@@ -4,7 +4,7 @@ import { requireUser, loadUserProfile } from "../lib/auth";
 import { hasRole } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { loadEmailAlertsSettings, sanitizeForResponse, saveEmailAlertsSettings } from "../lib/settingsService";
-import { sendEmail } from "../lib/emailService";
+import { buildTestEmail, sendEmail } from "../lib/emailService";
 import { badRequest, forbidden, ok, serverError } from "../lib/http";
 
 async function getAdmin(req: HttpRequest) {
@@ -91,11 +91,19 @@ app.http("settingsEmailAlertsTestEmail", {
       const parsed = TestSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const settings = await loadEmailAlertsSettings();
+      const email = buildTestEmail({
+        recipientName: admin.displayName,
+        frontendBaseUrl: settings.frontendBaseUrl || process.env.FRONTEND_BASE_URL,
+        provider: settings.emailProvider || process.env.EMAIL_PROVIDER,
+        emailFrom: settings.emailFrom,
+        sentAt: new Date(),
+        timezone: process.env.APP_TIMEZONE || "America/Bogota",
+      });
       const r = await sendEmail({
         to: parsed.data.to,
-        subject: "Correo de prueba — Programador de Actualizaciones",
-        text: "Este es un correo de prueba enviado desde la vista 'Alertas y correos'.",
-        html: "<p>Este es un <strong>correo de prueba</strong> enviado desde la vista <em>Alertas y correos</em>.</p>",
+        subject: email.subject,
+        text: email.text,
+        html: email.html,
       }, settings);
       await writeAuditLog({
         entityType: "settings",

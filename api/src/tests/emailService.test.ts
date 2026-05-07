@@ -19,13 +19,13 @@ describe("emailService", () => {
 
   it("renderTaskReminderEmail produce un asunto en español", () => {
     const t = renderTaskReminderEmail({ clientName: "C", domainName: "d", targetType: "database", targetName: "X", taskDate: "2026-05-10", daysBefore: 3 });
-    expect(t.subject).toMatch(/Recordatorio/i);
-    expect(t.subject).toMatch(/3 días/);
+    expect(t.subject).toMatch(/Bases de datos por actualizar/i);
+    expect(t.html).toContain("Empresa / base");
   });
 
   it("renderOverdueAlertEmail describe los conteos", () => {
     const t = renderOverdueAlertEmail({ domainTasks: [], databaseTasks: [{ clientName: "C", domainName: "d", targetName: "T", taskDate: "x", status: "pending", assigned: "" }] });
-    expect(t.subject).toMatch(/0 dominios/);
-    expect(t.subject).toMatch(/1 bases/);
+    expect(t.subject).toMatch(/bases de datos vencidas/i);
+    expect(t.html).toContain("Bases de datos / empresas vencidas");
   });
 });

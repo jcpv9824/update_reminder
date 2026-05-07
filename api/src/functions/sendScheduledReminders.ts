@@ -1,10 +1,12 @@
 import { app, InvocationContext, Timer } from "@azure/functions";
 import { getContainer } from "../lib/cosmos";
 import { writeAuditLog } from "../lib/audit";
-import { sendEmail, renderTaskReminderEmail } from "../lib/emailService";
-import { decidirRecordatorios } from "../lib/reminderLogic";
+import { buildDatabaseReminderEmail, buildDomainReminderEmail, sendEmail } from "../lib/emailService";
+import { decidirRecordatorios, type ReminderDecision } from "../lib/reminderLogic";
 import { loadEmailAlertsSettings } from "../lib/settingsService";
 import type { UpdateSchedule, UpdateTask, UserRecord, SentReminder } from "../types/models";
+
+type Recipient = { email: string; name?: string };
 
 function ahoraEnBogota(): { isoDate: string; horaLocal: string } {
   const now = new Date();
@@ -15,11 +17,11 @@ function ahoraEnBogota(): { isoDate: string; horaLocal: string } {
   return { isoDate, horaLocal };
 }
 
-async function obtenerEmailsDestinatarios(task: UpdateTask, schedule: UpdateSchedule | undefined): Promise<string[]> {
+async function obtenerDestinatarios(task: UpdateTask, schedule: UpdateSchedule | undefined): Promise<Recipient[]> {
   const cfg = schedule?.reminders;
   if (!cfg) return [];
   if (cfg.reminderRecipientsMode === "customEmails" && cfg.customReminderEmails && cfg.customReminderEmails.length > 0) {
-    return cfg.customReminderEmails;
+    return cfg.customReminderEmails.map((email) => ({ email }));
   }
   const usuariosCnt = getContainer("users");
   if (cfg.reminderRecipientsMode === "roleUsers") {
@@ -28,20 +30,71 @@ async function obtenerEmailsDestinatarios(task: UpdateTask, schedule: UpdateSche
     const { resources } = await usuariosCnt.items
       .query<UserRecord>({ query: "SELECT * FROM c WHERE c.active = true AND ARRAY_CONTAINS(c.roles, @r)", parameters: [{ name: "@r", value: role }] })
       .fetchAll();
-    return resources.map((u) => u.email).filter(Boolean);
+    return resources.map((u) => ({ email: u.email, name: u.displayName })).filter((u) => !!u.email);
   }
-  // assignedUsers (por defecto): combina IDs asignados de la frecuencia y de la tarea.
+
   const ids = Array.from(new Set([...(schedule?.assignedUserIds ?? []), ...(task.assignedUserIds ?? [])]));
   if (ids.length === 0) return [];
-  const emails: string[] = [];
+  const recipients: Recipient[] = [];
   for (const id of ids) {
     try {
       const { resource } = await usuariosCnt.item(id, id).read<UserRecord>();
-      if (resource && resource.active && resource.email) emails.push(resource.email);
-    } catch {/* puede ser un email directo */}
-    if (id.includes("@")) emails.push(id);
+      if (resource && resource.active && resource.email) recipients.push({ email: resource.email, name: resource.displayName });
+    } catch {
+      // Puede ser un correo directo guardado como responsable.
+    }
+    if (id.includes("@")) recipients.push({ email: id });
   }
-  return Array.from(new Set(emails));
+  const seen = new Set<string>();
+  return recipients.filter((r) => {
+    if (seen.has(r.email)) return false;
+    seen.add(r.email);
+    return true;
+  });
+}
+
+async function marcarRecordatorio(args: {
+  decision: ReminderDecision;
+  recipientEmail: string;
+  ok: boolean;
+  error?: string;
+}) {
+  const d = args.decision;
+  if (args.ok) {
+    const sent: SentReminder = {
+      type: d.type,
+      daysBefore: d.daysBefore,
+      sentAt: new Date().toISOString(),
+      recipients: [args.recipientEmail],
+    };
+    d.task.remindersSent = [...(d.task.remindersSent ?? []), sent];
+    d.task.updatedAt = new Date().toISOString();
+    d.task.updatedBy = "system";
+    await getContainer("updateTasks").item(d.task.id, d.task.taskBucket).replace(d.task);
+    await writeAuditLog({
+      entityType: "task",
+      entityId: d.task.id,
+      clientId: d.task.clientId,
+      clientName: d.task.clientName,
+      domainId: d.task.domainId,
+      domainName: d.task.domainName,
+      action: "reminder_email_sent",
+      performedBy: "system",
+      performedByEmail: "system",
+      metadata: { daysBefore: d.daysBefore, recipient: args.recipientEmail, targetType: d.task.targetType },
+    });
+  } else {
+    await writeAuditLog({
+      entityType: "task",
+      entityId: d.task.id,
+      clientId: d.task.clientId,
+      clientName: d.task.clientName,
+      action: "reminder_email_failed",
+      performedBy: "system",
+      performedByEmail: "system",
+      metadata: { error: args.error, daysBefore: d.daysBefore, recipient: args.recipientEmail, targetType: d.task.targetType },
+    });
+  }
 }
 
 export async function ejecutarRecordatorios(log: (m: string) => void): Promise<{ enviados: number; fallidos: number }> {
@@ -51,7 +104,6 @@ export async function ejecutarRecordatorios(log: (m: string) => void): Promise<{
     return { enviados: 0, fallidos: 0 };
   }
   const { isoDate, horaLocal } = ahoraEnBogota();
-  // Tareas activas en una ventana razonable (próximos 14 días).
   const { resources: tareas } = await getContainer("updateTasks")
     .items.query<UpdateTask>({ query: "SELECT * FROM c WHERE c.taskDate >= @hoy AND c.taskDate <= @max AND c.status NOT IN ('completed','cancelled')", parameters: [
       { name: "@hoy", value: isoDate },
@@ -70,48 +122,68 @@ export async function ejecutarRecordatorios(log: (m: string) => void): Promise<{
   }
 
   const decisiones = decidirRecordatorios({ ahoraIsoDate: isoDate, ahoraHoraLocal: horaLocal, tareas, frecuenciasPorId: frecuencias });
-  let enviados = 0, fallidos = 0;
-  for (const d of decisiones) {
-    const sch = frecuencias.get(d.task.scheduleId);
-    const destinatarios = await obtenerEmailsDestinatarios(d.task, sch);
-    if (destinatarios.length === 0) continue;
-    const tpl = renderTaskReminderEmail({
-      clientName: d.task.clientName,
-      domainName: d.task.domainName,
-      targetType: d.task.targetType,
-      targetName: d.task.targetName,
-      taskDate: d.task.taskDate,
-      daysBefore: d.daysBefore,
-      appUrl: settings.frontendBaseUrl,
-    });
-    const r = await sendEmail({ to: destinatarios, subject: tpl.subject, html: tpl.html, text: tpl.text }, settings);
-    const sent: SentReminder = { type: d.type, daysBefore: d.daysBefore, sentAt: new Date().toISOString(), recipients: destinatarios };
-    if (r.ok) {
-      d.task.remindersSent = [...(d.task.remindersSent ?? []), sent];
-      d.task.updatedAt = new Date().toISOString();
-      d.task.updatedBy = "system";
-      await getContainer("updateTasks").item(d.task.id, d.task.taskBucket).replace(d.task);
-      await writeAuditLog({
-        entityType: "task", entityId: d.task.id, clientId: d.task.clientId, clientName: d.task.clientName,
-        domainId: d.task.domainId, domainName: d.task.domainName,
-        action: "reminder_email_sent", performedBy: "system", performedByEmail: "system",
-        metadata: { daysBefore: d.daysBefore, recipients: destinatarios.length },
-      });
-      enviados++;
-    } else {
-      await writeAuditLog({
-        entityType: "task", entityId: d.task.id, clientId: d.task.clientId, clientName: d.task.clientName,
-        action: "reminder_email_failed", performedBy: "system", performedByEmail: "system",
-        metadata: { error: r.error, daysBefore: d.daysBefore },
-      });
-      fallidos++;
+  const grupos = new Map<string, { recipient: Recipient; domains: ReminderDecision[]; databases: ReminderDecision[] }>();
+
+  for (const decision of decisiones) {
+    const sch = frecuencias.get(decision.task.scheduleId);
+    const destinatarios = await obtenerDestinatarios(decision.task, sch);
+    for (const recipient of destinatarios) {
+      const group = grupos.get(recipient.email) ?? { recipient, domains: [], databases: [] };
+      if (decision.task.targetType === "domain") group.domains.push(decision);
+      else group.databases.push(decision);
+      grupos.set(recipient.email, group);
     }
   }
+
+  let enviados = 0;
+  let fallidos = 0;
+  for (const group of grupos.values()) {
+    if (group.domains.length > 0) {
+      const email = buildDomainReminderEmail({
+        recipientName: group.recipient.name,
+        frontendBaseUrl: settings.frontendBaseUrl,
+        timezone: process.env.APP_TIMEZONE || "America/Bogota",
+        tasks: group.domains.map((d) => ({
+          clientName: d.task.clientName,
+          domainName: d.task.domainName || d.task.targetName,
+          scheduledFor: d.task.taskDate,
+          status: d.task.status,
+          notes: d.task.notes,
+          assignedToName: group.recipient.name,
+          assignedToEmail: group.recipient.email,
+        })),
+      });
+      const r = await sendEmail({ to: group.recipient.email, subject: email.subject, html: email.html, text: email.text }, settings);
+      for (const decision of group.domains) await marcarRecordatorio({ decision, recipientEmail: group.recipient.email, ok: r.ok, error: r.error });
+      if (r.ok) enviados++; else fallidos++;
+    }
+
+    if (group.databases.length > 0) {
+      const email = buildDatabaseReminderEmail({
+        recipientName: group.recipient.name,
+        frontendBaseUrl: settings.frontendBaseUrl,
+        timezone: process.env.APP_TIMEZONE || "America/Bogota",
+        tasks: group.databases.map((d) => ({
+          clientName: d.task.clientName,
+          domainName: d.task.domainName,
+          databaseName: d.task.targetName,
+          scheduledFor: d.task.taskDate,
+          status: d.task.status,
+          notes: d.task.notes,
+          assignedToName: group.recipient.name,
+          assignedToEmail: group.recipient.email,
+        })),
+      });
+      const r = await sendEmail({ to: group.recipient.email, subject: email.subject, html: email.html, text: email.text }, settings);
+      for (const decision of group.databases) await marcarRecordatorio({ decision, recipientEmail: group.recipient.email, ok: r.ok, error: r.error });
+      if (r.ok) enviados++; else fallidos++;
+    }
+  }
+
   log(`Recordatorios enviados: ${enviados}; fallidos: ${fallidos}`);
   return { enviados, fallidos };
 }
 
-// Cada 15 minutos.
 app.timer("sendScheduledReminders", {
   schedule: "0 */15 * * * *",
   handler: async (_t: Timer, ctx: InvocationContext) => {

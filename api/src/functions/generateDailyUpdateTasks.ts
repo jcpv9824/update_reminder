@@ -1,7 +1,7 @@
 import { app, InvocationContext, Timer } from "@azure/functions";
 import { getContainer } from "../lib/cosmos";
 import { writeAuditLog } from "../lib/audit";
-import { generateTasksForDate } from "../lib/taskGenerator";
+import { expandSchedulesWithDomainInheritance, summarizeTaskGenerationForDate } from "../lib/taskGenerator";
 import type { DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 function todayInBogotaIso(): string {
@@ -34,9 +34,15 @@ async function resolveTargetName(
 export async function runTaskGeneration(
   isoDate: string,
   log: (msg: string) => void
-): Promise<{ created: number }> {
+): Promise<{ created: number; skipped: number; message: string }> {
   const { resources: schedules } = await getContainer("updateSchedules")
     .items.query<UpdateSchedule>({ query: "SELECT * FROM c WHERE c.active = true" })
+    .fetchAll();
+  const { resources: domains } = await getContainer("domains")
+    .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" })
+    .fetchAll();
+  const { resources: databases } = await getContainer("databases")
+    .items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" })
     .fetchAll();
 
   // Tareas existentes por bucket
@@ -53,7 +59,9 @@ export async function runTaskGeneration(
   const nameCache = new Map<string, string>();
   const resolver = (id: string) => nameCache.get(id) ?? id;
 
-  for (const s of schedules) {
+  const expandedSchedules = expandSchedulesWithDomainInheritance(schedules, domains, databases);
+
+  for (const s of expandedSchedules) {
     for (const targetId of s.targetIds) {
       if (!nameCache.has(targetId)) {
         nameCache.set(targetId, await resolveTargetName(s.targetType, targetId));
@@ -61,7 +69,8 @@ export async function runTaskGeneration(
     }
   }
 
-  const newTasks = generateTasksForDate(schedules, isoDate, existing, resolver);
+  const summary = summarizeTaskGenerationForDate(expandedSchedules, isoDate, existing, resolver);
+  const newTasks = summary.tasks;
   for (const task of newTasks) {
     await getContainer("updateTasks").items.create(task);
     await writeAuditLog({
@@ -77,8 +86,8 @@ export async function runTaskGeneration(
       after: { taskDate: task.taskDate, targetType: task.targetType, targetId: task.targetId },
     });
   }
-  log(`Tareas creadas: ${newTasks.length} para la fecha ${isoDate}.`);
-  return { created: newTasks.length };
+  log(`Tareas creadas: ${newTasks.length}; omitidas por duplicado: ${summary.skipped}; fecha ${isoDate}.`);
+  return { created: newTasks.length, skipped: summary.skipped, message: "Tareas generadas correctamente." };
 }
 
 // Timer trigger: 06:00 UTC = 01:00 hora de Bogotá.
@@ -104,16 +113,16 @@ app.http("generateDailyUpdateTasksManual", {
   handler: async (req, ctx) => {
     try {
       const { requireUser, loadUserProfile } = await import("../lib/auth");
-      const { hasRole } = await import("../lib/permissions");
+      const { canGenerateTasks } = await import("../lib/permissions");
       const auth = await requireUser(req);
       const profile = await loadUserProfile(auth);
-      if (!profile || !hasRole(profile, "admin")) {
-        return { status: 403, jsonBody: { error: "Solo administradores." } };
+      if (!profile || !canGenerateTasks(profile)) {
+        return { status: 403, jsonBody: { error: "Solo administradores y administradores de clientes." } };
       }
       const body = (await req.json().catch(() => ({}))) as any;
       const date = typeof body.date === "string" ? body.date : todayInBogotaIso();
       const r = await runTaskGeneration(date, (m) => ctx.log(m));
-      return { status: 200, jsonBody: { date, created: r.created } };
+      return { status: 200, jsonBody: { date, created: r.created, skipped: r.skipped, message: r.message } };
     } catch (e: any) {
       return { status: 500, jsonBody: { error: e.message } };
     }

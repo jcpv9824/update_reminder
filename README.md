@@ -5,13 +5,15 @@ Aplicación web para gestionar las actualizaciones programadas de los clientes d
 ## Características
 
 - **Login con correo y contraseña** (JWT). Los roles se administran únicamente desde la página *Usuarios y roles*.
-- **Recordatorios por correo** a los actualizadores (configurables por frecuencia: días previos, hora y destinatarios).
+- **Alertas y correos** en secciones simples: estado, configuración básica, recordatorios, alertas, reporte, SMTP avanzado y correo de prueba.
+- **Recordatorios por correo** a los actualizadores (días previos, hora y zona horaria configurables).
 - **Alertas diarias** a administradores cuando hay tareas vencidas.
+- **Reporte manual por correo** de clientes, dominios y empresas/bases de datos, sin contraseñas ni datos sensibles.
 - **Diseño con colores corporativos**: `#1C3664`, `#7E99B2`, `#D1D3D2`, `#D3C193`.
 - Página principal **Tareas** con dos columnas (dominios y bases de datos) divididas en *Vencidas / Hoy / Próximas / Completadas*.
-- Gestión de **clientes**, **dominios** y **bases de datos**. Al crear un dominio o una base de datos se puede configurar la **frecuencia de actualización** en el mismo formulario.
+- Gestión de **clientes**, **dominios** y **bases de datos**. La frecuencia principal se configura en el **dominio**; las bases de datos heredan esa frecuencia desde el dominio seleccionado.
 - **Frecuencias avanzadas** (semanal, intervalo, mensual, manual) accesibles desde una página secundaria solo para administradores.
-- **Generación automática diaria** de tareas mediante Azure Functions Timer Trigger.
+- **Generación automática diaria** de tareas mediante Azure Functions Timer Trigger y generación manual desde la vista **Tareas** con **Generar tareas ahora**.
 - Panel del actualizador con las cuatro partes del acceso (servidor, Initial Catalog, usuario y contraseña) y botones independientes para copiar; cada acción se audita.
 - **Roles**: administrador, administrador de clientes, actualizador de bases de datos, actualizador de dominios, visualizador.
 - **Auditoría completa** de todas las acciones (incluyendo revelar/copiar contraseñas).
@@ -111,13 +113,51 @@ Cubre el parser visual y el componente de vista previa.
 
 ## Seguridad
 
+- La contraseña SMTP se guarda en **Azure Key Vault**. El frontend nunca la recibe ni la muestra; Cosmos DB solo guarda el nombre del secreto y el indicador de configuración.
 - La contraseña de cada base de datos se guarda en **Azure Key Vault** con el nombre `db-{databaseId}-password`.
 - En Cosmos DB solo se guarda la **referencia** al secreto, nunca la contraseña.
 - Los registros de auditoría **eliminan automáticamente** cualquier campo cuyo nombre incluya `password`, `secret`, `rawDbAccess`.
 - Cada acción de **revelar** o **copiar** la contraseña genera una entrada de auditoría con el usuario, la fecha y la base de datos asociada.
+- El reporte de clientes/dominios/empresas no incluye usuarios SQL, contraseñas, cadenas de conexión completas, secretos ni tokens.
+
+## Alertas y correos
+
+La vista **Alertas y correos** está organizada en acordeones. La sección **Configuración avanzada SMTP** queda cerrada por defecto para mantener la pantalla inicial simple.
+
+Use **Usar configuración recomendada de P&A** para llenar:
+
+- Proveedor SMTP.
+- Remitente `info@pya.com.co`.
+- Servidor `smtp.office365.com`.
+- Puerto `587`.
+- SSL/TLS desactivado para STARTTLS.
+- URL pública de la aplicación.
+
+La contraseña SMTP no se llena automáticamente. Para configurarla, abra **Configuración avanzada SMTP**, use **Configurar/Cambiar contraseña SMTP** y escriba la contraseña de aplicación. La contraseña actual nunca se muestra.
+
+Para probar el envío, escriba un destinatario en **Correo de prueba** y pulse **Enviar correo de prueba**.
+
+Para enviar el reporte maestro, abra **Reporte de clientes/dominios/empresas**, escriba destinatarios separados por punto y coma, por ejemplo `correo1@empresa.com; correo2@empresa.com`, y pulse **Enviar reporte**.
+
+## Frecuencias heredadas
+
+El flujo principal es:
+
+1. Crear cliente.
+2. Crear dominio y configurar su frecuencia.
+3. Crear base de datos seleccionando el dominio.
+
+La base de datos usa la frecuencia activa del dominio. Si el dominio no tiene frecuencia activa, la vista muestra una advertencia y no se generarán tareas automáticas para esa base hasta configurar la frecuencia del dominio.
+
+Regla avanzada: si existe una frecuencia específica activa de base de datos, esa frecuencia tiene prioridad sobre la herencia del dominio. La vista **Nueva base de datos** ya no muestra ni envía frecuencia individual.
+
+## Generar tareas ahora
+
+En **Tareas**, administradores y administradores de clientes ven el botón **Generar tareas ahora**. El botón llama `POST /api/tasks/generate`, ejecuta la misma lógica del timer diario, devuelve cuántas tareas se crearon y cuántas se omitieron por idempotencia, y refresca la lista.
 
 ## Cambios recientes
 
+- [CAMBIOS_V6.md](CAMBIOS_V6.md): Alertas y correos simplificado, reporte maestro por correo, frecuencias heredadas desde dominio y generación manual de tareas.
 - [CAMBIOS_V5.md](CAMBIOS_V5.md): fix del 404 al refrescar, listas sin eliminados, eliminación física con integridad y selectores buscables.
 - [CAMBIOS_V4.md](CAMBIOS_V4.md): vista administrativa **Alertas y correos** (SMTP, recordatorios, alertas, prueba). Contraseña SMTP en Key Vault.
 - [CAMBIOS_V3.md](CAMBIOS_V3.md): login email/password con JWT, recordatorios y alertas por correo, colores corporativos.

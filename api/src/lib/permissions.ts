@@ -33,6 +33,14 @@ export function canManageSchedules(user: CurrentUser): boolean {
   return hasAnyRole(user, ["admin", "client_manager"]);
 }
 
+export function canGenerateTasks(user: CurrentUser): boolean {
+  return hasAnyRole(user, ["admin", "client_manager"]);
+}
+
+export function canSendMastersReport(user: CurrentUser): boolean {
+  return hasAnyRole(user, ["admin", "client_manager"]);
+}
+
 export function canViewAuditLogs(user: CurrentUser): boolean {
   return hasAnyRole(user, [
     "admin",

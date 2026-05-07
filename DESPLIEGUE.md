@@ -783,3 +783,76 @@ az functionapp config appsettings set `
 9. Documentar el procedimiento de actualización del ZIP cuando se modifique el backend.
 10. No dejar contraseñas reales en capturas, logs, tickets ni documentación.
 
+---
+
+## 16. Redeploy después de cambios V6
+
+Estos comandos sirven para publicar la ronda que simplifica **Alertas y correos**, agrega el reporte maestro por correo, hereda frecuencias desde dominio y agrega **Generar tareas ahora**.
+
+### 16.1 Backend con ZIP
+
+```powershell
+$resourceGroup = "rg-erp-update-scheduler-prod"
+$functionApp   = "erpupdsch4645-api"
+
+cd "C:\Users\jcami\Desktop\Actualizaciones automáticas\erp-update-scheduler\api"
+npm install
+npm test
+npm run build
+
+Remove-Item .\api-deploy-full.zip -ErrorAction SilentlyContinue
+tar -a -c -f api-deploy-full.zip host.json package.json package-lock.json dist node_modules
+
+az functionapp deployment source config-zip `
+  --resource-group $resourceGroup `
+  --name $functionApp `
+  --src api-deploy-full.zip
+
+az functionapp restart `
+  --name $functionApp `
+  --resource-group $resourceGroup
+```
+
+Verifique que existen las funciones nuevas/actualizadas:
+
+```powershell
+az functionapp function list `
+  --name $functionApp `
+  --resource-group $resourceGroup `
+  --output table
+```
+
+Debe incluir `mastersReportSendEmail` y `generateDailyUpdateTasksManual`.
+
+### 16.2 Frontend
+
+```powershell
+cd "C:\Users\jcami\Desktop\Actualizaciones automáticas\erp-update-scheduler\frontend"
+"VITE_API_BASE_URL=https://erpupdsch4645-api.azurewebsites.net/api" | Out-File -FilePath .env.production -Encoding utf8
+npm install
+npm test
+npm run build
+```
+
+Si usa GitHub Actions de Static Web Apps, haga commit y push. Si despliega manualmente con SWA CLI, use el recurso Static Web Apps apuntando a `frontend/dist`.
+
+El archivo `frontend/public/staticwebapp.config.json` debe seguir presente; Vite lo copia a `dist/staticwebapp.config.json` para evitar 404 al refrescar rutas como `/tareas`.
+
+### 16.3 Configurar SMTP sin exponer contraseña
+
+1. Inicie sesión como administrador.
+2. Abra **Alertas y correos**.
+3. Pulse **Usar configuración recomendada de P&A**.
+4. Abra **Configuración avanzada SMTP**.
+5. Pulse **Configurar/Cambiar contraseña SMTP** y escriba la contraseña de aplicación.
+6. Guarde.
+
+La contraseña se guarda en Key Vault. No se muestra, no vuelve al frontend y no se guarda en Cosmos DB como texto plano.
+
+### 16.4 Pruebas manuales después de publicar
+
+1. **Configuración P&A**: en **Alertas y correos**, pulse **Usar configuración recomendada de P&A** y confirme servidor `smtp.office365.com`, puerto `587`, remitente `info@pya.com.co`.
+2. **Correo de prueba**: escriba un correo en **Correo de prueba** y pulse **Enviar correo de prueba**.
+3. **Reporte manual**: en **Reporte de clientes/dominios/empresas**, escriba `correo1@empresa.com; correo2@empresa.com` y pulse **Enviar reporte**. El reporte no debe contener contraseñas, usuarios SQL, cadenas de conexión completas, secretos ni tokens.
+4. **Generar tareas ahora**: en **Tareas**, como admin o administrador de clientes, pulse **Generar tareas ahora**. Debe aparecer el mensaje `Tareas generadas correctamente.` y refrescarse la lista.
+5. **Frecuencia heredada**: cree un dominio con frecuencia activa. Cree una base de datos bajo ese dominio. El formulario debe mostrar que usará la frecuencia del dominio y no debe pedir frecuencia propia.

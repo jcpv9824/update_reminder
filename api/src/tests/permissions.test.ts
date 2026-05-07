@@ -4,6 +4,8 @@ import {
   canManageClients,
   canManageUsers,
   canManageSchedules,
+  canGenerateTasks,
+  canSendMastersReport,
   canCompleteDatabaseTask,
   canCompleteDomainTask,
   canRevealDatabaseSecret,
@@ -35,6 +37,15 @@ describe("permissions", () => {
     expect(canManageClients(u)).toBe(true);
     expect(canManageUsers(u)).toBe(false);
     expect(canManageSchedules(u)).toBe(true);
+  });
+
+  it("solo admin y client_manager pueden generar tareas y enviar el reporte maestro", () => {
+    expect(canGenerateTasks(user(["admin"]))).toBe(true);
+    expect(canGenerateTasks(user(["client_manager"]))).toBe(true);
+    expect(canGenerateTasks(user(["database_updater"]))).toBe(false);
+    expect(canSendMastersReport(user(["admin"]))).toBe(true);
+    expect(canSendMastersReport(user(["client_manager"]))).toBe(true);
+    expect(canSendMastersReport(user(["viewer"]))).toBe(false);
   });
 
   it("viewer no puede gestionar nada", () => {

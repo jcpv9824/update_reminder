@@ -5,6 +5,12 @@
 //   acs      - placeholder, no implementado.
 import { loadEmailAlertsSettings, getSmtpPassword } from "./settingsService";
 import type { EmailAlertsSettings } from "../types/models";
+import {
+  buildDatabaseReminderEmail,
+  buildDomainReminderEmail,
+  buildOverdueTasksEmail,
+  buildTestEmail,
+} from "./emailTemplates";
 
 export type EmailMessage = {
   to: string | string[];
@@ -96,22 +102,27 @@ export function renderTaskReminderEmail(args: {
   daysBefore: number;
   appUrl?: string;
 }): { subject: string; html: string; text: string } {
-  const cuando = args.daysBefore === 0 ? "hoy" : args.daysBefore === 1 ? "mañana" : `en ${args.daysBefore} días`;
-  const tipo = args.targetType === "domain" ? "dominio" : "base de datos";
-  const subject = `Recordatorio: actualización ${cuando} — ${args.clientName}`;
-  const enlace = args.appUrl ? `<p><a href="${args.appUrl}">Abrir el Programador de Actualizaciones</a></p>` : "";
-  const text = `Tienes una actualización programada ${cuando} (${args.taskDate}) del ${tipo} ${args.targetName} del cliente ${args.clientName} (dominio ${args.domainName}).`;
-  const html = `
-    <h3>Recordatorio de actualización</h3>
-    <p>Tienes una actualización programada <strong>${cuando}</strong> (${args.taskDate}).</p>
-    <ul>
-      <li><strong>Cliente:</strong> ${args.clientName}</li>
-      <li><strong>Dominio:</strong> ${args.domainName}</li>
-      <li><strong>${args.targetType === "domain" ? "Dominio" : "Base de datos"}:</strong> ${args.targetName}</li>
-    </ul>
-    ${enlace}
-  `;
-  return { subject, html, text };
+  if (args.targetType === "domain") {
+    return buildDomainReminderEmail({
+      tasks: [{
+        clientName: args.clientName,
+        domainName: args.domainName || args.targetName,
+        scheduledFor: args.taskDate,
+        status: "pendiente",
+      }],
+      frontendBaseUrl: args.appUrl,
+    });
+  }
+  return buildDatabaseReminderEmail({
+    tasks: [{
+      clientName: args.clientName,
+      domainName: args.domainName,
+      databaseName: args.targetName,
+      scheduledFor: args.taskDate,
+      status: "pendiente",
+    }],
+    frontendBaseUrl: args.appUrl,
+  });
 }
 
 export function renderOverdueAlertEmail(args: {
@@ -119,33 +130,27 @@ export function renderOverdueAlertEmail(args: {
   databaseTasks: Array<{ clientName: string; domainName: string; targetName: string; taskDate: string; status: string; assigned: string }>;
   appUrl?: string;
 }): { subject: string; html: string; text: string } {
-  const subject = `Alerta: actualizaciones vencidas (${args.domainTasks.length} dominios, ${args.databaseTasks.length} bases de datos)`;
-  function tabla(filas: string[], encabezado: string): string {
-    if (filas.length === 0) return "";
-    return `<h4>${encabezado}</h4><table border="1" cellpadding="6" cellspacing="0">${filas.join("")}</table>`;
-  }
-  const filasD = args.domainTasks.map((t) =>
-    `<tr><td>${t.clientName}</td><td>${t.domainName}</td><td>${t.taskDate}</td><td>${t.status}</td><td>${t.assigned}</td></tr>`
-  );
-  const filasB = args.databaseTasks.map((t) =>
-    `<tr><td>${t.clientName}</td><td>${t.domainName}</td><td>${t.targetName}</td><td>${t.taskDate}</td><td>${t.status}</td><td>${t.assigned}</td></tr>`
-  );
-  const cabD = `<tr><th>Cliente</th><th>Dominio</th><th>Fecha</th><th>Estado</th><th>Responsable</th></tr>`;
-  const cabB = `<tr><th>Cliente</th><th>Dominio</th><th>Empresa/BD</th><th>Fecha</th><th>Estado</th><th>Responsable</th></tr>`;
-  const enlace = args.appUrl ? `<p><a href="${args.appUrl}">Abrir el Programador de Actualizaciones</a></p>` : "";
-  const html = `
-    <h3>Actualizaciones vencidas</h3>
-    <ul>
-      <li>Dominios vencidos: <strong>${args.domainTasks.length}</strong></li>
-      <li>Bases de datos vencidas: <strong>${args.databaseTasks.length}</strong></li>
-    </ul>
-    ${tabla([cabD, ...filasD], "Dominios")}
-    ${tabla([cabB, ...filasB], "Bases de datos")}
-    ${enlace}
-  `;
-  const text = `Resumen de vencidos: ${args.domainTasks.length} dominios, ${args.databaseTasks.length} bases de datos.`;
-  return { subject, html, text };
+  return buildOverdueTasksEmail({
+    overdueDomainTasks: args.domainTasks.map((t) => ({
+        clientName: t.clientName,
+        domainName: t.domainName,
+        dueAt: t.taskDate,
+        status: t.status,
+        assignedToName: t.assigned,
+      })),
+    overdueDatabaseTasks: args.databaseTasks.map((t) => ({
+        clientName: t.clientName,
+        domainName: t.domainName,
+        databaseName: t.targetName,
+        dueAt: t.taskDate,
+        status: t.status,
+        assignedToName: t.assigned,
+      })),
+    frontendBaseUrl: args.appUrl,
+  });
 }
+
+export { buildDatabaseReminderEmail, buildDomainReminderEmail, buildOverdueTasksEmail, buildTestEmail };
 
 export function renderUserPasswordEmail(args: {
   displayName: string;

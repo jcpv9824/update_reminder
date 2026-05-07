@@ -119,6 +119,35 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
   padding: 16px;
   margin-bottom: 16px;
 }
+.estado-correo {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.estado-correo h3 { margin: 0 0 8px 0; }
+.estado-correo p { margin: 4px 0; }
+.acordeon {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+.acordeon summary {
+  cursor: pointer;
+  padding: 12px 16px;
+  color: var(--color-primary);
+  font-weight: 700;
+}
+.acordeon-contenido {
+  border-top: 1px solid var(--color-border);
+  padding: 16px;
+}
+.texto-ayuda {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  margin: 4px 0 8px;
+}
 
 .barra-filtros {
   display: flex;

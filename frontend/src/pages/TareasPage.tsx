@@ -9,6 +9,7 @@ import { PanelAccesoBd } from "../components/PanelAccesoBd";
 // Vista unificada de tareas. Muestra dos columnas (dominios y bases de datos).
 // La visibilidad y los botones de acción dependen del rol del usuario.
 export default function TareasPage() {
+  const qc = useQueryClient();
   const auth = useAuth();
   const usuario = auth.cargando || !auth.usuario ? null : auth.usuario;
   const roles = usuario?.roles ?? [];
@@ -17,11 +18,33 @@ export default function TareasPage() {
   const verBd = esAdmin || roles.includes("database_updater");
   const soloLectura = !esAdmin && !roles.includes("domain_updater") && !roles.includes("database_updater");
 
+  const [mensaje, setMensaje] = useState<string | null>(null);
+  const [errorGeneracion, setErrorGeneracion] = useState<string | null>(null);
+  const generarTareas = useMutation({
+    mutationFn: () => api.post<{ created: number; skipped: number; message: string }>("/tasks/generate", {}),
+    onSuccess: (r) => {
+      setMensaje(r.message ?? "Tareas generadas correctamente.");
+      setErrorGeneracion(null);
+      qc.invalidateQueries({ queryKey: ["tareas"] });
+    },
+    onError: (e: any) => {
+      setMensaje(null);
+      setErrorGeneracion(e?.message ?? "No se pudieron generar las tareas.");
+    },
+  });
+
   return (
     <>
       <div className="encabezado-pagina">
         <h2>Tareas</h2>
+        {esAdmin && (
+          <button className="primario" onClick={() => generarTareas.mutate()} disabled={generarTareas.isPending}>
+            {generarTareas.isPending ? "Generando..." : "Generar tareas ahora"}
+          </button>
+        )}
       </div>
+      {mensaje && <Alerta tipo="exito">{mensaje}</Alerta>}
+      {errorGeneracion && <Alerta tipo="error">{errorGeneracion}</Alerta>}
       <div className="tareas-grid">
         {verDominios && <ColumnaTareas titulo="Tareas de dominios" targetType="domain" soloLectura={soloLectura} />}
         {verBd && <ColumnaTareas titulo="Tareas de bases de datos" targetType="database" soloLectura={soloLectura} />}

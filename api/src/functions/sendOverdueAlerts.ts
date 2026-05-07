@@ -1,15 +1,52 @@
 import { app, InvocationContext, Timer } from "@azure/functions";
 import { getContainer } from "../lib/cosmos";
 import { writeAuditLog } from "../lib/audit";
-import { renderOverdueAlertEmail, sendEmail } from "../lib/emailService";
+import { buildOverdueTasksEmail, sendEmail } from "../lib/emailService";
 import { loadEmailAlertsSettings } from "../lib/settingsService";
 import type { UpdateTask, UserRecord } from "../types/models";
+
+type Recipient = { email: string; name?: string };
 
 function ahoraEnBogotaIso(): string {
   const now = new Date();
   const utcMs = now.getTime() + now.getTimezoneOffset() * 60_000;
   const bogota = new Date(utcMs - 5 * 3600_000);
   return bogota.toISOString().slice(0, 10);
+}
+
+async function getActiveUserById(id: string): Promise<UserRecord | null> {
+  try {
+    const { resource } = await getContainer("users").item(id, id).read<UserRecord>();
+    return resource && resource.active ? resource : null;
+  } catch {
+    return null;
+  }
+}
+
+async function recipientsFromAssigned(task: UpdateTask): Promise<Recipient[]> {
+  const recipients: Recipient[] = [];
+  for (const id of task.assignedUserIds ?? []) {
+    const user = await getActiveUserById(id);
+    if (user?.email) recipients.push({ email: user.email, name: user.displayName });
+    else if (id.includes("@")) recipients.push({ email: id });
+  }
+  const seen = new Set<string>();
+  return recipients.filter((r) => {
+    if (seen.has(r.email)) return false;
+    seen.add(r.email);
+    return true;
+  });
+}
+
+async function fallbackRecipients(settings: Awaited<ReturnType<typeof loadEmailAlertsSettings>>): Promise<Recipient[]> {
+  if (settings.overdueAlertRecipientsMode === "customEmails") {
+    return (settings.customAdminAlertEmails ?? []).map((email) => ({ email }));
+  }
+  const queryRoles = settings.overdueAlertRecipientsMode === "adminsAndClientManagers"
+    ? "SELECT * FROM c WHERE c.active = true AND (ARRAY_CONTAINS(c.roles, 'admin') OR ARRAY_CONTAINS(c.roles, 'client_manager'))"
+    : "SELECT * FROM c WHERE c.active = true AND ARRAY_CONTAINS(c.roles, 'admin')";
+  const { resources } = await getContainer("users").items.query<UserRecord>({ query: queryRoles }).fetchAll();
+  return resources.map((u) => ({ email: u.email, name: u.displayName })).filter((r) => !!r.email);
 }
 
 export async function ejecutarAlertasVencidas(log: (m: string) => void): Promise<{ enviados: number; tareas: number }> {
@@ -27,71 +64,91 @@ export async function ejecutarAlertasVencidas(log: (m: string) => void): Promise
     return { enviados: 0, tareas: 0 };
   }
 
-  // Filtrar tareas a las que aún no se les envió alerta hoy.
   const pendientes = tareas.filter((t) => !((t.overdueAlertSentDates ?? []).includes(hoy)));
   if (pendientes.length === 0) {
     log("Todas las tareas vencidas ya recibieron alerta hoy.");
     return { enviados: 0, tareas: tareas.length };
   }
 
-  // Destinatarios según configuración.
-  let destinatarios: string[] = [];
-  if (settings.overdueAlertRecipientsMode === "customEmails") {
-    destinatarios = settings.customAdminAlertEmails ?? [];
-  } else {
-    const queryRoles = settings.overdueAlertRecipientsMode === "adminsAndClientManagers"
-      ? "SELECT * FROM c WHERE c.active = true AND (ARRAY_CONTAINS(c.roles, 'admin') OR ARRAY_CONTAINS(c.roles, 'client_manager'))"
-      : "SELECT * FROM c WHERE c.active = true AND ARRAY_CONTAINS(c.roles, 'admin')";
-    const { resources: admins } = await getContainer("users").items.query<UserRecord>({ query: queryRoles }).fetchAll();
-    destinatarios = admins.map((u) => u.email).filter(Boolean);
-  }
-  if (destinatarios.length === 0) {
-    log("No hay administradores activos para enviar la alerta.");
-    return { enviados: 0, tareas: tareas.length };
-  }
+  const fallback = await fallbackRecipients(settings);
+  const grupos = new Map<string, { recipient: Recipient; domains: UpdateTask[]; databases: UpdateTask[] }>();
 
-  const dominios = pendientes.filter((t) => t.targetType === "domain").map((t) => ({
-    clientName: t.clientName, domainName: t.domainName, taskDate: t.taskDate, status: t.status, assigned: (t.assignedUserIds ?? []).join(", "),
-  }));
-  const bds = pendientes.filter((t) => t.targetType === "database").map((t) => ({
-    clientName: t.clientName, domainName: t.domainName, targetName: t.targetName, taskDate: t.taskDate, status: t.status, assigned: (t.assignedUserIds ?? []).join(", "),
-  }));
-  const tpl = renderOverdueAlertEmail({ domainTasks: dominios, databaseTasks: bds, appUrl: settings.frontendBaseUrl });
-  const r = await sendEmail({ to: destinatarios, subject: tpl.subject, html: tpl.html, text: tpl.text }, settings);
-
-  if (r.ok) {
-    // Marcar las tareas como alertadas hoy.
-    for (const t of pendientes) {
-      t.overdueAlertSentDates = [...(t.overdueAlertSentDates ?? []), hoy];
-      t.updatedAt = new Date().toISOString();
-      t.updatedBy = "system";
-      await getContainer("updateTasks").item(t.id, t.taskBucket).replace(t);
+  for (const task of pendientes) {
+    const assigned = await recipientsFromAssigned(task);
+    const recipients = assigned.length > 0 ? assigned : fallback;
+    for (const recipient of recipients) {
+      const group = grupos.get(recipient.email) ?? { recipient, domains: [], databases: [] };
+      if (task.targetType === "domain") group.domains.push(task);
+      else group.databases.push(task);
+      grupos.set(recipient.email, group);
     }
-    await writeAuditLog({
-      entityType: "task",
-      entityId: "overdue_summary",
-      action: "overdue_alert_sent",
-      performedBy: "system",
-      performedByEmail: "system",
-      metadata: { date: hoy, domainCount: dominios.length, databaseCount: bds.length, recipients: destinatarios.length },
-    });
-    log(`Alerta de vencidos enviada a ${destinatarios.length} admins.`);
-    return { enviados: 1, tareas: pendientes.length };
-  } else {
-    await writeAuditLog({
-      entityType: "task",
-      entityId: "overdue_summary",
-      action: "overdue_alert_failed",
-      performedBy: "system",
-      performedByEmail: "system",
-      metadata: { date: hoy, error: r.error },
-    });
-    log(`Falló envío: ${r.error}`);
+  }
+
+  if (grupos.size === 0) {
+    log("No hay responsables o administradores activos para enviar la alerta.");
     return { enviados: 0, tareas: pendientes.length };
   }
+
+  let enviados = 0;
+  const alertedTaskIds = new Set<string>();
+  for (const group of grupos.values()) {
+    const email = buildOverdueTasksEmail({
+      recipientName: group.recipient.name,
+      frontendBaseUrl: settings.frontendBaseUrl,
+      timezone: process.env.APP_TIMEZONE || "America/Bogota",
+      overdueDomainTasks: group.domains.map((t) => ({
+        clientName: t.clientName,
+        domainName: t.domainName || t.targetName,
+        dueAt: t.taskDate,
+        status: t.status,
+        notes: t.notes,
+        assignedToEmail: group.recipient.email,
+        assignedToName: group.recipient.name,
+      })),
+      overdueDatabaseTasks: group.databases.map((t) => ({
+        clientName: t.clientName,
+        domainName: t.domainName,
+        databaseName: t.targetName,
+        dueAt: t.taskDate,
+        status: t.status,
+        notes: t.notes,
+        assignedToEmail: group.recipient.email,
+        assignedToName: group.recipient.name,
+      })),
+    });
+    const r = await sendEmail({ to: group.recipient.email, subject: email.subject, html: email.html, text: email.text }, settings);
+    await writeAuditLog({
+      entityType: "task",
+      entityId: "overdue_summary",
+      action: r.ok ? "overdue_alert_sent" : "overdue_alert_failed",
+      performedBy: "system",
+      performedByEmail: "system",
+      metadata: {
+        date: hoy,
+        recipient: group.recipient.email,
+        domainCount: group.domains.length,
+        databaseCount: group.databases.length,
+        error: r.ok ? undefined : r.error,
+      },
+    });
+    if (r.ok) {
+      enviados++;
+      for (const t of [...group.domains, ...group.databases]) alertedTaskIds.add(t.id);
+    }
+  }
+
+  for (const t of pendientes) {
+    if (!alertedTaskIds.has(t.id)) continue;
+    t.overdueAlertSentDates = [...(t.overdueAlertSentDates ?? []), hoy];
+    t.updatedAt = new Date().toISOString();
+    t.updatedBy = "system";
+    await getContainer("updateTasks").item(t.id, t.taskBucket).replace(t);
+  }
+
+  log(`Alertas de vencidos enviadas: ${enviados}; tareas incluidas: ${alertedTaskIds.size}.`);
+  return { enviados, tareas: pendientes.length };
 }
 
-// Una vez al día a las 08:00 hora Bogotá = 13:00 UTC.
 app.timer("sendOverdueAlerts", {
   schedule: "0 0 13 * * *",
   handler: async (_t: Timer, ctx: InvocationContext) => {

@@ -1,12 +1,11 @@
 import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { BaseDeDatos, Cliente, Dominio } from "../types";
+import type { BaseDeDatos, Cliente, Dominio, Frecuencia } from "../types";
 import { Alerta, EtiquetaEstado, Modal, DialogoConfirmar } from "../components/Comunes";
 import { AccesoBdParseado } from "../components/AccesoBdParseado";
 import { PanelAccesoBd } from "../components/PanelAccesoBd";
 import { ETIQUETAS_AMBIENTE } from "../types";
-import { SeleccionFrecuencia, valoresFrecuenciaPorDefecto, depurarFrecuenciaParaEnvio, type ValoresFrecuencia } from "../components/SeleccionFrecuencia";
 import { SelectorBuscable } from "../components/SelectorBuscable";
 
 export default function BasesDeDatosPage() {
@@ -25,6 +24,7 @@ export default function BasesDeDatosPage() {
   const { data: clientes = [] } = useQuery({ queryKey: ["clientes"], queryFn: () => api.get<Cliente[]>("/clients") });
   const { data: dominios = [] } = useQuery({ queryKey: ["dominios"], queryFn: () => api.get<Dominio[]>("/domains") });
   const { data: bds = [], isLoading } = useQuery({ queryKey: ["bases-de-datos"], queryFn: () => api.get<BaseDeDatos[]>("/databases") });
+  const { data: frecuencias = [] } = useQuery({ queryKey: ["frecuencias"], queryFn: () => api.get<Frecuencia[]>("/schedules") });
 
   const crear = useMutation({
     mutationFn: (body: any) => api.post<BaseDeDatos>("/databases", body),
@@ -119,7 +119,7 @@ export default function BasesDeDatosPage() {
       )}
 
       <Modal titulo="Nueva base de datos" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
-        <FormularioBd clientes={clientes} dominios={dominios} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />
+        <FormularioBd clientes={clientes} dominios={dominios} frecuencias={frecuencias} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />
       </Modal>
 
       <Modal titulo={`Acceso: ${verAcceso?.companyName ?? ""}`} abierto={!!verAcceso} onCerrar={() => setVerAcceso(null)}>
@@ -143,7 +143,15 @@ export default function BasesDeDatosPage() {
   );
 }
 
-function FormularioBd({ clientes, dominios, onSubmit, cargando }: { clientes: Cliente[]; dominios: Dominio[]; onSubmit: (v: any) => void; cargando: boolean }) {
+function describirFrecuencia(f?: Frecuencia): string {
+  if (!f || !f.active) return "";
+  if (f.frequencyType === "weekly") return `Semanal: ${(f.weekdays ?? []).join(", ") || "sin día"} desde ${f.startDate}`;
+  if (f.frequencyType === "interval") return `Cada ${f.intervalDays} día(s) desde ${f.startDate}`;
+  if (f.frequencyType === "monthly") return `Mensual: día ${f.dayOfMonth} desde ${f.startDate}`;
+  return `Manual desde ${f.startDate}`;
+}
+
+function FormularioBd({ clientes, dominios, frecuencias, onSubmit, cargando }: { clientes: Cliente[]; dominios: Dominio[]; frecuencias: Frecuencia[]; onSubmit: (v: any) => void; cargando: boolean }) {
   const [clientId, setClientId] = useState("");
   const [domainId, setDomainId] = useState("");
   const [companyName, setCompanyName] = useState("");
@@ -151,11 +159,13 @@ function FormularioBd({ clientes, dominios, onSubmit, cargando }: { clientes: Cl
   const [rawDbAccess, setRawDbAccess] = useState("");
   const [currentDbVersion, setCurrentDbVersion] = useState("");
   const [notes, setNotes] = useState("");
-  const [crearFrecuencia, setCrearFrecuencia] = useState(true);
-  const [frecuencia, setFrecuencia] = useState<ValoresFrecuencia>(valoresFrecuenciaPorDefecto("database_updater"));
   const [err, setErr] = useState<string | null>(null);
 
   const dominiosFiltrados = useMemo(() => dominios.filter((d) => d.clientId === clientId && d.status === "active"), [dominios, clientId]);
+  const frecuenciaDominio = useMemo(
+    () => frecuencias.find((f) => f.active && f.targetType === "domain" && (f.domainId === domainId || f.targetIds.includes(domainId))),
+    [frecuencias, domainId]
+  );
 
   return (
     <form onSubmit={(e) => {
@@ -165,7 +175,6 @@ function FormularioBd({ clientes, dominios, onSubmit, cargando }: { clientes: Cl
       if (!companyName.trim()) return setErr("El nombre de la empresa es obligatorio.");
       if (!rawDbAccess.trim()) return setErr("La cadena de acceso es obligatoria.");
       const body: any = { clientId, domainId, companyName: companyName.trim(), environment, rawDbAccess, currentDbVersion: currentDbVersion || undefined, notes, assignedUpdaterIds: [] };
-      if (crearFrecuencia) body.frequency = depurarFrecuenciaParaEnvio(frecuencia);
       onSubmit(body);
     }}>
       {err && <Alerta tipo="error">{err}</Alerta>}
@@ -201,16 +210,14 @@ function FormularioBd({ clientes, dominios, onSubmit, cargando }: { clientes: Cl
       <div className="fila-formulario"><label>Notas</label>
         <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
 
-      <h4>Frecuencia de actualización de la base de datos</h4>
-      <div className="fila-formulario">
-        <label>
-          <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={crearFrecuencia} onChange={(e) => setCrearFrecuencia(e.target.checked)} />
-          Crear frecuencia automática para esta base de datos
-        </label>
-      </div>
-      {crearFrecuencia && (
-        <SeleccionFrecuencia valor={frecuencia} onChange={setFrecuencia} rolesPermitidos={["database_updater", "admin", "client_manager"]} />
-      )}
+      <h4>Frecuencia de actualización</h4>
+      <Alerta tipo={frecuenciaDominio ? "info" : "error"}>
+        {domainId
+          ? frecuenciaDominio
+            ? `Esta base de datos usará la frecuencia configurada en el dominio seleccionado: ${describirFrecuencia(frecuenciaDominio)}.`
+            : "El dominio seleccionado no tiene frecuencia configurada. Configure una frecuencia en el dominio para generar tareas automáticamente."
+          : "Esta base de datos usará la frecuencia configurada en el dominio seleccionado."}
+      </Alerta>
 
       <div className="acciones-formulario">
         <button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button>

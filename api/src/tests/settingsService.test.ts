@@ -36,6 +36,13 @@ describe("settingsService", () => {
     const s = await loadEmailAlertsSettings();
     expect(s.id).toBe("email-alerts");
     expect(s.emailProvider).toBeDefined();
+    expect(s.emailFrom).toBe("info@pya.com.co");
+    expect(s.emailFromName).toBe("Programador de Actualizaciones");
+    expect(s.frontendBaseUrl).toBe("https://agreeable-wave-07469d50f.7.azurestaticapps.net");
+    expect(s.smtpHost).toBe("smtp.office365.com");
+    expect(s.smtpPort).toBe(587);
+    expect(s.smtpSecure).toBe(false);
+    expect(s.smtpUser).toBe("info@pya.com.co");
     expect(s.remindersEnabled).toBe(true);
   });
 
@@ -65,18 +72,18 @@ describe("settingsService", () => {
 
   it("saveEmailAlertsSettings guarda contraseña SMTP en Key Vault y NO en Cosmos", async () => {
     const r = await saveEmailAlertsSettings({
-      patch: { emailProvider: "smtp", smtpUser: "info@pya.com.co", smtpPassword: "AppPwd-xyz" },
+      patch: { emailProvider: "smtp", smtpUser: "info@pya.com.co", smtpPassword: "valor-prueba-no-real" },
       performedBy: "admin",
     });
     expect(setSecretMock).toHaveBeenCalledTimes(1);
     const [secretName, secretValue] = setSecretMock.mock.calls[0];
-    expect(secretValue).toBe("AppPwd-xyz");
+    expect(secretValue).toBe("valor-prueba-no-real");
     expect(secretName).toMatch(/^smtp-password-/);
     expect(secretName).not.toContain("@");
 
     expect(upsertMock).toHaveBeenCalledTimes(1);
     const persisted = upsertMock.mock.calls[0][0] as any;
-    expect(JSON.stringify(persisted)).not.toContain("AppPwd-xyz");
+    expect(JSON.stringify(persisted)).not.toContain("valor-prueba-no-real");
     expect(persisted.smtpPasswordSecretName).toBe(secretName);
     expect(persisted.smtpPasswordConfigured).toBe(true);
     expect(r.smtpPasswordConfigured).toBe(true);
