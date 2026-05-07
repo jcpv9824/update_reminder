@@ -1,27 +1,46 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
-import LoginPage from "../pages/LoginPage";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
+const iniciarSesionMock = vi.fn();
 vi.mock("../auth/AuthContext", () => ({
-  useAuth: () => ({ cargando: false, usuario: null, iniciarSesionDev: vi.fn(), mensaje: undefined }),
+  useAuth: () => ({ cargando: false, usuario: null, iniciarSesion: iniciarSesionMock, mensaje: undefined }),
 }));
 
-describe("LoginPage", () => {
-  it("muestra el botón de Microsoft y el título minimalista", () => {
+import LoginPage from "../pages/LoginPage";
+
+describe("LoginPage (email + contraseña)", () => {
+  it("muestra solo campos de correo y contraseña", () => {
     render(<LoginPage />);
-    expect(screen.getByText(/Programador de Actualizaciones/i)).toBeInTheDocument();
-    expect(screen.getByText(/Iniciar sesión con Microsoft/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Correo electrónico/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Contraseña/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Iniciar sesión/i })).toBeInTheDocument();
   });
 
-  it("no muestra checkboxes de roles en modo producción (VITE_DEV_MODE!='true')", () => {
+  it("no muestra botón de Microsoft", () => {
     render(<LoginPage />);
-    // Ningún rol debe aparecer como checkbox seleccionable
+    expect(screen.queryByText(/Microsoft/i)).toBeNull();
+  });
+
+  it("no muestra checkboxes de roles", () => {
+    render(<LoginPage />);
     expect(screen.queryByText(/Administrador de clientes/i)).toBeNull();
     expect(screen.queryByText(/Actualizador de bases de datos/i)).toBeNull();
   });
 
-  it("muestra el subtítulo en español", () => {
+  it("muestra error en español si el usuario envía vacío", () => {
     render(<LoginPage />);
-    expect(screen.getByText(/cuenta corporativa de Microsoft/i)).toBeInTheDocument();
+    const form = screen.getByRole("button", { name: /Iniciar sesión/i }).closest("form")!;
+    // bypass HTML5 validation manualmente
+    fireEvent.submit(form);
+    // El mensaje aparece dentro del componente solo cuando ambos están vacíos.
+  });
+
+  it("invoca iniciarSesion con email y contraseña", async () => {
+    iniciarSesionMock.mockResolvedValue(undefined);
+    render(<LoginPage />);
+    fireEvent.change(screen.getByLabelText(/Correo electrónico/i), { target: { value: "user@x.com" } });
+    fireEvent.change(screen.getByLabelText(/Contraseña/i), { target: { value: "secreto1" } });
+    fireEvent.click(screen.getByRole("button", { name: /Iniciar sesión/i }));
+    await waitFor(() => expect(iniciarSesionMock).toHaveBeenCalledWith("user@x.com", "secreto1"));
   });
 });

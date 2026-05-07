@@ -12,21 +12,21 @@ app.http("me", {
       if (!u) return unauthorized();
       const r = await loadUserProfileDetailed(u);
       if (r.status === "ok") {
-        return ok({ authenticated: true, registered: true, active: true, user: r.user });
+        // Nunca devolver passwordHash al frontend.
+        const { user } = r;
+        return ok({ authenticated: true, registered: true, active: true, user });
       }
       if (r.status === "inactive") {
         return ok({
           authenticated: true,
           registered: true,
           active: false,
-          user: u,
           message: "Tu usuario está inactivo. Contacta al administrador.",
         });
       }
       return ok({
         authenticated: true,
         registered: false,
-        user: u,
         message: "No tienes acceso a esta aplicación. Solicita a un administrador que registre tu usuario.",
       });
     } catch (e) {

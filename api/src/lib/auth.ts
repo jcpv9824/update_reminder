@@ -1,32 +1,48 @@
 import type { HttpRequest } from "@azure/functions";
 import type { CurrentUser } from "../types/models";
+import { verifyJwt } from "./jwt";
+import { normalizeEmail } from "./password";
 
-// Encabezados aceptados en modo desarrollo (DEV_AUTH_ENABLED=true).
-// En producción se debe leer el principal autenticado de Static Web Apps:
-//   "x-ms-client-principal" (Base64 JSON con userId, userDetails, userRoles).
+// Extrae al usuario actual de la solicitud. El método principal es JWT
+// (Authorization: Bearer ...). Como respaldo se mantienen los modos
+// Static Web Apps (Microsoft Entra ID) y desarrollo, ambos solo si están
+// explícitamente habilitados.
 export async function getCurrentUser(
   req: HttpRequest
 ): Promise<CurrentUser | null> {
-  // 1) Static Web Apps / Entra ID
+  const auth = req.headers.get("authorization") ?? req.headers.get("Authorization");
+  if (auth && auth.toLowerCase().startsWith("bearer ")) {
+    const token = auth.slice(7).trim();
+    const payload = verifyJwt(token);
+    if (payload) {
+      return {
+        id: payload.sub,
+        email: payload.email,
+        displayName: payload.email,
+        roles: payload.roles ?? [],
+      };
+    }
+  }
+
+  // Static Web Apps / Entra ID (compatibilidad).
   const principalHeader = req.headers.get("x-ms-client-principal");
   if (principalHeader) {
     try {
       const decoded = Buffer.from(principalHeader, "base64").toString("utf8");
       const p = JSON.parse(decoded);
+      const email = p.userDetails ?? "";
       return {
-        id: p.userId ?? p.userDetails ?? "unknown",
-        email: p.userDetails ?? "",
-        displayName: p.userDetails ?? "",
+        id: p.userId ?? email,
+        email,
+        displayName: email,
         roles: Array.isArray(p.userRoles)
           ? p.userRoles.filter((r: string) => r !== "anonymous" && r !== "authenticated")
           : [],
       };
-    } catch {
-      // continúa
-    }
+    } catch {/* */}
   }
 
-  // 2) Modo desarrollo
+  // Modo desarrollo: solo si DEV_AUTH_ENABLED=true.
   if (process.env.DEV_AUTH_ENABLED === "true") {
     const id = req.headers.get("x-dev-user-id");
     if (id) {
@@ -53,16 +69,13 @@ export async function requireUser(req: HttpRequest): Promise<CurrentUser> {
   return u;
 }
 
-// Resultado detallado del intento de cargar perfil. Permite distinguir entre
-// "no registrado" y "registrado pero inactivo".
 export type ProfileLoadResult =
   | { status: "ok"; user: CurrentUser }
   | { status: "not_registered" }
   | { status: "inactive" };
 
-// Carga el perfil persistido del usuario en Cosmos DB.
-// Busca primero por id; si no existe, intenta por email (caso Microsoft 365
-// donde el id local de la app es el email corporativo).
+// Carga el perfil persistido en Cosmos DB. Busca por id o por email
+// case-insensitive. Devuelve estado detallado.
 export async function loadUserProfileDetailed(user: CurrentUser): Promise<ProfileLoadResult> {
   try {
     const { getContainer } = await import("./cosmos");
@@ -71,10 +84,11 @@ export async function loadUserProfileDetailed(user: CurrentUser): Promise<Profil
     try {
       const r = await container.item(user.id, user.id).read<any>();
       resource = r.resource;
-    } catch {/* sigue */}
-    if (!resource && user.email) {
+    } catch {/* */}
+    const email = normalizeEmail(user.email);
+    if (!resource && email) {
       const { resources } = await container.items
-        .query<any>({ query: "SELECT * FROM c WHERE LOWER(c.email) = LOWER(@e)", parameters: [{ name: "@e", value: user.email }] })
+        .query<any>({ query: "SELECT * FROM c WHERE LOWER(c.email) = @e", parameters: [{ name: "@e", value: email }] })
         .fetchAll();
       resource = resources[0];
     }
@@ -94,7 +108,6 @@ export async function loadUserProfileDetailed(user: CurrentUser): Promise<Profil
   }
 }
 
-// Compatibilidad hacia atrás con el resto del código existente.
 export async function loadUserProfile(user: CurrentUser): Promise<CurrentUser | null> {
   const r = await loadUserProfileDetailed(user);
   return r.status === "ok" ? r.user : null;

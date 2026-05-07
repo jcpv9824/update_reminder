@@ -1,4 +1,5 @@
 import "./functions/me";
+import "./functions/auth";
 import "./functions/users";
 import "./functions/clients";
 import "./functions/domains";
@@ -8,3 +9,5 @@ import "./functions/tasks";
 import "./functions/auditLogs";
 import "./functions/setup";
 import "./functions/generateDailyUpdateTasks";
+import "./functions/sendScheduledReminders";
+import "./functions/sendOverdueAlerts";

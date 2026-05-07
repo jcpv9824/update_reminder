@@ -3,6 +3,14 @@ import { DIAS_SEMANA, ETIQUETAS_FRECUENCIA, ETIQUETAS_ROLES } from "../types";
 
 const DIAS_LISTA = Object.keys(DIAS_SEMANA);
 
+export type ConfiguracionRecordatorios = {
+  remindersEnabled: boolean;
+  reminderDaysBefore: number[];
+  reminderTime: string;
+  reminderRecipientsMode: "assignedUsers" | "roleUsers" | "customEmails";
+  customReminderEmails?: string[];
+};
+
 export type ValoresFrecuencia = {
   frequencyType: "weekly" | "interval" | "monthly" | "manual";
   everyNWeeks?: number;
@@ -14,6 +22,7 @@ export type ValoresFrecuencia = {
   assignedRole: string;
   assignedUserIds: string[];
   active: boolean;
+  reminders: ConfiguracionRecordatorios;
 };
 
 export function valoresFrecuenciaPorDefecto(rolPorDefecto: string): ValoresFrecuencia {
@@ -28,6 +37,13 @@ export function valoresFrecuenciaPorDefecto(rolPorDefecto: string): ValoresFrecu
     assignedRole: rolPorDefecto,
     assignedUserIds: [],
     active: true,
+    reminders: {
+      remindersEnabled: false,
+      reminderDaysBefore: [3, 1, 0],
+      reminderTime: "08:00",
+      reminderRecipientsMode: "assignedUsers",
+      customReminderEmails: [],
+    },
   };
 }
 
@@ -52,6 +68,13 @@ export function depurarFrecuenciaParaEnvio(v: ValoresFrecuencia) {
   if (v.frequencyType === "monthly") {
     base.dayOfMonth = v.dayOfMonth;
   }
+  base.reminders = {
+    remindersEnabled: v.reminders.remindersEnabled,
+    reminderDaysBefore: v.reminders.reminderDaysBefore,
+    reminderTime: v.reminders.reminderTime,
+    reminderRecipientsMode: v.reminders.reminderRecipientsMode,
+    customReminderEmails: v.reminders.customReminderEmails ?? [],
+  };
   return base;
 }
 
@@ -141,6 +164,65 @@ export function SeleccionFrecuencia({ valor, onChange, rolesPermitidos }: Props)
           Frecuencia activa
         </label>
       </div>
+
+      <h5 style={{ margin: "12px 0 6px" }}>Recordatorios por correo</h5>
+      <div className="fila-formulario">
+        <label>
+          <input
+            type="checkbox"
+            style={{ width: "auto", marginRight: 6 }}
+            checked={v.reminders.remindersEnabled}
+            onChange={(e) => set({ reminders: { ...v.reminders, remindersEnabled: e.target.checked } })}
+          />
+          Activar recordatorios automáticos
+        </label>
+      </div>
+      {v.reminders.remindersEnabled && (
+        <>
+          <div className="fila-formulario">
+            <label>Días previos (separados por coma; 0 = el mismo día)</label>
+            <input
+              value={(v.reminders.reminderDaysBefore ?? []).join(", ")}
+              onChange={(e) => {
+                const arr = e.target.value.split(",").map((x) => parseInt(x.trim(), 10)).filter((n) => Number.isFinite(n) && n >= 0);
+                set({ reminders: { ...v.reminders, reminderDaysBefore: arr } });
+              }}
+              placeholder="3, 1, 0"
+            />
+          </div>
+          <div className="fila-formulario">
+            <label>Hora de envío (HH:mm)</label>
+            <input
+              value={v.reminders.reminderTime}
+              onChange={(e) => set({ reminders: { ...v.reminders, reminderTime: e.target.value } })}
+              placeholder="08:00"
+            />
+          </div>
+          <div className="fila-formulario">
+            <label>Destinatarios</label>
+            <select
+              value={v.reminders.reminderRecipientsMode}
+              onChange={(e) => set({ reminders: { ...v.reminders, reminderRecipientsMode: e.target.value as any } })}
+            >
+              <option value="assignedUsers">Usuarios asignados</option>
+              <option value="roleUsers">Todos los usuarios del rol</option>
+              <option value="customEmails">Correos personalizados</option>
+            </select>
+          </div>
+          {v.reminders.reminderRecipientsMode === "customEmails" && (
+            <div className="fila-formulario">
+              <label>Correos personalizados (separados por coma)</label>
+              <input
+                value={(v.reminders.customReminderEmails ?? []).join(", ")}
+                onChange={(e) => {
+                  const arr = e.target.value.split(",").map((x) => x.trim()).filter(Boolean);
+                  set({ reminders: { ...v.reminders, customReminderEmails: arr } });
+                }}
+              />
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

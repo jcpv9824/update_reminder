@@ -1,14 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import { api } from "../api/client";
+import { api, getToken, setToken } from "../api/client";
 import type { Usuario } from "../types";
-
-type RespuestaMe = {
-  authenticated: boolean;
-  registered: boolean;
-  active?: boolean;
-  user?: Usuario;
-  message?: string;
-};
 
 type EstadoAuth =
   | { cargando: true }
@@ -16,7 +8,7 @@ type EstadoAuth =
   | { cargando: false; usuario: Usuario };
 
 type Contexto = EstadoAuth & {
-  iniciarSesionDev: (u: Usuario) => void;
+  iniciarSesion: (email: string, password: string) => Promise<void>;
   cerrarSesion: () => void;
   recargar: () => Promise<void>;
 };
@@ -27,40 +19,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [estado, setEstado] = useState<EstadoAuth>({ cargando: true });
 
   async function cargar() {
+    if (!getToken()) {
+      setEstado({ cargando: false, usuario: null });
+      return;
+    }
     setEstado({ cargando: true });
     try {
-      const r = await api.get<RespuestaMe>("/me");
+      const r = await api.get<{ authenticated: boolean; registered: boolean; active?: boolean; user?: Usuario; message?: string }>("/me");
       if (r.authenticated && r.registered && r.active !== false && r.user) {
         setEstado({ cargando: false, usuario: r.user });
-      } else if (r.authenticated && r.registered && r.active === false) {
+      } else if (r.active === false) {
+        setToken(null);
         setEstado({ cargando: false, usuario: null, mensaje: r.message ?? "Tu usuario está inactivo. Contacta al administrador." });
-      } else if (r.authenticated && !r.registered) {
-        setEstado({ cargando: false, usuario: null, mensaje: r.message ?? "No tienes acceso a esta aplicación. Solicita a un administrador que registre tu usuario." });
       } else {
-        setEstado({ cargando: false, usuario: null });
+        setToken(null);
+        setEstado({ cargando: false, usuario: null, mensaje: r.message });
       }
     } catch {
+      setToken(null);
       setEstado({ cargando: false, usuario: null });
     }
   }
 
   useEffect(() => { cargar(); }, []);
 
-  const iniciarSesionDev = (u: Usuario) => {
-    localStorage.setItem("devUser", JSON.stringify(u));
-    cargar();
-  };
-  const cerrarSesion = () => {
-    localStorage.removeItem("devUser");
+  async function iniciarSesion(email: string, password: string) {
+    const r = await api.post<{ token: string; user: Usuario }>("/auth/login", { email, password });
+    setToken(r.token);
+    setEstado({ cargando: false, usuario: r.user });
+  }
+
+  function cerrarSesion() {
+    setToken(null);
     setEstado({ cargando: false, usuario: null });
-    // Si está autenticado por Static Web Apps, redirigir al endpoint de logout.
-    if ((window as any).location && document.cookie.includes("StaticWebAppsAuthCookie")) {
-      window.location.href = "/.auth/logout";
-    }
-  };
+  }
 
   return (
-    <Ctx.Provider value={{ ...estado, iniciarSesionDev, cerrarSesion, recargar: cargar }}>
+    <Ctx.Provider value={{ ...estado, iniciarSesion, cerrarSesion, recargar: cargar }}>
       {children}
     </Ctx.Provider>
   );

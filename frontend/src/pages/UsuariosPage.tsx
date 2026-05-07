@@ -20,12 +20,28 @@ export default function UsuariosPage() {
   const qc = useQueryClient();
   const [modalAbierto, setModalAbierto] = useState(false);
   const [editando, setEditando] = useState<Usuario | null>(null);
+  const [reset, setReset] = useState<Usuario | null>(null);
   const [exito, setExito] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const { data = [], isLoading } = useQuery({ queryKey: ["usuarios"], queryFn: () => api.get<Usuario[]>("/users") });
-  const crear = useMutation({ mutationFn: (b: any) => api.post("/users", b), onSuccess: () => { qc.invalidateQueries({ queryKey: ["usuarios"] }); setModalAbierto(false); setExito("Usuario creado."); }, onError: (e: any) => setError(e?.message) });
-  const actualizar = useMutation({ mutationFn: ({ id, body }: any) => api.put(`/users/${id}`, body), onSuccess: () => { qc.invalidateQueries({ queryKey: ["usuarios"] }); setEditando(null); setExito("Usuario actualizado."); }, onError: (e: any) => setError(e?.message) });
+  const crear = useMutation({
+    mutationFn: (b: any) => api.post("/users", b),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["usuarios"] }); setModalAbierto(false); setExito("Usuario creado correctamente."); },
+    onError: (e: any) => setError(e?.message),
+  });
+  const actualizar = useMutation({
+    mutationFn: ({ id, body }: any) => api.put(`/users/${id}`, body),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["usuarios"] }); setEditando(null); setExito("Usuario actualizado."); },
+    onError: (e: any) => setError(e?.message),
+  });
+  const resetMut = useMutation({
+    mutationFn: ({ id, password }: any) => api.post(`/users/${id}/reset-password`, { password }),
+    onSuccess: () => { setReset(null); setExito("Contraseña actualizada."); },
+    onError: (e: any) => setError(e?.message),
+  });
+  const desactivar = useMutation({ mutationFn: (id: string) => api.post(`/users/${id}/deactivate`), onSuccess: () => qc.invalidateQueries({ queryKey: ["usuarios"] }) });
+  const reactivar = useMutation({ mutationFn: (id: string) => api.post(`/users/${id}/reactivate`), onSuccess: () => qc.invalidateQueries({ queryKey: ["usuarios"] }) });
 
   return (
     <>
@@ -49,6 +65,10 @@ export default function UsuariosPage() {
                 <td><EtiquetaEstado estado={u.active ? "active" : "inactive"} /></td>
                 <td className="acciones-tabla">
                   <button onClick={() => setEditando(u)}>Editar</button>
+                  <button onClick={() => setReset(u)}>Restablecer contraseña</button>
+                  {u.active
+                    ? <button className="advertencia" onClick={() => desactivar.mutate(u.id)}>Desactivar</button>
+                    : <button className="exito" onClick={() => reactivar.mutate(u.id)}>Reactivar</button>}
                 </td>
               </tr>
             ))}
@@ -57,41 +77,81 @@ export default function UsuariosPage() {
       )}
 
       <Modal titulo="Nuevo usuario" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
-        <FormularioUsuario onSubmit={(v) => crear.mutate(v)} cargando={crear.isPending} />
+        <FormularioCrear onSubmit={(v) => crear.mutate(v)} cargando={crear.isPending} />
       </Modal>
       <Modal titulo="Editar usuario" abierto={!!editando} onCerrar={() => setEditando(null)}>
-        {editando && <FormularioUsuario inicial={editando} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} cargando={actualizar.isPending} />}
+        {editando && <FormularioEditar inicial={editando} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} cargando={actualizar.isPending} />}
+      </Modal>
+      <Modal titulo={`Restablecer contraseña de ${reset?.displayName ?? ""}`} abierto={!!reset} onCerrar={() => setReset(null)}>
+        {reset && <FormularioReset onSubmit={(p) => resetMut.mutate({ id: reset.id, password: p })} cargando={resetMut.isPending} />}
       </Modal>
     </>
   );
 }
 
-function FormularioUsuario({ inicial, onSubmit, cargando }: { inicial?: Usuario; onSubmit: (v: any) => void; cargando: boolean }) {
-  const [id, setId] = useState(inicial?.id ?? "");
-  const [displayName, setDisplayName] = useState(inicial?.displayName ?? "");
-  const [email, setEmail] = useState(inicial?.email ?? "");
-  const [roles, setRoles] = useState<string[]>(inicial?.roles ?? []);
-  const [active, setActive] = useState(inicial?.active ?? true);
+function FormularioCrear({ onSubmit, cargando }: { onSubmit: (v: any) => void; cargando: boolean }) {
+  const [displayName, setDisplayName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [roles, setRoles] = useState<string[]>(["viewer"]);
+  const [active, setActive] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
 
-  function alternarRol(r: string) {
+  function alternar(r: string) {
     setRoles((p) => (p.includes(r) ? p.filter((x) => x !== r) : [...p, r]));
   }
 
   return (
-    <form onSubmit={(e) => { e.preventDefault(); onSubmit(inicial ? { displayName, email, roles, active } : { id, displayName, email, roles, active }); }}>
-      {!inicial && (
-        <div className="fila-formulario"><label>Identificador *</label>
-          <input value={id} onChange={(e) => setId(e.target.value)} placeholder="correo@empresa.com" required />
-        </div>
-      )}
-      <div className="fila-formulario"><label>Nombre *</label>
-        <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required /></div>
-      <div className="fila-formulario"><label>Correo electrónico *</label>
-        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></div>
+    <form onSubmit={(e) => {
+      e.preventDefault();
+      if (!displayName.trim()) return setErr("El nombre es obligatorio.");
+      if (!email.trim()) return setErr("El correo es obligatorio.");
+      if (password.length < 6) return setErr("La contraseña debe tener al menos 6 caracteres.");
+      if (password !== confirm) return setErr("Las contraseñas no coinciden.");
+      onSubmit({ displayName, email: email.trim(), password, roles, active });
+    }}>
+      {err && <Alerta tipo="error">{err}</Alerta>}
+      <div className="fila-formulario"><label>Nombre *</label><input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required /></div>
+      <div className="fila-formulario"><label>Correo electrónico *</label><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></div>
+      <div className="fila-formulario"><label>Contraseña temporal *</label><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required /></div>
+      <div className="fila-formulario"><label>Confirmar contraseña *</label><input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required /></div>
       <div className="fila-formulario"><label>Roles</label>
         {ROLES.map((r) => (
           <label key={r} style={{ display: "flex", fontWeight: 400, alignItems: "center" }}>
-            <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={roles.includes(r)} onChange={() => alternarRol(r)} />
+            <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={roles.includes(r)} onChange={() => alternar(r)} />
+            {ETIQUETAS_ROLES[r]}
+          </label>
+        ))}
+      </div>
+      <div className="fila-formulario"><label>
+        <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={active} onChange={(e) => setActive(e.target.checked)} />
+        Usuario activo
+      </label></div>
+      <div className="acciones-formulario">
+        <button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Crear"}</button>
+      </div>
+    </form>
+  );
+}
+
+function FormularioEditar({ inicial, onSubmit, cargando }: { inicial: Usuario; onSubmit: (v: any) => void; cargando: boolean }) {
+  const [displayName, setDisplayName] = useState(inicial.displayName ?? "");
+  const [roles, setRoles] = useState<string[]>(inicial.roles ?? []);
+  const [active, setActive] = useState(inicial.active);
+
+  function alternar(r: string) {
+    setRoles((p) => (p.includes(r) ? p.filter((x) => x !== r) : [...p, r]));
+  }
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); onSubmit({ displayName, roles, active }); }}>
+      <div className="fila-formulario"><label>Nombre</label><input value={displayName} onChange={(e) => setDisplayName(e.target.value)} /></div>
+      <div className="fila-formulario"><label>Correo electrónico</label><input value={inicial.email} disabled /></div>
+      <div className="fila-formulario"><label>Roles</label>
+        {ROLES.map((r) => (
+          <label key={r} style={{ display: "flex", fontWeight: 400, alignItems: "center" }}>
+            <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={roles.includes(r)} onChange={() => alternar(r)} />
             {ETIQUETAS_ROLES[r]}
           </label>
         ))}
@@ -102,6 +162,27 @@ function FormularioUsuario({ inicial, onSubmit, cargando }: { inicial?: Usuario;
       </label></div>
       <div className="acciones-formulario">
         <button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button>
+      </div>
+    </form>
+  );
+}
+
+function FormularioReset({ onSubmit, cargando }: { onSubmit: (p: string) => void; cargando: boolean }) {
+  const [pwd, setPwd] = useState("");
+  const [conf, setConf] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  return (
+    <form onSubmit={(e) => {
+      e.preventDefault();
+      if (pwd.length < 6) return setErr("La contraseña debe tener al menos 6 caracteres.");
+      if (pwd !== conf) return setErr("Las contraseñas no coinciden.");
+      onSubmit(pwd);
+    }}>
+      {err && <Alerta tipo="error">{err}</Alerta>}
+      <div className="fila-formulario"><label>Nueva contraseña *</label><input type="password" value={pwd} onChange={(e) => setPwd(e.target.value)} /></div>
+      <div className="fila-formulario"><label>Confirmar *</label><input type="password" value={conf} onChange={(e) => setConf(e.target.value)} /></div>
+      <div className="acciones-formulario">
+        <button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Cambiar contraseña"}</button>
       </div>
     </form>
   );

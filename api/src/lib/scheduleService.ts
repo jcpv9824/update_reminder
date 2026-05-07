@@ -1,5 +1,5 @@
 import { v4 as uuid } from "uuid";
-import type { CurrentUser, UpdateSchedule, Weekday } from "../types/models";
+import type { CurrentUser, RemindersConfig, UpdateSchedule, Weekday } from "../types/models";
 
 // Entrada parcial de frecuencia que pueden enviar las pantallas de
 // "Nuevo dominio" o "Nueva base de datos" para crear la frecuencia
@@ -16,6 +16,7 @@ export type FrequencyInput = {
   assignedRole: string;
   assignedUserIds?: string[];
   active?: boolean;
+  reminders?: RemindersConfig;
 };
 
 export function validateFrequency(input: FrequencyInput): void {
@@ -79,6 +80,7 @@ export function buildScheduleRecord(args: {
     assignedRole: args.input.assignedRole,
     assignedUserIds: args.input.assignedUserIds ?? [],
     active: args.input.active ?? true,
+    reminders: args.input.reminders,
     createdAt: now,
     createdBy: args.currentUser.id,
     updatedAt: now,

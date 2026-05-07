@@ -2,17 +2,23 @@ import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { z } from "zod";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
+import { hashPassword, normalizeEmail } from "../lib/password";
 import { badRequest, created, forbidden, ok, serverError } from "../lib/http";
 import type { UserRecord } from "../types/models";
+
+function sanitize(u: UserRecord) {
+  const { passwordHash, ...rest } = u;
+  return rest;
+}
 
 const SetupSchema = z.object({
   setupSecret: z.string().min(8),
   id: z.string().min(1),
   email: z.string().email(),
   displayName: z.string().min(1),
+  password: z.string().min(6, "La contraseña debe tener al menos 6 caracteres."),
 });
 
-// Endpoint protegido por la variable SETUP_SECRET para crear el primer admin.
 app.http("setupFirstAdmin", {
   route: "setup/first-admin",
   methods: ["POST"],
@@ -28,10 +34,12 @@ app.http("setupFirstAdmin", {
 
       const container = getContainer("users");
       const now = new Date().toISOString();
+      const passwordHash = await hashPassword(parsed.data.password);
+      const email = normalizeEmail(parsed.data.email);
       const record: UserRecord = {
         id: parsed.data.id,
         displayName: parsed.data.displayName,
-        email: parsed.data.email,
+        email,
         roles: ["admin"],
         active: true,
         createdAt: now,
@@ -39,24 +47,93 @@ app.http("setupFirstAdmin", {
         updatedAt: now,
         updatedBy: "system",
         lastLoginAt: null,
+        passwordHash,
+        passwordUpdatedAt: now,
       };
       try {
         await container.items.create(record);
       } catch (e: any) {
         if (e?.code === 409) {
-          // Ya existe: actualízalo agregando rol admin si no lo tiene.
           const { resource } = await container.item(record.id, record.id).read<UserRecord>();
           if (resource) {
             const roles = Array.from(new Set([...(resource.roles ?? []), "admin"]));
-            const updated = { ...resource, roles, active: true, updatedAt: now, updatedBy: "system" };
+            const updated: UserRecord = {
+              ...resource,
+              roles,
+              active: true,
+              email,
+              displayName: parsed.data.displayName,
+              passwordHash,
+              passwordUpdatedAt: now,
+              updatedAt: now,
+              updatedBy: "system",
+            };
             await container.item(record.id, record.id).replace(updated);
-            return ok(updated);
+            return ok(sanitize(updated));
           }
         }
         throw e;
       }
-      await writeAuditLog({ entityType: "user", entityId: record.id, action: "user_created", performedBy: "system", performedByEmail: "system", after: record, metadata: { firstAdmin: true } });
-      return created(record);
+      await writeAuditLog({
+        entityType: "user",
+        entityId: record.id,
+        action: "user_created",
+        performedBy: "system",
+        performedByEmail: "system",
+        after: sanitize(record),
+        metadata: { firstAdmin: true },
+      });
+      return created(sanitize(record));
+    } catch (e) {
+      return serverError(e);
+    }
+  },
+});
+
+const SetAdminPwdSchema = z.object({
+  setupSecret: z.string().min(8),
+  email: z.string().email(),
+  password: z.string().min(6, "La contraseña debe tener al menos 6 caracteres."),
+});
+
+// Endpoint temporal para asignar/cambiar la contraseña de un usuario existente
+// (típicamente el admin original creado sin contraseña). Después de usarlo se
+// debe vaciar SETUP_SECRET.
+app.http("setupSetAdminPassword", {
+  route: "setup/set-admin-password",
+  methods: ["POST"],
+  authLevel: "anonymous",
+  handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
+    try {
+      const expected = process.env.SETUP_SECRET;
+      if (!expected) return forbidden("La inicialización está deshabilitada.");
+      const body = await req.json();
+      const parsed = SetAdminPwdSchema.safeParse(body);
+      if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      if (parsed.data.setupSecret !== expected) return forbidden("Clave de inicialización incorrecta.");
+
+      const email = normalizeEmail(parsed.data.email);
+      const container = getContainer("users");
+      const { resources } = await container.items
+        .query<UserRecord>({ query: "SELECT * FROM c WHERE LOWER(c.email) = @e", parameters: [{ name: "@e", value: email }] })
+        .fetchAll();
+      const user = resources[0];
+      if (!user) return badRequest("Usuario no encontrado.");
+      const now = new Date().toISOString();
+      user.passwordHash = await hashPassword(parsed.data.password);
+      user.passwordUpdatedAt = now;
+      user.updatedAt = now;
+      user.updatedBy = "system";
+      await container.item(user.id, user.id).replace(user);
+      await writeAuditLog({
+        entityType: "user",
+        entityId: user.id,
+        action: "user_password_reset",
+        performedBy: "system",
+        performedByEmail: "system",
+        metadata: { setup: true },
+      });
+      return ok(sanitize(user));
     } catch (e) {
       return serverError(e);
     }

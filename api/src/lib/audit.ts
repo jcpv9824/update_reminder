@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
 import type { AuditLog } from "../types/models";
 
-const SENSITIVE_KEYS = ["password", "rawDbAccess", "secret", "passwordPlain"];
+const SENSITIVE_KEYS = ["password", "passwordhash", "rawDbAccess", "secret", "passwordPlain", "token", "jwt"];
 
 function sanitize(value: unknown): unknown {
   if (value == null) return value;

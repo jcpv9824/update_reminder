@@ -4,7 +4,10 @@ Aplicación web para gestionar las actualizaciones programadas de los clientes d
 
 ## Características
 
-- **Login con Microsoft 365 / Entra ID** (a través de Azure Static Web Apps). Los roles se administran únicamente desde la página *Usuarios y roles*.
+- **Login con correo y contraseña** (JWT). Los roles se administran únicamente desde la página *Usuarios y roles*.
+- **Recordatorios por correo** a los actualizadores (configurables por frecuencia: días previos, hora y destinatarios).
+- **Alertas diarias** a administradores cuando hay tareas vencidas.
+- **Diseño con colores corporativos**: `#1C3664`, `#7E99B2`, `#D1D3D2`, `#D3C193`.
 - Página principal **Tareas** con dos columnas (dominios y bases de datos) divididas en *Vencidas / Hoy / Próximas / Completadas*.
 - Gestión de **clientes**, **dominios** y **bases de datos**. Al crear un dominio o una base de datos se puede configurar la **frecuencia de actualización** en el mismo formulario.
 - **Frecuencias avanzadas** (semanal, intervalo, mensual, manual) accesibles desde una página secundaria solo para administradores.
@@ -115,7 +118,16 @@ Cubre el parser visual y el componente de vista previa.
 
 ## Cambios recientes
 
-Consulte [CAMBIOS.md](CAMBIOS.md) para el resumen de la última ronda de mejoras (login Microsoft, frecuencia integrada en formularios, vista unificada de tareas, sanitización Key Vault, etc.).
+- [CAMBIOS_V3.md](CAMBIOS_V3.md): login email/password con JWT, recordatorios y alertas por correo, colores corporativos.
+- [CAMBIOS.md](CAMBIOS.md): vista unificada de tareas, frecuencia integrada en formularios, sanitización Key Vault.
+
+## Cómo iniciar sesión
+
+1. La pantalla de login pide únicamente correo y contraseña.
+2. El backend devuelve un JWT (`Authorization: Bearer …`).
+3. Para crear el primer usuario, configure `SETUP_SECRET` en la Function App y llame `POST /api/setup/first-admin` con `id`, `email`, `displayName`, `password`.
+4. Para asignar contraseña al admin existente (`camilo.palacio@pya.com.co`), use `POST /api/setup/set-admin-password` (ver `CAMBIOS_V3.md`).
+5. Después de configurar el primer admin, vacíe `SETUP_SECRET`.
 
 ## Despliegue
 
