@@ -1,0 +1,17 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+    "COSMOS_CONNECTION_STRING": "AccountEndpoint=https://...;AccountKey=...;",
+    "COSMOS_DATABASE_NAME": "erp-update-scheduler",
+    "KEY_VAULT_URL": "https://tu-keyvault.vault.azure.net/",
+    "APP_TIMEZONE": "America/Bogota",
+    "DEV_AUTH_ENABLED": "true",
+    "SETUP_SECRET": ""
+  },
+  "Host": {
+    "CORS": "*",
+    "LocalHttpPort": 7071
+  }
+}

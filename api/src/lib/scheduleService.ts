@@ -1,0 +1,87 @@
+import { v4 as uuid } from "uuid";
+import type { CurrentUser, UpdateSchedule, Weekday } from "../types/models";
+
+// Entrada parcial de frecuencia que pueden enviar las pantallas de
+// "Nuevo dominio" o "Nueva base de datos" para crear la frecuencia
+// asociada en la misma operación.
+export type FrequencyInput = {
+  frequencyType: "weekly" | "interval" | "monthly" | "manual";
+  everyNWeeks?: number;
+  weekdays?: Weekday[];
+  intervalDays?: number;
+  preferredWeekdays?: Weekday[];
+  dayOfMonth?: number;
+  startDate: string;
+  timezone?: string;
+  assignedRole: string;
+  assignedUserIds?: string[];
+  active?: boolean;
+};
+
+export function validateFrequency(input: FrequencyInput): void {
+  if (!input || !input.frequencyType) {
+    throw new Error("La frecuencia es obligatoria.");
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.startDate ?? "")) {
+    throw new Error("La fecha de inicio de la frecuencia debe estar en formato YYYY-MM-DD.");
+  }
+  if (input.frequencyType === "weekly") {
+    if (!input.weekdays || input.weekdays.length === 0) {
+      throw new Error("Seleccione al menos un día de la semana para la frecuencia.");
+    }
+    if ((input.everyNWeeks ?? 1) < 1) {
+      throw new Error("El intervalo de semanas debe ser mayor o igual a 1.");
+    }
+  }
+  if (input.frequencyType === "interval") {
+    if (!input.intervalDays || input.intervalDays < 1) {
+      throw new Error("El intervalo en días debe ser mayor o igual a 1.");
+    }
+  }
+  if (input.frequencyType === "monthly") {
+    const d = input.dayOfMonth ?? 0;
+    if (d < 1 || d > 31) {
+      throw new Error("El día del mes debe estar entre 1 y 31.");
+    }
+  }
+  if (!input.assignedRole) {
+    throw new Error("Seleccione el rol responsable de la frecuencia.");
+  }
+}
+
+export function buildScheduleRecord(args: {
+  input: FrequencyInput;
+  clientId: string;
+  clientName: string;
+  domainId?: string;
+  domainName?: string;
+  targetType: "domain" | "database";
+  targetIds: string[];
+  currentUser: CurrentUser;
+}): UpdateSchedule {
+  const now = new Date().toISOString();
+  return {
+    id: `schedule_${uuid()}`,
+    clientId: args.clientId,
+    clientName: args.clientName,
+    domainId: args.domainId,
+    domainName: args.domainName,
+    targetType: args.targetType,
+    targetIds: args.targetIds,
+    frequencyType: args.input.frequencyType,
+    everyNWeeks: args.input.everyNWeeks,
+    weekdays: args.input.weekdays,
+    intervalDays: args.input.intervalDays,
+    preferredWeekdays: args.input.preferredWeekdays,
+    dayOfMonth: args.input.dayOfMonth,
+    startDate: args.input.startDate,
+    timezone: args.input.timezone ?? "America/Bogota",
+    assignedRole: args.input.assignedRole,
+    assignedUserIds: args.input.assignedUserIds ?? [],
+    active: args.input.active ?? true,
+    createdAt: now,
+    createdBy: args.currentUser.id,
+    updatedAt: now,
+    updatedBy: args.currentUser.id,
+  };
+}

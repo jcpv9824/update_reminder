@@ -1,0 +1,243 @@
+/* Estilos básicos en español. UI simple y funcional. */
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #f3f4f6;
+  color: #111827;
+  font-size: 14px;
+}
+
+a { color: #2563eb; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+button {
+  cursor: pointer;
+  border: 1px solid #d1d5db;
+  background: white;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+}
+button:hover { background: #f9fafb; }
+button.primario {
+  background: #2563eb;
+  color: white;
+  border-color: #2563eb;
+}
+button.primario:hover { background: #1d4ed8; }
+button.peligro {
+  background: #dc2626;
+  color: white;
+  border-color: #dc2626;
+}
+button.exito { background: #059669; color: white; border-color: #059669; }
+button.advertencia { background: #d97706; color: white; border-color: #d97706; }
+
+input, select, textarea {
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 14px;
+  font-family: inherit;
+  width: 100%;
+}
+label { display: block; margin-bottom: 4px; font-weight: 500; }
+
+table { width: 100%; border-collapse: collapse; background: white; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e7eb; }
+th { background: #f9fafb; font-weight: 600; }
+
+.contenedor-app { display: flex; min-height: 100vh; }
+.barra-lateral {
+  width: 240px;
+  background: #1e293b;
+  color: white;
+  padding: 16px;
+}
+.barra-lateral h1 { font-size: 16px; margin: 0 0 16px 0; }
+.barra-lateral nav a {
+  display: block;
+  padding: 8px 10px;
+  color: #cbd5e1;
+  border-radius: 4px;
+  margin-bottom: 2px;
+}
+.barra-lateral nav a:hover, .barra-lateral nav a.activo { background: #334155; color: white; text-decoration: none; }
+
+.contenido-principal { flex: 1; padding: 24px; overflow-x: auto; }
+.encabezado-pagina {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.encabezado-pagina h2 { margin: 0; }
+
+.tarjeta {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.barra-filtros {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+.barra-filtros .campo { flex: 1; min-width: 160px; }
+
+.estado {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.estado-active, .estado-pending, .estado-in_progress { background: #dbeafe; color: #1e40af; }
+.estado-completed { background: #d1fae5; color: #065f46; }
+.estado-failed, .estado-deleted { background: #fee2e2; color: #991b1b; }
+.estado-blocked { background: #fef3c7; color: #92400e; }
+.estado-inactive, .estado-cancelled { background: #e5e7eb; color: #374151; }
+
+.alerta {
+  padding: 10px 14px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+.alerta-error { background: #fee2e2; color: #991b1b; }
+.alerta-exito { background: #d1fae5; color: #065f46; }
+.alerta-info { background: #dbeafe; color: #1e40af; }
+
+.modal-fondo {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.5);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+}
+.modal {
+  background: white;
+  padding: 24px;
+  border-radius: 8px;
+  min-width: 480px;
+  max-width: 700px;
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.fila-formulario { margin-bottom: 12px; }
+.acciones-formulario { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+.parser-preview {
+  background: #f9fafb;
+  border: 1px dashed #d1d5db;
+  padding: 12px;
+  border-radius: 6px;
+  font-family: monospace;
+  font-size: 13px;
+}
+.parser-preview .linea { display: flex; gap: 8px; margin: 4px 0; }
+.parser-preview .clave { font-weight: bold; color: #6b7280; min-width: 130px; }
+
+.acceso-bd { display: grid; gap: 8px; }
+.acceso-bd .campo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #f9fafb;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+}
+.acceso-bd .campo strong { min-width: 140px; color: #6b7280; }
+.acceso-bd .campo .valor { flex: 1; font-family: monospace; }
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.dashboard-tarjeta {
+  background: white;
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+}
+.dashboard-tarjeta .numero { font-size: 28px; font-weight: bold; color: #1e40af; }
+.dashboard-tarjeta .etiqueta { color: #6b7280; font-size: 13px; }
+
+.acciones-tabla { display: flex; gap: 4px; flex-wrap: wrap; }
+.acciones-tabla button { padding: 4px 8px; font-size: 12px; }
+
+.login-pantalla {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 100vh; background: #1e293b;
+}
+.login-tarjeta {
+  background: white;
+  padding: 32px;
+  border-radius: 12px;
+  width: 400px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+}
+.login-tarjeta h1 { margin-top: 0; text-align: center; }
+
+.cargando { text-align: center; padding: 24px; color: #6b7280; }
+.vacio { text-align: center; padding: 24px; color: #6b7280; }
+
+.tareas-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 1024px) {
+  .tareas-grid { grid-template-columns: 1fr; }
+}
+.columna-tareas {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+.columna-tareas h3 {
+  margin: 0 0 12px 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.grupo-tareas { margin-bottom: 12px; }
+.grupo-tareas-titulo {
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  margin: 8px 0 4px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.lista-tareas { list-style: none; padding: 0; margin: 0; }
+.item-tarea {
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.item-tarea-datos { flex: 1; min-width: 0; }
+.item-tarea-fila { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.item-tarea-detalle { color: #6b7280; font-size: 12px; }
+
+.boton-microsoft {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-weight: 500;
+}

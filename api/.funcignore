@@ -1,0 +1,8 @@
+node_modules
+*.test.ts
+src/tests/
+.git*
+.vscode
+local.settings.json
+test
+tsconfig.json
