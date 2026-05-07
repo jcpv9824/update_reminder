@@ -46,7 +46,9 @@ app.http("databasesList", {
       const status = req.query.get("status");
       const env = req.query.get("environment");
       const search = req.query.get("search")?.toLowerCase();
+      const includeDeleted = req.query.get("includeDeleted") === "true";
       let items = resources;
+      if (!includeDeleted && !status) items = items.filter((d) => d.status !== "deleted");
       if (status) items = items.filter((d) => d.status === status);
       if (env) items = items.filter((d) => d.environment === env);
       if (search) items = items.filter((d) => d.companyName.toLowerCase().includes(search) || d.dbAccess.initialCatalog.toLowerCase().includes(search));
@@ -231,7 +233,7 @@ app.http("databasesUpdate", {
   },
 });
 
-async function setDbStatus(req: HttpRequest, action: "database_deactivated" | "database_reactivated" | "database_deleted", status: "inactive" | "active" | "deleted"): Promise<HttpResponseInit> {
+async function setDbStatus(req: HttpRequest, action: "database_deactivated" | "database_reactivated", status: "inactive" | "active"): Promise<HttpResponseInit> {
   const user = await getUserOrFail(req);
   if (!canManageClients(user)) return forbidden();
   const db = await findDatabase(req.params.id);
@@ -241,24 +243,52 @@ async function setDbStatus(req: HttpRequest, action: "database_deactivated" | "d
   db.updatedBy = user.id;
   await getContainer("databases").item(db.id, db.clientId).replace(db);
   await writeAuditLog({
-    entityType: "database",
-    entityId: db.id,
-    clientId: db.clientId,
-    clientName: db.clientName,
-    domainId: db.domainId,
-    domainName: db.domainName,
-    companyName: db.companyName,
-    action,
-    performedBy: user.id,
-    performedByEmail: user.email,
-    after: { status: db.status },
+    entityType: "database", entityId: db.id, clientId: db.clientId, clientName: db.clientName,
+    domainId: db.domainId, domainName: db.domainName, companyName: db.companyName,
+    action, performedBy: user.id, performedByEmail: user.email, after: { status: db.status },
   });
-  return action === "database_deleted" ? noContent() : ok(db);
+  return ok(db);
 }
 
 app.http("databasesDeactivate", { route: "databases/{id}/deactivate", methods: ["POST"], authLevel: "anonymous", handler: (req) => setDbStatus(req, "database_deactivated", "inactive").catch(serverError) });
 app.http("databasesReactivate", { route: "databases/{id}/reactivate", methods: ["POST"], authLevel: "anonymous", handler: (req) => setDbStatus(req, "database_reactivated", "active").catch(serverError) });
-app.http("databasesDelete", { route: "databases/{id}", methods: ["DELETE"], authLevel: "anonymous", handler: (req) => setDbStatus(req, "database_deleted", "deleted").catch(serverError) });
+
+// Eliminación física con verificación de integridad: si tiene frecuencias
+// asociadas (targetIds), no se puede eliminar.
+app.http("databasesDelete", {
+  route: "databases/{id}",
+  methods: ["DELETE"],
+  authLevel: "anonymous",
+  handler: async (req): Promise<HttpResponseInit> => {
+    try {
+      const user = await getUserOrFail(req);
+      if (!canManageClients(user)) return forbidden();
+      const db = await findDatabase(req.params.id);
+      if (!db) return notFound("Base de datos no encontrada.");
+      const schedQ = await getContainer("updateSchedules")
+        .items.query({ query: "SELECT VALUE COUNT(1) FROM c WHERE ARRAY_CONTAINS(c.targetIds, @t)", parameters: [{ name: "@t", value: db.id }] })
+        .fetchAll();
+      const schedules = (schedQ.resources[0] as any) ?? 0;
+      if (schedules > 0) {
+        return badRequest(`No se puede eliminar la base de datos porque tiene ${schedules} frecuencia(s) asociadas. Elimine las frecuencias primero.`);
+      }
+      // Eliminar el secreto de la contraseña en Key Vault si existe.
+      try {
+        await keyVault.deleteSecret(db.dbAccess.passwordSecretName);
+      } catch {/* opcional: si falla no bloquea la eliminación del registro */}
+      await getContainer("databases").item(db.id, db.clientId).delete();
+      await writeAuditLog({
+        entityType: "database", entityId: db.id, clientId: db.clientId, clientName: db.clientName,
+        domainId: db.domainId, domainName: db.domainName, companyName: db.companyName,
+        action: "database_deleted", performedBy: user.id, performedByEmail: user.email,
+        before: { ...db, dbAccess: { ...db.dbAccess, passwordSecretName: undefined } },
+      });
+      return noContent();
+    } catch (e) {
+      return serverError(e);
+    }
+  },
+});
 
 app.http("databasesCopyAccessPart", {
   route: "databases/{id}/copy-access-part",

@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { Cliente, RegistroAuditoria } from "../types";
 import { ETIQUETAS_ACCION_AUDITORIA } from "../types";
+import { SelectorBuscable } from "../components/SelectorBuscable";
 
 export default function AuditoriaPage() {
   const [clientId, setClientId] = useState("");
@@ -35,10 +36,14 @@ export default function AuditoriaPage() {
         <div className="campo"><label>Hasta</label>
           <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value ? new Date(e.target.value + "T23:59:59").toISOString() : "")} /></div>
         <div className="campo"><label>Cliente</label>
-          <select value={clientId} onChange={(e) => setClientId(e.target.value)}>
-            <option value="">Todos</option>
-            {clientes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select></div>
+          <SelectorBuscable
+            opciones={clientes.map((c) => ({ id: c.id, etiqueta: c.name }))}
+            valor={clientId}
+            onChange={setClientId}
+            permiteVacio
+            textoVacio="Todos los clientes"
+            placeholder="Buscar cliente..."
+          /></div>
         <div className="campo"><label>Tipo de entidad</label>
           <select value={entityType} onChange={(e) => setEntityType(e.target.value)}>
             <option value="">Todas</option>

@@ -118,6 +118,8 @@ Cubre el parser visual y el componente de vista previa.
 
 ## Cambios recientes
 
+- [CAMBIOS_V5.md](CAMBIOS_V5.md): fix del 404 al refrescar, listas sin eliminados, eliminación física con integridad y selectores buscables.
+- [CAMBIOS_V4.md](CAMBIOS_V4.md): vista administrativa **Alertas y correos** (SMTP, recordatorios, alertas, prueba). Contraseña SMTP en Key Vault.
 - [CAMBIOS_V3.md](CAMBIOS_V3.md): login email/password con JWT, recordatorios y alertas por correo, colores corporativos.
 - [CAMBIOS.md](CAMBIOS.md): vista unificada de tareas, frecuencia integrada en formularios, sanitización Key Vault.
 

@@ -1,7 +1,10 @@
-// Servicio de envío de correos. Soporta tres modos:
-// - mock: solo registra en consola (desarrollo y pruebas).
-// - sendgrid: usa @sendgrid/mail.
-// - acs: Azure Communication Services (no implementado en MVP, marcador).
+// Servicio de envío de correos. Soporta los modos:
+//   mock     - solo registra en consola (desarrollo y pruebas).
+//   smtp     - usa nodemailer con la configuración guardada (KeyVault para password).
+//   sendgrid - usa @sendgrid/mail.
+//   acs      - placeholder, no implementado.
+import { loadEmailAlertsSettings, getSmtpPassword } from "./settingsService";
+import type { EmailAlertsSettings } from "../types/models";
 
 export type EmailMessage = {
   to: string | string[];
@@ -12,59 +15,77 @@ export type EmailMessage = {
 
 export type EmailResult = { ok: boolean; provider: string; error?: string; messageId?: string };
 
-function provider(): string {
-  return (process.env.EMAIL_PROVIDER ?? "mock").toLowerCase();
-}
-
-function fromAddress(): { email: string; name: string } {
-  return {
-    email: process.env.EMAIL_FROM ?? "no-reply@local",
-    name: process.env.EMAIL_FROM_NAME ?? "Programador de Actualizaciones",
-  };
-}
-
-export async function sendEmail(msg: EmailMessage): Promise<EmailResult> {
-  const p = provider();
+async function sendViaMock(msg: EmailMessage, s: EmailAlertsSettings): Promise<EmailResult> {
   const recipients = Array.isArray(msg.to) ? msg.to : [msg.to];
-  if (recipients.length === 0) return { ok: false, provider: p, error: "Sin destinatarios." };
-
-  if (p === "mock") {
-    // Modo desarrollo / pruebas: no envía nada real.
-    const from = fromAddress();
-    console.log(`[email:mock] de ${from.name} <${from.email}> a ${recipients.join(", ")}: ${msg.subject}`);
-    return { ok: true, provider: "mock", messageId: `mock-${Date.now()}` };
-  }
-
-  if (p === "sendgrid") {
-    const key = process.env.SENDGRID_API_KEY;
-    if (!key) return { ok: false, provider: p, error: "SENDGRID_API_KEY no configurado." };
-    try {
-      const sg = (await import("@sendgrid/mail")).default;
-      sg.setApiKey(key);
-      const from = fromAddress();
-      const [r] = await sg.send({
-        to: recipients,
-        from: { email: from.email, name: from.name },
-        subject: msg.subject,
-        text: msg.text ?? msg.subject,
-        html: msg.html ?? `<p>${msg.text ?? msg.subject}</p>`,
-      });
-      return { ok: true, provider: "sendgrid", messageId: (r.headers as any)?.["x-message-id"] };
-    } catch (e: any) {
-      return { ok: false, provider: "sendgrid", error: e?.message ?? "Error de SendGrid" };
-    }
-  }
-
-  if (p === "acs") {
-    // Marcador para Azure Communication Services. Devolvemos error explícito
-    // para no fallar silenciosamente.
-    return { ok: false, provider: "acs", error: "Proveedor ACS no implementado todavía. Use EMAIL_PROVIDER=sendgrid o mock." };
-  }
-
-  return { ok: false, provider: p, error: `Proveedor de email desconocido: ${p}` };
+  console.log(`[email:mock] de ${s.emailFromName} <${s.emailFrom}> a ${recipients.join(", ")}: ${msg.subject}`);
+  return { ok: true, provider: "mock", messageId: `mock-${Date.now()}` };
 }
 
-// Plantillas comunes -------------------------------------------------------
+async function sendViaSmtp(msg: EmailMessage, s: EmailAlertsSettings): Promise<EmailResult> {
+  if (!s.smtpHost || !s.smtpPort || !s.smtpUser) {
+    return { ok: false, provider: "smtp", error: "Configuración SMTP incompleta (host, puerto o usuario)." };
+  }
+  const password = await getSmtpPassword(s);
+  if (!password) {
+    return { ok: false, provider: "smtp", error: "Contraseña SMTP no configurada." };
+  }
+  try {
+    const nodemailer = await import("nodemailer");
+    const transporter = nodemailer.createTransport({
+      host: s.smtpHost,
+      port: s.smtpPort,
+      secure: !!s.smtpSecure,
+      auth: { user: s.smtpUser, pass: password },
+    });
+    const info = await transporter.sendMail({
+      from: { name: s.emailFromName, address: s.emailFrom },
+      to: msg.to,
+      subject: msg.subject,
+      text: msg.text ?? msg.subject,
+      html: msg.html ?? `<p>${msg.text ?? msg.subject}</p>`,
+    });
+    return { ok: true, provider: "smtp", messageId: info.messageId };
+  } catch (e: any) {
+    // Mensaje seguro: no incluye credenciales.
+    return { ok: false, provider: "smtp", error: e?.message ?? "Error SMTP" };
+  }
+}
+
+async function sendViaSendgrid(msg: EmailMessage, s: EmailAlertsSettings): Promise<EmailResult> {
+  const key = process.env.SENDGRID_API_KEY;
+  if (!key) return { ok: false, provider: "sendgrid", error: "SENDGRID_API_KEY no configurado." };
+  try {
+    const sg = (await import("@sendgrid/mail")).default;
+    sg.setApiKey(key);
+    const recipients = Array.isArray(msg.to) ? msg.to : [msg.to];
+    const [r] = await sg.send({
+      to: recipients,
+      from: { email: s.emailFrom, name: s.emailFromName },
+      subject: msg.subject,
+      text: msg.text ?? msg.subject,
+      html: msg.html ?? `<p>${msg.text ?? msg.subject}</p>`,
+    });
+    return { ok: true, provider: "sendgrid", messageId: (r.headers as any)?.["x-message-id"] };
+  } catch (e: any) {
+    return { ok: false, provider: "sendgrid", error: e?.message ?? "Error SendGrid" };
+  }
+}
+
+export async function sendEmail(msg: EmailMessage, settings?: EmailAlertsSettings): Promise<EmailResult> {
+  const recipients = Array.isArray(msg.to) ? msg.to : [msg.to];
+  if (!recipients || recipients.length === 0) return { ok: false, provider: "n/a", error: "Sin destinatarios." };
+  const s = settings ?? (await loadEmailAlertsSettings());
+  switch (s.emailProvider) {
+    case "smtp": return sendViaSmtp(msg, s);
+    case "sendgrid": return sendViaSendgrid(msg, s);
+    case "acs": return { ok: false, provider: "acs", error: "Proveedor ACS no implementado." };
+    case "mock":
+    default:
+      return sendViaMock(msg, s);
+  }
+}
+
+// Plantillas en español ----------------------------------------------------
 
 export function renderTaskReminderEmail(args: {
   clientName: string;
@@ -73,10 +94,12 @@ export function renderTaskReminderEmail(args: {
   targetName: string;
   taskDate: string;
   daysBefore: number;
+  appUrl?: string;
 }): { subject: string; html: string; text: string } {
   const cuando = args.daysBefore === 0 ? "hoy" : args.daysBefore === 1 ? "mañana" : `en ${args.daysBefore} días`;
   const tipo = args.targetType === "domain" ? "dominio" : "base de datos";
   const subject = `Recordatorio: actualización ${cuando} — ${args.clientName}`;
+  const enlace = args.appUrl ? `<p><a href="${args.appUrl}">Abrir el Programador de Actualizaciones</a></p>` : "";
   const text = `Tienes una actualización programada ${cuando} (${args.taskDate}) del ${tipo} ${args.targetName} del cliente ${args.clientName} (dominio ${args.domainName}).`;
   const html = `
     <h3>Recordatorio de actualización</h3>
@@ -86,7 +109,7 @@ export function renderTaskReminderEmail(args: {
       <li><strong>Dominio:</strong> ${args.domainName}</li>
       <li><strong>${args.targetType === "domain" ? "Dominio" : "Base de datos"}:</strong> ${args.targetName}</li>
     </ul>
-    <p>Ingresa al Programador de Actualizaciones para gestionarla.</p>
+    ${enlace}
   `;
   return { subject, html, text };
 }
@@ -94,6 +117,7 @@ export function renderTaskReminderEmail(args: {
 export function renderOverdueAlertEmail(args: {
   domainTasks: Array<{ clientName: string; domainName: string; taskDate: string; status: string; assigned: string }>;
   databaseTasks: Array<{ clientName: string; domainName: string; targetName: string; taskDate: string; status: string; assigned: string }>;
+  appUrl?: string;
 }): { subject: string; html: string; text: string } {
   const subject = `Alerta: actualizaciones vencidas (${args.domainTasks.length} dominios, ${args.databaseTasks.length} bases de datos)`;
   function tabla(filas: string[], encabezado: string): string {
@@ -108,16 +132,44 @@ export function renderOverdueAlertEmail(args: {
   );
   const cabD = `<tr><th>Cliente</th><th>Dominio</th><th>Fecha</th><th>Estado</th><th>Responsable</th></tr>`;
   const cabB = `<tr><th>Cliente</th><th>Dominio</th><th>Empresa/BD</th><th>Fecha</th><th>Estado</th><th>Responsable</th></tr>`;
+  const enlace = args.appUrl ? `<p><a href="${args.appUrl}">Abrir el Programador de Actualizaciones</a></p>` : "";
   const html = `
     <h3>Actualizaciones vencidas</h3>
-    <p>Resumen del día:</p>
     <ul>
       <li>Dominios vencidos: <strong>${args.domainTasks.length}</strong></li>
       <li>Bases de datos vencidas: <strong>${args.databaseTasks.length}</strong></li>
     </ul>
     ${tabla([cabD, ...filasD], "Dominios")}
     ${tabla([cabB, ...filasB], "Bases de datos")}
+    ${enlace}
   `;
   const text = `Resumen de vencidos: ${args.domainTasks.length} dominios, ${args.databaseTasks.length} bases de datos.`;
+  return { subject, html, text };
+}
+
+export function renderUserPasswordEmail(args: {
+  displayName: string;
+  email: string;
+  temporaryPassword?: string;
+  isReset: boolean;
+  appUrl?: string;
+}): { subject: string; html: string; text: string } {
+  const subject = args.isReset
+    ? "Tu contraseña fue restablecida"
+    : "Bienvenido al Programador de Actualizaciones";
+  const enlace = args.appUrl ? `<p><a href="${args.appUrl}">Iniciar sesión</a></p>` : "";
+  const incluyePwd = !!args.temporaryPassword;
+  const detallePwd = incluyePwd
+    ? `<p>Tu contraseña temporal es: <code>${args.temporaryPassword}</code></p><p>Te recomendamos cambiarla al iniciar sesión.</p>`
+    : `<p>Solicita tu contraseña al administrador o usa la opción de inicio de sesión.</p>`;
+  const html = `
+    <h3>${subject}</h3>
+    <p>Hola ${args.displayName},</p>
+    ${args.isReset ? "<p>Un administrador ha restablecido tu contraseña.</p>" : "<p>Tu cuenta ha sido creada.</p>"}
+    <p>Tu correo de acceso es: <strong>${args.email}</strong></p>
+    ${detallePwd}
+    ${enlace}
+  `;
+  const text = `${subject}. Correo: ${args.email}.${incluyePwd ? " Tu contraseña temporal fue enviada en este correo." : " Solicita tu contraseña al administrador."}`;
   return { subject, html, text };
 }

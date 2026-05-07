@@ -277,3 +277,49 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
 .item-tarea-datos { flex: 1; min-width: 0; }
 .item-tarea-fila { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .item-tarea-detalle { color: var(--color-text-muted); font-size: 12px; }
+
+.selector-buscable {
+  position: relative;
+}
+.selector-buscable input { padding-right: 28px; }
+.selector-buscable-limpiar {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  font-size: 16px;
+  color: var(--color-text-muted);
+  padding: 0 4px;
+}
+.selector-buscable-lista {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  background: white;
+  list-style: none;
+  margin: 2px 0 0 0;
+  padding: 4px 0;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: 0 6px 14px rgba(0,0,0,0.08);
+  max-height: 240px;
+  overflow-y: auto;
+}
+.selector-buscable-lista li {
+  padding: 6px 10px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+}
+.selector-buscable-lista li:hover { background: rgba(126, 153, 178, 0.18); }
+.selector-buscable-lista li.activo { background: rgba(28, 54, 100, 0.1); color: var(--color-primary); }
+.selector-buscable-lista li.selector-buscable-vacio {
+  color: var(--color-text-muted);
+  font-style: italic;
+  cursor: default;
+}
+.selector-buscable-lista small { color: var(--color-text-muted); }

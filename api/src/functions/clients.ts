@@ -32,7 +32,9 @@ app.http("clientsList", {
       const { resources } = await container.items.readAll<ClientRecord>().fetchAll();
       const search = req.query.get("search")?.toLowerCase();
       const status = req.query.get("status");
+      const includeDeleted = req.query.get("includeDeleted") === "true";
       let items = resources;
+      if (!includeDeleted && !status) items = items.filter((c) => c.status !== "deleted");
       if (search) items = items.filter((c) => c.name.toLowerCase().includes(search));
       if (status) items = items.filter((c) => c.status === status);
       return ok(items);
@@ -221,10 +223,22 @@ app.http("clientsDelete", {
       const container = getContainer("clients");
       const { resource } = await container.item(id, id).read<ClientRecord>();
       if (!resource) return notFound("Cliente no encontrado.");
-      resource.status = "deleted";
-      resource.updatedAt = new Date().toISOString();
-      resource.updatedBy = user.id;
-      await container.item(id, id).replace(resource);
+
+      // Verificación de integridad: no permitir eliminar si tiene dominios o BDs vivas.
+      const domsQ = await getContainer("domains")
+        .items.query({ query: "SELECT VALUE COUNT(1) FROM c WHERE c.clientId = @c AND c.status != 'deleted'", parameters: [{ name: "@c", value: id }] })
+        .fetchAll();
+      const dbsQ = await getContainer("databases")
+        .items.query({ query: "SELECT VALUE COUNT(1) FROM c WHERE c.clientId = @c AND c.status != 'deleted'", parameters: [{ name: "@c", value: id }] })
+        .fetchAll();
+      const dominios = (domsQ.resources[0] as any) ?? 0;
+      const bds = (dbsQ.resources[0] as any) ?? 0;
+      if (dominios > 0 || bds > 0) {
+        return badRequest(`No se puede eliminar el cliente porque tiene ${dominios} dominio(s) y ${bds} base(s) de datos asociadas. Elimine o desactive esos registros primero.`);
+      }
+
+      // Eliminación física.
+      await container.item(id, id).delete();
       await writeAuditLog({
         entityType: "client",
         entityId: id,
@@ -233,7 +247,7 @@ app.http("clientsDelete", {
         action: "client_deleted",
         performedBy: user.id,
         performedByEmail: user.email,
-        after: resource,
+        before: resource,
       });
       return noContent();
     } catch (e) {

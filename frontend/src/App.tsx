@@ -10,6 +10,7 @@ import FrecuenciasPage from "./pages/FrecuenciasPage";
 import TareasPage from "./pages/TareasPage";
 import AuditoriaPage from "./pages/AuditoriaPage";
 import UsuariosPage from "./pages/UsuariosPage";
+import AlertasCorreosPage from "./pages/AlertasCorreosPage";
 import NoAutorizadoPage from "./pages/NoAutorizadoPage";
 
 function Protegido({ roles, element }: { roles: string[]; element: JSX.Element }) {
@@ -38,6 +39,7 @@ function Enrutador() {
           <Route path="dominios" element={<Protegido roles={["admin", "client_manager", "viewer", "domain_updater"]} element={<DominiosPage />} />} />
           <Route path="bases-de-datos" element={<Protegido roles={["admin", "client_manager", "viewer", "database_updater"]} element={<BasesDeDatosPage />} />} />
           <Route path="frecuencias" element={<Protegido roles={["admin", "client_manager"]} element={<FrecuenciasPage />} />} />
+          <Route path="alertas-correos" element={<Protegido roles={["admin"]} element={<AlertasCorreosPage />} />} />
           <Route path="auditoria" element={<Protegido roles={["admin", "client_manager", "viewer", "database_updater", "domain_updater"]} element={<AuditoriaPage />} />} />
           <Route path="usuarios" element={<Protegido roles={["admin"]} element={<UsuariosPage />} />} />
           <Route path="tablero" element={<DashboardPage />} />

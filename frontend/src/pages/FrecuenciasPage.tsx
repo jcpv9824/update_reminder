@@ -2,8 +2,9 @@ import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { BaseDeDatos, Cliente, Dominio, Frecuencia } from "../types";
-import { Alerta, EtiquetaEstado, Modal } from "../components/Comunes";
+import { Alerta, EtiquetaEstado, Modal, DialogoConfirmar } from "../components/Comunes";
 import { DIAS_SEMANA, ETIQUETAS_FRECUENCIA, ETIQUETAS_ROLES } from "../types";
+import { SelectorBuscable } from "../components/SelectorBuscable";
 
 const DIAS_LISTA = Object.keys(DIAS_SEMANA);
 
@@ -25,6 +26,12 @@ export default function FrecuenciasPage() {
   });
   const desactivar = useMutation({ mutationFn: (id: string) => api.post(`/schedules/${id}/deactivate`), onSuccess: () => qc.invalidateQueries({ queryKey: ["frecuencias"] }) });
   const reactivar = useMutation({ mutationFn: (id: string) => api.post(`/schedules/${id}/reactivate`), onSuccess: () => qc.invalidateQueries({ queryKey: ["frecuencias"] }) });
+  const eliminar = useMutation({
+    mutationFn: (id: string) => api.del(`/schedules/${id}`),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["frecuencias"] }); setExito("Frecuencia eliminada."); setConfirmarEliminar(null); },
+    onError: (e: any) => setError(e?.message ?? "No se pudo eliminar."),
+  });
+  const [confirmarEliminar, setConfirmarEliminar] = useState<Frecuencia | null>(null);
 
   return (
     <>
@@ -55,6 +62,7 @@ export default function FrecuenciasPage() {
                   {f.active
                     ? <button className="advertencia" onClick={() => desactivar.mutate(f.id)}>Desactivar</button>
                     : <button className="exito" onClick={() => reactivar.mutate(f.id)}>Reactivar</button>}
+                  <button className="peligro" onClick={() => setConfirmarEliminar(f)}>Eliminar</button>
                 </td>
               </tr>
             ))}
@@ -65,6 +73,18 @@ export default function FrecuenciasPage() {
       <Modal titulo="Nueva frecuencia" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
         <FormularioFrecuencia clientes={clientes} dominios={dominios} bds={bds} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />
       </Modal>
+
+      <DialogoConfirmar
+        abierto={!!confirmarEliminar}
+        titulo="Eliminar frecuencia"
+        mensaje={confirmarEliminar
+          ? `¿Eliminar la frecuencia para ${confirmarEliminar.clientName}? Esta acción no se puede deshacer.`
+          : ""}
+        textoConfirmar="Eliminar"
+        variante="peligro"
+        onConfirmar={() => confirmarEliminar && eliminar.mutate(confirmarEliminar.id)}
+        onCancelar={() => setConfirmarEliminar(null)}
+      />
     </>
   );
 }
@@ -108,10 +128,12 @@ function FormularioFrecuencia({ clientes, dominios, bds, onSubmit, cargando }: {
     }}>
       {err && <Alerta tipo="error">{err}</Alerta>}
       <div className="fila-formulario"><label>Cliente *</label>
-        <select value={clientId} onChange={(e) => { setClientId(e.target.value); setTargetIds([]); }}>
-          <option value="">Seleccione...</option>
-          {clientes.filter((c) => c.status === "active").map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select></div>
+        <SelectorBuscable
+          opciones={clientes.filter((c) => c.status === "active").map((c) => ({ id: c.id, etiqueta: c.name }))}
+          valor={clientId}
+          onChange={(id) => { setClientId(id); setTargetIds([]); }}
+          placeholder="Buscar cliente..."
+        /></div>
       <div className="fila-formulario"><label>Tipo de objetivo *</label>
         <select value={targetType} onChange={(e) => { setTargetType(e.target.value as any); setTargetIds([]); setAssignedRole(e.target.value === "database" ? "database_updater" : "domain_updater"); }}>
           <option value="database">Base de datos</option>

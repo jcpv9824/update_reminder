@@ -2,6 +2,7 @@ import { app, InvocationContext, Timer } from "@azure/functions";
 import { getContainer } from "../lib/cosmos";
 import { writeAuditLog } from "../lib/audit";
 import { renderOverdueAlertEmail, sendEmail } from "../lib/emailService";
+import { loadEmailAlertsSettings } from "../lib/settingsService";
 import type { UpdateTask, UserRecord } from "../types/models";
 
 function ahoraEnBogotaIso(): string {
@@ -12,6 +13,11 @@ function ahoraEnBogotaIso(): string {
 }
 
 export async function ejecutarAlertasVencidas(log: (m: string) => void): Promise<{ enviados: number; tareas: number }> {
+  const settings = await loadEmailAlertsSettings();
+  if (settings.overdueAlertsEnabled === false) {
+    log("Alertas de vencidos deshabilitadas globalmente.");
+    return { enviados: 0, tareas: 0 };
+  }
   const hoy = ahoraEnBogotaIso();
   const { resources: tareas } = await getContainer("updateTasks")
     .items.query<UpdateTask>({ query: "SELECT * FROM c WHERE c.taskDate < @hoy AND c.status IN ('pending','in_progress','failed','blocked','reopened')", parameters: [{ name: "@hoy", value: hoy }] })
@@ -28,11 +34,17 @@ export async function ejecutarAlertasVencidas(log: (m: string) => void): Promise
     return { enviados: 0, tareas: tareas.length };
   }
 
-  // Destinatarios: administradores activos.
-  const { resources: admins } = await getContainer("users")
-    .items.query<UserRecord>({ query: "SELECT * FROM c WHERE c.active = true AND (ARRAY_CONTAINS(c.roles, 'admin') OR ARRAY_CONTAINS(c.roles, 'client_manager'))" })
-    .fetchAll();
-  const destinatarios = admins.map((u) => u.email).filter(Boolean);
+  // Destinatarios según configuración.
+  let destinatarios: string[] = [];
+  if (settings.overdueAlertRecipientsMode === "customEmails") {
+    destinatarios = settings.customAdminAlertEmails ?? [];
+  } else {
+    const queryRoles = settings.overdueAlertRecipientsMode === "adminsAndClientManagers"
+      ? "SELECT * FROM c WHERE c.active = true AND (ARRAY_CONTAINS(c.roles, 'admin') OR ARRAY_CONTAINS(c.roles, 'client_manager'))"
+      : "SELECT * FROM c WHERE c.active = true AND ARRAY_CONTAINS(c.roles, 'admin')";
+    const { resources: admins } = await getContainer("users").items.query<UserRecord>({ query: queryRoles }).fetchAll();
+    destinatarios = admins.map((u) => u.email).filter(Boolean);
+  }
   if (destinatarios.length === 0) {
     log("No hay administradores activos para enviar la alerta.");
     return { enviados: 0, tareas: tareas.length };
@@ -44,8 +56,8 @@ export async function ejecutarAlertasVencidas(log: (m: string) => void): Promise
   const bds = pendientes.filter((t) => t.targetType === "database").map((t) => ({
     clientName: t.clientName, domainName: t.domainName, targetName: t.targetName, taskDate: t.taskDate, status: t.status, assigned: (t.assignedUserIds ?? []).join(", "),
   }));
-  const tpl = renderOverdueAlertEmail({ domainTasks: dominios, databaseTasks: bds });
-  const r = await sendEmail({ to: destinatarios, subject: tpl.subject, html: tpl.html, text: tpl.text });
+  const tpl = renderOverdueAlertEmail({ domainTasks: dominios, databaseTasks: bds, appUrl: settings.frontendBaseUrl });
+  const r = await sendEmail({ to: destinatarios, subject: tpl.subject, html: tpl.html, text: tpl.text }, settings);
 
   if (r.ok) {
     // Marcar las tareas como alertadas hoy.

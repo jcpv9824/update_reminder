@@ -43,7 +43,9 @@ app.http("domainsList", {
         ? { query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: clientId }] }
         : { query: "SELECT * FROM c" };
       const { resources } = await container.items.query<DomainRecord>(querySpec).fetchAll();
+      const includeDeleted = req.query.get("includeDeleted") === "true";
       let items = resources;
+      if (!includeDeleted && !status) items = items.filter((d) => d.status !== "deleted");
       if (status) items = items.filter((d) => d.status === status);
       if (environment) items = items.filter((d) => d.environment === environment);
       if (search) items = items.filter((d) => d.domainName.toLowerCase().includes(search) || d.clientName.toLowerCase().includes(search));
@@ -206,7 +208,7 @@ app.http("domainsUpdate", {
   },
 });
 
-async function setDomainStatus(req: HttpRequest, action: "domain_deactivated" | "domain_reactivated" | "domain_deleted", status: "inactive" | "active" | "deleted"): Promise<HttpResponseInit> {
+async function setDomainStatus(req: HttpRequest, action: "domain_deactivated" | "domain_reactivated", status: "inactive" | "active"): Promise<HttpResponseInit> {
   const user = await getUserOrFail(req);
   if (!canManageClients(user)) return forbidden();
   const id = req.params.id;
@@ -221,20 +223,56 @@ async function setDomainStatus(req: HttpRequest, action: "domain_deactivated" | 
   existing.updatedBy = user.id;
   await container.item(id, existing.clientId).replace(existing);
   await writeAuditLog({
-    entityType: "domain",
-    entityId: id,
-    clientId: existing.clientId,
-    clientName: existing.clientName,
-    domainId: id,
-    domainName: existing.domainName,
-    action,
-    performedBy: user.id,
-    performedByEmail: user.email,
-    after: existing,
+    entityType: "domain", entityId: id, clientId: existing.clientId, clientName: existing.clientName,
+    domainId: id, domainName: existing.domainName,
+    action, performedBy: user.id, performedByEmail: user.email, after: existing,
   });
-  return action === "domain_deleted" ? noContent() : ok(existing);
+  return ok(existing);
 }
 
 app.http("domainsDeactivate", { route: "domains/{id}/deactivate", methods: ["POST"], authLevel: "anonymous", handler: (req) => setDomainStatus(req, "domain_deactivated", "inactive").catch(serverError) });
 app.http("domainsReactivate", { route: "domains/{id}/reactivate", methods: ["POST"], authLevel: "anonymous", handler: (req) => setDomainStatus(req, "domain_reactivated", "active").catch(serverError) });
-app.http("domainsDelete", { route: "domains/{id}", methods: ["DELETE"], authLevel: "anonymous", handler: (req) => setDomainStatus(req, "domain_deleted", "deleted").catch(serverError) });
+
+// Eliminación física con verificación de integridad.
+app.http("domainsDelete", {
+  route: "domains/{id}",
+  methods: ["DELETE"],
+  authLevel: "anonymous",
+  handler: async (req): Promise<HttpResponseInit> => {
+    try {
+      const user = await getUserOrFail(req);
+      if (!canManageClients(user)) return forbidden();
+      const id = req.params.id;
+      const container = getContainer("domains");
+      const { resources } = await container
+        .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })
+        .fetchAll();
+      if (!resources.length) return notFound("Dominio no encontrado.");
+      const dom = resources[0];
+
+      // Verificación de integridad: bases de datos activas y frecuencias activas
+      // que apunten a este dominio.
+      const dbsQ = await getContainer("databases")
+        .items.query({ query: "SELECT VALUE COUNT(1) FROM c WHERE c.domainId = @d AND c.status != 'deleted'", parameters: [{ name: "@d", value: id }] })
+        .fetchAll();
+      const schedQ = await getContainer("updateSchedules")
+        .items.query({ query: "SELECT VALUE COUNT(1) FROM c WHERE (c.domainId = @d OR ARRAY_CONTAINS(c.targetIds, @d))", parameters: [{ name: "@d", value: id }] })
+        .fetchAll();
+      const bds = (dbsQ.resources[0] as any) ?? 0;
+      const schedules = (schedQ.resources[0] as any) ?? 0;
+      if (bds > 0 || schedules > 0) {
+        return badRequest(`No se puede eliminar el dominio porque tiene ${bds} base(s) de datos y ${schedules} frecuencia(s) asociadas. Elimine o desactive esos registros primero.`);
+      }
+
+      await container.item(id, dom.clientId).delete();
+      await writeAuditLog({
+        entityType: "domain", entityId: id, clientId: dom.clientId, clientName: dom.clientName,
+        domainId: id, domainName: dom.domainName,
+        action: "domain_deleted", performedBy: user.id, performedByEmail: user.email, before: dom,
+      });
+      return noContent();
+    } catch (e) {
+      return serverError(e);
+    }
+  },
+});

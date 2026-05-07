@@ -6,7 +6,38 @@ import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { hashPassword, normalizeEmail } from "../lib/password";
 import { badRequest, created, forbidden, notFound, ok, serverError } from "../lib/http";
+import { loadEmailAlertsSettings } from "../lib/settingsService";
+import { renderUserPasswordEmail, sendEmail } from "../lib/emailService";
 import type { UserRecord } from "../types/models";
+
+async function notificarContrasena(args: {
+  email: string;
+  displayName: string;
+  password: string;
+  isReset: boolean;
+  performedBy: string;
+  performedByEmail: string;
+}): Promise<void> {
+  const settings = await loadEmailAlertsSettings();
+  if (!settings.passwordNotificationEnabled) return;
+  const incluirPwd = !!settings.sendTemporaryPasswordByEmail;
+  const tpl = renderUserPasswordEmail({
+    displayName: args.displayName,
+    email: args.email,
+    temporaryPassword: incluirPwd ? args.password : undefined,
+    isReset: args.isReset,
+    appUrl: settings.frontendBaseUrl,
+  });
+  const r = await sendEmail({ to: args.email, subject: tpl.subject, html: tpl.html, text: tpl.text }, settings);
+  await writeAuditLog({
+    entityType: "user",
+    entityId: args.email,
+    action: r.ok ? "password_notification_sent" : "password_notification_failed",
+    performedBy: args.performedBy,
+    performedByEmail: args.performedByEmail,
+    metadata: { isReset: args.isReset, includedPassword: incluirPwd, error: r.ok ? undefined : r.error },
+  });
+}
 
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -93,6 +124,8 @@ app.http("usersCreate", {
         performedByEmail: u.email,
         after: sanitize(record),
       });
+      // Notificación opcional con/ sin contraseña según settings.
+      try { await notificarContrasena({ email: record.email, displayName: record.displayName, password: parsed.data.password, isReset: false, performedBy: u.id, performedByEmail: u.email }); } catch {/* no bloquear creación */}
       return created(sanitize(record));
     } catch (e: any) {
       if (e?.code === 409) return badRequest("Ya existe un usuario con ese identificador.");
@@ -169,6 +202,7 @@ app.http("usersResetPassword", {
         performedBy: u.id,
         performedByEmail: u.email,
       });
+      try { await notificarContrasena({ email: resource.email, displayName: resource.displayName, password: parsed.data.password, isReset: true, performedBy: u.id, performedByEmail: u.email }); } catch {/* no bloquear reset */}
       return ok(sanitize(resource));
     } catch (e) { return serverError(e); }
   },

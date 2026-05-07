@@ -8,6 +8,7 @@ import "./functions/schedules";
 import "./functions/tasks";
 import "./functions/auditLogs";
 import "./functions/setup";
+import "./functions/settings";
 import "./functions/generateDailyUpdateTasks";
 import "./functions/sendScheduledReminders";
 import "./functions/sendOverdueAlerts";

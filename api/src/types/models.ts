@@ -181,6 +181,42 @@ export type SentReminder = {
   recipients: string[];
 };
 
+// Configuración global de correos y alertas (un único documento en
+// el contenedor "appSettings" con id="email-alerts").
+export type EmailAlertsSettings = {
+  id: "email-alerts";
+  emailProvider: "mock" | "smtp" | "sendgrid" | "acs";
+  emailFrom: string;
+  emailFromName: string;
+  frontendBaseUrl?: string;
+
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpSecure?: boolean;
+  smtpUser?: string;
+  smtpPasswordSecretName?: string;
+  smtpPasswordConfigured?: boolean;
+
+  remindersEnabled: boolean;
+  defaultReminderDaysBefore: number[];
+  defaultReminderTime: string;
+  defaultTimezone: string;
+
+  overdueAlertsEnabled: boolean;
+  overdueAlertTime: string;
+  overdueAlertTimezone: string;
+  overdueAlertRecipientsMode: "admins" | "adminsAndClientManagers" | "customEmails";
+  customAdminAlertEmails?: string[];
+
+  passwordNotificationEnabled: boolean;
+  sendTemporaryPasswordByEmail: boolean;
+
+  createdAt?: string;
+  createdBy?: string;
+  updatedAt?: string;
+  updatedBy?: string;
+};
+
 export type AuditAction = string;
 
 export type AuditLog = {

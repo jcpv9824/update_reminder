@@ -3,6 +3,7 @@ import { getContainer } from "../lib/cosmos";
 import { writeAuditLog } from "../lib/audit";
 import { sendEmail, renderTaskReminderEmail } from "../lib/emailService";
 import { decidirRecordatorios } from "../lib/reminderLogic";
+import { loadEmailAlertsSettings } from "../lib/settingsService";
 import type { UpdateSchedule, UpdateTask, UserRecord, SentReminder } from "../types/models";
 
 function ahoraEnBogota(): { isoDate: string; horaLocal: string } {
@@ -44,6 +45,11 @@ async function obtenerEmailsDestinatarios(task: UpdateTask, schedule: UpdateSche
 }
 
 export async function ejecutarRecordatorios(log: (m: string) => void): Promise<{ enviados: number; fallidos: number }> {
+  const settings = await loadEmailAlertsSettings();
+  if (settings.remindersEnabled === false) {
+    log("Recordatorios deshabilitados globalmente.");
+    return { enviados: 0, fallidos: 0 };
+  }
   const { isoDate, horaLocal } = ahoraEnBogota();
   // Tareas activas en una ventana razonable (próximos 14 días).
   const { resources: tareas } = await getContainer("updateTasks")
@@ -76,8 +82,9 @@ export async function ejecutarRecordatorios(log: (m: string) => void): Promise<{
       targetName: d.task.targetName,
       taskDate: d.task.taskDate,
       daysBefore: d.daysBefore,
+      appUrl: settings.frontendBaseUrl,
     });
-    const r = await sendEmail({ to: destinatarios, subject: tpl.subject, html: tpl.html, text: tpl.text });
+    const r = await sendEmail({ to: destinatarios, subject: tpl.subject, html: tpl.html, text: tpl.text }, settings);
     const sent: SentReminder = { type: d.type, daysBefore: d.daysBefore, sentAt: new Date().toISOString(), recipients: destinatarios };
     if (r.ok) {
       d.task.remindersSent = [...(d.task.remindersSent ?? []), sent];

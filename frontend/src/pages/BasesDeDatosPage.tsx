@@ -7,6 +7,7 @@ import { AccesoBdParseado } from "../components/AccesoBdParseado";
 import { PanelAccesoBd } from "../components/PanelAccesoBd";
 import { ETIQUETAS_AMBIENTE } from "../types";
 import { SeleccionFrecuencia, valoresFrecuenciaPorDefecto, depurarFrecuenciaParaEnvio, type ValoresFrecuencia } from "../components/SeleccionFrecuencia";
+import { SelectorBuscable } from "../components/SelectorBuscable";
 
 export default function BasesDeDatosPage() {
   const qc = useQueryClient();
@@ -56,15 +57,23 @@ export default function BasesDeDatosPage() {
 
       <div className="barra-filtros">
         <div className="campo"><label>Cliente</label>
-          <select value={filtroCliente} onChange={(e) => setFiltroCliente(e.target.value)}>
-            <option value="">Todos</option>
-            {clientes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select></div>
+          <SelectorBuscable
+            opciones={clientes.map((c) => ({ id: c.id, etiqueta: c.name }))}
+            valor={filtroCliente}
+            onChange={setFiltroCliente}
+            permiteVacio
+            textoVacio="Todos los clientes"
+            placeholder="Buscar cliente..."
+          /></div>
         <div className="campo"><label>Dominio</label>
-          <select value={filtroDominio} onChange={(e) => setFiltroDominio(e.target.value)}>
-            <option value="">Todos</option>
-            {dominios.map((d) => <option key={d.id} value={d.id}>{d.domainName}</option>)}
-          </select></div>
+          <SelectorBuscable
+            opciones={dominios.map((d) => ({ id: d.id, etiqueta: d.domainName, subtitulo: d.clientName }))}
+            valor={filtroDominio}
+            onChange={setFiltroDominio}
+            permiteVacio
+            textoVacio="Todos los dominios"
+            placeholder="Buscar dominio..."
+          /></div>
         <div className="campo"><label>Ambiente</label>
           <select value={filtroAmbiente} onChange={(e) => setFiltroAmbiente(e.target.value)}>
             <option value="">Todos</option>
@@ -161,15 +170,20 @@ function FormularioBd({ clientes, dominios, onSubmit, cargando }: { clientes: Cl
     }}>
       {err && <Alerta tipo="error">{err}</Alerta>}
       <div className="fila-formulario"><label>Cliente *</label>
-        <select value={clientId} onChange={(e) => { setClientId(e.target.value); setDomainId(""); }}>
-          <option value="">Seleccione...</option>
-          {clientes.filter((c) => c.status === "active").map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select></div>
+        <SelectorBuscable
+          opciones={clientes.filter((c) => c.status === "active").map((c) => ({ id: c.id, etiqueta: c.name }))}
+          valor={clientId}
+          onChange={(id) => { setClientId(id); setDomainId(""); }}
+          placeholder="Buscar cliente..."
+        /></div>
       <div className="fila-formulario"><label>Dominio *</label>
-        <select value={domainId} onChange={(e) => setDomainId(e.target.value)} disabled={!clientId}>
-          <option value="">Seleccione...</option>
-          {dominiosFiltrados.map((d) => <option key={d.id} value={d.id}>{d.domainName}</option>)}
-        </select></div>
+        <SelectorBuscable
+          opciones={dominiosFiltrados.map((d) => ({ id: d.id, etiqueta: d.domainName }))}
+          valor={domainId}
+          onChange={setDomainId}
+          disabled={!clientId}
+          placeholder={clientId ? "Buscar dominio..." : "Seleccione un cliente primero"}
+        /></div>
       <div className="fila-formulario"><label>Nombre de la empresa *</label>
         <input value={companyName} onChange={(e) => setCompanyName(e.target.value)} /></div>
       <div className="fila-formulario"><label>Ambiente *</label>

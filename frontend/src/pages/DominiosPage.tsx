@@ -5,6 +5,7 @@ import type { Cliente, Dominio } from "../types";
 import { Alerta, EtiquetaEstado, Modal, DialogoConfirmar } from "../components/Comunes";
 import { ETIQUETAS_AMBIENTE } from "../types";
 import { SeleccionFrecuencia, valoresFrecuenciaPorDefecto, depurarFrecuenciaParaEnvio, type ValoresFrecuencia } from "../components/SeleccionFrecuencia";
+import { SelectorBuscable } from "../components/SelectorBuscable";
 
 export default function DominiosPage() {
   const qc = useQueryClient();
@@ -53,10 +54,14 @@ export default function DominiosPage() {
 
       <div className="barra-filtros">
         <div className="campo"><label>Cliente</label>
-          <select value={filtroCliente} onChange={(e) => setFiltroCliente(e.target.value)}>
-            <option value="">Todos</option>
-            {clientes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
+          <SelectorBuscable
+            opciones={clientes.map((c) => ({ id: c.id, etiqueta: c.name }))}
+            valor={filtroCliente}
+            onChange={setFiltroCliente}
+            permiteVacio
+            textoVacio="Todos los clientes"
+            placeholder="Buscar cliente..."
+          />
         </div>
         <div className="campo"><label>Buscar dominio</label>
           <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="ejemplo.sagerp.co" />
@@ -153,10 +158,13 @@ function FormularioDominio({ inicial, clientes, onSubmit, cargando }: { inicial?
       <h4 style={{ marginTop: 0 }}>Información general</h4>
       <div className="fila-formulario">
         <label>Cliente *</label>
-        <select value={clientId} onChange={(e) => setClientId(e.target.value)} disabled={!!inicial}>
-          <option value="">Seleccione...</option>
-          {clientes.filter((c) => c.status === "active").map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
+        <SelectorBuscable
+          opciones={clientes.filter((c) => c.status === "active").map((c) => ({ id: c.id, etiqueta: c.name }))}
+          valor={clientId}
+          onChange={setClientId}
+          disabled={!!inicial}
+          placeholder="Buscar cliente..."
+        />
       </div>
       <div className="fila-formulario"><label>Nombre del dominio *</label>
         <input value={domainName} onChange={(e) => setDomainName(e.target.value)} placeholder="ejemplo.sagerp.co" /></div>

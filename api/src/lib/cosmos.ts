@@ -29,7 +29,8 @@ export type ContainerName =
   | "databases"
   | "updateSchedules"
   | "updateTasks"
-  | "auditLogs";
+  | "auditLogs"
+  | "appSettings";
 
 export function getContainer(name: ContainerName): Container {
   return getDatabase().container(name);
