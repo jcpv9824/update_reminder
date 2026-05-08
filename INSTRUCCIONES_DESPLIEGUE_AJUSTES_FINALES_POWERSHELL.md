@@ -1,8 +1,8 @@
 # Instrucciones de despliegue de últimos cambios con PowerShell
 
-Fecha: 2026-05-07
+Fecha: 2026-05-08
 
-Estos pasos publican los cambios finales de flujo **Cliente → Dominio → Base de datos → Tareas**, responsables manuales opcionales, recordatorios por responsable, **Programaciones especiales** separadas de la frecuencia normal del dominio, el tablero agrupado de tareas, el modal amplio de detalle, la ventana visible de tareas, las frecuencias con fecha de fin opcional, la reorganización de **Alertas y correos**, el fix urgente del detalle de tareas para quitar acciones antiguas y la corrección para limpiar responsables específicos al volver al rol predeterminado.
+Estos pasos publican los cambios finales de flujo **Cliente → Dominio → Base de datos → Tareas**, responsables manuales opcionales, recordatorios por responsable, **Programaciones especiales** separadas de la frecuencia normal del dominio, el tablero agrupado de tareas, el modal amplio de detalle, la ventana visible de tareas, las frecuencias con fecha de fin opcional, la reorganización de **Alertas y correos**, el fix urgente del detalle de tareas para quitar acciones antiguas, la corrección para limpiar responsables específicos al volver al rol predeterminado y la carga segura de conexión de bases para tareas por rol.
 
 No incluya contraseñas reales en Git, documentación, capturas, logs ni comandos.
 
@@ -24,7 +24,7 @@ git diff -- README.md DESPLIEGUE.md CAMBIOS_V6.md
 git diff -- api/src frontend/src
 ```
 
-Verifique especialmente que no se incluyan secretos, que los cambios de frecuencia usen `origin = "domain_default"` para dominios y `origin = "special"` para **Programaciones especiales**, y que al volver a **Usar rol predeterminado** se envíe `assignedUserIds = []` con `reminderRecipientsMode = "roleUsers"`.
+Verifique especialmente que no se incluyan secretos, que los cambios de frecuencia usen `origin = "domain_default"` para dominios y `origin = "special"` para **Programaciones especiales**, que al volver a **Usar rol predeterminado** se envíe `assignedUserIds = []` con `reminderRecipientsMode = "roleUsers"`, y que la conexión de bases se cargue con `GET /api/databases/{id}/access-info?taskId=...` sin contraseña.
 
 ## 3. Ejecutar pruebas y build del backend
 
@@ -90,7 +90,7 @@ Set-Location $repo
 git status
 git add README.md DESPLIEGUE.md CAMBIOS_V6.md INSTRUCCIONES_DESPLIEGUE_AJUSTES_FINALES_POWERSHELL.md
 git add api/src frontend/src frontend/public/staticwebapp.config.json
-git commit -m "Corrige detalle de tareas y responsables"
+git commit -m "Corrige conexion de bases en tareas por rol"
 git push
 ```
 
@@ -215,7 +215,10 @@ correo1@empresa.com; correo2@empresa.com
    - Acción: **Completar**.
 8. Confirme que en la columna **Acciones** de bases solo aparece **Completar**; los botones **Copiar** de servidor/base/usuario/contraseña deben estar dentro de **Base / conexión**.
 9. Use **Ver** o **Copiar** contraseña solo cuando sea necesario. La contraseña se obtiene bajo demanda desde el backend y no se carga en la lista de tareas.
-10. Verifique en el frontend compilado que no existan acciones antiguas:
+10. Abra un grupo por rol **Actualizador de bases de datos — Bases de datos por actualizar** y confirme que cada fila deja de mostrar **Cargando conexión...**.
+11. Abra un grupo asignado a Rodrigo Kammerer u otro usuario específico y confirme que también carga la conexión.
+12. Inicie sesión con un usuario sin permiso y confirme que aparece **No tienes permiso para ver esta conexión.**.
+13. Verifique en el frontend compilado que no existan acciones antiguas:
 
 ```powershell
 Set-Location "$repo\frontend"

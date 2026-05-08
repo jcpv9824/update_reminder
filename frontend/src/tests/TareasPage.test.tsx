@@ -90,6 +90,16 @@ function mockTareas({ dominios = [], bases = [], basesDetalle = [], usuarios = [
     if (path === "/users") return Promise.resolve(usuarios);
     if (path.includes("targetType=domain")) return Promise.resolve(dominios);
     if (path.includes("targetType=database")) return Promise.resolve(bases);
+    if (path.includes("/access-info")) {
+      const id = path.split("/databases/")[1]?.split("/")[0] ?? "db_1";
+      const item = basesDetalle.find((b) => b.id === id) ?? bd(id);
+      return Promise.resolve({
+        server: item.dbAccess.serverHostPort,
+        databaseName: item.dbAccess.initialCatalog,
+        user: item.dbAccess.userId,
+        hasPassword: true,
+      });
+    }
     if (path.startsWith("/databases/")) {
       const id = path.split("/").at(-1);
       return Promise.resolve(basesDetalle.find((b) => b.id === id) ?? bd(id ?? "db_1"));
@@ -369,6 +379,88 @@ describe("TareasPage (vista unificada)", () => {
     expect(screen.queryByRole("button", { name: /^Iniciar$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Bloquear$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Reportar problema/i })).toBeNull();
+  });
+
+  it("grupo de bases por rol carga conexión por taskId aunque assignedUserIds esté vacío", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["database_updater"];
+    const baseTask = tarea({
+      id: "b_role",
+      targetType: "database",
+      targetId: "db_role",
+      targetName: "SAMPEDRO",
+      assignedRole: "database_updater",
+      assignedUserIds: [],
+    });
+    mockTareas({ bases: [baseTask], basesDetalle: [bd("db_role")] });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    expect(await screen.findByText(/Servidor:/i)).toBeInTheDocument();
+    expect(screen.getByText("data-ims.imsampedro.cloud,54101")).toBeInTheDocument();
+    expect(screen.queryByText(/Cargando conexión/i)).toBeNull();
+    await waitFor(() =>
+      expect(apiMock.get).toHaveBeenCalledWith("/databases/db_role/access-info?taskId=b_role")
+    );
+  });
+
+  it("grupo de bases asignado manualmente sigue cargando conexión", async () => {
+    usuarioMock.id = "rodrigo";
+    usuarioMock.roles = ["database_updater"];
+    usuarioMock.displayName = "Rodrigo Kammerer";
+    const baseTask = tarea({
+      id: "b_rodrigo",
+      targetType: "database",
+      targetId: "db_rodrigo",
+      targetName: "SAMPEDRO",
+      assignedRole: "database_updater",
+      assignedUserIds: ["rodrigo"],
+    });
+    mockTareas({ bases: [baseTask], basesDetalle: [bd("db_rodrigo")] });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    expect(await screen.findByText(/Servidor:/i)).toBeInTheDocument();
+    expect(screen.getByText("IMSAMPEDRO-IMS01-API")).toBeInTheDocument();
+  });
+
+  it("si access-info falla, la fila muestra error y reintento sin dejar todo cargando", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    const okTask = tarea({ id: "b_ok", targetType: "database", targetId: "db_ok", targetName: "OK", assignedRole: "database_updater" });
+    const failTask = tarea({ id: "b_fail", targetType: "database", targetId: "db_fail", targetName: "FAIL", assignedRole: "database_updater" });
+    apiMock.get.mockImplementation((path = "") => {
+      if (path.includes("targetType=domain")) return Promise.resolve([]);
+      if (path.includes("targetType=database")) return Promise.resolve([okTask, failTask]);
+      if (path.includes("/databases/db_ok/access-info")) {
+        return Promise.resolve({ server: "srv-ok", databaseName: "OK", user: "usr-ok", hasPassword: true });
+      }
+      if (path.includes("/databases/db_fail/access-info")) return Promise.reject(new Error("Error 500"));
+      if (path === "/users") return Promise.resolve([]);
+      return Promise.resolve([]);
+    });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    expect(await screen.findByText("srv-ok")).toBeInTheDocument();
+    expect(await screen.findByText(/No se pudo cargar la conexión/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Reintentar/i })).toBeInTheDocument();
+    expect(screen.queryByText(/Cargando conexión/i)).toBeNull();
+  });
+
+  it("si access-info devuelve 403, muestra mensaje de permisos", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["database_updater"];
+    const error = Object.assign(new Error("No tienes permiso para ver esta conexión."), { status: 403 });
+    apiMock.get.mockImplementation((path = "") => {
+      if (path.includes("targetType=domain")) return Promise.resolve([]);
+      if (path.includes("targetType=database")) {
+        return Promise.resolve([tarea({ id: "b_forbidden", targetType: "database", targetId: "db_forbidden", assignedRole: "database_updater", assignedUserIds: ["otro"] })]);
+      }
+      if (path.includes("/access-info")) return Promise.reject(error);
+      return Promise.resolve([]);
+    });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    expect(await screen.findByText(/No tienes permiso para ver esta conexión/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Reintentar/i })).toBeNull();
   });
 
   it("ver y copiar contraseña llaman endpoint seguro sin precargar password", async () => {

@@ -58,9 +58,20 @@ export function canCompleteDatabaseTask(
   if (task.targetType !== "database") return false;
   if (hasRole(user, "admin")) return true;
   if (hasRole(user, "database_updater")) {
-    return task.assignedUserIds.length === 0 || task.assignedUserIds.includes(user.id);
+    if (task.assignedUserIds.length > 0) return task.assignedUserIds.includes(user.id);
+    return task.assignedRole === "database_updater";
   }
   return false;
+}
+
+export function canAccessDatabaseTaskConnection(
+  user: CurrentUser,
+  task: UpdateTask
+): boolean {
+  if (task.targetType !== "database") return false;
+  if (hasRole(user, "admin")) return true;
+  if (task.assignedUserIds.length > 0) return task.assignedUserIds.includes(user.id);
+  return task.assignedRole === "database_updater" && hasRole(user, "database_updater");
 }
 
 export function canCompleteDomainTask(
@@ -70,7 +81,8 @@ export function canCompleteDomainTask(
   if (task.targetType !== "domain") return false;
   if (hasRole(user, "admin")) return true;
   if (hasRole(user, "domain_updater")) {
-    return task.assignedUserIds.length === 0 || task.assignedUserIds.includes(user.id);
+    if (task.assignedUserIds.length > 0) return task.assignedUserIds.includes(user.id);
+    return task.assignedRole === "domain_updater";
   }
   return false;
 }

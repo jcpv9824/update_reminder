@@ -9,7 +9,9 @@ import {
   canCompleteDatabaseTask,
   canCompleteDomainTask,
   canRevealDatabaseSecret,
+  canAccessDatabaseTaskConnection,
 } from "../lib/permissions";
+import { buildDatabaseAccessInfo } from "../lib/databaseAccessInfo";
 import type { CurrentUser, UpdateTask, DatabaseRecord } from "../types/models";
 
 const user = (roles: string[]): CurrentUser => ({
@@ -18,6 +20,34 @@ const user = (roles: string[]): CurrentUser => ({
   displayName: "U",
   roles,
 });
+
+function baseTask(overrides: Partial<UpdateTask> = {}): UpdateTask {
+  return {
+    id: "t1",
+    taskDate: "2026-05-08",
+    taskBucket: "2026-05-08_database",
+    clientId: "c1",
+    clientName: "C",
+    domainId: "d1",
+    domainName: "d",
+    targetType: "database",
+    targetId: "db1",
+    targetName: "BD",
+    scheduleId: "s1",
+    assignedRole: "database_updater",
+    assignedUserIds: [],
+    status: "pending",
+    result: null,
+    notes: "",
+    createdAt: "",
+    createdBy: "system",
+    updatedAt: "",
+    updatedBy: "system",
+    completedAt: null,
+    completedBy: null,
+    ...overrides,
+  };
+}
 
 describe("permissions", () => {
   it("hasRole detecta el rol", () => {
@@ -87,6 +117,60 @@ describe("permissions", () => {
     expect(canCompleteDatabaseTask(user(["domain_updater"]), task)).toBe(
       false
     );
+  });
+
+  it("admin puede acceder a metadata de conexión de una tarea de base por rol", () => {
+    expect(canAccessDatabaseTaskConnection(user(["admin"]), baseTask())).toBe(true);
+  });
+
+  it("database_updater puede acceder a conexión cuando assignedUserIds está vacío y assignedRole es database_updater", () => {
+    expect(canAccessDatabaseTaskConnection(user(["database_updater"]), baseTask({ assignedUserIds: [], assignedRole: "database_updater" }))).toBe(true);
+  });
+
+  it("usuario directamente asignado puede acceder a conexión aunque la tarea tenga responsible manual", () => {
+    const assigned = user(["viewer"]);
+    assigned.id = "rodrigo";
+    expect(canAccessDatabaseTaskConnection(assigned, baseTask({ assignedUserIds: ["rodrigo"] }))).toBe(true);
+  });
+
+  it("database_updater no asignado no accede a conexión cuando assignedUserIds tiene otro usuario", () => {
+    const other = user(["database_updater"]);
+    other.id = "otro";
+    expect(canAccessDatabaseTaskConnection(other, baseTask({ assignedUserIds: ["rodrigo"] }))).toBe(false);
+  });
+
+  it("domain_updater no accede a conexión de tareas de base por rol", () => {
+    expect(canAccessDatabaseTaskConnection(user(["domain_updater"]), baseTask())).toBe(false);
+  });
+
+  it("metadata de conexión no incluye contraseña ni nombre de secreto", () => {
+    const db: DatabaseRecord = {
+      id: "db1",
+      clientId: "c1",
+      clientName: "C",
+      domainId: "d1",
+      domainName: "d",
+      companyName: "X",
+      environment: "production",
+      dbAccess: {
+        serverHostPort: "server,1433",
+        initialCatalog: "ERP",
+        userId: "sql_user",
+        passwordSecretName: "kv-secret-name",
+      },
+      assignedUpdaterIds: [],
+      status: "active",
+      createdAt: "",
+      createdBy: "",
+      updatedAt: "",
+      updatedBy: "",
+      lastUpdatedAt: null,
+      lastUpdatedBy: null,
+    };
+    const info = buildDatabaseAccessInfo(db);
+    expect(info).toEqual({ server: "server,1433", databaseName: "ERP", user: "sql_user", hasPassword: true });
+    expect(JSON.stringify(info)).not.toContain("kv-secret-name");
+    expect(JSON.stringify(info).toLowerCase()).not.toContain("passwordsecretname");
   });
 
   it("domain_updater no puede completar tareas de tipo database", () => {

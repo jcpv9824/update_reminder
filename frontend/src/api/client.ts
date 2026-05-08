@@ -49,7 +49,9 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       // token expirado o inválido: limpiarlo para forzar login.
       setToken(null);
     }
-    throw new Error(mensaje);
+    const error = new Error(mensaje) as Error & { status?: number };
+    error.status = res.status;
+    throw error;
   }
   if (res.status === 204) return undefined as T;
   const text = await res.text();

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
-import type { BaseDeDatos, Tarea, Usuario } from "../types";
+import type { Tarea, Usuario } from "../types";
 import { ETIQUETAS_ROLES } from "../types";
 import { Alerta, EtiquetaEstado, Modal } from "../components/Comunes";
 import { hoyEnBogotaIso, sumarDiasIso, clasificarTareaPorFecha, type ClasificacionTarea } from "../utils/fechas";
@@ -34,6 +34,13 @@ type GrupoResumen = {
   completadasConProblemas: number;
   pendientes: number;
   estadoAgregado: "completed" | "with_problems" | "in_progress" | "pending" | "overdue";
+};
+
+type ConexionInfo = {
+  server: string;
+  databaseName: string;
+  user: string;
+  hasPassword: boolean;
 };
 
 function etiquetaTipo(targetType: "domain" | "database", plural = false): string {
@@ -351,17 +358,6 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
   onAccion: (id: string, accion: AccionTarea, body?: any) => void;
 }) {
   const pendientes = grupo.tareas.filter((t) => t.status !== "completed" && t.status !== "cancelled");
-  const dbIds = useMemo(
-    () => Array.from(new Set(grupo.targetType === "database" ? grupo.tareas.map((t) => t.targetId) : [])),
-    [grupo.targetType, grupo.tareas]
-  );
-  const { data: bases = [] } = useQuery({
-    queryKey: ["detalle-db-tareas", dbIds.join("|")],
-    queryFn: () => Promise.all(dbIds.map((id) => api.get<BaseDeDatos>(`/databases/${id}`))),
-    enabled: grupo.targetType === "database" && dbIds.length > 0,
-  });
-  const basesPorId = useMemo(() => new Map(bases.map((b) => [b.id, b])), [bases]);
-
   return (
     <>
       <p>
@@ -418,7 +414,6 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
               ? `Con problemas: ${tarea.problemNote || "Reportó problema"}`
               : (tarea.completionNote || tarea.notes || "-");
             const dominioPublicable = formatDomainForPublishing(tarea.domainName);
-            const db = basesPorId.get(tarea.targetId);
             return (
               <tr key={tarea.id}>
                 <td>{tarea.clientName}</td>
@@ -431,7 +426,7 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
                   <>
                     <td style={{ fontFamily: "monospace" }}>{dominioPublicable}</td>
                     <td>
-                      <ConexionBaseCelda bd={db} tarea={tarea} usuario={usuario} />
+                      <ConexionBaseCelda tarea={tarea} usuario={usuario} />
                     </td>
                   </>
                 )}
@@ -473,18 +468,24 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
   );
 }
 
-function ConexionBaseCelda({ bd, tarea, usuario }: { bd?: BaseDeDatos; tarea: Tarea; usuario: Usuario | null }) {
+function ConexionBaseCelda({ tarea, usuario }: { tarea: Tarea; usuario: Usuario | null }) {
   const [passwordVisible, setPasswordVisible] = useState<string | null>(null);
   const [cargandoPwd, setCargandoPwd] = useState(false);
   const [errorPwd, setErrorPwd] = useState<string | null>(null);
   const puedeVerPassword = puedeCambiarTarea(usuario, tarea);
+  const conexion = useQuery({
+    queryKey: ["conexion-db-tarea", tarea.targetId, tarea.id],
+    queryFn: () => api.get<ConexionInfo>(`/databases/${tarea.targetId}/access-info?taskId=${encodeURIComponent(tarea.id)}`),
+    enabled: tarea.targetType === "database" && !!tarea.targetId && !!tarea.id,
+    retry: false,
+  });
 
   async function revelarPassword(paraCopiar: boolean) {
-    if (!bd || !puedeVerPassword) return;
+    if (!conexion.data || !puedeVerPassword) return;
     setCargandoPwd(true);
     setErrorPwd(null);
     try {
-      const r = await api.post<{ password: string }>(`/databases/${bd.id}/reveal-password`, { taskId: tarea.id, reason: "task_detail" });
+      const r = await api.post<{ password: string }>(`/databases/${tarea.targetId}/reveal-password`, { taskId: tarea.id, reason: "task_detail" });
       if (paraCopiar) {
         await copiarTexto(r.password);
       } else {
@@ -498,17 +499,31 @@ function ConexionBaseCelda({ bd, tarea, usuario }: { bd?: BaseDeDatos; tarea: Ta
     }
   }
 
-  if (!bd) return <span className="texto-ayuda">Cargando conexión...</span>;
+  if (conexion.isLoading || conexion.isFetching) return <span className="texto-ayuda">Cargando conexión...</span>;
+  if (conexion.isError) {
+    const error = conexion.error as Error & { status?: number };
+    const esPermiso = error.status === 403 || /permiso/i.test(error.message);
+    return (
+      <div className="conexion-celda">
+        <span className="texto-ayuda" style={{ color: esPermiso ? "#92400e" : "#991b1b" }}>
+          {esPermiso ? "No tienes permiso para ver esta conexión." : "No se pudo cargar la conexión."}
+        </span>
+        {!esPermiso && <button type="button" onClick={() => conexion.refetch()}>Reintentar</button>}
+      </div>
+    );
+  }
+  const info = conexion.data;
+  if (!info) return <span className="texto-ayuda">No se pudo cargar la conexión.</span>;
   return (
     <div className="conexion-celda">
-      <ConexionLinea etiqueta="Servidor" valor={bd.dbAccess.serverHostPort} />
-      <ConexionLinea etiqueta="Base" valor={bd.dbAccess.initialCatalog} />
-      <ConexionLinea etiqueta="Usuario" valor={bd.dbAccess.userId} />
+      <ConexionLinea etiqueta="Servidor" valor={info.server} />
+      <ConexionLinea etiqueta="Base" valor={info.databaseName} />
+      <ConexionLinea etiqueta="Usuario" valor={info.user} />
       <div className="conexion-linea">
         <strong>Contraseña:</strong>
-        <span className="conexion-valor">{passwordVisible ?? "••••••••••••"}</span>
+        <span className="conexion-valor">{info.hasPassword ? (passwordVisible ?? "••••••••••••") : "No configurada"}</span>
         <span className="acciones-tabla">
-          {puedeVerPassword ? (
+          {puedeVerPassword && info.hasPassword ? (
             <>
               <button type="button" disabled={cargandoPwd} onClick={() => revelarPassword(false)}>Ver</button>
               <button type="button" disabled={cargandoPwd} onClick={() => revelarPassword(true)}>Copiar</button>

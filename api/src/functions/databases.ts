@@ -1,15 +1,16 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
-import { canManageClients, canRevealDatabaseSecret, canEditDatabaseLimited } from "../lib/permissions";
+import { canManageClients, canRevealDatabaseSecret, canEditDatabaseLimited, canAccessDatabaseTaskConnection } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import * as keyVault from "../lib/keyVault";
 import { buildDatabaseRecordFromInput } from "../lib/databaseService";
+import { buildDatabaseAccessInfo } from "../lib/databaseAccessInfo";
 import { parseDbAccessString } from "../lib/dbAccessParser";
 import { buildScheduleRecord, validateFrequency, type FrequencyInput } from "../lib/scheduleService";
 import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
-import type { ClientRecord, DatabaseRecord, DomainRecord } from "../types/models";
+import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateTask } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -168,6 +169,48 @@ async function findDatabase(id: string): Promise<DatabaseRecord | null> {
   return resources[0] ?? null;
 }
 
+async function findTask(id: string): Promise<UpdateTask | null> {
+  const { resources } = await getContainer("updateTasks")
+    .items.query<UpdateTask>({
+      query: "SELECT * FROM c WHERE c.id = @id",
+      parameters: [{ name: "@id", value: id }],
+    })
+    .fetchAll();
+  return resources[0] ?? null;
+}
+
+app.http("databasesAccessInfo", {
+  route: "databases/{id}/access-info",
+  methods: ["GET"],
+  authLevel: "anonymous",
+  handler: async (req): Promise<HttpResponseInit> => {
+    try {
+      const user = await getUserOrFail(req);
+      const db = await findDatabase(req.params.id);
+      if (!db) return notFound("Base de datos no encontrada.");
+
+      const taskId = req.query.get("taskId")?.trim();
+      if (taskId) {
+        const task = await findTask(taskId);
+        if (!task || task.targetType !== "database" || task.targetId !== db.id) {
+          return forbidden("No tienes permiso para ver esta conexión.");
+        }
+        if (!canAccessDatabaseTaskConnection(user, task)) {
+          return forbidden("No tienes permiso para ver esta conexión.");
+        }
+        return ok(buildDatabaseAccessInfo(db));
+      }
+
+      if (!canRevealDatabaseSecret(user, db) && !canEditDatabaseLimited(user, db)) {
+        return forbidden("No tienes permiso para ver esta conexión.");
+      }
+      return ok(buildDatabaseAccessInfo(db));
+    } catch (e) {
+      return serverError(e);
+    }
+  },
+});
+
 app.http("databasesGet", {
   route: "databases/{id}",
   methods: ["GET"],
@@ -265,12 +308,26 @@ app.http("databasesDelete", {
       if (!canManageClients(user)) return forbidden();
       const db = await findDatabase(req.params.id);
       if (!db) return notFound("Base de datos no encontrada.");
-      const schedQ = await getContainer("updateSchedules")
-        .items.query({ query: "SELECT VALUE COUNT(1) FROM c WHERE ARRAY_CONTAINS(c.targetIds, @t)", parameters: [{ name: "@t", value: db.id }] })
+      // Cascada: eliminar frecuencias asociadas a esta BD (configuración del registro).
+      const schedContainer = getContainer("updateSchedules");
+      const { resources: schedulesAsociadas } = await schedContainer.items
+        .query<any>({
+          query: "SELECT * FROM c WHERE ARRAY_CONTAINS(c.targetIds, @t)",
+          parameters: [{ name: "@t", value: db.id }],
+        })
         .fetchAll();
-      const schedules = (schedQ.resources[0] as any) ?? 0;
-      if (schedules > 0) {
-        return badRequest(`No se puede eliminar la base de datos porque tiene ${schedules} frecuencia(s) asociadas. Elimine las frecuencias primero.`);
+      let cascadaSchedules = 0;
+      for (const s of schedulesAsociadas) {
+        try {
+          await schedContainer.item(s.id, s.clientId).delete();
+          cascadaSchedules++;
+          await writeAuditLog({
+            entityType: "schedule", entityId: s.id, clientId: s.clientId, clientName: s.clientName,
+            domainId: db.domainId, domainName: db.domainName,
+            action: "schedule_deleted", performedBy: user.id, performedByEmail: user.email,
+            metadata: { cascadeFromDatabase: db.id }, before: s,
+          });
+        } catch {/* seguimos con las demás */}
       }
       // Eliminar el secreto de la contraseña en Key Vault si existe.
       try {
@@ -281,6 +338,7 @@ app.http("databasesDelete", {
         entityType: "database", entityId: db.id, clientId: db.clientId, clientName: db.clientName,
         domainId: db.domainId, domainName: db.domainName, companyName: db.companyName,
         action: "database_deleted", performedBy: user.id, performedByEmail: user.email,
+        metadata: { cascadeSchedules: cascadaSchedules },
         before: { ...db, dbAccess: { ...db.dbAccess, passwordSecretName: undefined } },
       });
       return noContent();
@@ -352,8 +410,19 @@ app.http("databasesRevealPassword", {
       const user = await getUserOrFail(req);
       const db = await findDatabase(req.params.id);
       if (!db) return notFound("Base de datos no encontrada.");
-      if (!canRevealDatabaseSecret(user, db)) return forbidden("No tiene permisos para acceder a la contraseña.");
+      const body = (await req.json().catch(() => ({}))) as any;
+      let authorizedByTask = false;
+      let taskId: string | undefined;
+      if (typeof body.taskId === "string" && body.taskId.trim()) {
+        const requestedTaskId = body.taskId.trim();
+        taskId = requestedTaskId;
+        const task = await findTask(requestedTaskId);
+        authorizedByTask = !!task && task.targetType === "database" && task.targetId === db.id && canAccessDatabaseTaskConnection(user, task);
+      }
+      if (!authorizedByTask && !canRevealDatabaseSecret(user, db)) return forbidden("No tiene permisos para acceder a la contraseña.");
       const value = await keyVault.getSecret(db.dbAccess.passwordSecretName);
+      const metadata: Record<string, string> = { databaseId: db.id, reason: typeof body.reason === "string" ? body.reason : "manual" };
+      if (taskId) metadata.taskId = taskId;
       await writeAuditLog({
         entityType: "database",
         entityId: db.id,
@@ -365,6 +434,7 @@ app.http("databasesRevealPassword", {
         action: "database_password_revealed",
         performedBy: user.id,
         performedByEmail: user.email,
+        metadata,
       });
       return ok({ password: value });
     } catch (e) {
