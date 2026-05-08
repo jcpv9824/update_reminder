@@ -133,9 +133,9 @@ export default function TareasPage() {
   }, [usuarios]);
 
   const generarTareas = useMutation({
-    mutationFn: () => api.post<{ created: number; skipped: number; windowStart?: string; windowEnd?: string; message: string }>("/tasks/generate", {}),
+    mutationFn: () => api.post<{ created: number; updated?: number; obsoleted?: number; skipped: number; windowStart?: string; windowEnd?: string; message: string }>("/tasks/generate", {}),
     onSuccess: (r) => {
-      setMensaje(`${r.message ?? "Tareas generadas correctamente."} Creadas: ${r.created ?? 0}. Omitidas: ${r.skipped ?? 0}.`);
+      setMensaje(`${r.message ?? "Tareas generadas correctamente."} Creadas: ${r.created ?? 0}. Actualizadas: ${r.updated ?? 0}. Obsoletas eliminadas: ${r.obsoleted ?? 0}. Omitidas: ${r.skipped ?? 0}.`);
       setErrorGeneracion(null);
       qc.invalidateQueries({ queryKey: ["tareas"] });
     },
@@ -207,7 +207,8 @@ function ColumnaTareas({ titulo, targetType, usuario, usuariosMap }: { titulo: s
     },
   });
 
-  const grupos = useMemo(() => agruparTareas(tareas, targetType, usuario, usuariosMap), [tareas, targetType, usuario, usuariosMap]);
+  const tareasVisibles = useMemo(() => tareas.filter((t) => t.status !== "cancelled"), [tareas]);
+  const grupos = useMemo(() => agruparTareas(tareasVisibles, targetType, usuario, usuariosMap), [tareasVisibles, targetType, usuario, usuariosMap]);
 
   // Clasificación por zona Bogotá: hoy / próximas / vencidas / completadas.
   const seccionado = useMemo(() => {

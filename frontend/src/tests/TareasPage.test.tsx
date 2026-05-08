@@ -147,11 +147,23 @@ describe("TareasPage (vista unificada)", () => {
 
   it("el botón Generar tareas ahora llama /tasks/generate y muestra mensaje", async () => {
     usuarioMock.roles = ["admin"];
-    apiMock.post.mockResolvedValueOnce({ created: 2, skipped: 1, message: "Tareas generadas correctamente." });
+    apiMock.post.mockResolvedValueOnce({ created: 2, updated: 1, obsoleted: 3, skipped: 1, message: "Tareas generadas correctamente." });
     renderPagina();
     fireEvent.click(screen.getByRole("button", { name: /Generar tareas ahora/i }));
     await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/tasks/generate", {}));
     expect(await screen.findByText(/Tareas generadas correctamente/i)).toBeInTheDocument();
+    expect(screen.getByText(/Actualizadas: 1/i)).toBeInTheDocument();
+    expect(screen.getByText(/Obsoletas eliminadas: 3/i)).toBeInTheDocument();
+  });
+
+  it("después de generar refresca el tablero", async () => {
+    usuarioMock.roles = ["admin"];
+    apiMock.post.mockResolvedValueOnce({ created: 0, updated: 0, obsoleted: 1, skipped: 0, message: "Tareas generadas correctamente." });
+    mockTareas({ dominios: [tarea({ id: "d1" })] });
+    renderPagina();
+    await screen.findByText(/U — Dominios por actualizar/i);
+    fireEvent.click(screen.getByRole("button", { name: /Generar tareas ahora/i }));
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith(expect.stringMatching(/targetType=domain/)));
   });
 
   it("consulta tareas dentro de la ventana predeterminada de siete días", async () => {
@@ -514,5 +526,30 @@ describe("TareasPage (vista unificada)", () => {
     renderPagina();
     expect(await screen.findByText(/Actualizador de dominios — Dominios por actualizar/i)).toBeInTheDocument();
     expect(screen.queryByText(/Rodrigo Kammerer — Dominios por actualizar/i)).toBeNull();
+  });
+
+  it("no muestra tareas obsoletas canceladas en el tablero ni en el detalle", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    mockTareas({
+      dominios: [
+        tarea({ id: "activa", domainName: "activo.sagerp.cloud", targetName: "activo.sagerp.cloud" }),
+        tarea({ id: "obsoleta", domainName: "sampedro.sagerp.cloud", targetName: "sampedro.sagerp.cloud", status: "cancelled" }),
+      ],
+    });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    expect((await screen.findAllByText("activo.sagerp.cloud")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("sampedro.sagerp.cloud")).toBeNull();
+  });
+
+  it("las tareas completadas siguen apareciendo en la sección completadas dentro de la ventana", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    mockTareas({ dominios: [tarea({ id: "completada", status: "completed", domainName: "historico.sagerp.cloud", targetName: "historico.sagerp.cloud" })] });
+    renderPagina();
+    expect(await screen.findByText(/Completadas: 1 \/ 1/i)).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    expect((await screen.findAllByText("historico.sagerp.cloud")).length).toBeGreaterThan(0);
   });
 });

@@ -4,6 +4,7 @@ import { requireUser, loadUserProfile } from "../lib/auth";
 import { canManageClients, canRevealDatabaseSecret, canEditDatabaseLimited, canAccessDatabaseTaskConnection } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
+import { cancelPendingTasksForDatabase } from "../lib/taskCleanup";
 import * as keyVault from "../lib/keyVault";
 import { buildDatabaseRecordFromInput } from "../lib/databaseService";
 import { buildDatabaseAccessInfo } from "../lib/databaseAccessInfo";
@@ -285,10 +286,13 @@ async function setDbStatus(req: HttpRequest, action: "database_deactivated" | "d
   db.updatedAt = new Date().toISOString();
   db.updatedBy = user.id;
   await getContainer("databases").item(db.id, db.clientId).replace(db);
+  const obsoletedTasks = status === "inactive"
+    ? await cancelPendingTasksForDatabase(db.id, user, "target_database_inactive")
+    : 0;
   await writeAuditLog({
     entityType: "database", entityId: db.id, clientId: db.clientId, clientName: db.clientName,
     domainId: db.domainId, domainName: db.domainName, companyName: db.companyName,
-    action, performedBy: user.id, performedByEmail: user.email, after: { status: db.status },
+    action, performedBy: user.id, performedByEmail: user.email, metadata: { obsoletedTasks }, after: { status: db.status },
   });
   return ok(db);
 }
@@ -334,11 +338,12 @@ app.http("databasesDelete", {
         await keyVault.deleteSecret(db.dbAccess.passwordSecretName);
       } catch {/* opcional: si falla no bloquea la eliminación del registro */}
       await getContainer("databases").item(db.id, db.clientId).delete();
+      const obsoletedTasks = await cancelPendingTasksForDatabase(db.id, user, "target_database_deleted");
       await writeAuditLog({
         entityType: "database", entityId: db.id, clientId: db.clientId, clientName: db.clientName,
         domainId: db.domainId, domainName: db.domainName, companyName: db.companyName,
         action: "database_deleted", performedBy: user.id, performedByEmail: user.email,
-        metadata: { cascadeSchedules: cascadaSchedules },
+        metadata: { cascadeSchedules: cascadaSchedules, obsoletedTasks },
         before: { ...db, dbAccess: { ...db.dbAccess, passwordSecretName: undefined } },
       });
       return noContent();

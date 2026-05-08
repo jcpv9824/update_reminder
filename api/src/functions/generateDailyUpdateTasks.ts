@@ -1,7 +1,7 @@
 import { app, InvocationContext, Timer } from "@azure/functions";
 import { getContainer } from "../lib/cosmos";
 import { writeAuditLog } from "../lib/audit";
-import { expandSchedulesWithDomainInheritance, summarizeTaskGenerationForDate } from "../lib/taskGenerator";
+import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, obsoleteTasksOutsideExpected, summarizeTaskGenerationForDate } from "../lib/taskGenerator";
 import { isScheduleDueOnDate } from "../lib/scheduleEngine";
 import type { DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
@@ -50,6 +50,8 @@ async function resolveTargetName(
 export type GenerationResult = {
   date: string;
   created: number;
+  updated: number;
+  obsoleted: number;
   skipped: number;
   windowStart: string;
   windowEnd: string;
@@ -61,6 +63,12 @@ export type GenerationResult = {
     activeSchedules: number;
     schedulesEvaluated: number;
     candidateDates: string[];
+    expectedTasks: number;
+    existingTasks: number;
+    createdTasks: number;
+    updatedTasks: number;
+    obsoletedTasks: number;
+    preservedCompletedTasks: number;
     eligibleDomainTasks: number;
     eligibleDatabaseTasks: number;
     createdDomainTasks: number;
@@ -91,12 +99,17 @@ export async function runTaskGeneration(
   const { resources: clients } = await getContainer("clients")
     .items.query<any>({ query: "SELECT * FROM c WHERE c.status = 'active'" })
     .fetchAll();
-  const { resources: domains } = await getContainer("domains")
+  const { resources: domainsRaw } = await getContainer("domains")
     .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" })
     .fetchAll();
-  const { resources: databases } = await getContainer("databases")
+  const { resources: databasesRaw } = await getContainer("databases")
     .items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" })
     .fetchAll();
+  const activeClientIds = new Set(clients.map((c: any) => c.id));
+  const domains = domainsRaw.filter((d) => activeClientIds.has(d.clientId));
+  const activeDomainIds = new Set(domains.map((d) => d.id));
+  const databases = databasesRaw.filter((d) => activeClientIds.has(d.clientId) && activeDomainIds.has(d.domainId));
+  const activeSchedules = schedules.filter((s) => activeClientIds.has(s.clientId));
 
   // Cargar tareas existentes en TODOS los buckets de la ventana.
   const buckets: string[] = [];
@@ -111,8 +124,9 @@ export async function runTaskGeneration(
       .fetchAll();
     existing.push(...resources);
   }
+  const initialExistingTasks = existing.length;
 
-  const expandedSchedules = expandSchedulesWithDomainInheritance(schedules, domains, databases);
+  const expandedSchedules = expandSchedulesWithDomainInheritance(activeSchedules, domains, databases);
 
   // Diagnostics
   const reasons: string[] = [];
@@ -125,7 +139,7 @@ export async function runTaskGeneration(
   let skippedDatabaseTasks = 0;
 
   // Anotamos por qué algunos schedules originales no produjeron candidatos.
-  for (const s of schedules) {
+  for (const s of activeSchedules) {
     const candidatos = ventana.filter((d) => isScheduleDueOnDate(s, d));
     if (candidatos.length === 0) {
       reasons.push(`Schedule ${s.id} omitido: no tiene fechas candidatas en ${windowStart}..${windowEnd}.`);
@@ -136,6 +150,10 @@ export async function runTaskGeneration(
   const allDomains = (await getContainer("domains").items.query<DomainRecord>({ query: "SELECT * FROM c" }).fetchAll()).resources;
   const allDatabases = (await getContainer("databases").items.query<DatabaseRecord>({ query: "SELECT * FROM c" }).fetchAll()).resources;
   for (const s of schedules) {
+    if (!activeClientIds.has(s.clientId)) {
+      reasons.push(`Schedule ${s.id} omitido: cliente ${s.clientId} no existe o no está activo.`);
+      continue;
+    }
     if (s.targetType === "domain") {
       for (const id of s.targetIds) {
         const d = allDomains.find((x) => x.id === id);
@@ -153,6 +171,45 @@ export async function runTaskGeneration(
 
   let totalCreated = 0;
   let totalSkipped = 0;
+  let totalUpdated = 0;
+
+  const expectedKeys = new Set<string>();
+  for (const d of ventana) {
+    for (const key of expectedTaskKeysForDate(expandedSchedules, d)) expectedKeys.add(key);
+  }
+
+  const obsoletedTasks = obsoleteTasksOutsideExpected(existing, expectedKeys);
+  for (const task of obsoletedTasks) {
+    try {
+      await getContainer("updateTasks").item(task.id, task.taskBucket).replace(task);
+      const reason = `Tarea ${task.id} obsoleta: ${task.targetType} ${task.targetId} ya no corresponde al estado activo actual.`;
+      reasons.push(reason);
+      await writeAuditLog({
+        entityType: "task",
+        entityId: task.id,
+        clientId: task.clientId,
+        clientName: task.clientName,
+        domainId: task.domainId,
+        domainName: task.domainName,
+        action: "task_obsoleted",
+        performedBy: "system",
+        performedByEmail: "system",
+        metadata: {
+          reason: "target_or_schedule_not_expected",
+          taskId: task.id,
+          targetType: task.targetType,
+          targetId: task.targetId,
+          domainId: task.domainId,
+          scheduledFor: task.taskDate,
+          generationWindowStart: windowStart,
+          generationWindowEnd: windowEnd,
+        },
+        after: { status: task.status, result: task.result },
+      });
+    } catch (e: any) {
+      reasons.push(`Tarea ${task.id} no pudo marcarse obsoleta: ${e?.message ?? e}`);
+    }
+  }
 
   // Iteramos día por día dentro de la ventana.
   for (const d of ventana) {
@@ -210,6 +267,7 @@ export async function runTaskGeneration(
     for (const synced of summary.syncedTasks) {
       try {
         await getContainer("updateTasks").item(synced.id, synced.taskBucket).replace(synced);
+        totalUpdated++;
         reasons.push(`Tarea ${synced.id} sincronizada con responsable actual de la frecuencia.`);
         await writeAuditLog({
           entityType: "task",
@@ -236,11 +294,15 @@ export async function runTaskGeneration(
     }
   }
 
-  log(`Generación ${windowStart}..${windowEnd}: creadas=${totalCreated}, omitidas=${totalSkipped}.`);
+  const preservedCompletedTasks = existing.filter((t) => t.status === "completed").length;
+
+  log(`Generación ${windowStart}..${windowEnd}: creadas=${totalCreated}, actualizadas=${totalUpdated}, obsoletas=${obsoletedTasks.length}, omitidas=${totalSkipped}.`);
 
   return {
     date: isoDate,
     created: totalCreated,
+    updated: totalUpdated,
+    obsoleted: obsoletedTasks.length,
     skipped: totalSkipped,
     windowStart,
     windowEnd,
@@ -249,9 +311,15 @@ export async function runTaskGeneration(
       activeClients: clients.length,
       activeDomains: domains.length,
       activeDatabases: databases.length,
-      activeSchedules: schedules.length,
+      activeSchedules: activeSchedules.length,
       schedulesEvaluated: expandedSchedules.length,
       candidateDates: Array.from(candidateDatesSet).sort(),
+      expectedTasks: expectedKeys.size,
+      existingTasks: initialExistingTasks,
+      createdTasks: totalCreated,
+      updatedTasks: totalUpdated,
+      obsoletedTasks: obsoletedTasks.length,
+      preservedCompletedTasks,
       eligibleDomainTasks: createdDomainTasks + skippedDomainTasks,
       eligibleDatabaseTasks: createdDatabaseTasks + skippedDatabaseTasks,
       createdDomainTasks,

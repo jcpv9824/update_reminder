@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { expandSchedulesWithDomainInheritance, generateTasksForDate, summarizeTaskGenerationForDate } from "../lib/taskGenerator";
+import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, generateTasksForDate, obsoleteTasksOutsideExpected, summarizeTaskGenerationForDate, taskTargetKey } from "../lib/taskGenerator";
 import type { DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 const schedule: UpdateSchedule = {
@@ -223,6 +223,136 @@ describe("generateTasksForDate", () => {
     const summary = summarizeTaskGenerationForDate([schedule], "2026-05-08", existing, (id) => id);
     expect(summary.tasks).toHaveLength(1);
     expect(summary.skipped).toBe(1);
+  });
+
+  it("reconciliación marca obsoleta una tarea pendiente cuyo dominio ya no está esperado", () => {
+    const existing = [{
+      id: "old_domain_task",
+      taskDate: "2026-05-08",
+      taskBucket: "2026-05-08_domain",
+      clientId: "client_1",
+      clientName: "Cliente",
+      domainId: "domain_deleted",
+      domainName: "sampedro.sagerp.cloud",
+      targetType: "domain",
+      targetId: "domain_deleted",
+      targetName: "sampedro.sagerp.cloud",
+      scheduleId: "schedule_deleted",
+      assignedRole: "domain_updater",
+      assignedUserIds: [],
+      status: "pending",
+      result: null,
+      notes: "",
+      createdAt: "",
+      createdBy: "system",
+      updatedAt: "",
+      updatedBy: "system",
+      completedAt: null,
+      completedBy: null,
+    }] as UpdateTask[];
+    const obsoleted = obsoleteTasksOutsideExpected(existing, new Set(), "2026-05-08T12:00:00Z");
+    expect(obsoleted).toHaveLength(1);
+    expect(existing[0].status).toBe("cancelled");
+    expect(existing[0].result).toBe("obsolete");
+  });
+
+  it("reconciliación marca obsoleta una tarea pendiente de base heredada si el dominio padre ya no está esperado", () => {
+    const existing = [{
+      id: "old_database_task",
+      taskDate: "2026-05-08",
+      taskBucket: "2026-05-08_database",
+      clientId: "client_1",
+      clientName: "Cliente",
+      domainId: "domain_deleted",
+      domainName: "sampedro.sagerp.cloud",
+      targetType: "database",
+      targetId: "db_1",
+      targetName: "SAMPEDRO",
+      scheduleId: "schedule_domain__db_inherited_db_1",
+      assignedRole: "database_updater",
+      assignedUserIds: [],
+      status: "reopened",
+      result: null,
+      notes: "",
+      createdAt: "",
+      createdBy: "system",
+      updatedAt: "",
+      updatedBy: "system",
+      completedAt: null,
+      completedBy: null,
+    }] as UpdateTask[];
+    const obsoleted = obsoleteTasksOutsideExpected(existing, new Set(), "2026-05-08T12:00:00Z");
+    expect(obsoleted).toHaveLength(1);
+    expect(existing[0].status).toBe("cancelled");
+  });
+
+  it("reconciliación no elimina tareas completadas ni completadas con problemas", () => {
+    const completed = {
+      id: "completed_task",
+      taskDate: "2026-05-08",
+      taskBucket: "2026-05-08_database",
+      clientId: "client_1",
+      clientName: "Cliente",
+      domainId: "domain_deleted",
+      domainName: "sampedro.sagerp.cloud",
+      targetType: "database",
+      targetId: "db_1",
+      targetName: "SAMPEDRO",
+      scheduleId: "schedule_deleted",
+      assignedRole: "database_updater",
+      assignedUserIds: [],
+      status: "completed",
+      completedWithProblems: true,
+      result: "completed_with_problems",
+      notes: "",
+      createdAt: "",
+      createdBy: "system",
+      updatedAt: "",
+      updatedBy: "system",
+      completedAt: "2026-05-08T10:00:00Z",
+      completedBy: "u",
+    } as UpdateTask;
+    const obsoleted = obsoleteTasksOutsideExpected([completed], new Set(), "2026-05-08T12:00:00Z");
+    expect(obsoleted).toHaveLength(0);
+    expect(completed.status).toBe("completed");
+  });
+
+  it("reconciliación preserva tareas pendientes que siguen en el conjunto esperado", () => {
+    const existing = [{
+      id: "expected_task",
+      taskDate: "2026-05-08",
+      taskBucket: "2026-05-08_domain",
+      clientId: "client_1",
+      clientName: "Cliente",
+      domainId: "domain_1",
+      domainName: "cliente.pya.com.co",
+      targetType: "domain",
+      targetId: "domain_1",
+      targetName: "cliente.pya.com.co",
+      scheduleId: "schedule_domain",
+      assignedRole: "domain_updater",
+      assignedUserIds: [],
+      status: "pending",
+      result: null,
+      notes: "",
+      createdAt: "",
+      createdBy: "system",
+      updatedAt: "",
+      updatedBy: "system",
+      completedAt: null,
+      completedBy: null,
+    }] as UpdateTask[];
+    const expected = new Set([taskTargetKey("domain", "domain_1", "2026-05-08")]);
+    const obsoleted = obsoleteTasksOutsideExpected(existing, expected, "2026-05-08T12:00:00Z");
+    expect(obsoleted).toHaveLength(0);
+    expect(existing[0].status).toBe("pending");
+  });
+
+  it("expectedTaskKeysForDate contiene solo tareas que aplican ese día", () => {
+    const expectedSchedule: UpdateSchedule = { ...schedule, targetType: "domain", targetIds: ["domain_1"], assignedRole: "domain_updater" };
+    const expected = expectedTaskKeysForDate([expectedSchedule], "2026-05-08");
+    expect(expected.has(taskTargetKey("domain", "domain_1", "2026-05-08"))).toBe(true);
+    expect(expectedTaskKeysForDate([expectedSchedule], "2026-05-09").size).toBe(0);
   });
 });
 

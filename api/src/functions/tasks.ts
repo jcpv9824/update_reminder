@@ -71,6 +71,8 @@ app.http("tasksList", {
       if (status) {
         conditions.push("c.status = @s");
         parameters.push({ name: "@s", value: status });
+      } else {
+        conditions.push("c.status != 'cancelled'");
       }
       if (clientId) {
         conditions.push("c.clientId = @c");

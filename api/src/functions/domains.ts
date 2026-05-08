@@ -5,6 +5,7 @@ import { requireUser, loadUserProfile } from "../lib/auth";
 import { canManageClients, canEditDomainLimited } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
+import { cancelPendingTasksForDomain } from "../lib/taskCleanup";
 import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
 import { buildScheduleRecord, normalizeFrequencyResponsibility, validateFrequency, type FrequencyInput } from "../lib/scheduleService";
 import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule } from "../types/models";
@@ -313,10 +314,13 @@ async function setDomainStatus(req: HttpRequest, action: "domain_deactivated" | 
   existing.updatedAt = new Date().toISOString();
   existing.updatedBy = user.id;
   await container.item(id, existing.clientId).replace(existing);
+  const obsoletedTasks = status === "inactive"
+    ? await cancelPendingTasksForDomain(id, user, "target_domain_inactive")
+    : 0;
   await writeAuditLog({
     entityType: "domain", entityId: id, clientId: existing.clientId, clientName: existing.clientName,
     domainId: id, domainName: existing.domainName,
-    action, performedBy: user.id, performedByEmail: user.email, after: existing,
+    action, performedBy: user.id, performedByEmail: user.email, metadata: { obsoletedTasks }, after: existing,
   });
   return ok(existing);
 }
@@ -378,11 +382,12 @@ app.http("domainsDelete", {
       }
 
       await container.item(id, dom.clientId).delete();
+      const obsoletedTasks = await cancelPendingTasksForDomain(id, user, "target_domain_deleted");
       await writeAuditLog({
         entityType: "domain", entityId: id, clientId: dom.clientId, clientName: dom.clientName,
         domainId: id, domainName: dom.domainName,
         action: "domain_deleted", performedBy: user.id, performedByEmail: user.email,
-        metadata: { cascadeSchedules: cascadaSchedules },
+        metadata: { cascadeSchedules: cascadaSchedules, obsoletedTasks },
         before: dom,
       });
       return noContent();

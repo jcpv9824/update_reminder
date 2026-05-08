@@ -7,8 +7,12 @@ import type { DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from ".
 
 export type TargetNameResolver = (id: string) => string;
 
-function taskTargetKey(targetType: "domain" | "database", targetId: string, isoDate: string): string {
+export function taskTargetKey(targetType: "domain" | "database", targetId: string, isoDate: string): string {
   return `${targetType}|${targetId}|${isoDate}`;
+}
+
+export function isTerminalTask(task: UpdateTask): boolean {
+  return task.status === "completed" || task.status === "cancelled";
 }
 
 function canSyncExistingTask(task: UpdateTask): boolean {
@@ -106,6 +110,43 @@ export function generateTasksForDate(
   resolveTargetName: TargetNameResolver
 ): UpdateTask[] {
   return summarizeTaskGenerationForDate(schedules, isoDate, existingTasks, resolveTargetName).tasks;
+}
+
+export function expectedTaskKeysForDate(
+  schedules: UpdateSchedule[],
+  isoDate: string
+): Set<string> {
+  const expected = new Set<string>();
+  for (const schedule of schedules) {
+    if (!schedule.active) continue;
+    if (!isScheduleDueOnDate(schedule, isoDate)) continue;
+    for (const targetId of schedule.targetIds) {
+      expected.add(taskTargetKey(schedule.targetType, targetId, isoDate));
+    }
+  }
+  return expected;
+}
+
+export function obsoleteTasksOutsideExpected(
+  existingTasks: UpdateTask[],
+  expectedKeys: Set<string>,
+  nowIso = new Date().toISOString()
+): UpdateTask[] {
+  const obsoleted: UpdateTask[] = [];
+  for (const task of existingTasks) {
+    if (isTerminalTask(task)) continue;
+    const key = taskTargetKey(task.targetType, task.targetId, task.taskDate);
+    if (expectedKeys.has(key)) continue;
+    task.status = "cancelled";
+    task.result = "obsolete";
+    task.notes = task.notes
+      ? `${task.notes}\nTarea cancelada automáticamente porque ya no corresponde al estado actual.`
+      : "Tarea cancelada automáticamente porque ya no corresponde al estado actual.";
+    task.updatedAt = nowIso;
+    task.updatedBy = "system";
+    obsoleted.push(task);
+  }
+  return obsoleted;
 }
 
 export function expandSchedulesWithDomainInheritance(

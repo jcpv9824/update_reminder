@@ -2,7 +2,7 @@
 
 Fecha: 2026-05-08
 
-Estos pasos publican los cambios finales de flujo **Cliente → Dominio → Base de datos → Tareas**, responsables manuales opcionales, recordatorios por responsable, **Programaciones especiales** separadas de la frecuencia normal del dominio, el tablero agrupado de tareas, el modal amplio de detalle, la ventana visible de tareas, las frecuencias con fecha de fin opcional, la reorganización de **Alertas y correos**, el fix urgente del detalle de tareas para quitar acciones antiguas, la corrección para limpiar responsables específicos al volver al rol predeterminado y la carga segura de conexión de bases para tareas por rol.
+Estos pasos publican los cambios finales de flujo **Cliente → Dominio → Base de datos → Tareas**, responsables manuales opcionales, recordatorios por responsable, **Programaciones especiales** separadas de la frecuencia normal del dominio, el tablero agrupado de tareas, el modal amplio de detalle, la ventana visible de tareas, las frecuencias con fecha de fin opcional, la reorganización de **Alertas y correos**, el fix urgente del detalle de tareas para quitar acciones antiguas, la corrección para limpiar responsables específicos al volver al rol predeterminado, la carga segura de conexión de bases para tareas por rol y la regeneración limpia de tareas obsoletas.
 
 No incluya contraseñas reales en Git, documentación, capturas, logs ni comandos.
 
@@ -24,7 +24,7 @@ git diff -- README.md DESPLIEGUE.md CAMBIOS_V6.md
 git diff -- api/src frontend/src
 ```
 
-Verifique especialmente que no se incluyan secretos, que los cambios de frecuencia usen `origin = "domain_default"` para dominios y `origin = "special"` para **Programaciones especiales**, que al volver a **Usar rol predeterminado** se envíe `assignedUserIds = []` con `reminderRecipientsMode = "roleUsers"`, y que la conexión de bases se cargue con `GET /api/databases/{id}/access-info?taskId=...` sin contraseña.
+Verifique especialmente que no se incluyan secretos, que los cambios de frecuencia usen `origin = "domain_default"` para dominios y `origin = "special"` para **Programaciones especiales**, que al volver a **Usar rol predeterminado** se envíe `assignedUserIds = []` con `reminderRecipientsMode = "roleUsers"`, que la conexión de bases se cargue con `GET /api/databases/{id}/access-info?taskId=...` sin contraseña, y que `POST /api/tasks/generate` devuelva `created`, `updated`, `obsoleted` y `skipped`.
 
 ## 3. Ejecutar pruebas y build del backend
 
@@ -90,7 +90,7 @@ Set-Location $repo
 git status
 git add README.md DESPLIEGUE.md CAMBIOS_V6.md INSTRUCCIONES_DESPLIEGUE_AJUSTES_FINALES_POWERSHELL.md
 git add api/src frontend/src frontend/public/staticwebapp.config.json
-git commit -m "Corrige conexion de bases en tareas por rol"
+git commit -m "Reconcilia tareas obsoletas al generar"
 git push
 ```
 
@@ -178,9 +178,22 @@ correo1@empresa.com; correo2@empresa.com
 
 1. Abra **Tareas** como admin o administrador de clientes.
 2. Pulse **Generar tareas ahora**.
-3. Verifique mensaje con creadas y omitidas.
+3. Verifique mensaje con creadas, actualizadas, obsoletas eliminadas y omitidas.
 4. Confirme que el tablero muestra grupos dentro de la ventana `hoy - 7 días` a `hoy + 7 días`.
 5. Abra **Ver detalle** y confirme que las tareas individuales están dentro del grupo.
+6. Si había tareas pendientes de dominios/bases eliminados, deben desaparecer del tablero después de generar.
+
+### 8.5.0 Regeneración limpia de tareas obsoletas
+
+1. Cree un dominio de prueba, por ejemplo `https://sampedro.sagerp.cloud:54678/`.
+2. Cree una base asociada y una frecuencia.
+3. Pulse **Generar tareas ahora** y confirme que aparecen tareas de dominio/base.
+4. Elimine o desactive el dominio/base según la regla de integridad del sistema.
+5. Vuelva a **Tareas** y pulse **Generar tareas ahora**.
+6. Confirme que el mensaje muestra **Obsoletas eliminadas** mayor a cero si había pendientes.
+7. Confirme que las tareas pendientes de ese dominio/base ya no aparecen.
+8. Confirme que una tarea completada histórica no se elimina automáticamente.
+9. Revise auditoría y confirme eventos `task_obsoleted` sin secretos ni cadenas de conexión.
 
 ### 8.5.1 Tablero agrupado de tareas
 
