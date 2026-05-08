@@ -12,8 +12,9 @@ export type FrequencyInput = {
   preferredWeekdays?: Weekday[];
   dayOfMonth?: number;
   startDate: string;
+  endDate?: string | null;
   timezone?: string;
-  assignedRole: string;
+  assignedRole?: string;
   assignedUserIds?: string[];
   active?: boolean;
   reminders?: RemindersConfig;
@@ -25,6 +26,12 @@ export function validateFrequency(input: FrequencyInput): void {
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.startDate ?? "")) {
     throw new Error("La fecha de inicio de la frecuencia debe estar en formato YYYY-MM-DD.");
+  }
+  if (input.endDate && !/^\d{4}-\d{2}-\d{2}$/.test(input.endDate)) {
+    throw new Error("La fecha de fin de la frecuencia debe estar en formato YYYY-MM-DD.");
+  }
+  if (input.endDate && input.endDate < input.startDate) {
+    throw new Error("La fecha de fin no puede ser anterior a la fecha de inicio.");
   }
   if (input.frequencyType === "weekly") {
     if (!input.weekdays || input.weekdays.length === 0) {
@@ -45,9 +52,10 @@ export function validateFrequency(input: FrequencyInput): void {
       throw new Error("El día del mes debe estar entre 1 y 31.");
     }
   }
-  if (!input.assignedRole) {
-    throw new Error("Seleccione el rol responsable de la frecuencia.");
-  }
+}
+
+export function inferScheduleRole(targetType: "domain" | "database"): string {
+  return targetType === "domain" ? "domain_updater" : "database_updater";
 }
 
 export function buildScheduleRecord(args: {
@@ -76,8 +84,9 @@ export function buildScheduleRecord(args: {
     preferredWeekdays: args.input.preferredWeekdays,
     dayOfMonth: args.input.dayOfMonth,
     startDate: args.input.startDate,
+    endDate: args.input.endDate ?? null,
     timezone: args.input.timezone ?? "America/Bogota",
-    assignedRole: args.input.assignedRole,
+    assignedRole: args.input.assignedRole ?? inferScheduleRole(args.targetType),
     assignedUserIds: args.input.assignedUserIds ?? [],
     active: args.input.active ?? true,
     reminders: args.input.reminders,

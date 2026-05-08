@@ -180,95 +180,35 @@ export default function AlertasCorreosPage() {
         <div>
           <h3>Estado del envío de correos</h3>
           <p><strong>Proveedor actual:</strong> {proveedor}</p>
+          <p className="texto-ayuda">Indica si los correos se están simulando o enviando realmente.</p>
           <p><strong>Correo remitente actual:</strong> {form.emailFrom}</p>
           <p><strong>Contraseña SMTP configurada:</strong> {form.smtpPasswordConfigured ? "Sí" : "No"}</p>
+          <p className="texto-ayuda">Por seguridad no se muestra la contraseña. Solo se indica si ya fue guardada.</p>
           <p><strong>Última actualización:</strong> {form.updatedAt ? new Date(form.updatedAt).toLocaleString("es-CO") : "Sin cambios registrados"}</p>
           {form.emailProvider === "mock"
             ? <Alerta tipo="info">El envío está en modo simulado. No se enviarán correos reales.</Alerta>
             : <Alerta tipo="exito">El envío real de correos está activo.</Alerta>}
         </div>
-        <button onClick={probar} disabled={enviarPrueba.isPending}>{enviarPrueba.isPending ? "Enviando..." : "Enviar correo de prueba"}</button>
       </div>
 
-      <Acordeon titulo="Configuración básica">
+      <Acordeon titulo="Configuración recomendada rápida">
+        <p className="texto-ayuda">Llena los valores sugeridos para Office 365. No llena la contraseña.</p>
         <button type="button" onClick={usarConfiguracionPya}>Usar configuración recomendada de P&A</button>
+      </Acordeon>
+
+      <Acordeon titulo="Configuración básica del remitente">
         <div className="fila-formulario" style={{ marginTop: 12 }}><label>Correo remitente</label>
+          <p className="texto-ayuda">Correo desde el cual saldrán las notificaciones.</p>
           <input type="email" value={form.emailFrom} onChange={(e) => actualizar("emailFrom", e.target.value)} /></div>
         <div className="fila-formulario"><label>Nombre del remitente</label>
+          <p className="texto-ayuda">Nombre visible que verá el destinatario del correo.</p>
           <input value={form.emailFromName} onChange={(e) => actualizar("emailFromName", e.target.value)} /></div>
         <div className="fila-formulario"><label>URL de la aplicación</label>
+          <p className="texto-ayuda">Enlace usado en los botones de los correos.</p>
           <input value={form.frontendBaseUrl ?? ""} onChange={(e) => actualizar("frontendBaseUrl", e.target.value)} /></div>
       </Acordeon>
 
-      <Acordeon titulo="Recordatorios a actualizadores">
-        <div className="fila-formulario"><label>
-          <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={form.remindersEnabled} onChange={(e) => actualizar("remindersEnabled", e.target.checked)} />
-          Activar recordatorios automáticos
-        </label></div>
-        {form.remindersEnabled && (
-          <>
-            <div className="fila-formulario"><label>Días previos separados por coma</label>
-              <input value={form.defaultReminderDaysBefore.join(", ")}
-                onChange={(e) => {
-                  const arr = e.target.value.split(",").map((x) => parseInt(x.trim(), 10)).filter((n) => Number.isFinite(n) && n >= 0);
-                  actualizar("defaultReminderDaysBefore", arr);
-                }} />
-              <p className="texto-ayuda">El valor 0 significa que también se enviará recordatorio el mismo día de la actualización.</p>
-            </div>
-            <div className="fila-formulario"><label>Hora de envío</label>
-              <input value={form.defaultReminderTime} onChange={(e) => actualizar("defaultReminderTime", e.target.value)} /></div>
-            <div className="fila-formulario"><label>Zona horaria</label>
-              <input value={form.defaultTimezone} onChange={(e) => actualizar("defaultTimezone", e.target.value)} /></div>
-            <details>
-              <summary>Opciones avanzadas de destinatarios</summary>
-              <p className="texto-ayuda">Por defecto los recordatorios se envían a los usuarios asignados en las tareas.</p>
-            </details>
-          </>
-        )}
-      </Acordeon>
-
-      <Acordeon titulo="Alertas a administradores">
-        <div className="fila-formulario"><label>
-          <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={form.overdueAlertsEnabled} onChange={(e) => actualizar("overdueAlertsEnabled", e.target.checked)} />
-          Activar alertas de vencidos
-        </label></div>
-        {form.overdueAlertsEnabled && (
-          <>
-            <div className="fila-formulario"><label>Hora de envío</label>
-              <input value={form.overdueAlertTime} onChange={(e) => actualizar("overdueAlertTime", e.target.value)} /></div>
-            <div className="fila-formulario"><label>Zona horaria</label>
-              <input value={form.overdueAlertTimezone} onChange={(e) => actualizar("overdueAlertTimezone", e.target.value)} /></div>
-            <div className="fila-formulario"><label>Destinatarios</label>
-              <select value={form.overdueAlertRecipientsMode} onChange={(e) => actualizar("overdueAlertRecipientsMode", e.target.value as any)}>
-                <option value="admins">Administradores activos</option>
-                <option value="adminsAndClientManagers">Administradores + administradores de clientes</option>
-                <option value="customEmails">Correos personalizados</option>
-              </select></div>
-            {form.overdueAlertRecipientsMode === "customEmails" && (
-              <div className="fila-formulario"><label>Correos personalizados</label>
-                <input placeholder="correo1@empresa.com; correo2@empresa.com; correo3@empresa.com" value={(form.customAdminAlertEmails ?? []).join("; ")}
-                  onChange={(e) => actualizar("customAdminAlertEmails", parseCorreos(e.target.value))} /></div>
-            )}
-          </>
-        )}
-      </Acordeon>
-
-      <Acordeon titulo="Reporte de clientes/dominios/empresas">
-        <p className="texto-ayuda">El reporte incluye clientes, dominios y empresas/bases de datos sin contraseñas, usuarios SQL, cadenas de conexión, secretos ni tokens.</p>
-        <div className="fila-formulario"><label>Destinatarios</label>
-          <input value={destinatariosReporte} onChange={(e) => setDestinatariosReporte(e.target.value)} placeholder="correo1@empresa.com; correo2@empresa.com" /></div>
-        <button className="primario" onClick={enviarReporteManual} disabled={enviarReporte.isPending}>{enviarReporte.isPending ? "Enviando..." : "Enviar reporte"}</button>
-        {resultadoReporte && (
-          <div style={{ marginTop: 12 }}>
-            <Alerta tipo={resultadoReporte.ok ? "exito" : "error"}>
-              {resultadoReporte.message}
-              {resultadoReporte.details && <div style={{ fontSize: 12, marginTop: 4 }}>Detalles: {resultadoReporte.details}</div>}
-            </Alerta>
-          </div>
-        )}
-      </Acordeon>
-
-      <Acordeon titulo="Configuración avanzada SMTP" abiertoInicial={false}>
+      <Acordeon titulo="Configuración SMTP avanzada" abiertoInicial={false}>
         <p className="texto-ayuda">Estos valores normalmente no necesitan cambiarse. Modifíquelos solo si cambia la cuenta de correo o el proveedor.</p>
         <div className="fila-formulario"><label>Proveedor</label>
           <select value={form.emailProvider} onChange={(e) => actualizar("emailProvider", e.target.value as any)}>
@@ -302,7 +242,81 @@ export default function AlertasCorreosPage() {
         </div>
       </Acordeon>
 
+      <Acordeon titulo="Recordatorios a actualizadores">
+        <div className="fila-formulario"><label>
+          <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={form.remindersEnabled} onChange={(e) => actualizar("remindersEnabled", e.target.checked)} />
+          Activar recordatorios automáticos
+        </label></div>
+        {form.remindersEnabled && (
+          <>
+            <div className="fila-formulario"><label>Días previos separados por coma</label>
+              <input value={form.defaultReminderDaysBefore.join(", ")}
+                onChange={(e) => {
+                  const arr = e.target.value.split(",").map((x) => parseInt(x.trim(), 10)).filter((n) => Number.isFinite(n) && n >= 0);
+                  actualizar("defaultReminderDaysBefore", arr);
+                }} />
+              <p className="texto-ayuda">Ejemplo: 3,1,0 enviará recordatorios 3 días antes, 1 día antes y el mismo día.</p>
+            </div>
+            <div className="fila-formulario"><label>Hora de envío</label>
+              <p className="texto-ayuda">Hora local en la que se intentará enviar el recordatorio.</p>
+              <input value={form.defaultReminderTime} onChange={(e) => actualizar("defaultReminderTime", e.target.value)} /></div>
+            <div className="fila-formulario"><label>Zona horaria</label>
+              <p className="texto-ayuda">Zona usada para calcular fechas y horas de envío.</p>
+              <input value={form.defaultTimezone} onChange={(e) => actualizar("defaultTimezone", e.target.value)} /></div>
+            <details>
+              <summary>Opciones avanzadas de destinatarios</summary>
+              <p className="texto-ayuda">Por defecto los recordatorios se envían a los usuarios asignados en las tareas.</p>
+            </details>
+          </>
+        )}
+      </Acordeon>
+
+      <Acordeon titulo="Alertas de tareas vencidas">
+        <div className="fila-formulario"><label>
+          <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={form.overdueAlertsEnabled} onChange={(e) => actualizar("overdueAlertsEnabled", e.target.checked)} />
+          Activar alertas de vencidos
+        </label></div>
+        {form.overdueAlertsEnabled && (
+          <>
+            <div className="fila-formulario"><label>Hora de envío</label>
+              <p className="texto-ayuda">Hora local en la que se intentará enviar la alerta.</p>
+              <input value={form.overdueAlertTime} onChange={(e) => actualizar("overdueAlertTime", e.target.value)} /></div>
+            <div className="fila-formulario"><label>Zona horaria</label>
+              <p className="texto-ayuda">Zona usada para calcular las alertas de vencidos.</p>
+              <input value={form.overdueAlertTimezone} onChange={(e) => actualizar("overdueAlertTimezone", e.target.value)} /></div>
+            <div className="fila-formulario"><label>Destinatarios</label>
+              <p className="texto-ayuda">Puedes usar administradores activos o correos específicos separados por punto y coma.</p>
+              <select value={form.overdueAlertRecipientsMode} onChange={(e) => actualizar("overdueAlertRecipientsMode", e.target.value as any)}>
+                <option value="admins">Administradores activos</option>
+                <option value="adminsAndClientManagers">Administradores + administradores de clientes</option>
+                <option value="customEmails">Correos personalizados</option>
+              </select></div>
+            {form.overdueAlertRecipientsMode === "customEmails" && (
+              <div className="fila-formulario"><label>Correos personalizados</label>
+                <input placeholder="correo1@empresa.com; correo2@empresa.com; correo3@empresa.com" value={(form.customAdminAlertEmails ?? []).join("; ")}
+                  onChange={(e) => actualizar("customAdminAlertEmails", parseCorreos(e.target.value))} /></div>
+            )}
+          </>
+        )}
+      </Acordeon>
+
+      <Acordeon titulo="Reporte maestro de clientes/dominios/empresas">
+        <p className="texto-ayuda">Envía un resumen de clientes, dominios y bases sin datos sensibles.</p>
+        <div className="fila-formulario"><label>Destinatarios</label>
+          <input value={destinatariosReporte} onChange={(e) => setDestinatariosReporte(e.target.value)} placeholder="correo1@empresa.com; correo2@empresa.com" /></div>
+        <button className="primario" onClick={enviarReporteManual} disabled={enviarReporte.isPending}>{enviarReporte.isPending ? "Enviando..." : "Enviar reporte"}</button>
+        {resultadoReporte && (
+          <div style={{ marginTop: 12 }}>
+            <Alerta tipo={resultadoReporte.ok ? "exito" : "error"}>
+              {resultadoReporte.message}
+              {resultadoReporte.details && <div style={{ fontSize: 12, marginTop: 4 }}>Detalles: {resultadoReporte.details}</div>}
+            </Alerta>
+          </div>
+        )}
+      </Acordeon>
+
       <Acordeon titulo="Correo de prueba">
+        <p className="texto-ayuda">Envía un correo de prueba para validar la configuración actual.</p>
         <div className="fila-formulario"><label>Destinatario</label>
           <input type="email" value={destinatarioPrueba} onChange={(e) => setDestinatarioPrueba(e.target.value)} placeholder="prueba@empresa.com" /></div>
         <button onClick={probar} disabled={enviarPrueba.isPending}>{enviarPrueba.isPending ? "Enviando..." : "Enviar correo de prueba"}</button>

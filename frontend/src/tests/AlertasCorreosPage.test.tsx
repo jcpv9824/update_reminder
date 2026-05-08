@@ -56,12 +56,13 @@ describe("AlertasCorreosPage", () => {
     render_();
     expect(await screen.findByRole("heading", { name: /Alertas y correos/i })).toBeInTheDocument();
     expect(screen.getByText(/Estado del envío de correos/i)).toBeInTheDocument();
-    expect(screen.getByText(/Configuración básica/i)).toBeInTheDocument();
+    expect(screen.getByText(/Configuración recomendada rápida/i)).toBeInTheDocument();
+    expect(screen.getByText(/Configuración básica del remitente/i)).toBeInTheDocument();
     expect(screen.getByText(/Recordatorios a actualizadores/i)).toBeInTheDocument();
-    expect(screen.getByText(/Alertas a administradores/i)).toBeInTheDocument();
-    expect(screen.getByText(/Reporte de clientes\/dominios\/empresas/i)).toBeInTheDocument();
-    expect(screen.getAllByText(/Correo de prueba/i).length).toBeGreaterThanOrEqual(1);
-    const smtpSummary = screen.getByText(/Configuración avanzada SMTP/i);
+    expect(screen.getByText(/Alertas de tareas vencidas/i)).toBeInTheDocument();
+    expect(screen.getByText(/Reporte maestro de clientes\/dominios\/empresas/i)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /Enviar correo de prueba/i })).toHaveLength(1);
+    const smtpSummary = screen.getByText(/Configuración SMTP avanzada/i);
     expect(smtpSummary.closest("details")).not.toHaveAttribute("open");
     expect(screen.getByText(/Contraseña SMTP configurada:/i)).toBeInTheDocument();
   });
@@ -74,7 +75,7 @@ describe("AlertasCorreosPage", () => {
     expect(screen.getAllByDisplayValue("info@pya.com.co").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByDisplayValue("Programador de Actualizaciones")).toBeInTheDocument();
     expect(screen.getByDisplayValue("https://agreeable-wave-07469d50f.7.azurestaticapps.net")).toBeInTheDocument();
-    fireEvent.click(screen.getByText(/Configuración avanzada SMTP/i));
+    fireEvent.click(screen.getByText(/Configuración SMTP avanzada/i));
     expect(screen.getByDisplayValue("smtp.office365.com")).toBeInTheDocument();
     expect(screen.getByDisplayValue("587")).toBeInTheDocument();
     expect(screen.queryByDisplayValue(/valor-prueba-no-real/i)).toBeNull();

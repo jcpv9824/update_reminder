@@ -42,6 +42,10 @@ export function isScheduleDueOnDate(
   const target = parseDateOnly(isoDate);
   const start = parseDateOnly(schedule.startDate);
   if (target.getTime() < start.getTime()) return false;
+  if (schedule.endDate) {
+    const end = parseDateOnly(schedule.endDate);
+    if (target.getTime() > end.getTime()) return false;
+  }
 
   switch (schedule.frequencyType) {
     case "manual":

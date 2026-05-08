@@ -58,7 +58,7 @@ export function canCompleteDatabaseTask(
   if (task.targetType !== "database") return false;
   if (hasRole(user, "admin")) return true;
   if (hasRole(user, "database_updater")) {
-    return task.assignedUserIds.includes(user.id);
+    return task.assignedUserIds.length === 0 || task.assignedUserIds.includes(user.id);
   }
   return false;
 }
@@ -70,7 +70,7 @@ export function canCompleteDomainTask(
   if (task.targetType !== "domain") return false;
   if (hasRole(user, "admin")) return true;
   if (hasRole(user, "domain_updater")) {
-    return task.assignedUserIds.includes(user.id);
+    return task.assignedUserIds.length === 0 || task.assignedUserIds.includes(user.id);
   }
   return false;
 }

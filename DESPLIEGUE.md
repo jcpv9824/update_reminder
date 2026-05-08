@@ -856,3 +856,63 @@ La contraseña se guarda en Key Vault. No se muestra, no vuelve al frontend y no
 3. **Reporte manual**: en **Reporte de clientes/dominios/empresas**, escriba `correo1@empresa.com; correo2@empresa.com` y pulse **Enviar reporte**. El reporte no debe contener contraseñas, usuarios SQL, cadenas de conexión completas, secretos ni tokens.
 4. **Generar tareas ahora**: en **Tareas**, como admin o administrador de clientes, pulse **Generar tareas ahora**. Debe aparecer el mensaje `Tareas generadas correctamente.` y refrescarse la lista.
 5. **Frecuencia heredada**: cree un dominio con frecuencia activa. Cree una base de datos bajo ese dominio. El formulario debe mostrar que usará la frecuencia del dominio y no debe pedir frecuencia propia.
+
+---
+
+## 17. Redeploy después de ajustes finales de flujo
+
+Estos pasos aplican a la ronda que agrega acciones rápidas de creación, edición de frecuencia en dominios, fecha de fin opcional, ventana de tareas visible y reorganización final de **Alertas y correos**.
+
+### 17.1 Backend con ZIP
+
+```powershell
+$repo = "C:\Users\jcami\Desktop\Actualizaciones automáticas\erp-update-scheduler"
+$resourceGroup = "rg-erp-update-scheduler-prod"
+$functionApp = "erpupdsch4645-api"
+
+Set-Location "$repo\api"
+npm install
+npm test
+npm run build
+
+Remove-Item .\api-deploy-full.zip -ErrorAction SilentlyContinue
+tar -a -c -f api-deploy-full.zip host.json package.json package-lock.json dist node_modules
+
+az functionapp deployment source config-zip `
+  --resource-group $resourceGroup `
+  --name $functionApp `
+  --src api-deploy-full.zip
+
+az functionapp restart `
+  --resource-group $resourceGroup `
+  --name $functionApp
+```
+
+### 17.2 Frontend
+
+```powershell
+$repo = "C:\Users\jcami\Desktop\Actualizaciones automáticas\erp-update-scheduler"
+Set-Location "$repo\frontend"
+
+"VITE_API_BASE_URL=https://erpupdsch4645-api.azurewebsites.net/api" | Out-File -FilePath .env.production -Encoding utf8
+npm install
+npm test
+npm run build
+```
+
+Publique `frontend/dist` con el mecanismo actual de Static Web Apps. Si usa GitHub Actions, haga commit y push de los cambios.
+
+La vista **Tareas** ahora muestra grupos resumidos por fecha, responsable, tipo y estado agregado. Después de publicar, verifique que el tablero principal no liste todos los dominios o bases individuales y que el detalle permita copiar y guardar cambios de estado inmediatamente.
+
+### 17.3 Git con PowerShell
+
+```powershell
+$repo = "C:\Users\jcami\Desktop\Actualizaciones automáticas\erp-update-scheduler"
+Set-Location $repo
+
+git status
+git add README.md DESPLIEGUE.md CAMBIOS_V6.md INSTRUCCIONES_DESPLIEGUE_AJUSTES_FINALES_POWERSHELL.md
+git add api/src frontend/src
+git commit -m "Ajusta flujo de dominios, frecuencias, tareas y alertas"
+git push
+```

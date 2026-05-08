@@ -89,6 +89,20 @@ describe("scheduleEngine - frecuencia manual", () => {
   });
 });
 
+describe("scheduleEngine - fecha de fin", () => {
+  it("no ejecuta frecuencias después de endDate", () => {
+    const s = baseSchedule({
+      frequencyType: "weekly",
+      everyNWeeks: 1,
+      weekdays: ["FRIDAY"],
+      startDate: "2026-05-01",
+      endDate: "2026-05-08",
+    });
+    expect(isScheduleDueOnDate(s, "2026-05-08")).toBe(true);
+    expect(isScheduleDueOnDate(s, "2026-05-15")).toBe(false);
+  });
+});
+
 describe("scheduleEngine - identificadores deterministas", () => {
   it("genera bucket por fecha y tipo", () => {
     expect(getTaskDateBucket("2026-05-08", "database")).toBe(

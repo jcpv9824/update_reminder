@@ -1,4 +1,5 @@
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { BaseDeDatos, Cliente, Dominio, Frecuencia } from "../types";
@@ -8,8 +9,11 @@ import { PanelAccesoBd } from "../components/PanelAccesoBd";
 import { ETIQUETAS_AMBIENTE } from "../types";
 import { SelectorBuscable } from "../components/SelectorBuscable";
 
+type AccionBd = "guardar" | "crearNueva";
+
 export default function BasesDeDatosPage() {
   const qc = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [modalAbierto, setModalAbierto] = useState(false);
   const [verAcceso, setVerAcceso] = useState<BaseDeDatos | null>(null);
   const [confirmar, setConfirmar] = useState<{ tipo: "eliminar" | "desactivar"; bd: BaseDeDatos } | null>(null);
@@ -26,9 +30,29 @@ export default function BasesDeDatosPage() {
   const { data: bds = [], isLoading } = useQuery({ queryKey: ["bases-de-datos"], queryFn: () => api.get<BaseDeDatos[]>("/databases") });
   const { data: frecuencias = [] } = useQuery({ queryKey: ["frecuencias"], queryFn: () => api.get<Frecuencia[]>("/schedules") });
 
+  useEffect(() => {
+    if (searchParams.get("new") === "1") {
+      setModalAbierto(true);
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("new");
+        return next;
+      });
+    }
+  }, [searchParams, setSearchParams]);
+
   const crear = useMutation({
-    mutationFn: (body: any) => api.post<BaseDeDatos>("/databases", body),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["bases-de-datos"] }); setModalAbierto(false); setExito("Base de datos creada correctamente."); },
+    mutationFn: ({ body }: { body: any; accion: AccionBd }) => api.post<BaseDeDatos>("/databases", body),
+    onSuccess: (_bd, variables) => {
+      qc.invalidateQueries({ queryKey: ["bases-de-datos"] });
+      setExito("Base de datos creada correctamente.");
+      if (variables.accion === "crearNueva") {
+        setSearchParams({ clientId: variables.body.clientId, domainId: variables.body.domainId });
+        setModalAbierto(true);
+      } else {
+        setModalAbierto(false);
+      }
+    },
     onError: (e: any) => setError(e?.message ?? "Error al crear la base de datos."),
   });
   const desactivar = useMutation({ mutationFn: (id: string) => api.post(`/databases/${id}/deactivate`), onSuccess: () => { qc.invalidateQueries({ queryKey: ["bases-de-datos"] }); setConfirmar(null); setExito("Base de datos desactivada."); } });
@@ -119,7 +143,16 @@ export default function BasesDeDatosPage() {
       )}
 
       <Modal titulo="Nueva base de datos" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
-        <FormularioBd clientes={clientes} dominios={dominios} frecuencias={frecuencias} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />
+        <FormularioBd
+          key={crear.submittedAt || `${searchParams.get("clientId") ?? ""}-${searchParams.get("domainId") ?? ""}`}
+          clienteInicialId={searchParams.get("clientId") ?? ""}
+          dominioInicialId={searchParams.get("domainId") ?? ""}
+          clientes={clientes}
+          dominios={dominios}
+          frecuencias={frecuencias}
+          cargando={crear.isPending}
+          onSubmit={(v, accion) => crear.mutate({ body: v, accion })}
+        />
       </Modal>
 
       <Modal titulo={`Acceso: ${verAcceso?.companyName ?? ""}`} abierto={!!verAcceso} onCerrar={() => setVerAcceso(null)}>
@@ -151,9 +184,9 @@ function describirFrecuencia(f?: Frecuencia): string {
   return `Manual desde ${f.startDate}`;
 }
 
-function FormularioBd({ clientes, dominios, frecuencias, onSubmit, cargando }: { clientes: Cliente[]; dominios: Dominio[]; frecuencias: Frecuencia[]; onSubmit: (v: any) => void; cargando: boolean }) {
-  const [clientId, setClientId] = useState("");
-  const [domainId, setDomainId] = useState("");
+function FormularioBd({ clientes, dominios, frecuencias, clienteInicialId = "", dominioInicialId = "", onSubmit, cargando }: { clientes: Cliente[]; dominios: Dominio[]; frecuencias: Frecuencia[]; clienteInicialId?: string; dominioInicialId?: string; onSubmit: (v: any, accion: AccionBd) => void; cargando: boolean }) {
+  const [clientId, setClientId] = useState(clienteInicialId);
+  const [domainId, setDomainId] = useState(dominioInicialId);
   const [companyName, setCompanyName] = useState("");
   const [environment, setEnvironment] = useState("production");
   const [rawDbAccess, setRawDbAccess] = useState("");
@@ -166,16 +199,20 @@ function FormularioBd({ clientes, dominios, frecuencias, onSubmit, cargando }: {
     () => frecuencias.find((f) => f.active && f.targetType === "domain" && (f.domainId === domainId || f.targetIds.includes(domainId))),
     [frecuencias, domainId]
   );
+  function enviar(accion: AccionBd) {
+    if (!clientId) return setErr("Seleccione el cliente.");
+    if (!domainId) return setErr("Seleccione el dominio.");
+    if (!companyName.trim()) return setErr("El nombre de la empresa es obligatorio.");
+    if (!rawDbAccess.trim()) return setErr("La cadena de acceso es obligatoria.");
+    setErr(null);
+    const body: any = { clientId, domainId, companyName: companyName.trim(), environment, rawDbAccess, currentDbVersion: currentDbVersion || undefined, notes, assignedUpdaterIds: [] };
+    onSubmit(body, accion);
+  }
 
   return (
     <form onSubmit={(e) => {
       e.preventDefault();
-      if (!clientId) return setErr("Seleccione el cliente.");
-      if (!domainId) return setErr("Seleccione el dominio.");
-      if (!companyName.trim()) return setErr("El nombre de la empresa es obligatorio.");
-      if (!rawDbAccess.trim()) return setErr("La cadena de acceso es obligatoria.");
-      const body: any = { clientId, domainId, companyName: companyName.trim(), environment, rawDbAccess, currentDbVersion: currentDbVersion || undefined, notes, assignedUpdaterIds: [] };
-      onSubmit(body);
+      enviar("guardar");
     }}>
       {err && <Alerta tipo="error">{err}</Alerta>}
       <div className="fila-formulario"><label>Cliente *</label>
@@ -221,6 +258,7 @@ function FormularioBd({ clientes, dominios, frecuencias, onSubmit, cargando }: {
 
       <div className="acciones-formulario">
         <button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button>
+        <button type="button" onClick={() => enviar("crearNueva")} disabled={cargando}>Guardar y crear nueva base de datos</button>
       </div>
     </form>
   );

@@ -11,6 +11,7 @@ const DIAS_LISTA = Object.keys(DIAS_SEMANA);
 export default function FrecuenciasPage() {
   const qc = useQueryClient();
   const [modalAbierto, setModalAbierto] = useState(false);
+  const [editando, setEditando] = useState<Frecuencia | null>(null);
   const [exito, setExito] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -24,6 +25,11 @@ export default function FrecuenciasPage() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["frecuencias"] }); setModalAbierto(false); setExito("Frecuencia creada correctamente."); },
     onError: (e: any) => setError(e?.message ?? "Error al crear la frecuencia."),
   });
+  const actualizar = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: any }) => api.put<Frecuencia>(`/schedules/${id}`, body),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["frecuencias"] }); setEditando(null); setExito("Frecuencia actualizada correctamente."); },
+    onError: (e: any) => setError(e?.message ?? "Error al actualizar la frecuencia."),
+  });
   const desactivar = useMutation({ mutationFn: (id: string) => api.post(`/schedules/${id}/deactivate`), onSuccess: () => qc.invalidateQueries({ queryKey: ["frecuencias"] }) });
   const reactivar = useMutation({ mutationFn: (id: string) => api.post(`/schedules/${id}/reactivate`), onSuccess: () => qc.invalidateQueries({ queryKey: ["frecuencias"] }) });
   const eliminar = useMutation({
@@ -36,8 +42,8 @@ export default function FrecuenciasPage() {
   return (
     <>
       <div className="encabezado-pagina">
-        <h2>Frecuencias de actualización</h2>
-        <button className="primario" onClick={() => setModalAbierto(true)}>Nueva frecuencia</button>
+        <h2>Frecuencias especiales</h2>
+        <button className="primario" onClick={() => setModalAbierto(true)}>Nueva frecuencia especial</button>
       </div>
       {exito && <Alerta tipo="exito">{exito}</Alerta>}
       {error && <Alerta tipo="error">{error}</Alerta>}
@@ -45,10 +51,10 @@ export default function FrecuenciasPage() {
       {isLoading ? <div className="cargando">Cargando...</div> : (
         <table>
           <thead><tr>
-            <th>Cliente</th><th>Tipo</th><th>Objetivos</th><th>Frecuencia</th><th>Inicio</th><th>Rol asignado</th><th>Estado</th><th>Acciones</th>
+            <th>Cliente</th><th>Tipo</th><th>Objetivos</th><th>Frecuencia</th><th>Inicio</th><th>Fin</th><th>Responsable inferido</th><th>Estado</th><th>Acciones</th>
           </tr></thead>
           <tbody>
-            {frecuencias.length === 0 ? (<tr><td colSpan={8} className="vacio">Aún no hay frecuencias configuradas.</td></tr>) :
+            {frecuencias.length === 0 ? (<tr><td colSpan={9} className="vacio">Aún no hay frecuencias configuradas.</td></tr>) :
             frecuencias.map((f) => (
               <tr key={f.id}>
                 <td>{f.clientName}</td>
@@ -56,9 +62,11 @@ export default function FrecuenciasPage() {
                 <td>{f.targetIds.length}</td>
                 <td>{ETIQUETAS_FRECUENCIA[f.frequencyType]}</td>
                 <td>{f.startDate}</td>
+                <td>{f.endDate ?? "-"}</td>
                 <td>{ETIQUETAS_ROLES[f.assignedRole] ?? f.assignedRole}</td>
                 <td><EtiquetaEstado estado={f.active ? "active" : "inactive"} /></td>
                 <td className="acciones-tabla">
+                  <button onClick={() => setEditando(f)}>Editar</button>
                   {f.active
                     ? <button className="advertencia" onClick={() => desactivar.mutate(f.id)}>Desactivar</button>
                     : <button className="exito" onClick={() => reactivar.mutate(f.id)}>Reactivar</button>}
@@ -70,8 +78,11 @@ export default function FrecuenciasPage() {
         </table>
       )}
 
-      <Modal titulo="Nueva frecuencia" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
+      <Modal titulo="Nueva frecuencia especial" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
         <FormularioFrecuencia clientes={clientes} dominios={dominios} bds={bds} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />
+      </Modal>
+      <Modal titulo="Editar frecuencia especial" abierto={!!editando} onCerrar={() => setEditando(null)}>
+        {editando && <FormularioFrecuencia inicial={editando} clientes={clientes} dominios={dominios} bds={bds} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
       </Modal>
 
       <DialogoConfirmar
@@ -89,17 +100,19 @@ export default function FrecuenciasPage() {
   );
 }
 
-function FormularioFrecuencia({ clientes, dominios, bds, onSubmit, cargando }: { clientes: Cliente[]; dominios: Dominio[]; bds: BaseDeDatos[]; onSubmit: (v: any) => void; cargando: boolean }) {
-  const [clientId, setClientId] = useState("");
-  const [targetType, setTargetType] = useState<"domain" | "database">("database");
-  const [targetIds, setTargetIds] = useState<string[]>([]);
-  const [frequencyType, setFrequencyType] = useState<"weekly" | "interval" | "monthly" | "manual">("weekly");
-  const [everyNWeeks, setEveryNWeeks] = useState(1);
-  const [weekdays, setWeekdays] = useState<string[]>(["FRIDAY"]);
-  const [intervalDays, setIntervalDays] = useState(15);
-  const [dayOfMonth, setDayOfMonth] = useState(15);
-  const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10));
-  const [assignedRole, setAssignedRole] = useState("database_updater");
+function FormularioFrecuencia({ inicial, clientes, dominios, bds, onSubmit, cargando }: { inicial?: Frecuencia; clientes: Cliente[]; dominios: Dominio[]; bds: BaseDeDatos[]; onSubmit: (v: any) => void; cargando: boolean }) {
+  const [clientId, setClientId] = useState(inicial?.clientId ?? "");
+  const [targetType, setTargetType] = useState<"domain" | "database">(inicial?.targetType ?? "database");
+  const [targetIds, setTargetIds] = useState<string[]>(inicial?.targetIds ?? []);
+  const [frequencyType, setFrequencyType] = useState<"weekly" | "interval" | "monthly" | "manual">(inicial?.frequencyType ?? "weekly");
+  const [everyNWeeks, setEveryNWeeks] = useState(inicial?.everyNWeeks ?? 1);
+  const [weekdays, setWeekdays] = useState<string[]>(inicial?.weekdays ?? ["FRIDAY"]);
+  const [intervalDays, setIntervalDays] = useState(inicial?.intervalDays ?? 15);
+  const [dayOfMonth, setDayOfMonth] = useState(inicial?.dayOfMonth ?? 15);
+  const [startDate, setStartDate] = useState(inicial?.startDate ?? new Date().toISOString().slice(0, 10));
+  const [hasEndDate, setHasEndDate] = useState(!!inicial?.endDate);
+  const [endDate, setEndDate] = useState(inicial?.endDate ?? "");
+  const [active, setActive] = useState(inicial?.active ?? true);
   const [err, setErr] = useState<string | null>(null);
 
   const objetivos = useMemo(() => {
@@ -115,15 +128,14 @@ function FormularioFrecuencia({ clientes, dominios, bds, onSubmit, cargando }: {
     <form onSubmit={(e) => {
       e.preventDefault();
       if (!clientId) return setErr("Seleccione el cliente.");
-      if (targetIds.length === 0) return setErr("Seleccione al menos un objetivo.");
       onSubmit({
         clientId, targetType, targetIds, frequencyType,
         everyNWeeks: frequencyType === "weekly" ? everyNWeeks : undefined,
         weekdays: frequencyType === "weekly" ? weekdays : undefined,
         intervalDays: frequencyType === "interval" ? intervalDays : undefined,
         dayOfMonth: frequencyType === "monthly" ? dayOfMonth : undefined,
-        startDate, timezone: "America/Bogota",
-        assignedRole, assignedUserIds: [], active: true,
+        startDate, endDate: hasEndDate ? endDate || null : null, timezone: "America/Bogota",
+        assignedRole: targetType === "database" ? "database_updater" : "domain_updater", assignedUserIds: inicial?.assignedUserIds ?? [], active,
       });
     }}>
       {err && <Alerta tipo="error">{err}</Alerta>}
@@ -135,14 +147,15 @@ function FormularioFrecuencia({ clientes, dominios, bds, onSubmit, cargando }: {
           placeholder="Buscar cliente..."
         /></div>
       <div className="fila-formulario"><label>Tipo de objetivo *</label>
-        <select value={targetType} onChange={(e) => { setTargetType(e.target.value as any); setTargetIds([]); setAssignedRole(e.target.value === "database" ? "database_updater" : "domain_updater"); }}>
+        <select value={targetType} onChange={(e) => { setTargetType(e.target.value as any); setTargetIds([]); }}>
           <option value="database">Base de datos</option>
           <option value="domain">Dominio</option>
         </select></div>
-      <div className="fila-formulario"><label>Objetivos *</label>
+      <div className="fila-formulario"><label>Objetivos</label>
         <select multiple value={targetIds} onChange={(e) => setTargetIds(Array.from(e.target.selectedOptions).map((o) => o.value))} style={{ height: 120 }}>
           {objetivos.map((o: any) => <option key={o.id} value={o.id}>{o.companyName ? `${o.companyName} / ${o.dbAccess?.initialCatalog}` : o.domainName}</option>)}
         </select></div>
+      <p className="texto-ayuda">El objetivo es opcional para casos especiales. El responsable se infiere según el tipo: dominio o base de datos.</p>
       <div className="fila-formulario"><label>Tipo de frecuencia *</label>
         <select value={frequencyType} onChange={(e) => setFrequencyType(e.target.value as any)}>
           {Object.entries(ETIQUETAS_FRECUENCIA).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
@@ -171,10 +184,19 @@ function FormularioFrecuencia({ clientes, dominios, bds, onSubmit, cargando }: {
       )}
       <div className="fila-formulario"><label>Fecha de inicio *</label>
         <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></div>
-      <div className="fila-formulario"><label>Rol asignado *</label>
-        <select value={assignedRole} onChange={(e) => setAssignedRole(e.target.value)}>
-          {Object.entries(ETIQUETAS_ROLES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-        </select></div>
+      <div className="fila-formulario"><label>
+        <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={hasEndDate} onChange={(e) => setHasEndDate(e.target.checked)} />
+        Tiene fecha de fin
+      </label></div>
+      {hasEndDate && (
+        <div className="fila-formulario"><label>Fecha de fin</label>
+          <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} /></div>
+      )}
+      <div className="fila-formulario"><label>
+        <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={active} onChange={(e) => setActive(e.target.checked)} />
+        Frecuencia activa
+      </label></div>
+      <p className="texto-ayuda">No se pide rol manualmente. Se usará {targetType === "database" ? "Actualizador de bases de datos" : "Actualizador de dominios"}.</p>
       <div className="acciones-formulario">
         <button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button>
       </div>

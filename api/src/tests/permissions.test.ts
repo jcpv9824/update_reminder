@@ -118,6 +118,36 @@ describe("permissions", () => {
     expect(canCompleteDomainTask(u, task)).toBe(false);
   });
 
+  it("actualizadores pueden cambiar tareas de su tipo cuando no hay usuario asignado explícito", () => {
+    const baseTask: UpdateTask = {
+      id: "t1",
+      taskDate: "2026-05-08",
+      taskBucket: "2026-05-08_database",
+      clientId: "c1",
+      clientName: "C",
+      domainId: "d1",
+      domainName: "d",
+      targetType: "database",
+      targetId: "db1",
+      targetName: "BD",
+      scheduleId: "s1",
+      assignedRole: "database_updater",
+      assignedUserIds: [],
+      status: "pending",
+      result: null,
+      notes: "",
+      createdAt: "",
+      createdBy: "system",
+      updatedAt: "",
+      updatedBy: "system",
+      completedAt: null,
+      completedBy: null,
+    };
+    expect(canCompleteDatabaseTask(user(["database_updater"]), baseTask)).toBe(true);
+    expect(canCompleteDomainTask(user(["domain_updater"]), { ...baseTask, targetType: "domain", taskBucket: "2026-05-08_domain", assignedRole: "domain_updater" })).toBe(true);
+  });
+
+
   it("domain_updater no puede revelar contraseña de base de datos", () => {
     const db: DatabaseRecord = {
       id: "db1",

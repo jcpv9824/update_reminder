@@ -32,6 +32,8 @@ app.http("tasksList", {
       const status = req.query.get("status");
       const clientId = req.query.get("clientId");
       const domainId = req.query.get("domainId");
+      const dateFrom = req.query.get("dateFrom");
+      const dateTo = req.query.get("dateTo");
       const assignedToMe = req.query.get("assignedToMe") === "true";
       const range = req.query.get("range"); // overdue | today | upcoming
 
@@ -41,6 +43,14 @@ app.http("tasksList", {
       if (date) {
         conditions.push("c.taskDate = @date");
         parameters.push({ name: "@date", value: date });
+      }
+      if (dateFrom) {
+        conditions.push("c.taskDate >= @from");
+        parameters.push({ name: "@from", value: dateFrom });
+      }
+      if (dateTo) {
+        conditions.push("c.taskDate <= @to");
+        parameters.push({ name: "@to", value: dateTo });
       }
       if (range === "overdue") {
         conditions.push("c.taskDate < @today AND c.status IN ('pending','in_progress','reopened')");

@@ -83,6 +83,7 @@ export type Frecuencia = {
   preferredWeekdays?: string[];
   dayOfMonth?: number;
   startDate: string;
+  endDate?: string | null;
   timezone: string;
   assignedRole: string;
   assignedUserIds: string[];

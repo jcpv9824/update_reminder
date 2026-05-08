@@ -18,6 +18,8 @@ export type ValoresFrecuencia = {
   intervalDays?: number;
   dayOfMonth?: number;
   startDate: string;
+  hasEndDate?: boolean;
+  endDate?: string | null;
   timezone: string;
   assignedRole: string;
   assignedUserIds: string[];
@@ -33,6 +35,8 @@ export function valoresFrecuenciaPorDefecto(rolPorDefecto: string): ValoresFrecu
     intervalDays: 15,
     dayOfMonth: 15,
     startDate: new Date().toISOString().slice(0, 10),
+    hasEndDate: false,
+    endDate: null,
     timezone: "America/Bogota",
     assignedRole: rolPorDefecto,
     assignedUserIds: [],
@@ -53,6 +57,7 @@ export function depurarFrecuenciaParaEnvio(v: ValoresFrecuencia) {
   const base: any = {
     frequencyType: v.frequencyType,
     startDate: v.startDate,
+    endDate: v.hasEndDate ? v.endDate || null : null,
     timezone: v.timezone,
     assignedRole: v.assignedRole,
     assignedUserIds: v.assignedUserIds,
@@ -83,9 +88,10 @@ type Props = {
   valor: ValoresFrecuencia;
   onChange: (v: ValoresFrecuencia) => void;
   rolesPermitidos?: string[];
+  mostrarRol?: boolean;
 };
 
-export function SeleccionFrecuencia({ valor, onChange, rolesPermitidos }: Props) {
+export function SeleccionFrecuencia({ valor, onChange, rolesPermitidos, mostrarRol = false }: Props) {
   const [v, setV] = useState(valor);
   const set = (patch: Partial<ValoresFrecuencia>) => {
     const nuevo = { ...v, ...patch };
@@ -147,16 +153,37 @@ export function SeleccionFrecuencia({ valor, onChange, rolesPermitidos }: Props)
       </div>
 
       <div className="fila-formulario">
+        <label>
+          <input
+            type="checkbox"
+            style={{ width: "auto", marginRight: 6 }}
+            checked={!!v.hasEndDate}
+            onChange={(e) => set({ hasEndDate: e.target.checked, endDate: e.target.checked ? v.endDate ?? v.startDate : null })}
+          />
+          Tiene fecha de fin
+        </label>
+      </div>
+
+      {v.hasEndDate && (
+        <div className="fila-formulario">
+          <label>Fecha de fin</label>
+          <input type="date" value={v.endDate ?? ""} onChange={(e) => set({ endDate: e.target.value || null })} />
+        </div>
+      )}
+
+      <div className="fila-formulario">
         <label>Zona horaria</label>
         <input value={v.timezone} onChange={(e) => set({ timezone: e.target.value })} />
       </div>
 
-      <div className="fila-formulario">
-        <label>Rol responsable *</label>
-        <select value={v.assignedRole} onChange={(e) => set({ assignedRole: e.target.value })}>
-          {rolesUI.map((r) => <option key={r} value={r}>{ETIQUETAS_ROLES[r] ?? r}</option>)}
-        </select>
-      </div>
+      {mostrarRol && (
+        <div className="fila-formulario">
+          <label>Rol responsable *</label>
+          <select value={v.assignedRole} onChange={(e) => set({ assignedRole: e.target.value })}>
+            {rolesUI.map((r) => <option key={r} value={r}>{ETIQUETAS_ROLES[r] ?? r}</option>)}
+          </select>
+        </div>
+      )}
 
       <div className="fila-formulario">
         <label>

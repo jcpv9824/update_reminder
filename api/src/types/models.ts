@@ -126,6 +126,7 @@ export type UpdateSchedule = {
   preferredWeekdays?: Weekday[];
   dayOfMonth?: number;
   startDate: string; // YYYY-MM-DD
+  endDate?: string | null; // YYYY-MM-DD opcional
   timezone: string;
   assignedRole: Role | string;
   assignedUserIds: string[];

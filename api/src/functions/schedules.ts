@@ -6,6 +6,7 @@ import { canManageSchedules } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
+import { inferScheduleRole } from "../lib/scheduleService";
 import type { ClientRecord, UpdateSchedule } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
@@ -21,7 +22,7 @@ const ScheduleSchema = z.object({
   clientId: z.string().min(1, "El cliente es obligatorio."),
   domainId: z.string().optional(),
   targetType: z.enum(["domain", "database"]),
-  targetIds: z.array(z.string()).min(1, "Seleccione al menos un objetivo."),
+  targetIds: z.array(z.string()).default([]),
   frequencyType: z.enum(["weekly", "interval", "monthly", "manual"]),
   everyNWeeks: z.number().int().positive().optional(),
   weekdays: z.array(z.enum(Weekdays)).optional(),
@@ -29,8 +30,9 @@ const ScheduleSchema = z.object({
   preferredWeekdays: z.array(z.enum(Weekdays)).optional(),
   dayOfMonth: z.number().int().min(1).max(31).optional(),
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "La fecha debe estar en formato YYYY-MM-DD."),
+  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "La fecha de fin debe estar en formato YYYY-MM-DD.").nullable().optional(),
   timezone: z.string().default("America/Bogota"),
-  assignedRole: z.string().min(1),
+  assignedRole: z.string().min(1).optional(),
   assignedUserIds: z.array(z.string()).default([]),
   active: z.boolean().default(true),
   notes: z.string().optional(),
@@ -84,8 +86,9 @@ app.http("schedulesCreate", {
         preferredWeekdays: parsed.data.preferredWeekdays as any,
         dayOfMonth: parsed.data.dayOfMonth,
         startDate: parsed.data.startDate,
+        endDate: parsed.data.endDate ?? null,
         timezone: parsed.data.timezone,
-        assignedRole: parsed.data.assignedRole,
+        assignedRole: parsed.data.assignedRole ?? inferScheduleRole(parsed.data.targetType),
         assignedUserIds: parsed.data.assignedUserIds,
         active: parsed.data.active,
         notes: parsed.data.notes,
@@ -145,7 +148,20 @@ app.http("schedulesUpdate", {
       if (!existing) return notFound();
       const body = await req.json() as any;
       const before = { ...existing };
-      const merged: UpdateSchedule = { ...existing, ...body, id: existing.id, clientId: existing.clientId, clientName: existing.clientName, updatedAt: new Date().toISOString(), updatedBy: user.id };
+      const targetType = body.targetType === "domain" || body.targetType === "database" ? body.targetType : existing.targetType;
+      const merged: UpdateSchedule = {
+        ...existing,
+        ...body,
+        targetType,
+        assignedRole: body.assignedRole ?? inferScheduleRole(targetType),
+        targetIds: Array.isArray(body.targetIds) ? body.targetIds : existing.targetIds,
+        endDate: body.endDate ?? null,
+        id: existing.id,
+        clientId: existing.clientId,
+        clientName: existing.clientName,
+        updatedAt: new Date().toISOString(),
+        updatedBy: user.id,
+      };
       await getContainer("updateSchedules").item(existing.id, existing.clientId).replace(merged);
       await writeAuditLog({
         entityType: "schedule",

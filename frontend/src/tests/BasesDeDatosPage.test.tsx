@@ -1,6 +1,7 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 
 const apiMock = vi.hoisted(() => ({
   get: vi.fn(),
@@ -39,7 +40,9 @@ function renderPagina() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <BasesDeDatosPage />
+      <MemoryRouter>
+        <BasesDeDatosPage />
+      </MemoryRouter>
     </QueryClientProvider>
   );
 }
@@ -78,6 +81,7 @@ describe("BasesDeDatosPage", () => {
     expect(screen.getByText(/Semanal: FRIDAY desde 2026-05-01/i)).toBeInTheDocument();
     expect(screen.queryByText(/Frecuencia individual avanzada/i)).toBeNull();
     expect(screen.queryByText(/Crear frecuencia automática específica/i)).toBeNull();
+    expect(screen.getByRole("button", { name: /Guardar y crear nueva base de datos/i })).toBeInTheDocument();
   });
 
   it("Nueva base de datos advierte si el dominio no tiene frecuencia", async () => {

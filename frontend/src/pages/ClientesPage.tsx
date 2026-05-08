@@ -1,11 +1,15 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { Cliente } from "../types";
 import { Alerta, DialogoConfirmar, EtiquetaEstado, Modal } from "../components/Comunes";
 
+type AccionCliente = "guardar" | "agregarDominio" | "crearNuevo";
+
 export default function ClientesPage() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [modalAbierto, setModalAbierto] = useState(false);
   const [editando, setEditando] = useState<Cliente | null>(null);
   const [confirmar, setConfirmar] = useState<{ tipo: "eliminar" | "desactivar"; cliente: Cliente } | null>(null);
@@ -20,8 +24,19 @@ export default function ClientesPage() {
   });
 
   const crear = useMutation({
-    mutationFn: (body: { name: string; notes?: string }) => api.post<Cliente>("/clients", body),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["clientes"] }); setModalAbierto(false); setExito("Cliente creado correctamente."); },
+    mutationFn: ({ body }: { body: { name: string; notes?: string }; accion: AccionCliente }) => api.post<Cliente>("/clients", body),
+    onSuccess: (cliente, variables) => {
+      qc.invalidateQueries({ queryKey: ["clientes"] });
+      setExito("Cliente creado correctamente.");
+      if (variables.accion === "agregarDominio") {
+        setModalAbierto(false);
+        navigate(`/dominios?clientId=${encodeURIComponent(cliente.id)}&new=1`);
+      } else if (variables.accion === "crearNuevo") {
+        setModalAbierto(true);
+      } else {
+        setModalAbierto(false);
+      }
+    },
     onError: (e: any) => setError(e?.message ?? "Error al crear cliente."),
   });
   const actualizar = useMutation({
@@ -101,7 +116,7 @@ export default function ClientesPage() {
       )}
 
       <Modal titulo="Nuevo cliente" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
-        <FormularioCliente onSubmit={(v) => crear.mutate(v)} cargando={crear.isPending} />
+        <FormularioCliente key={crear.submittedAt || "nuevo"} onSubmit={(v, accion) => crear.mutate({ body: v, accion })} cargando={crear.isPending} />
       </Modal>
       <Modal titulo="Editar cliente" abierto={!!editando} onCerrar={() => setEditando(null)}>
         {editando && (
@@ -132,15 +147,19 @@ export default function ClientesPage() {
   );
 }
 
-function FormularioCliente({ inicial, onSubmit, cargando }: { inicial?: Cliente; onSubmit: (v: { name: string; notes?: string }) => void; cargando: boolean }) {
+function FormularioCliente({ inicial, onSubmit, cargando }: { inicial?: Cliente; onSubmit: (v: { name: string; notes?: string }, accion: AccionCliente) => void; cargando: boolean }) {
   const [name, setName] = useState(inicial?.name ?? "");
   const [notes, setNotes] = useState(inicial?.notes ?? "");
   const [err, setErr] = useState<string | null>(null);
+  function enviar(accion: AccionCliente) {
+    if (!name.trim()) { setErr("El nombre es obligatorio."); return; }
+    setErr(null);
+    onSubmit({ name: name.trim(), notes: notes.trim() || undefined }, accion);
+  }
   return (
     <form onSubmit={(e) => {
       e.preventDefault();
-      if (!name.trim()) { setErr("El nombre es obligatorio."); return; }
-      onSubmit({ name: name.trim(), notes: notes.trim() || undefined });
+      enviar("guardar");
     }}>
       {err && <Alerta tipo="error">{err}</Alerta>}
       <div className="fila-formulario">
@@ -153,6 +172,12 @@ function FormularioCliente({ inicial, onSubmit, cargando }: { inicial?: Cliente;
       </div>
       <div className="acciones-formulario">
         <button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button>
+        {!inicial && (
+          <>
+            <button type="button" onClick={() => enviar("agregarDominio")} disabled={cargando}>Guardar y agregar dominio</button>
+            <button type="button" onClick={() => enviar("crearNuevo")} disabled={cargando}>Guardar y crear nuevo cliente</button>
+          </>
+        )}
       </div>
     </form>
   );

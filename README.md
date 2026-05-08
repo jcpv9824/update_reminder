@@ -155,6 +155,22 @@ Regla avanzada: si existe una frecuencia específica activa de base de datos, es
 
 En **Tareas**, administradores y administradores de clientes ven el botón **Generar tareas ahora**. El botón llama `POST /api/tasks/generate`, ejecuta la misma lógica del timer diario, devuelve cuántas tareas se crearon y cuántas se omitieron por idempotencia, y refresca la lista.
 
+La vista muestra por defecto una ventana compacta desde 7 días antes de hoy hasta 7 días después de hoy. Al generar tareas manualmente, las tareas creadas dentro de esa ventana aparecen agrupadas por fecha, responsable, tipo de tarea y estado agregado.
+
+El tablero principal no lista todos los dominios o bases individualmente. Muestra grupos resumidos como **Dominios por actualizar** o **Bases de datos por actualizar**, con total, completadas, pendientes, con problemas y estado general. El botón **Ver detalle** abre las tareas individuales, permite copiar dominios o nombres de bases y guarda inmediatamente cada cambio de estado.
+
+## Flujo rápido de creación
+
+El flujo principal ahora es **Cliente → Dominio con frecuencia → Base de datos heredada → Tareas**:
+
+- **Clientes**: `Guardar`, `Guardar y agregar dominio`, `Guardar y crear nuevo cliente`.
+- **Dominios**: `Guardar`, `Guardar y agregar base de datos`, `Guardar y crear nuevo dominio`.
+- **Bases de datos**: `Guardar`, `Guardar y crear nueva base de datos`.
+
+Los formularios normales ya no piden rol responsable. La app infiere **Actualizador de dominios** para tareas de dominio y **Actualizador de bases de datos** para tareas de base. La frecuencia principal se configura en el dominio, con `startDate` obligatorio y `endDate` opcional mediante **Tiene fecha de fin**.
+
+La vista **Frecuencias especiales** queda para excepciones avanzadas. Allí el objetivo puede quedar vacío si el caso especial lo requiere, y el rol también se infiere por tipo de objetivo.
+
 ## Cambios recientes
 
 - [CAMBIOS_V6.md](CAMBIOS_V6.md): Alertas y correos simplificado, reporte maestro por correo, frecuencias heredadas desde dominio y generación manual de tareas.

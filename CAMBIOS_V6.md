@@ -161,3 +161,47 @@ Documentacion:
 - `README.md`
 - `DESPLIEGUE.md`
 - `CAMBIOS_V6.md`
+
+---
+
+## 10. Ajustes finales de flujo dominio/frecuencia/tareas
+
+- Se agregaron acciones rápidas en clientes: **Guardar**, **Guardar y agregar dominio**, **Guardar y crear nuevo cliente**.
+- Se agregaron acciones rápidas en dominios: **Guardar**, **Guardar y agregar base de datos**, **Guardar y crear nuevo dominio**.
+- Se agregó **Guardar y crear nueva base de datos** en bases de datos.
+- La frecuencia del dominio se puede configurar al crear y editar dominio.
+- Las frecuencias soportan **Tiene fecha de fin** y `endDate` opcional.
+- Los formularios normales no piden rol responsable; la responsabilidad se infiere por tipo de tarea.
+- La vista **Frecuencias (avanzado)** se renombró a **Frecuencias especiales**.
+- Las frecuencias especiales permiten objetivos opcionales y edición clara.
+- La vista **Tareas** consulta por defecto desde `hoy - 7 días` hasta `hoy + 7 días`.
+- La vista principal de **Tareas** muestra grupos resumidos por fecha, responsable, tipo y estado agregado.
+- El detalle de cada grupo muestra tareas individuales con copiado de dominio/base y acciones inmediatas.
+- Cada cambio de estado en el detalle llama el endpoint correspondiente al instante y muestra `Guardando`, `Guardado` o `Error` con opción de reintentar.
+- `POST /api/tasks/generate` devuelve también `windowStart` y `windowEnd`.
+- Las tarjetas principales muestran contadores agregados para evitar saturar el tablero con todos los dominios o bases.
+- Los actualizadores pueden cambiar estado de tareas de su tipo cuando la tarea no tiene usuario asignado explícito.
+- **Alertas y correos** quedó reordenado: estado, configuración rápida, remitente, SMTP avanzada, recordatorios, alertas vencidas, reporte maestro y correo de prueba.
+- Se quitó la duplicidad del botón de correo de prueba; queda una sola área al final.
+
+## 11. Pruebas finales agregadas/actualizadas
+
+Backend:
+
+- `endDate` opcional en frecuencias.
+- Inferencia de rol por tipo de objetivo.
+- Corte de generación posterior a fecha de fin.
+- Permisos de actualizadores cuando la tarea no tiene usuario asignado.
+
+Frontend:
+
+- Botones rápidos de clientes, dominios y bases.
+- Dominio con frecuencia sin pedir rol responsable.
+- Ventana de tareas en consultas del tablero.
+- Agrupación del tablero por fecha, responsable y tipo.
+- Contadores correctos para grupos de dominios y bases.
+- Detalle con tareas individuales.
+- Guardado inmediato al completar una tarea.
+- Error y reintento si falla el guardado.
+- Restricción de acciones para usuarios sin permiso sobre otro responsable.
+- Orden lógico de **Alertas y correos** y un solo botón de prueba.

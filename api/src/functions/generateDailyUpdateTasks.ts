@@ -12,6 +12,13 @@ function todayInBogotaIso(): string {
   return bogota.toISOString().slice(0, 10);
 }
 
+function addDaysIso(isoDate: string, days: number): string {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
 async function resolveTargetName(
   targetType: "domain" | "database",
   targetId: string
@@ -87,7 +94,13 @@ export async function runTaskGeneration(
     });
   }
   log(`Tareas creadas: ${newTasks.length}; omitidas por duplicado: ${summary.skipped}; fecha ${isoDate}.`);
-  return { created: newTasks.length, skipped: summary.skipped, message: "Tareas generadas correctamente." };
+  return {
+    created: newTasks.length,
+    skipped: summary.skipped,
+    windowStart: addDaysIso(isoDate, -7),
+    windowEnd: addDaysIso(isoDate, 7),
+    message: "Tareas generadas correctamente.",
+  } as any;
 }
 
 // Timer trigger: 06:00 UTC = 01:00 hora de Bogotá.
@@ -122,7 +135,7 @@ app.http("generateDailyUpdateTasksManual", {
       const body = (await req.json().catch(() => ({}))) as any;
       const date = typeof body.date === "string" ? body.date : todayInBogotaIso();
       const r = await runTaskGeneration(date, (m) => ctx.log(m));
-      return { status: 200, jsonBody: { date, created: r.created, skipped: r.skipped, message: r.message } };
+      return { status: 200, jsonBody: { date, ...r } };
     } catch (e: any) {
       return { status: 500, jsonBody: { error: e.message } };
     }

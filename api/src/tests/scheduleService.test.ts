@@ -15,6 +15,11 @@ describe("validateFrequency", () => {
   it("rechaza fecha inválida", () => {
     expect(() => validateFrequency({ frequencyType: "manual", startDate: "no", assignedRole: "x" })).toThrow();
   });
+
+  it("permite frecuencia sin rol manual y valida fecha de fin opcional", () => {
+    expect(() => validateFrequency({ frequencyType: "weekly", weekdays: ["FRIDAY"], startDate: "2026-05-01", endDate: "2026-05-31" })).not.toThrow();
+    expect(() => validateFrequency({ frequencyType: "weekly", weekdays: ["FRIDAY"], startDate: "2026-05-31", endDate: "2026-05-01" })).toThrow(/fecha de fin/i);
+  });
 });
 
 describe("buildScheduleRecord", () => {
@@ -30,5 +35,17 @@ describe("buildScheduleRecord", () => {
     expect(r.targetIds).toEqual(["d1"]);
     expect(r.id).toMatch(/^schedule_/);
     expect(r.assignedRole).toBe("domain_updater");
+  });
+
+  it("infiere el rol responsable según el tipo de objetivo", () => {
+    const r = buildScheduleRecord({
+      input: { frequencyType: "weekly", weekdays: ["FRIDAY"], startDate: "2026-05-01" },
+      clientId: "c1", clientName: "C",
+      domainId: "d1", domainName: "x.com",
+      targetType: "database", targetIds: ["db1"],
+      currentUser: user,
+    });
+    expect(r.assignedRole).toBe("database_updater");
+    expect(r.endDate).toBeNull();
   });
 });

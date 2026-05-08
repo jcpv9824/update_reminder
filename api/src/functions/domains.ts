@@ -7,7 +7,7 @@ import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
 import { buildScheduleRecord, validateFrequency, type FrequencyInput } from "../lib/scheduleService";
-import type { ClientRecord, DomainRecord } from "../types/models";
+import type { ClientRecord, DomainRecord, UpdateSchedule } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -201,6 +201,83 @@ app.http("domainsUpdate", {
         before,
         after: updated,
       });
+      if (body.frequency) {
+        try {
+          const freq = body.frequency as FrequencyInput;
+          validateFrequency(freq);
+          const scheduleContainer = getContainer("updateSchedules");
+          const { resources: schedules } = await scheduleContainer.items
+            .query<UpdateSchedule>({
+              query: "SELECT * FROM c WHERE c.targetType = 'domain' AND (c.domainId = @d OR ARRAY_CONTAINS(c.targetIds, @d))",
+              parameters: [{ name: "@d", value: id }],
+            })
+            .fetchAll();
+          const existingSchedule = schedules[0];
+          if (existingSchedule) {
+            const beforeSchedule = { ...existingSchedule };
+            const merged: UpdateSchedule = {
+              ...existingSchedule,
+              frequencyType: freq.frequencyType,
+              everyNWeeks: freq.everyNWeeks,
+              weekdays: freq.weekdays,
+              intervalDays: freq.intervalDays,
+              preferredWeekdays: freq.preferredWeekdays,
+              dayOfMonth: freq.dayOfMonth,
+              startDate: freq.startDate,
+              endDate: freq.endDate ?? null,
+              timezone: freq.timezone ?? "America/Bogota",
+              assignedRole: "domain_updater",
+              assignedUserIds: freq.assignedUserIds ?? existing.assignedUpdaterIds ?? [],
+              active: freq.active ?? true,
+              reminders: freq.reminders,
+              domainName: updated.domainName,
+              targetIds: [id],
+              updatedAt: new Date().toISOString(),
+              updatedBy: user.id,
+            };
+            await scheduleContainer.item(existingSchedule.id, existingSchedule.clientId).replace(merged);
+            await writeAuditLog({
+              entityType: "schedule",
+              entityId: merged.id,
+              clientId: existing.clientId,
+              clientName: existing.clientName,
+              domainId: id,
+              domainName: updated.domainName,
+              action: "schedule_updated",
+              performedBy: user.id,
+              performedByEmail: user.email,
+              before: beforeSchedule,
+              after: merged,
+            });
+          } else {
+            const schedule = buildScheduleRecord({
+              input: freq,
+              clientId: existing.clientId,
+              clientName: existing.clientName,
+              domainId: id,
+              domainName: updated.domainName,
+              targetType: "domain",
+              targetIds: [id],
+              currentUser: user,
+            });
+            await scheduleContainer.items.create(schedule);
+            await writeAuditLog({
+              entityType: "schedule",
+              entityId: schedule.id,
+              clientId: existing.clientId,
+              clientName: existing.clientName,
+              domainId: id,
+              domainName: updated.domainName,
+              action: "schedule_created",
+              performedBy: user.id,
+              performedByEmail: user.email,
+              after: schedule,
+            });
+          }
+        } catch (e: any) {
+          return badRequest(e?.message ?? "Frecuencia inválida.");
+        }
+      }
       return ok(updated);
     } catch (e) {
       return serverError(e);
