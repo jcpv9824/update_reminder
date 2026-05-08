@@ -45,10 +45,10 @@ export function decidirRecordatorios(args: {
 
 export function valoresRecordatoriosPorDefecto(): RemindersConfig {
   return {
-    remindersEnabled: false,
-    reminderDaysBefore: [3, 1, 0],
+    remindersEnabled: true,
+    reminderDaysBefore: [1, 0],
     reminderTime: "08:00",
-    reminderRecipientsMode: "assignedUsers",
+    reminderRecipientsMode: "roleUsers",
     customReminderEmails: [],
   };
 }

@@ -111,6 +111,7 @@ export function expandSchedulesWithDomainInheritance(
       const domain = activeDomains.get(domainId);
       const inheritedDbs = (databasesByDomain.get(domainId) ?? []).filter((db) => !dbsWithSpecificSchedule.has(db.id));
       if (!domain || inheritedDbs.length === 0) continue;
+      const databaseAssignedUserIds = schedule.databaseAssignedUserIds ?? [];
       for (const db of inheritedDbs) {
         expanded.push({
           ...schedule,
@@ -120,7 +121,14 @@ export function expandSchedulesWithDomainInheritance(
           targetType: "database",
           targetIds: [db.id],
           assignedRole: "database_updater",
-          assignedUserIds: db.assignedUpdaterIds ?? [],
+          assignedUserIds: databaseAssignedUserIds,
+          reminders: schedule.reminders
+            ? {
+                ...schedule.reminders,
+                reminderRecipientsMode: databaseAssignedUserIds.length > 0 ? "assignedUsers" : "roleUsers",
+                customReminderEmails: [],
+              }
+            : undefined,
           notes: [schedule.notes, "Frecuencia heredada del dominio. Una frecuencia especifica activa de base de datos tiene prioridad sobre esta herencia."]
             .filter(Boolean)
             .join("\n"),

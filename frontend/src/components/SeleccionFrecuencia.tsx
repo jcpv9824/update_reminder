@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { DIAS_SEMANA, ETIQUETAS_FRECUENCIA, ETIQUETAS_ROLES } from "../types";
+import { DIAS_SEMANA, ETIQUETAS_FRECUENCIA, ETIQUETAS_ROLES, type Usuario } from "../types";
 
 const DIAS_LISTA = Object.keys(DIAS_SEMANA);
 
@@ -23,6 +23,8 @@ export type ValoresFrecuencia = {
   timezone: string;
   assignedRole: string;
   assignedUserIds: string[];
+  databaseAssignedUserIds?: string[];
+  databaseReminderRecipientsMode?: "assignedUsers" | "roleUsers";
   active: boolean;
   reminders: ConfiguracionRecordatorios;
 };
@@ -40,12 +42,19 @@ export function valoresFrecuenciaPorDefecto(rolPorDefecto: string): ValoresFrecu
     timezone: "America/Bogota",
     assignedRole: rolPorDefecto,
     assignedUserIds: [],
+    databaseAssignedUserIds: [],
+    databaseReminderRecipientsMode: "roleUsers",
     active: true,
     reminders: {
-      remindersEnabled: false,
-      reminderDaysBefore: [3, 1, 0],
+      // Por defecto los recordatorios quedan activados cuando se crea una
+      // frecuencia automática. El admin puede desactivarlos si lo desea.
+      remindersEnabled: true,
+      // Avisar el día antes y el mismo día por defecto.
+      reminderDaysBefore: [1, 0],
       reminderTime: "08:00",
-      reminderRecipientsMode: "assignedUsers",
+      // Los recordatorios se envían automáticamente a los usuarios con el rol
+      // responsable (Actualizador de dominios / Actualizador de bases de datos).
+      reminderRecipientsMode: "roleUsers",
       customReminderEmails: [],
     },
   };
@@ -61,6 +70,8 @@ export function depurarFrecuenciaParaEnvio(v: ValoresFrecuencia) {
     timezone: v.timezone,
     assignedRole: v.assignedRole,
     assignedUserIds: v.assignedUserIds,
+    databaseAssignedUserIds: v.databaseAssignedUserIds ?? [],
+    databaseReminderRecipientsMode: (v.databaseAssignedUserIds ?? []).length > 0 ? "assignedUsers" : "roleUsers",
     active: v.active,
   };
   if (v.frequencyType === "weekly") {
@@ -77,8 +88,8 @@ export function depurarFrecuenciaParaEnvio(v: ValoresFrecuencia) {
     remindersEnabled: v.reminders.remindersEnabled,
     reminderDaysBefore: v.reminders.reminderDaysBefore,
     reminderTime: v.reminders.reminderTime,
-    reminderRecipientsMode: v.reminders.reminderRecipientsMode,
-    customReminderEmails: v.reminders.customReminderEmails ?? [],
+    reminderRecipientsMode: v.assignedUserIds.length > 0 ? "assignedUsers" : "roleUsers",
+    customReminderEmails: [],
   };
   return base;
 }
@@ -89,9 +100,11 @@ type Props = {
   onChange: (v: ValoresFrecuencia) => void;
   rolesPermitidos?: string[];
   mostrarRol?: boolean;
+  usuarios?: Usuario[];
+  tipoObjetivo?: "domain" | "database";
 };
 
-export function SeleccionFrecuencia({ valor, onChange, rolesPermitidos, mostrarRol = false }: Props) {
+export function SeleccionFrecuencia({ valor, onChange, rolesPermitidos, mostrarRol = false, usuarios = [], tipoObjetivo = "domain" }: Props) {
   const [v, setV] = useState(valor);
   const set = (patch: Partial<ValoresFrecuencia>) => {
     const nuevo = { ...v, ...patch };
@@ -105,6 +118,32 @@ export function SeleccionFrecuencia({ valor, onChange, rolesPermitidos, mostrarR
   }
 
   const rolesUI = rolesPermitidos ?? Object.keys(ETIQUETAS_ROLES);
+  const usuariosActivos = usuarios.filter((u) => u.active !== false);
+  const responsableManual = v.reminders.reminderRecipientsMode === "assignedUsers" || v.assignedUserIds.length > 0;
+  const responsableBasesManual = v.databaseReminderRecipientsMode === "assignedUsers" || (v.databaseAssignedUserIds ?? []).length > 0;
+
+  function etiquetaUsuario(u: Usuario, rolSugerido?: string) {
+    const rol = rolSugerido && u.roles.includes(rolSugerido) ? " - rol recomendado" : "";
+    return `${u.displayName || u.email} (${u.email})${rol}`;
+  }
+
+  function seleccionarResponsable(ids: string[]) {
+    set({
+      assignedUserIds: ids,
+      reminders: {
+        ...v.reminders,
+        reminderRecipientsMode: ids.length > 0 ? "assignedUsers" : "roleUsers",
+        customReminderEmails: [],
+      },
+    });
+  }
+
+  function seleccionarResponsableBases(ids: string[]) {
+    set({
+      databaseAssignedUserIds: ids,
+      databaseReminderRecipientsMode: ids.length > 0 ? "assignedUsers" : "roleUsers",
+    });
+  }
 
   return (
     <div>
@@ -185,6 +224,100 @@ export function SeleccionFrecuencia({ valor, onChange, rolesPermitidos, mostrarR
         </div>
       )}
 
+      <h5 style={{ margin: "12px 0 6px" }}>Responsable de actualización</h5>
+      <div className="fila-formulario">
+        <label style={{ fontWeight: 400 }}>
+          <input
+            type="radio"
+            name="modoResponsableActualizacion"
+            style={{ width: "auto", marginRight: 6 }}
+            checked={!responsableManual}
+            onChange={() => seleccionarResponsable([])}
+          />
+          Usar rol predeterminado
+        </label>
+        <label style={{ fontWeight: 400 }}>
+          <input
+            type="radio"
+            name="modoResponsableActualizacion"
+            style={{ width: "auto", marginRight: 6 }}
+            checked={responsableManual}
+            onChange={() => set({ reminders: { ...v.reminders, reminderRecipientsMode: "assignedUsers", customReminderEmails: [] } })}
+          />
+          Asignar responsable específico
+        </label>
+        {!responsableManual ? (
+          <p className="texto-ayuda">
+            Las tareas y recordatorios se asignarán automáticamente a las personas con el rol {ETIQUETAS_ROLES[v.assignedRole] ?? v.assignedRole}.
+          </p>
+        ) : null}
+      </div>
+
+      {responsableManual && (
+        <div className="fila-formulario">
+          <label>Responsable específico</label>
+          <select
+            multiple
+            aria-label="Responsable específico"
+            value={v.assignedUserIds}
+            onChange={(e) => seleccionarResponsable(Array.from(e.currentTarget.selectedOptions).map((o) => o.value))}
+          >
+            {usuariosActivos.map((u) => (
+              <option key={u.id} value={u.id}>{etiquetaUsuario(u, v.assignedRole)}</option>
+            ))}
+          </select>
+          <p className="texto-ayuda">Puedes seleccionar una o varias personas activas. Si vuelves al rol predeterminado, se limpiará esta selección.</p>
+        </div>
+      )}
+
+      {tipoObjetivo === "domain" && (
+        <>
+          <h5 style={{ margin: "12px 0 6px" }}>Responsable de bases de datos asociadas</h5>
+          <div className="fila-formulario">
+            <label style={{ fontWeight: 400 }}>
+              <input
+                type="radio"
+                name="modoResponsableBases"
+                style={{ width: "auto", marginRight: 6 }}
+                checked={!responsableBasesManual}
+                onChange={() => seleccionarResponsableBases([])}
+              />
+              Usar rol predeterminado
+            </label>
+            <label style={{ fontWeight: 400 }}>
+              <input
+                type="radio"
+                name="modoResponsableBases"
+                style={{ width: "auto", marginRight: 6 }}
+                checked={responsableBasesManual}
+                onChange={() => set({ databaseReminderRecipientsMode: "assignedUsers" })}
+              />
+              Asignar responsable específico
+            </label>
+            {!responsableBasesManual ? (
+              <p className="texto-ayuda">
+                Las tareas de bases de datos heredadas de este dominio se asignarán automáticamente a las personas con el rol Actualizador de bases de datos.
+              </p>
+            ) : null}
+          </div>
+          {responsableBasesManual && (
+            <div className="fila-formulario">
+              <label>Responsables específicos de bases de datos</label>
+              <select
+                multiple
+                aria-label="Responsables específicos de bases de datos"
+                value={v.databaseAssignedUserIds ?? []}
+                onChange={(e) => seleccionarResponsableBases(Array.from(e.currentTarget.selectedOptions).map((o) => o.value))}
+              >
+                {usuariosActivos.map((u) => (
+                  <option key={u.id} value={u.id}>{etiquetaUsuario(u, "database_updater")}</option>
+                ))}
+              </select>
+            </div>
+          )}
+        </>
+      )}
+
       <div className="fila-formulario">
         <label>
           <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={v.active} onChange={(e) => set({ active: e.target.checked })} />
@@ -214,8 +347,9 @@ export function SeleccionFrecuencia({ valor, onChange, rolesPermitidos, mostrarR
                 const arr = e.target.value.split(",").map((x) => parseInt(x.trim(), 10)).filter((n) => Number.isFinite(n) && n >= 0);
                 set({ reminders: { ...v.reminders, reminderDaysBefore: arr } });
               }}
-              placeholder="3, 1, 0"
+              placeholder="1, 0"
             />
+            <p className="texto-ayuda">Por defecto avisa un día antes y el mismo día.</p>
           </div>
           <div className="fila-formulario">
             <label>Hora de envío (HH:mm)</label>
@@ -225,29 +359,9 @@ export function SeleccionFrecuencia({ valor, onChange, rolesPermitidos, mostrarR
               placeholder="08:00"
             />
           </div>
-          <div className="fila-formulario">
-            <label>Destinatarios</label>
-            <select
-              value={v.reminders.reminderRecipientsMode}
-              onChange={(e) => set({ reminders: { ...v.reminders, reminderRecipientsMode: e.target.value as any } })}
-            >
-              <option value="assignedUsers">Usuarios asignados</option>
-              <option value="roleUsers">Todos los usuarios del rol</option>
-              <option value="customEmails">Correos personalizados</option>
-            </select>
-          </div>
-          {v.reminders.reminderRecipientsMode === "customEmails" && (
-            <div className="fila-formulario">
-              <label>Correos personalizados (separados por coma)</label>
-              <input
-                value={(v.reminders.customReminderEmails ?? []).join(", ")}
-                onChange={(e) => {
-                  const arr = e.target.value.split(",").map((x) => x.trim()).filter(Boolean);
-                  set({ reminders: { ...v.reminders, customReminderEmails: arr } });
-                }}
-              />
-            </div>
-          )}
+          <p className="texto-ayuda">
+            Los recordatorios se enviarán al responsable seleccionado. Si no seleccionas uno, se enviarán a las personas activas con el rol correspondiente.
+          </p>
         </>
       )}
     </div>

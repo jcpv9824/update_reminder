@@ -38,6 +38,8 @@ DEV_AUTH_ENABLED=true
 http://localhost:5173/
 ```
 
+Nota funcional de la versión actual: la frecuencia normal se configura desde **Dominios** y se guarda como `origin = "domain_default"`. La vista **Programaciones especiales** muestra solo excepciones creadas con `origin = "special"` y no mezcla las frecuencias normales de dominios.
+
 ---
 
 ## 1. Software necesario
@@ -903,6 +905,8 @@ npm run build
 Publique `frontend/dist` con el mecanismo actual de Static Web Apps. Si usa GitHub Actions, haga commit y push de los cambios.
 
 La vista **Tareas** ahora muestra grupos resumidos por fecha, responsable, tipo y estado agregado. Después de publicar, verifique que el tablero principal no liste todos los dominios o bases individuales y que el detalle permita copiar y guardar cambios de estado inmediatamente.
+
+En el detalle, los dominios solo deben mostrar **Copiar dominio para publicar** y **Completar**. Las bases deben mostrar servidor, base, usuario y contraseña como campos apilados; la contraseña se revela o copia bajo demanda con auditoría segura.
 
 ### 17.3 Git con PowerShell
 

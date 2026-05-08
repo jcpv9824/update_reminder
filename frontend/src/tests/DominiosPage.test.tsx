@@ -1,5 +1,5 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 
@@ -35,6 +35,7 @@ beforeEach(() => {
     if (path === "/clients") return Promise.resolve(clientes);
     if (path === "/domains") return Promise.resolve([]);
     if (path === "/schedules") return Promise.resolve([]);
+    if (path === "/users") return Promise.resolve([]);
     return Promise.resolve([]);
   });
 });
@@ -49,5 +50,19 @@ describe("DominiosPage", () => {
     expect(screen.getByRole("button", { name: /Guardar y agregar base de datos/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Guardar y crear nuevo dominio/i })).toBeInTheDocument();
     expect(screen.getByLabelText(/Tiene fecha de fin/i)).toBeInTheDocument();
+  });
+
+  it("al guardar frecuencia normal del dominio envia origin domain_default", async () => {
+    apiMock.post.mockResolvedValue({ id: "domain_1", clientId: "client_1" });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Nuevo dominio/i }));
+    fireEvent.focus(screen.getAllByPlaceholderText("Buscar cliente...").at(-1)!);
+    fireEvent.mouseDown(await screen.findByRole("option", { name: "Cliente Uno" }));
+    fireEvent.change(screen.getAllByPlaceholderText("ejemplo.sagerp.co").at(-1)!, { target: { value: "cliente.sagerp.co" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Guardar$/i }));
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalled());
+    expect(apiMock.post).toHaveBeenCalledWith("/domains", expect.objectContaining({
+      frequency: expect.objectContaining({ origin: "domain_default" }),
+    }));
   });
 });

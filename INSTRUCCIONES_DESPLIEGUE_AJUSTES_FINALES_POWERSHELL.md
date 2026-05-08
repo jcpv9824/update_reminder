@@ -2,7 +2,7 @@
 
 Fecha: 2026-05-07
 
-Estos pasos publican los cambios finales de flujo **Cliente → Dominio → Base de datos → Tareas**, el tablero agrupado de tareas, la ventana visible de tareas, las frecuencias con fecha de fin opcional y la reorganización de **Alertas y correos**.
+Estos pasos publican los cambios finales de flujo **Cliente → Dominio → Base de datos → Tareas**, responsables manuales opcionales, recordatorios por responsable, **Programaciones especiales** separadas de la frecuencia normal del dominio, el tablero agrupado de tareas, el modal amplio de detalle, la ventana visible de tareas, las frecuencias con fecha de fin opcional y la reorganización de **Alertas y correos**.
 
 No incluya contraseñas reales en Git, documentación, capturas, logs ni comandos.
 
@@ -23,6 +23,8 @@ git status
 git diff -- README.md DESPLIEGUE.md CAMBIOS_V6.md
 git diff -- api/src frontend/src
 ```
+
+Verifique especialmente que no se incluyan secretos y que los cambios de frecuencia usen `origin = "domain_default"` para dominios y `origin = "special"` para **Programaciones especiales**.
 
 ## 3. Ejecutar pruebas y build del backend
 
@@ -88,7 +90,7 @@ Set-Location $repo
 git status
 git add README.md DESPLIEGUE.md CAMBIOS_V6.md INSTRUCCIONES_DESPLIEGUE_AJUSTES_FINALES_POWERSHELL.md
 git add api/src frontend/src
-git commit -m "Ajusta flujo de dominios, frecuencias, tareas y alertas"
+git commit -m "Ajusta responsables, programaciones especiales, tareas y alertas"
 git push
 ```
 
@@ -138,7 +140,26 @@ correo1@empresa.com; correo2@empresa.com
 3. Cree un dominio con frecuencia semanal y, si aplica, fecha de fin.
 4. Use **Guardar y agregar base de datos**.
 5. Cree una base asociada al dominio.
-6. Confirme que la base muestra la frecuencia heredada y no pide frecuencia ni rol responsable.
+6. Confirme que la base muestra la frecuencia heredada y no pide frecuencia propia.
+
+### 8.4.1 Responsables y recordatorios
+
+1. En **Dominios**, cree o edite un dominio con frecuencia automática.
+2. Deje **Responsable de actualización → Usar rol predeterminado**.
+3. Guarde y genere tareas. La tarea de dominio debe quedar sin `assignedUserIds` y con rol **Actualizador de dominios**.
+4. Vuelva a editar el dominio y seleccione **Asignar responsable específico**.
+5. Seleccione una o varias personas activas.
+6. Guarde y genere tareas. La tarjeta debe mostrar esos nombres y el badge **Asignado a ti** cuando corresponda.
+7. Repita con **Responsable de bases de datos asociadas** para validar que las tareas heredadas de bases se asignen al responsable manual de bases.
+8. Confirme que los recordatorios se envían a responsables manuales cuando existen y al rol cuando no existen.
+
+### 8.4.2 Programaciones especiales
+
+1. Abra **Programaciones especiales**.
+2. Confirme el texto de ayuda: la frecuencia normal se configura desde **Dominios**.
+3. Verifique que no aparezcan las frecuencias normales de dominios.
+4. Cree una programación especial y confirme que sí aparece en la tabla.
+5. En el API, `GET /api/schedules?origin=special` debe devolver solo programaciones especiales.
 
 ### 8.5 Generar tareas ahora
 
@@ -157,6 +178,27 @@ correo1@empresa.com; correo2@empresa.com
 5. Abra un grupo de bases y use **Copiar base**, **Copiar dominio** o **Copiar todas las bases pendientes**.
 6. Marque una tarea como completada. Debe mostrar `Guardando` y luego `Guardado`.
 7. Si una acción falla, debe verse `Error` y el botón **Reintentar**.
+
+### 8.5.2 Modal de detalle de tareas
+
+1. En **Tareas**, abra un grupo con **Ver detalle**.
+2. Confirme que el modal es amplio y que la tabla no queda cortada innecesariamente.
+3. Para dominios, confirme que cada fila muestra:
+   - Cliente.
+   - Dominio registrado.
+   - Dominio para publicar.
+   - Estado.
+   - Nota.
+   - Acciones: **Copiar dominio para publicar** y **Completar**.
+4. Confirme que no aparecen **Iniciar**, **Bloquear**, **Reportar problema** ni **Copiar URL completa** como acciones normales.
+5. Para bases, confirme que cada fila muestra:
+   - Cliente.
+   - Dominio para publicar.
+   - Base / conexión con servidor, base, usuario y contraseña.
+   - Estado.
+   - Nota.
+   - Acción: **Completar**.
+6. Use **Ver** o **Copiar** contraseña solo cuando sea necesario. La contraseña se obtiene bajo demanda desde el backend y no se carga en la lista de tareas.
 
 ### 8.6 Actualizadores
 

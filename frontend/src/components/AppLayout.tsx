@@ -7,7 +7,7 @@ const ELEMENTOS = [
   { ruta: "/clientes", etiqueta: "Clientes", roles: ["admin", "client_manager", "viewer"] },
   { ruta: "/dominios", etiqueta: "Dominios", roles: ["admin", "client_manager", "viewer", "domain_updater"] },
   { ruta: "/bases-de-datos", etiqueta: "Bases de datos", roles: ["admin", "client_manager", "viewer", "database_updater"] },
-  { ruta: "/frecuencias", etiqueta: "Frecuencias especiales", roles: ["admin", "client_manager"] },
+  { ruta: "/frecuencias", etiqueta: "Programaciones especiales", roles: ["admin", "client_manager"] },
   { ruta: "/alertas-correos", etiqueta: "Alertas y correos", roles: ["admin"] },
   { ruta: "/auditoria", etiqueta: "Auditoría", roles: ["admin", "client_manager", "viewer", "database_updater", "domain_updater"] },
   { ruta: "/usuarios", etiqueta: "Usuarios y roles", roles: ["admin"] },

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { Cliente, Dominio, Frecuencia } from "../types";
+import type { Cliente, Dominio, Frecuencia, Usuario } from "../types";
 import { Alerta, EtiquetaEstado, Modal, DialogoConfirmar } from "../components/Comunes";
 import { ETIQUETAS_AMBIENTE } from "../types";
 import { SeleccionFrecuencia, valoresFrecuenciaPorDefecto, depurarFrecuenciaParaEnvio, type ValoresFrecuencia } from "../components/SeleccionFrecuencia";
@@ -28,6 +28,7 @@ export default function DominiosPage() {
   const { data: clientes = [] } = useQuery({ queryKey: ["clientes"], queryFn: () => api.get<Cliente[]>("/clients") });
   const { data: dominios = [], isLoading } = useQuery({ queryKey: ["dominios"], queryFn: () => api.get<Dominio[]>("/domains") });
   const { data: frecuencias = [] } = useQuery({ queryKey: ["frecuencias"], queryFn: () => api.get<Frecuencia[]>("/schedules") });
+  const { data: usuarios = [] } = useQuery({ queryKey: ["usuarios"], queryFn: () => api.get<Usuario[]>("/users") });
 
   useEffect(() => {
     if (searchParams.get("new") === "1") {
@@ -150,13 +151,14 @@ export default function DominiosPage() {
         <FormularioDominio
           key={crear.submittedAt || searchParams.get("clientId") || "nuevo"}
           clientes={clientes}
+          usuarios={usuarios}
           clienteInicialId={searchParams.get("clientId") ?? ""}
           cargando={crear.isPending}
           onSubmit={(v, accion) => crear.mutate({ body: v, accion })}
         />
       </Modal>
       <Modal titulo="Editar dominio" abierto={!!editando} onCerrar={() => setEditando(null)}>
-        {editando && <FormularioDominio inicial={editando} frecuenciaInicial={frecuencias.find((f) => f.targetType === "domain" && (f.domainId === editando.id || f.targetIds.includes(editando.id)))} clientes={clientes} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
+        {editando && <FormularioDominio inicial={editando} frecuenciaInicial={frecuencias.find((f) => f.targetType === "domain" && (f.domainId === editando.id || f.targetIds.includes(editando.id)))} clientes={clientes} usuarios={usuarios} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
       </Modal>
 
       <DialogoConfirmar
@@ -192,11 +194,14 @@ function valoresDesdeFrecuencia(f?: Frecuencia): ValoresFrecuencia {
     timezone: f.timezone,
     assignedRole: "domain_updater",
     assignedUserIds: f.assignedUserIds ?? [],
+    databaseAssignedUserIds: f.databaseAssignedUserIds ?? [],
+    databaseReminderRecipientsMode: f.databaseReminderRecipientsMode ?? ((f.databaseAssignedUserIds ?? []).length > 0 ? "assignedUsers" : "roleUsers"),
     active: f.active,
+    reminders: f.reminders ?? base.reminders,
   };
 }
 
-function FormularioDominio({ inicial, frecuenciaInicial, clienteInicialId = "", clientes, onSubmit, cargando }: { inicial?: Dominio; frecuenciaInicial?: Frecuencia; clienteInicialId?: string; clientes: Cliente[]; onSubmit: (v: any, accion: AccionDominio) => void; cargando: boolean }) {
+function FormularioDominio({ inicial, frecuenciaInicial, clienteInicialId = "", clientes, usuarios, onSubmit, cargando }: { inicial?: Dominio; frecuenciaInicial?: Frecuencia; clienteInicialId?: string; clientes: Cliente[]; usuarios: Usuario[]; onSubmit: (v: any, accion: AccionDominio) => void; cargando: boolean }) {
   const [clientId, setClientId] = useState(inicial?.clientId ?? clienteInicialId);
   const [domainName, setDomainName] = useState(inicial?.domainName ?? "");
   const [environment, setEnvironment] = useState(inicial?.environment ?? "production");
@@ -211,7 +216,7 @@ function FormularioDominio({ inicial, frecuenciaInicial, clienteInicialId = "", 
     setErr(null);
     const body: any = { clientId, domainName: domainName.trim(), environment, currentWebVersion: currentWebVersion || undefined, assignedUpdaterIds: [], notes };
     if (crearFrecuencia) {
-      body.frequency = { ...depurarFrecuenciaParaEnvio(frecuencia), assignedRole: "domain_updater" };
+      body.frequency = { ...depurarFrecuenciaParaEnvio(frecuencia), assignedRole: "domain_updater", origin: "domain_default" };
     }
     onSubmit(body, accion);
   }
@@ -255,9 +260,9 @@ function FormularioDominio({ inicial, frecuenciaInicial, clienteInicialId = "", 
         </label>
       </div>
       {crearFrecuencia && (
-        <SeleccionFrecuencia valor={frecuencia} onChange={setFrecuencia} rolesPermitidos={["domain_updater"]} />
+        <SeleccionFrecuencia valor={frecuencia} onChange={setFrecuencia} rolesPermitidos={["domain_updater"]} usuarios={usuarios} tipoObjetivo="domain" />
       )}
-      <p className="texto-ayuda">Las bases de datos asociadas heredarán esta frecuencia. La responsabilidad se infiere como Actualizador de dominios.</p>
+      <p className="texto-ayuda">Las bases de datos asociadas heredarán esta frecuencia. Puedes dejar responsables por rol o asignar personas específicas.</p>
 
       <div className="acciones-formulario">
         <button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button>

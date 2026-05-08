@@ -147,6 +147,40 @@ describe("permissions", () => {
     expect(canCompleteDomainTask(user(["domain_updater"]), { ...baseTask, targetType: "domain", taskBucket: "2026-05-08_domain", assignedRole: "domain_updater" })).toBe(true);
   });
 
+  it("responsable manual limita la tarea al usuario asignado o admin", () => {
+    const assignedTask: UpdateTask = {
+      id: "t1",
+      taskDate: "2026-05-08",
+      taskBucket: "2026-05-08_domain",
+      clientId: "c1",
+      clientName: "C",
+      domainId: "d1",
+      domainName: "d",
+      targetType: "domain",
+      targetId: "d1",
+      targetName: "Dominio",
+      scheduleId: "s1",
+      assignedRole: "domain_updater",
+      assignedUserIds: ["mateo"],
+      status: "pending",
+      result: null,
+      notes: "",
+      createdAt: "",
+      createdBy: "system",
+      updatedAt: "",
+      updatedBy: "system",
+      completedAt: null,
+      completedBy: null,
+    };
+    const other = user(["domain_updater"]);
+    other.id = "otro";
+    const assigned = user(["domain_updater"]);
+    assigned.id = "mateo";
+    expect(canCompleteDomainTask(other, assignedTask)).toBe(false);
+    expect(canCompleteDomainTask(assigned, assignedTask)).toBe(true);
+    expect(canCompleteDomainTask(user(["admin"]), assignedTask)).toBe(true);
+  });
+
 
   it("domain_updater no puede revelar contraseña de base de datos", () => {
     const db: DatabaseRecord = {

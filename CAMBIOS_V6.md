@@ -172,12 +172,21 @@ Documentacion:
 - La frecuencia del dominio se puede configurar al crear y editar dominio.
 - Las frecuencias soportan **Tiene fecha de fin** y `endDate` opcional.
 - Los formularios normales no piden rol responsable; la responsabilidad se infiere por tipo de tarea.
-- La vista **Frecuencias (avanzado)** se renombró a **Frecuencias especiales**.
-- Las frecuencias especiales permiten objetivos opcionales y edición clara.
+- La vista avanzada de frecuencias se renombró a **Programaciones especiales**.
+- Las programaciones especiales permiten objetivos opcionales y edición clara.
+- Las frecuencias normales creadas desde **Dominios** se guardan con `origin = "domain_default"` y no se muestran en **Programaciones especiales**.
+- Las programaciones creadas desde la página avanzada se guardan con `origin = "special"` y `/api/schedules?origin=special` devuelve solo esas excepciones.
+- La frecuencia del dominio permite **Usar rol predeterminado** o **Asignar responsable específico** para dominios y para bases heredadas.
+- En modo manual, las tareas y recordatorios usan `assignedUserIds` y `reminderRecipientsMode = "assignedUsers"`; si no hay usuarios manuales, se usa el rol predeterminado.
 - La vista **Tareas** consulta por defecto desde `hoy - 7 días` hasta `hoy + 7 días`.
 - La vista principal de **Tareas** muestra grupos resumidos por fecha, responsable, tipo y estado agregado.
 - El detalle de cada grupo muestra tareas individuales con copiado de dominio/base y acciones inmediatas.
 - Cada cambio de estado en el detalle llama el endpoint correspondiente al instante y muestra `Guardando`, `Guardado` o `Error` con opción de reintentar.
+- El modal de detalle de tareas usa ancho ampliado `min(95vw, 1400px)`.
+- El detalle de dominios se simplificó a **Copiar dominio para publicar** y **Completar**.
+- El detalle de bases muestra servidor, base, usuario y contraseña en una celda apilada, con copiado por campo.
+- La contraseña de base no se precarga en tareas; se revela o copia solo al hacer clic y se audita sin incluir el valor.
+- Las tarjetas de grupo muestran nombres de responsables cuando el directorio de usuarios está disponible y badge **Asignado a ti** cuando aplica.
 - `POST /api/tasks/generate` devuelve también `windowStart` y `windowEnd`.
 - Las tarjetas principales muestran contadores agregados para evitar saturar el tablero con todos los dominios o bases.
 - Los actualizadores pueden cambiar estado de tareas de su tipo cuando la tarea no tiene usuario asignado explícito.
@@ -204,4 +213,9 @@ Frontend:
 - Guardado inmediato al completar una tarea.
 - Error y reintento si falla el guardado.
 - Restricción de acciones para usuarios sin permiso sobre otro responsable.
+- Modal grande de detalle.
+- Acciones simplificadas para dominios y bases.
+- Conexión de base apilada.
+- Reveal/copy de contraseña bajo demanda.
+- Nombres de responsables en tarjetas.
 - Orden lógico de **Alertas y correos** y un solo botón de prueba.

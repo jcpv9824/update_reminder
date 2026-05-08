@@ -8,6 +8,31 @@ import type { UpdateSchedule, UpdateTask, UserRecord, SentReminder } from "../ty
 
 type Recipient = { email: string; name?: string };
 
+function schedulePersistedId(scheduleId: string): string {
+  return scheduleId.split("__db_inherited_")[0];
+}
+
+export function adaptarFrecuenciaParaTarea(schedule: UpdateSchedule | undefined, task: UpdateTask): UpdateSchedule | undefined {
+  if (!schedule) return undefined;
+  if (task.targetType !== "database" || !task.scheduleId.includes("__db_inherited_")) return schedule;
+  const databaseAssignedUserIds = schedule.databaseAssignedUserIds ?? [];
+  return {
+    ...schedule,
+    id: task.scheduleId,
+    targetType: "database",
+    targetIds: [task.targetId],
+    assignedRole: "database_updater",
+    assignedUserIds: databaseAssignedUserIds,
+    reminders: schedule.reminders
+      ? {
+          ...schedule.reminders,
+          reminderRecipientsMode: databaseAssignedUserIds.length > 0 ? "assignedUsers" : "roleUsers",
+          customReminderEmails: [],
+        }
+      : undefined,
+  };
+}
+
 function ahoraEnBogota(): { isoDate: string; horaLocal: string } {
   const now = new Date();
   const utcMs = now.getTime() + now.getTimezoneOffset() * 60_000;
@@ -17,7 +42,15 @@ function ahoraEnBogota(): { isoDate: string; horaLocal: string } {
   return { isoDate, horaLocal };
 }
 
-async function obtenerDestinatarios(task: UpdateTask, schedule: UpdateSchedule | undefined): Promise<Recipient[]> {
+async function obtenerDestinatariosPorRol(role: string): Promise<Recipient[]> {
+  const usuariosCnt = getContainer("users");
+  const { resources } = await usuariosCnt.items
+    .query<UserRecord>({ query: "SELECT * FROM c WHERE c.active = true AND ARRAY_CONTAINS(c.roles, @r)", parameters: [{ name: "@r", value: role }] })
+    .fetchAll();
+  return resources.map((u) => ({ email: u.email, name: u.displayName })).filter((u) => !!u.email);
+}
+
+async function obtenerDestinatarios(task: UpdateTask, schedule: UpdateSchedule | undefined, log?: (m: string) => void): Promise<Recipient[]> {
   const cfg = schedule?.reminders;
   if (!cfg) return [];
   if (cfg.reminderRecipientsMode === "customEmails" && cfg.customReminderEmails && cfg.customReminderEmails.length > 0) {
@@ -27,14 +60,16 @@ async function obtenerDestinatarios(task: UpdateTask, schedule: UpdateSchedule |
   if (cfg.reminderRecipientsMode === "roleUsers") {
     const role = schedule?.assignedRole;
     if (!role) return [];
-    const { resources } = await usuariosCnt.items
-      .query<UserRecord>({ query: "SELECT * FROM c WHERE c.active = true AND ARRAY_CONTAINS(c.roles, @r)", parameters: [{ name: "@r", value: role }] })
-      .fetchAll();
-    return resources.map((u) => ({ email: u.email, name: u.displayName })).filter((u) => !!u.email);
+    return obtenerDestinatariosPorRol(role);
   }
 
   const ids = Array.from(new Set([...(schedule?.assignedUserIds ?? []), ...(task.assignedUserIds ?? [])]));
-  if (ids.length === 0) return [];
+  if (ids.length === 0) {
+    const role = schedule?.assignedRole;
+    if (!role) return [];
+    log?.(`Recordatorio con assignedUsers sin usuarios asignados; se usa fallback por rol ${role}.`);
+    return obtenerDestinatariosPorRol(role);
+  }
   const recipients: Recipient[] = [];
   for (const id of ids) {
     try {
@@ -112,7 +147,7 @@ export async function ejecutarRecordatorios(log: (m: string) => void): Promise<{
     .fetchAll();
   if (tareas.length === 0) return { enviados: 0, fallidos: 0 };
 
-  const ids = Array.from(new Set(tareas.map((t) => t.scheduleId)));
+  const ids = Array.from(new Set(tareas.map((t) => schedulePersistedId(t.scheduleId))));
   const frecuencias = new Map<string, UpdateSchedule>();
   for (const id of ids) {
     const { resources } = await getContainer("updateSchedules")
@@ -120,13 +155,18 @@ export async function ejecutarRecordatorios(log: (m: string) => void): Promise<{
       .fetchAll();
     if (resources[0]) frecuencias.set(id, resources[0]);
   }
+  for (const tarea of tareas) {
+    const original = frecuencias.get(schedulePersistedId(tarea.scheduleId));
+    const ajustada = adaptarFrecuenciaParaTarea(original, tarea);
+    if (ajustada) frecuencias.set(tarea.scheduleId, ajustada);
+  }
 
   const decisiones = decidirRecordatorios({ ahoraIsoDate: isoDate, ahoraHoraLocal: horaLocal, tareas, frecuenciasPorId: frecuencias });
   const grupos = new Map<string, { recipient: Recipient; domains: ReminderDecision[]; databases: ReminderDecision[] }>();
 
   for (const decision of decisiones) {
     const sch = frecuencias.get(decision.task.scheduleId);
-    const destinatarios = await obtenerDestinatarios(decision.task, sch);
+    const destinatarios = await obtenerDestinatarios(decision.task, sch, log);
     for (const recipient of destinatarios) {
       const group = grupos.get(recipient.email) ?? { recipient, domains: [], databases: [] };
       if (decision.task.targetType === "domain") group.domains.push(decision);

@@ -12,7 +12,7 @@ Aplicación web para gestionar las actualizaciones programadas de los clientes d
 - **Diseño con colores corporativos**: `#1C3664`, `#7E99B2`, `#D1D3D2`, `#D3C193`.
 - Página principal **Tareas** con dos columnas (dominios y bases de datos) divididas en *Vencidas / Hoy / Próximas / Completadas*.
 - Gestión de **clientes**, **dominios** y **bases de datos**. La frecuencia principal se configura en el **dominio**; las bases de datos heredan esa frecuencia desde el dominio seleccionado.
-- **Frecuencias avanzadas** (semanal, intervalo, mensual, manual) accesibles desde una página secundaria solo para administradores.
+- **Programaciones especiales** (semanal, intervalo, mensual, manual) para excepciones o casos avanzados. La frecuencia normal vive en cada dominio y no aparece en esa vista.
 - **Generación automática diaria** de tareas mediante Azure Functions Timer Trigger y generación manual desde la vista **Tareas** con **Generar tareas ahora**.
 - Panel del actualizador con las cuatro partes del acceso (servidor, Initial Catalog, usuario y contraseña) y botones independientes para copiar; cada acción se audita.
 - **Roles**: administrador, administrador de clientes, actualizador de bases de datos, actualizador de dominios, visualizador.
@@ -159,6 +159,8 @@ La vista muestra por defecto una ventana compacta desde 7 días antes de hoy has
 
 El tablero principal no lista todos los dominios o bases individualmente. Muestra grupos resumidos como **Dominios por actualizar** o **Bases de datos por actualizar**, con total, completadas, pendientes, con problemas y estado general. El botón **Ver detalle** abre las tareas individuales, permite copiar dominios o nombres de bases y guarda inmediatamente cada cambio de estado.
 
+El detalle de tareas usa un modal amplio. Para dominios muestra solo las acciones normales **Copiar dominio para publicar** y **Completar**. Para bases de datos muestra la conexión en campos apilados: servidor, base, usuario y contraseña. La contraseña no se precarga; se revela o copia bajo demanda con el endpoint seguro y auditoría sin incluir el valor.
+
 ## Flujo rápido de creación
 
 El flujo principal ahora es **Cliente → Dominio con frecuencia → Base de datos heredada → Tareas**:
@@ -167,9 +169,9 @@ El flujo principal ahora es **Cliente → Dominio con frecuencia → Base de dat
 - **Dominios**: `Guardar`, `Guardar y agregar base de datos`, `Guardar y crear nuevo dominio`.
 - **Bases de datos**: `Guardar`, `Guardar y crear nueva base de datos`.
 
-Los formularios normales ya no piden rol responsable. La app infiere **Actualizador de dominios** para tareas de dominio y **Actualizador de bases de datos** para tareas de base. La frecuencia principal se configura en el dominio, con `startDate` obligatorio y `endDate` opcional mediante **Tiene fecha de fin**.
+Los formularios normales usan por defecto el rol responsable: **Actualizador de dominios** para tareas de dominio y **Actualizador de bases de datos** para tareas de base. En la frecuencia del dominio el administrador puede cambiar a **Asignar responsable específico**; entonces las tareas y recordatorios se asignan solo a esas personas activas. Si vuelve a **Usar rol predeterminado**, se limpian los usuarios manuales y los recordatorios vuelven a todos los usuarios activos del rol.
 
-La vista **Frecuencias especiales** queda para excepciones avanzadas. Allí el objetivo puede quedar vacío si el caso especial lo requiere, y el rol también se infiere por tipo de objetivo.
+La vista **Programaciones especiales** queda para excepciones avanzadas. Allí el objetivo puede quedar vacío si el caso especial lo requiere, y el rol también se infiere por tipo de objetivo. Las frecuencias normales creadas desde **Dominios** se guardan con `origin = "domain_default"` y no aparecen en esta página; las creadas desde **Programaciones especiales** se guardan con `origin = "special"`.
 
 ## Cambios recientes
 

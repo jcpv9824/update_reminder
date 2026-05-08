@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildScheduleRecord, validateFrequency } from "../lib/scheduleService";
+import { filterSchedulesByOrigin } from "../lib/scheduleFilters";
 
 const user = { id: "u1", email: "u@x", displayName: "U", roles: ["admin"] };
 
@@ -47,5 +48,46 @@ describe("buildScheduleRecord", () => {
     });
     expect(r.assignedRole).toBe("database_updater");
     expect(r.endDate).toBeNull();
+  });
+
+  it("guarda origin domain_default para frecuencias creadas desde dominio", () => {
+    const r = buildScheduleRecord({
+      input: { frequencyType: "weekly", weekdays: ["FRIDAY"], startDate: "2026-05-01", origin: "domain_default" },
+      clientId: "c1", clientName: "C",
+      domainId: "d1", domainName: "x.com",
+      targetType: "domain", targetIds: ["d1"],
+      currentUser: user,
+    });
+    expect(r.origin).toBe("domain_default");
+  });
+
+  it("guarda origin special para programaciones especiales", () => {
+    const r = buildScheduleRecord({
+      input: { frequencyType: "weekly", weekdays: ["FRIDAY"], startDate: "2026-05-01", origin: "special" },
+      clientId: "c1", clientName: "C",
+      targetType: "database", targetIds: ["db1"],
+      currentUser: user,
+    });
+    expect(r.origin).toBe("special");
+  });
+});
+
+describe("filterSchedulesByOrigin", () => {
+  const base = buildScheduleRecord({
+    input: { frequencyType: "weekly", weekdays: ["FRIDAY"], startDate: "2026-05-01", origin: "domain_default" },
+    clientId: "c1", clientName: "C",
+    targetType: "domain", targetIds: ["d1"],
+    currentUser: user,
+  });
+  const special = { ...base, id: "schedule_special", origin: "special" };
+  const legacy = { ...base, id: "schedule_legacy", origin: undefined };
+
+  it("GET /api/schedules?origin=special debe devolver solo programaciones especiales", () => {
+    expect(filterSchedulesByOrigin([base, special, legacy], "special").map((s) => s.id)).toEqual(["schedule_special"]);
+  });
+
+  it("los registros sin origin no rompen el filtro ni aparecen como especiales", () => {
+    expect(filterSchedulesByOrigin([legacy], "special")).toEqual([]);
+    expect(filterSchedulesByOrigin([legacy], undefined)).toEqual([legacy]);
   });
 });

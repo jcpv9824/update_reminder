@@ -7,6 +7,7 @@ import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
 import { inferScheduleRole } from "../lib/scheduleService";
+import { filterSchedulesByOrigin } from "../lib/scheduleFilters";
 import type { ClientRecord, UpdateSchedule } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
@@ -34,6 +35,9 @@ const ScheduleSchema = z.object({
   timezone: z.string().default("America/Bogota"),
   assignedRole: z.string().min(1).optional(),
   assignedUserIds: z.array(z.string()).default([]),
+  databaseAssignedUserIds: z.array(z.string()).default([]),
+  databaseReminderRecipientsMode: z.enum(["assignedUsers", "roleUsers"]).optional(),
+  origin: z.string().optional(),
   active: z.boolean().default(true),
   notes: z.string().optional(),
 });
@@ -46,11 +50,12 @@ app.http("schedulesList", {
     try {
       await getUserOrFail(req);
       const clientId = req.query.get("clientId");
+      const origin = req.query.get("origin");
       const querySpec = clientId
         ? { query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: clientId }] }
         : { query: "SELECT * FROM c" };
       const { resources } = await getContainer("updateSchedules").items.query<UpdateSchedule>(querySpec).fetchAll();
-      return ok(resources);
+      return ok(filterSchedulesByOrigin(resources, origin));
     } catch (e) {
       return serverError(e);
     }
@@ -90,6 +95,10 @@ app.http("schedulesCreate", {
         timezone: parsed.data.timezone,
         assignedRole: parsed.data.assignedRole ?? inferScheduleRole(parsed.data.targetType),
         assignedUserIds: parsed.data.assignedUserIds,
+        databaseAssignedUserIds: parsed.data.databaseAssignedUserIds,
+        databaseReminderRecipientsMode:
+          parsed.data.databaseReminderRecipientsMode ?? (parsed.data.databaseAssignedUserIds.length > 0 ? "assignedUsers" : "roleUsers"),
+        origin: parsed.data.origin ?? "special",
         active: parsed.data.active,
         notes: parsed.data.notes,
         createdAt: now,
@@ -154,6 +163,7 @@ app.http("schedulesUpdate", {
         ...body,
         targetType,
         assignedRole: body.assignedRole ?? inferScheduleRole(targetType),
+        origin: body.origin ?? existing.origin ?? "special",
         targetIds: Array.isArray(body.targetIds) ? body.targetIds : existing.targetIds,
         endDate: body.endDate ?? null,
         id: existing.id,

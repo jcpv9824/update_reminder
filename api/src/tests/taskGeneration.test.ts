@@ -40,6 +40,27 @@ describe("generateTasksForDate", () => {
     expect(tasks[0].assignedUserIds).toEqual(["user_a"]);
   });
 
+  it("frecuencia de dominio sin usuarios manuales crea tarea asignada al rol", () => {
+    const roleSchedule: UpdateSchedule = {
+      ...domainSchedule,
+      assignedUserIds: [],
+    };
+    const tasks = generateTasksForDate([roleSchedule], "2026-05-08", [], (id) => id);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].assignedRole).toBe("domain_updater");
+    expect(tasks[0].assignedUserIds).toEqual([]);
+  });
+
+  it("frecuencia de dominio con usuarios manuales crea tarea asignada a esas personas", () => {
+    const manualSchedule: UpdateSchedule = {
+      ...domainSchedule,
+      assignedUserIds: ["mateo", "laura"],
+    };
+    const tasks = generateTasksForDate([manualSchedule], "2026-05-08", [], (id) => id);
+    expect(tasks[0].assignedRole).toBe("domain_updater");
+    expect(tasks[0].assignedUserIds).toEqual(["mateo", "laura"]);
+  });
+
   it("no genera tareas en una fecha que no aplica", () => {
     const tasks = generateTasksForDate(
       [schedule],
@@ -48,6 +69,16 @@ describe("generateTasksForDate", () => {
       (id) => id
     );
     expect(tasks).toHaveLength(0);
+  });
+
+  it("la generacion sigue usando frecuencias domain_default", () => {
+    const tasks = generateTasksForDate([{ ...schedule, origin: "domain_default" }], "2026-05-08", [], (id) => id);
+    expect(tasks).toHaveLength(2);
+  });
+
+  it("la generacion sigue usando programaciones especiales", () => {
+    const tasks = generateTasksForDate([{ ...schedule, origin: "special" }], "2026-05-08", [], (id) => id);
+    expect(tasks).toHaveLength(2);
   });
 
   it("no duplica tareas existentes (idempotencia)", () => {
@@ -170,7 +201,29 @@ describe("expandSchedulesWithDomainInheritance", () => {
     const tasks = generateTasksForDate(expanded, "2026-05-08", [], (id) => id);
     expect(tasks).toHaveLength(2);
     expect(tasks.map((t) => t.targetType).sort()).toEqual(["database", "domain"]);
-    expect(tasks.find((t) => t.targetType === "database")?.scheduleId).toBe("schedule_domain__db_inherited_db_1");
+    const databaseTask = tasks.find((t) => t.targetType === "database");
+    expect(databaseTask?.scheduleId).toBe("schedule_domain__db_inherited_db_1");
+    expect(databaseTask?.assignedRole).toBe("database_updater");
+    expect(databaseTask?.assignedUserIds).toEqual([]);
+  });
+
+  it("base heredada usa responsables especificos de base configurados en la frecuencia del dominio", () => {
+    const scheduleWithDbUsers: UpdateSchedule = {
+      ...domainSchedule,
+      databaseAssignedUserIds: ["db_user_1", "db_user_2"],
+      databaseReminderRecipientsMode: "assignedUsers",
+      reminders: {
+        remindersEnabled: true,
+        reminderDaysBefore: [1, 0],
+        reminderTime: "08:00",
+        reminderRecipientsMode: "roleUsers",
+      },
+    };
+    const expanded = expandSchedulesWithDomainInheritance([scheduleWithDbUsers], [domain], [db("db_1")]);
+    const databaseSchedule = expanded.find((s) => s.targetType === "database");
+    expect(databaseSchedule?.assignedRole).toBe("database_updater");
+    expect(databaseSchedule?.assignedUserIds).toEqual(["db_user_1", "db_user_2"]);
+    expect(databaseSchedule?.reminders?.reminderRecipientsMode).toBe("assignedUsers");
   });
 
   it("no genera tareas heredadas para bases inactivas o eliminadas", () => {

@@ -16,6 +16,9 @@ export type FrequencyInput = {
   timezone?: string;
   assignedRole?: string;
   assignedUserIds?: string[];
+  databaseAssignedUserIds?: string[];
+  databaseReminderRecipientsMode?: "assignedUsers" | "roleUsers";
+  origin?: "domain_default" | "special" | "database_inherited" | string;
   active?: boolean;
   reminders?: RemindersConfig;
 };
@@ -88,6 +91,10 @@ export function buildScheduleRecord(args: {
     timezone: args.input.timezone ?? "America/Bogota",
     assignedRole: args.input.assignedRole ?? inferScheduleRole(args.targetType),
     assignedUserIds: args.input.assignedUserIds ?? [],
+    databaseAssignedUserIds: args.input.databaseAssignedUserIds ?? [],
+    databaseReminderRecipientsMode:
+      args.input.databaseReminderRecipientsMode ?? ((args.input.databaseAssignedUserIds ?? []).length > 0 ? "assignedUsers" : "roleUsers"),
+    origin: args.input.origin,
     active: args.input.active ?? true,
     reminders: args.input.reminders,
     createdAt: now,

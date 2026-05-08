@@ -114,6 +114,7 @@ export type Weekday =
   | "SUNDAY";
 
 export type FrequencyType = "weekly" | "interval" | "monthly" | "manual";
+export type ScheduleOrigin = "domain_default" | "special" | "database_inherited";
 
 export type UpdateSchedule = {
   id: string;
@@ -134,6 +135,9 @@ export type UpdateSchedule = {
   timezone: string;
   assignedRole: Role | string;
   assignedUserIds: string[];
+  databaseAssignedUserIds?: string[];
+  databaseReminderRecipientsMode?: "assignedUsers" | "roleUsers";
+  origin?: ScheduleOrigin | string;
   active: boolean;
   notes?: string;
   reminders?: RemindersConfig;

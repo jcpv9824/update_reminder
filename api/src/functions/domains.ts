@@ -7,7 +7,7 @@ import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
 import { buildScheduleRecord, validateFrequency, type FrequencyInput } from "../lib/scheduleService";
-import type { ClientRecord, DomainRecord, UpdateSchedule } from "../types/models";
+import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -105,7 +105,7 @@ app.http("domainsCreate", {
       // Crear la frecuencia asociada en la misma operación, si vino en el cuerpo.
       if (parsed.data.frequency) {
         try {
-          const freq = parsed.data.frequency as FrequencyInput;
+          const freq = { ...(parsed.data.frequency as FrequencyInput), origin: "domain_default" };
           validateFrequency(freq);
           const schedule = buildScheduleRecord({
             input: freq,
@@ -176,6 +176,17 @@ app.http("domainsUpdate", {
       const existing = resources[0];
       if (!canEditDomainLimited(user, existing)) return forbidden();
       const body = await req.json() as any;
+
+      // Validar la frecuencia ANTES de tocar el dominio para no dejar
+      // estado inconsistente si la frecuencia es inválida.
+      if (body.frequency) {
+        try {
+          validateFrequency(body.frequency as FrequencyInput);
+        } catch (e: any) {
+          return badRequest(e?.message ?? "Frecuencia inválida.");
+        }
+      }
+
       const before = { ...existing };
       const updated: DomainRecord = {
         ...existing,
@@ -228,6 +239,10 @@ app.http("domainsUpdate", {
               timezone: freq.timezone ?? "America/Bogota",
               assignedRole: "domain_updater",
               assignedUserIds: freq.assignedUserIds ?? existing.assignedUpdaterIds ?? [],
+              databaseAssignedUserIds: freq.databaseAssignedUserIds ?? existingSchedule.databaseAssignedUserIds ?? [],
+              databaseReminderRecipientsMode:
+                freq.databaseReminderRecipientsMode ?? ((freq.databaseAssignedUserIds ?? existingSchedule.databaseAssignedUserIds ?? []).length > 0 ? "assignedUsers" : "roleUsers"),
+              origin: "domain_default",
               active: freq.active ?? true,
               reminders: freq.reminders,
               domainName: updated.domainName,
@@ -251,7 +266,7 @@ app.http("domainsUpdate", {
             });
           } else {
             const schedule = buildScheduleRecord({
-              input: freq,
+              input: { ...freq, origin: "domain_default" },
               clientId: existing.clientId,
               clientName: existing.clientName,
               domainId: id,
@@ -327,25 +342,49 @@ app.http("domainsDelete", {
       if (!resources.length) return notFound("Dominio no encontrado.");
       const dom = resources[0];
 
-      // Verificación de integridad: bases de datos activas y frecuencias activas
-      // que apunten a este dominio.
+      // Verificación de integridad: bloquear solo si hay bases de datos
+      // asociadas al dominio (datos importantes). Las frecuencias asociadas
+      // se eliminan en cascada porque son configuración del dominio.
       const dbsQ = await getContainer("databases")
-        .items.query({ query: "SELECT VALUE COUNT(1) FROM c WHERE c.domainId = @d AND c.status != 'deleted'", parameters: [{ name: "@d", value: id }] })
+        .items.query<DatabaseRecord>({
+          query: "SELECT * FROM c WHERE c.domainId = @d AND c.status != 'deleted'",
+          parameters: [{ name: "@d", value: id }],
+        })
         .fetchAll();
-      const schedQ = await getContainer("updateSchedules")
-        .items.query({ query: "SELECT VALUE COUNT(1) FROM c WHERE (c.domainId = @d OR ARRAY_CONTAINS(c.targetIds, @d))", parameters: [{ name: "@d", value: id }] })
+      const bdsCount = dbsQ.resources.length;
+      if (bdsCount > 0) {
+        return badRequest(`No se puede eliminar el dominio porque tiene ${bdsCount} base(s) de datos asociada(s). Elimine o desactive esas bases de datos primero.`);
+      }
+
+      // Cascada: eliminar las frecuencias asociadas a este dominio.
+      const schedContainer = getContainer("updateSchedules");
+      const { resources: schedulesAsociadas } = await schedContainer.items
+        .query<UpdateSchedule>({
+          query: "SELECT * FROM c WHERE c.domainId = @d OR ARRAY_CONTAINS(c.targetIds, @d)",
+          parameters: [{ name: "@d", value: id }],
+        })
         .fetchAll();
-      const bds = (dbsQ.resources[0] as any) ?? 0;
-      const schedules = (schedQ.resources[0] as any) ?? 0;
-      if (bds > 0 || schedules > 0) {
-        return badRequest(`No se puede eliminar el dominio porque tiene ${bds} base(s) de datos y ${schedules} frecuencia(s) asociadas. Elimine o desactive esos registros primero.`);
+      let cascadaSchedules = 0;
+      for (const s of schedulesAsociadas) {
+        try {
+          await schedContainer.item(s.id, s.clientId).delete();
+          cascadaSchedules++;
+          await writeAuditLog({
+            entityType: "schedule", entityId: s.id, clientId: s.clientId, clientName: s.clientName,
+            domainId: id, domainName: dom.domainName,
+            action: "schedule_deleted", performedBy: user.id, performedByEmail: user.email,
+            metadata: { cascadeFromDomain: id }, before: s,
+          });
+        } catch {/* si falla una, seguimos con las demás */}
       }
 
       await container.item(id, dom.clientId).delete();
       await writeAuditLog({
         entityType: "domain", entityId: id, clientId: dom.clientId, clientName: dom.clientName,
         domainId: id, domainName: dom.domainName,
-        action: "domain_deleted", performedBy: user.id, performedByEmail: user.email, before: dom,
+        action: "domain_deleted", performedBy: user.id, performedByEmail: user.email,
+        metadata: { cascadeSchedules: cascadaSchedules },
+        before: dom,
       });
       return noContent();
     } catch (e) {

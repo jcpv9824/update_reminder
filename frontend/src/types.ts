@@ -11,6 +11,7 @@ export type Usuario = {
   email: string;
   displayName: string;
   roles: string[];
+  active?: boolean;
 };
 
 export type RespuestaMe =
@@ -87,7 +88,17 @@ export type Frecuencia = {
   timezone: string;
   assignedRole: string;
   assignedUserIds: string[];
+  databaseAssignedUserIds?: string[];
+  databaseReminderRecipientsMode?: "assignedUsers" | "roleUsers";
+  origin?: "domain_default" | "special" | "database_inherited" | string;
   active: boolean;
+  reminders?: {
+    remindersEnabled: boolean;
+    reminderDaysBefore: number[];
+    reminderTime: string;
+    reminderRecipientsMode: "assignedUsers" | "roleUsers" | "customEmails";
+    customReminderEmails?: string[];
+  };
   notes?: string;
   createdAt: string;
   updatedAt: string;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decidirRecordatorios } from "../lib/reminderLogic";
+import { decidirRecordatorios, valoresRecordatoriosPorDefecto } from "../lib/reminderLogic";
 import type { UpdateSchedule, UpdateTask } from "../types/models";
 
 const sch: UpdateSchedule = {
@@ -85,5 +85,17 @@ describe("decidirRecordatorios", () => {
       frecuenciasPorId: new Map([[sch2.id, sch2]]),
     });
     expect(r).toHaveLength(0);
+  });
+});
+
+describe("valoresRecordatoriosPorDefecto", () => {
+  it("usa rol por defecto, recordatorios activos y dias 1,0", () => {
+    expect(valoresRecordatoriosPorDefecto()).toEqual({
+      remindersEnabled: true,
+      reminderDaysBefore: [1, 0],
+      reminderTime: "08:00",
+      reminderRecipientsMode: "roleUsers",
+      customReminderEmails: [],
+    });
   });
 });

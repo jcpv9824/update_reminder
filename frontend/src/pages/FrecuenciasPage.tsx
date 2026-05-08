@@ -18,23 +18,24 @@ export default function FrecuenciasPage() {
   const { data: clientes = [] } = useQuery({ queryKey: ["clientes"], queryFn: () => api.get<Cliente[]>("/clients") });
   const { data: dominios = [] } = useQuery({ queryKey: ["dominios"], queryFn: () => api.get<Dominio[]>("/domains") });
   const { data: bds = [] } = useQuery({ queryKey: ["bases-de-datos"], queryFn: () => api.get<BaseDeDatos[]>("/databases") });
-  const { data: frecuencias = [], isLoading } = useQuery({ queryKey: ["frecuencias"], queryFn: () => api.get<Frecuencia[]>("/schedules") });
+  const { data: frecuencias = [], isLoading } = useQuery({ queryKey: ["frecuencias", "special"], queryFn: () => api.get<Frecuencia[]>("/schedules?origin=special") });
+  const programacionesEspeciales = useMemo(() => frecuencias.filter((f) => f.origin === "special"), [frecuencias]);
 
   const crear = useMutation({
     mutationFn: (body: any) => api.post<Frecuencia>("/schedules", body),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["frecuencias"] }); setModalAbierto(false); setExito("Frecuencia creada correctamente."); },
-    onError: (e: any) => setError(e?.message ?? "Error al crear la frecuencia."),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["frecuencias"] }); setModalAbierto(false); setExito("Programación especial creada correctamente."); },
+    onError: (e: any) => setError(e?.message ?? "Error al crear la programación especial."),
   });
   const actualizar = useMutation({
     mutationFn: ({ id, body }: { id: string; body: any }) => api.put<Frecuencia>(`/schedules/${id}`, body),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["frecuencias"] }); setEditando(null); setExito("Frecuencia actualizada correctamente."); },
-    onError: (e: any) => setError(e?.message ?? "Error al actualizar la frecuencia."),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["frecuencias"] }); setEditando(null); setExito("Programación especial actualizada correctamente."); },
+    onError: (e: any) => setError(e?.message ?? "Error al actualizar la programación especial."),
   });
   const desactivar = useMutation({ mutationFn: (id: string) => api.post(`/schedules/${id}/deactivate`), onSuccess: () => qc.invalidateQueries({ queryKey: ["frecuencias"] }) });
   const reactivar = useMutation({ mutationFn: (id: string) => api.post(`/schedules/${id}/reactivate`), onSuccess: () => qc.invalidateQueries({ queryKey: ["frecuencias"] }) });
   const eliminar = useMutation({
     mutationFn: (id: string) => api.del(`/schedules/${id}`),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["frecuencias"] }); setExito("Frecuencia eliminada."); setConfirmarEliminar(null); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["frecuencias"] }); setExito("Programación especial eliminada."); setConfirmarEliminar(null); },
     onError: (e: any) => setError(e?.message ?? "No se pudo eliminar."),
   });
   const [confirmarEliminar, setConfirmarEliminar] = useState<Frecuencia | null>(null);
@@ -42,11 +43,14 @@ export default function FrecuenciasPage() {
   return (
     <>
       <div className="encabezado-pagina">
-        <h2>Frecuencias especiales</h2>
-        <button className="primario" onClick={() => setModalAbierto(true)}>Nueva frecuencia especial</button>
+        <h2>Programaciones especiales</h2>
+        <button className="primario" onClick={() => setModalAbierto(true)}>Nueva programación especial</button>
       </div>
       {exito && <Alerta tipo="exito">{exito}</Alerta>}
       {error && <Alerta tipo="error">{error}</Alerta>}
+      <p className="texto-ayuda">
+        Esta vista es para programaciones excepcionales o manuales. La frecuencia normal de actualización se configura desde cada dominio y se hereda automáticamente por sus bases de datos.
+      </p>
 
       {isLoading ? <div className="cargando">Cargando...</div> : (
         <table>
@@ -54,8 +58,15 @@ export default function FrecuenciasPage() {
             <th>Cliente</th><th>Tipo</th><th>Objetivos</th><th>Frecuencia</th><th>Inicio</th><th>Fin</th><th>Responsable inferido</th><th>Estado</th><th>Acciones</th>
           </tr></thead>
           <tbody>
-            {frecuencias.length === 0 ? (<tr><td colSpan={9} className="vacio">Aún no hay frecuencias configuradas.</td></tr>) :
-            frecuencias.map((f) => (
+            {programacionesEspeciales.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="vacio">
+                  <div>No hay programaciones especiales configuradas.</div>
+                  <div>Para configurar la frecuencia normal de un dominio, ve a Dominios y edita la frecuencia del dominio.</div>
+                </td>
+              </tr>
+            ) :
+            programacionesEspeciales.map((f) => (
               <tr key={f.id}>
                 <td>{f.clientName}</td>
                 <td>{f.targetType === "database" ? "Base de datos" : "Dominio"}</td>
@@ -78,18 +89,18 @@ export default function FrecuenciasPage() {
         </table>
       )}
 
-      <Modal titulo="Nueva frecuencia especial" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
+      <Modal titulo="Nueva programación especial" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
         <FormularioFrecuencia clientes={clientes} dominios={dominios} bds={bds} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />
       </Modal>
-      <Modal titulo="Editar frecuencia especial" abierto={!!editando} onCerrar={() => setEditando(null)}>
+      <Modal titulo="Editar programación especial" abierto={!!editando} onCerrar={() => setEditando(null)}>
         {editando && <FormularioFrecuencia inicial={editando} clientes={clientes} dominios={dominios} bds={bds} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
       </Modal>
 
       <DialogoConfirmar
         abierto={!!confirmarEliminar}
-        titulo="Eliminar frecuencia"
+        titulo="Eliminar programación especial"
         mensaje={confirmarEliminar
-          ? `¿Eliminar la frecuencia para ${confirmarEliminar.clientName}? Esta acción no se puede deshacer.`
+          ? `¿Eliminar la programación especial para ${confirmarEliminar.clientName}? Esta acción no se puede deshacer.`
           : ""}
         textoConfirmar="Eliminar"
         variante="peligro"
@@ -135,7 +146,7 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, onSubmit, carg
         intervalDays: frequencyType === "interval" ? intervalDays : undefined,
         dayOfMonth: frequencyType === "monthly" ? dayOfMonth : undefined,
         startDate, endDate: hasEndDate ? endDate || null : null, timezone: "America/Bogota",
-        assignedRole: targetType === "database" ? "database_updater" : "domain_updater", assignedUserIds: inicial?.assignedUserIds ?? [], active,
+        assignedRole: targetType === "database" ? "database_updater" : "domain_updater", assignedUserIds: inicial?.assignedUserIds ?? [], origin: "special", active,
       });
     }}>
       {err && <Alerta tipo="error">{err}</Alerta>}
