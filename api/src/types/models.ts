@@ -175,6 +175,12 @@ export type UpdateTask = {
   updatedBy: string;
   completedAt: string | null;
   completedBy: string | null;
+  // Indica si el actualizador reportó algún problema durante la tarea.
+  // Una tarea puede estar `status="completed"` y a la vez tener
+  // `completedWithProblems=true` y un `problemNote`.
+  completedWithProblems?: boolean;
+  problemNote?: string;
+  completionNote?: string;
   remindersSent?: SentReminder[];
   overdueAlertSentDates?: string[];
 };

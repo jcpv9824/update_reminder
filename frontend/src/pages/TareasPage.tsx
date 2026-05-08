@@ -1,24 +1,22 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import type { Tarea, Usuario } from "../types";
-import { ETIQUETAS_ESTADO, ETIQUETAS_ROLES } from "../types";
+import { ETIQUETAS_ROLES } from "../types";
 import { Alerta, EtiquetaEstado, Modal } from "../components/Comunes";
+import { hoyEnBogotaIso, sumarDiasIso, clasificarTareaPorFecha, type ClasificacionTarea } from "../utils/fechas";
+import { formatDomainForPublishing } from "../utils/dominio";
 
-function sumarDiasIso(dias: number): string {
-  const hoy = new Date();
-  hoy.setHours(0, 0, 0, 0);
-  hoy.setDate(hoy.getDate() + dias);
-  return hoy.toISOString().slice(0, 10);
-}
-
+// La ventana de visualización se calcula en zona Bogotá. Las comparaciones
+// "hoy / próximas / vencidas" usan ese mismo `HOY` para evitar drift por UTC.
+const HOY = hoyEnBogotaIso();
 const VENTANA_TAREAS = {
-  desde: sumarDiasIso(-7),
-  hasta: sumarDiasIso(7),
+  desde: sumarDiasIso(HOY, -7),
+  hasta: sumarDiasIso(HOY, 7),
 };
 
-type AccionTarea = "start" | "complete" | "fail" | "block" | "reopen";
+type AccionTarea = "start" | "complete" | "fail" | "reopen";
 type EstadoGuardado = "guardando" | "guardado" | "error";
 
 type GrupoResumen = {
@@ -26,12 +24,16 @@ type GrupoResumen = {
   fecha: string;
   responsableClave: string;
   responsableEtiqueta: string;
+  responsableEsRolFallback: boolean;
+  asignadoAlActual: boolean;
+  rolHabilitaActual: boolean;
   targetType: "domain" | "database";
   tareas: Tarea[];
-  completadas: number;
+  total: number;
+  completadasOk: number;
+  completadasConProblemas: number;
   pendientes: number;
-  conProblemas: number;
-  estadoAgregado: "completed" | "failed" | "in_progress" | "pending" | "overdue";
+  estadoAgregado: "completed" | "with_problems" | "in_progress" | "pending" | "overdue";
 };
 
 function etiquetaTipo(targetType: "domain" | "database", plural = false): string {
@@ -39,38 +41,30 @@ function etiquetaTipo(targetType: "domain" | "database", plural = false): string
   return plural ? "bases de datos" : "Base de datos";
 }
 
-function etiquetaResponsable(t: Tarea, usuario?: Usuario | null): string {
-  if (t.assignedUserIds.length === 0) return ETIQUETAS_ROLES[t.assignedRole] ?? t.assignedRole;
-  if (t.assignedUserIds.length === 1 && usuario?.id === t.assignedUserIds[0]) return "Tú";
-  if (t.assignedUserIds.length === 1) return `Usuario ${t.assignedUserIds[0]}`;
-  return `Usuarios ${t.assignedUserIds.join(", ")}`;
-}
-
-function claveResponsable(t: Tarea): string {
-  return t.assignedUserIds.length ? t.assignedUserIds.slice().sort().join("|") : `rol:${t.assignedRole}`;
+function nombreUsuarioPorId(id: string, mapa: Map<string, string>): string {
+  return mapa.get(id) ?? id;
 }
 
 function calcularEstadoGrupo(tareas: Tarea[], fecha: string): GrupoResumen["estadoAgregado"] {
-  const hoy = new Date().toISOString().slice(0, 10);
+  const conProblemas = tareas.some((t) => t.completedWithProblems || t.status === "failed");
+  if (conProblemas) return "with_problems";
   if (tareas.every((t) => t.status === "completed")) return "completed";
-  if (tareas.some((t) => t.status === "failed" || t.status === "blocked")) return "failed";
-  if (fecha < hoy && tareas.some((t) => t.status !== "completed" && t.status !== "cancelled")) return "overdue";
+  if (fecha < HOY && tareas.some((t) => t.status !== "completed" && t.status !== "cancelled")) return "overdue";
   if (tareas.some((t) => t.status === "in_progress" || t.status === "completed" || t.status === "reopened")) return "in_progress";
   return "pending";
 }
 
 function etiquetaEstadoGrupo(estado: GrupoResumen["estadoAgregado"]): string {
-  const etiquetas = {
+  return ({
     completed: "Completado",
-    failed: "Con problemas",
+    with_problems: "Con problemas",
     in_progress: "En progreso",
     pending: "Pendiente",
     overdue: "Vencido",
-  };
-  return etiquetas[estado];
+  } as const)[estado];
 }
 
-function puedeCambiarTarea(usuario: Usuario | null, tarea: Tarea): boolean {
+export function puedeCambiarTarea(usuario: Usuario | null, tarea: Tarea): boolean {
   const roles = usuario?.roles ?? [];
   if (roles.includes("admin")) return true;
   const rolNecesario = tarea.targetType === "domain" ? "domain_updater" : "database_updater";
@@ -83,13 +77,31 @@ function estadoDespuesDeAccion(accion: AccionTarea): Tarea["status"] {
   if (accion === "start") return "in_progress";
   if (accion === "complete") return "completed";
   if (accion === "fail") return "failed";
-  if (accion === "block") return "blocked";
   return "reopened";
 }
 
 async function copiarTexto(texto: string): Promise<void> {
   if (!texto) return;
   await navigator.clipboard?.writeText(texto);
+}
+
+function claveResponsable(t: Tarea): string {
+  return t.assignedUserIds.length ? t.assignedUserIds.slice().sort().join("|") : `rol:${t.assignedRole}`;
+}
+
+function etiquetaResponsableDeGrupo(items: Tarea[], usuariosMap: Map<string, string>, usuario: Usuario | null): { etiqueta: string; esRolFallback: boolean } {
+  const ids = items[0].assignedUserIds ?? [];
+  if (ids.length === 0) {
+    return { etiqueta: ETIQUETAS_ROLES[items[0].assignedRole] ?? items[0].assignedRole, esRolFallback: true };
+  }
+  // Caso especial: el único responsable es el usuario actual.
+  if (ids.length === 1 && usuario?.id === ids[0]) {
+    return { etiqueta: "Tú", esRolFallback: false };
+  }
+  if (ids.length <= 2) {
+    return { etiqueta: ids.map((id) => nombreUsuarioPorId(id, usuariosMap)).join(", "), esRolFallback: false };
+  }
+  return { etiqueta: `${ids.length} responsables`, esRolFallback: false };
 }
 
 export default function TareasPage() {
@@ -103,6 +115,19 @@ export default function TareasPage() {
 
   const [mensaje, setMensaje] = useState<string | null>(null);
   const [errorGeneracion, setErrorGeneracion] = useState<string | null>(null);
+
+  // Cargar nombres de los usuarios cuando el actual puede gestionar (admin / client_manager).
+  const { data: usuarios = [] } = useQuery({
+    queryKey: ["usuarios-tareas"],
+    queryFn: () => api.get<Array<{ id: string; displayName: string; email: string }>>("/users"),
+    enabled: puedeGenerar,
+  });
+  const usuariosMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const u of usuarios) m.set(u.id, u.displayName || u.email);
+    return m;
+  }, [usuarios]);
+
   const generarTareas = useMutation({
     mutationFn: () => api.post<{ created: number; skipped: number; windowStart?: string; windowEnd?: string; message: string }>("/tasks/generate", {}),
     onSuccess: (r) => {
@@ -128,19 +153,20 @@ export default function TareasPage() {
       </div>
       {mensaje && <Alerta tipo="exito">{mensaje}</Alerta>}
       {errorGeneracion && <Alerta tipo="error">{errorGeneracion}</Alerta>}
-      <Alerta tipo="info">Mostrando grupos de trabajo desde {VENTANA_TAREAS.desde} hasta {VENTANA_TAREAS.hasta}.</Alerta>
+      <Alerta tipo="info">Mostrando grupos de trabajo desde {VENTANA_TAREAS.desde} hasta {VENTANA_TAREAS.hasta} (zona América/Bogotá).</Alerta>
       <div className="tareas-grid">
-        {verDominios && <ColumnaTareas titulo="Tareas de dominios" targetType="domain" usuario={usuario} />}
-        {verBd && <ColumnaTareas titulo="Tareas de bases de datos" targetType="database" usuario={usuario} />}
+        {verDominios && <ColumnaTareas titulo="Tareas de dominios" targetType="domain" usuario={usuario} usuariosMap={usuariosMap} />}
+        {verBd && <ColumnaTareas titulo="Tareas de bases de datos" targetType="database" usuario={usuario} usuariosMap={usuariosMap} />}
         {!verDominios && !verBd && <Alerta tipo="info">No tienes tareas asignadas.</Alerta>}
       </div>
     </>
   );
 }
 
-function ColumnaTareas({ titulo, targetType, usuario }: { titulo: string; targetType: "domain" | "database"; usuario: Usuario | null }) {
+function ColumnaTareas({ titulo, targetType, usuario, usuariosMap }: { titulo: string; targetType: "domain" | "database"; usuario: Usuario | null; usuariosMap: Map<string, string> }) {
   const qc = useQueryClient();
   const [grupoActivo, setGrupoActivo] = useState<GrupoResumen | null>(null);
+  const [confirmando, setConfirmando] = useState<{ tarea: Tarea } | null>(null);
   const [guardado, setGuardado] = useState<Record<string, { estado: EstadoGuardado; mensaje?: string; reintento?: { accion: AccionTarea; body?: any } }>>({});
   const [error, setError] = useState<string | null>(null);
 
@@ -158,7 +184,15 @@ function ColumnaTareas({ titulo, targetType, usuario }: { titulo: string; target
     onSuccess: (_r, variables) => {
       const nuevoEstado = estadoDespuesDeAccion(variables.accion);
       qc.setQueryData<Tarea[]>(["tareas", targetType], (actuales = []) =>
-        actuales.map((t) => t.id === variables.id ? { ...t, status: nuevoEstado, notes: variables.body?.notes ?? t.notes } : t)
+        actuales.map((t) => t.id === variables.id ? {
+          ...t,
+          status: nuevoEstado,
+          notes: variables.body?.notes ?? t.notes,
+          completedWithProblems: nuevoEstado === "completed" ? !!variables.body?.withProblems : t.completedWithProblems,
+          problemNote: variables.body?.problemNote ?? t.problemNote,
+          completionNote: variables.body?.completionNote ?? t.completionNote,
+          completedAt: nuevoEstado === "completed" ? new Date().toISOString() : t.completedAt,
+        } : t)
       );
       setGuardado((m) => ({ ...m, [variables.id]: { estado: "guardado" } }));
     },
@@ -169,12 +203,17 @@ function ColumnaTareas({ titulo, targetType, usuario }: { titulo: string; target
     },
   });
 
-  const grupos = useMemo(() => agruparTareas(tareas, targetType, usuario), [tareas, targetType, usuario]);
-  const hoy = new Date().toISOString().slice(0, 10);
-  const vencidas = grupos.filter((g) => g.estadoAgregado === "overdue");
-  const deHoy = grupos.filter((g) => g.fecha === hoy && g.estadoAgregado !== "completed" && g.estadoAgregado !== "overdue");
-  const proximas = grupos.filter((g) => g.fecha > hoy && g.estadoAgregado !== "completed");
-  const completadas = grupos.filter((g) => g.estadoAgregado === "completed");
+  const grupos = useMemo(() => agruparTareas(tareas, targetType, usuario, usuariosMap), [tareas, targetType, usuario, usuariosMap]);
+
+  // Clasificación por zona Bogotá: hoy / próximas / vencidas / completadas.
+  const seccionado = useMemo(() => {
+    const out: Record<ClasificacionTarea, GrupoResumen[]> = { vencidas: [], hoy: [], proximas: [], completadas: [], fueraVentana: [] };
+    for (const g of grupos) {
+      const cls = clasificarTareaPorFecha(g.fecha, g.estadoAgregado === "completed" ? "completed" : "pending", HOY);
+      out[cls].push(g);
+    }
+    return out;
+  }, [grupos]);
 
   function accionar(id: string, accion: AccionTarea, body?: any) {
     cambiarEstado.mutate({ id, accion, body });
@@ -186,10 +225,10 @@ function ColumnaTareas({ titulo, targetType, usuario }: { titulo: string; target
       {error && <Alerta tipo="error">{error}</Alerta>}
       {isLoading ? <div className="cargando">Cargando...</div> : (
         <>
-          <GrupoResumenSeccion titulo="Vencidas" grupos={vencidas} onAbrir={setGrupoActivo} />
-          <GrupoResumenSeccion titulo="Hoy" grupos={deHoy} onAbrir={setGrupoActivo} />
-          <GrupoResumenSeccion titulo="Próximas" grupos={proximas} onAbrir={setGrupoActivo} />
-          <GrupoResumenSeccion titulo="Completadas" grupos={completadas} onAbrir={setGrupoActivo} />
+          <GrupoResumenSeccion titulo="Vencidas" grupos={seccionado.vencidas} onAbrir={setGrupoActivo} />
+          <GrupoResumenSeccion titulo="Hoy" grupos={seccionado.hoy} onAbrir={setGrupoActivo} />
+          <GrupoResumenSeccion titulo="Próximas" grupos={seccionado.proximas} onAbrir={setGrupoActivo} />
+          <GrupoResumenSeccion titulo="Completadas" grupos={seccionado.completadas} onAbrir={setGrupoActivo} />
         </>
       )}
 
@@ -203,15 +242,28 @@ function ColumnaTareas({ titulo, targetType, usuario }: { titulo: string; target
             grupo={grupos.find((g) => g.id === grupoActivo.id) ?? grupoActivo}
             usuario={usuario}
             guardado={guardado}
+            onSolicitarCompletar={(tarea) => setConfirmando({ tarea })}
             onAccion={accionar}
           />
         )}
       </Modal>
+
+      <ModalConfirmarCompletar
+        abierto={!!confirmando}
+        tarea={confirmando?.tarea ?? null}
+        onCerrar={() => setConfirmando(null)}
+        onConfirmar={(payload) => {
+          if (!confirmando) return;
+          const t = confirmando.tarea;
+          accionar(t.id, "complete", payload);
+          setConfirmando(null);
+        }}
+      />
     </div>
   );
 }
 
-function agruparTareas(tareas: Tarea[], targetType: "domain" | "database", usuario: Usuario | null): GrupoResumen[] {
+function agruparTareas(tareas: Tarea[], targetType: "domain" | "database", usuario: Usuario | null, usuariosMap: Map<string, string>): GrupoResumen[] {
   const mapa = new Map<string, Tarea[]>();
   for (const tarea of tareas) {
     const responsable = claveResponsable(tarea);
@@ -221,18 +273,28 @@ function agruparTareas(tareas: Tarea[], targetType: "domain" | "database", usuar
 
   return Array.from(mapa.entries()).map(([key, items]) => {
     const [fecha, responsableClave] = key.split("|");
-    const completadas = items.filter((t) => t.status === "completed").length;
-    const conProblemas = items.filter((t) => t.status === "failed" || t.status === "blocked").length;
+    const completadasOk = items.filter((t) => t.status === "completed" && !t.completedWithProblems).length;
+    const completadasConProblemas = items.filter((t) => (t.status === "completed" && t.completedWithProblems) || t.status === "failed").length;
+    const pendientes = items.filter((t) => t.status !== "completed" && t.status !== "cancelled").length;
+    const { etiqueta, esRolFallback } = etiquetaResponsableDeGrupo(items, usuariosMap, usuario);
+    const ids = items[0].assignedUserIds ?? [];
+    const asignadoAlActual = !!usuario && ids.includes(usuario.id);
+    const rolNecesario = items[0].targetType === "domain" ? "domain_updater" : "database_updater";
+    const rolHabilitaActual = !!usuario && (usuario.roles ?? []).includes(rolNecesario) && ids.length === 0;
     return {
       id: key,
       fecha,
       responsableClave,
-      responsableEtiqueta: etiquetaResponsable(items[0], usuario),
+      responsableEtiqueta: etiqueta,
+      responsableEsRolFallback: esRolFallback,
+      asignadoAlActual,
+      rolHabilitaActual,
       targetType,
       tareas: items.sort((a, b) => a.clientName.localeCompare(b.clientName) || a.targetName.localeCompare(b.targetName)),
-      completadas,
-      pendientes: items.filter((t) => t.status !== "completed" && t.status !== "cancelled").length,
-      conProblemas,
+      total: items.length,
+      completadasOk,
+      completadasConProblemas,
+      pendientes,
       estadoAgregado: calcularEstadoGrupo(items, fecha),
     };
   }).sort((a, b) => a.fecha.localeCompare(b.fecha) || a.responsableEtiqueta.localeCompare(b.responsableEtiqueta));
@@ -244,77 +306,94 @@ function GrupoResumenSeccion({ titulo, grupos, onAbrir }: { titulo: string; grup
       <div className="grupo-tareas-titulo">{titulo} <span style={{ color: "#9ca3af", fontWeight: 400 }}>({grupos.length})</span></div>
       {grupos.length === 0 ? <div className="vacio" style={{ padding: 8, fontSize: 12 }}>Sin grupos.</div> : (
         <ul className="lista-tareas">
-          {grupos.map((g) => (
-            <li key={g.id} className="item-tarea">
-              <div className="item-tarea-datos">
-                <div className="item-tarea-fila">
-                  <strong>{g.responsableEtiqueta} — {g.targetType === "domain" ? "Dominios" : "Bases de datos"} por actualizar</strong>
-                  <EtiquetaEstado estado={g.estadoAgregado === "overdue" ? "failed" : g.estadoAgregado} />
+          {grupos.map((g) => {
+            const clases = ["item-tarea"];
+            if (g.asignadoAlActual) clases.push("item-tarea-asignada");
+            else if (g.rolHabilitaActual) clases.push("item-tarea-rol-actual");
+            return (
+              <li key={g.id} className={clases.join(" ")}>
+                <div className="item-tarea-datos">
+                  <div className="item-tarea-fila">
+                    <strong>{g.responsableEtiqueta} — {g.targetType === "domain" ? "Dominios" : "Bases de datos"} por actualizar</strong>
+                    {g.asignadoAlActual && <span className="badge-asignado">Asignado a ti</span>}
+                    {!g.asignadoAlActual && g.rolHabilitaActual && <span className="badge-rol">Tu rol puede atender esta tarea</span>}
+                    <EtiquetaEstado estado={g.estadoAgregado === "overdue" ? "failed" : g.estadoAgregado === "with_problems" ? "blocked" : g.estadoAgregado} />
+                  </div>
+                  <div className="item-tarea-fila item-tarea-detalle">
+                    <span>Fecha: {g.fecha}</span>
+                    <span>Total: {g.total} {etiquetaTipo(g.targetType, true)}</span>
+                  </div>
+                  <div className="item-tarea-fila item-tarea-detalle">
+                    <span>Completadas: {g.completadasOk} / {g.total}</span>
+                    <span>Pendientes: {g.pendientes}</span>
+                    <span>Con problemas: {g.completadasConProblemas}</span>
+                  </div>
+                  <div className="item-tarea-fila item-tarea-detalle">
+                    <span>Estado: {etiquetaEstadoGrupo(g.estadoAgregado)}</span>
+                    {!g.responsableEsRolFallback && <span>Responsable: {g.responsableEtiqueta}</span>}
+                  </div>
                 </div>
-                <div className="item-tarea-fila item-tarea-detalle">
-                  <span>Fecha: {g.fecha}</span>
-                  <span>Total: {g.tareas.length} {etiquetaTipo(g.targetType, true)}</span>
+                <div className="acciones-tabla">
+                  <button onClick={() => onAbrir(g)}>Ver detalle</button>
                 </div>
-                <div className="item-tarea-fila item-tarea-detalle">
-                  <span>Completadas: {g.completadas} / {g.tareas.length}</span>
-                  <span>Pendientes: {g.pendientes}</span>
-                  <span>Con problemas: {g.conProblemas}</span>
-                </div>
-                <div className="item-tarea-fila item-tarea-detalle">
-                  <span>Estado: {etiquetaEstadoGrupo(g.estadoAgregado)}</span>
-                </div>
-              </div>
-              <div className="acciones-tabla">
-                <button onClick={() => onAbrir(g)}>Ver detalle</button>
-              </div>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>
   );
 }
 
-function DetalleGrupo({ grupo, usuario, guardado, onAccion }: {
+function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion }: {
   grupo: GrupoResumen;
   usuario: Usuario | null;
   guardado: Record<string, { estado: EstadoGuardado; mensaje?: string; reintento?: { accion: AccionTarea; body?: any } }>;
+  onSolicitarCompletar: (t: Tarea) => void;
   onAccion: (id: string, accion: AccionTarea, body?: any) => void;
 }) {
   const pendientes = grupo.tareas.filter((t) => t.status !== "completed" && t.status !== "cancelled");
 
-  function pedirNotaYEnviar(tarea: Tarea, accion: AccionTarea) {
-    if (!puedeCambiarTarea(usuario, tarea)) return;
-    if (accion === "fail" || accion === "block") {
-      const nota = window.prompt("Describe el problema encontrado");
-      if (!nota?.trim()) return;
-      onAccion(tarea.id, accion, { notes: nota.trim(), result: "failure" });
-      return;
-    }
-    if (accion === "complete") {
-      const nota = window.prompt("Nota de actualización (opcional)") ?? "";
-      onAccion(tarea.id, accion, { notes: nota.trim(), result: "success" });
-      return;
-    }
-    onAccion(tarea.id, accion);
-  }
-
   return (
     <>
-      <p><strong>Fecha:</strong> {grupo.fecha}</p>
-      <p><strong>Total:</strong> {grupo.tareas.length} | <strong>Completadas:</strong> {grupo.completadas} / {grupo.tareas.length} | <strong>Con problemas:</strong> {grupo.conProblemas}</p>
-      <button
-        type="button"
-        onClick={() => copiarTexto(pendientes.map((t) => grupo.targetType === "domain" ? t.domainName : t.targetName).filter(Boolean).join("\n"))}
-      >
-        {grupo.targetType === "domain" ? "Copiar todos los dominios pendientes" : "Copiar todas las bases pendientes"}
-      </button>
+      <p>
+        <strong>Fecha:</strong> {grupo.fecha} ·{" "}
+        <strong>Responsables:</strong> {grupo.responsableEtiqueta}
+      </p>
+      <p>
+        <strong>Total:</strong> {grupo.total} · <strong>Completadas:</strong> {grupo.completadasOk} / {grupo.total} · <strong>Con problemas:</strong> {grupo.completadasConProblemas}
+      </p>
+      {grupo.targetType === "domain" ? (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            className="primario"
+            onClick={() => copiarTexto(pendientes.map((t) => formatDomainForPublishing(t.domainName)).filter(Boolean).join("\n"))}
+          >
+            Copiar todos los dominios pendientes (formato publicable)
+          </button>
+          <button
+            type="button"
+            onClick={() => copiarTexto(pendientes.map((t) => t.domainName).filter(Boolean).join("\n"))}
+          >
+            Copiar URLs completas
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => copiarTexto(pendientes.map((t) => t.targetName).filter(Boolean).join("\n"))}
+        >
+          Copiar todas las bases pendientes
+        </button>
+      )}
 
       <table style={{ marginTop: 12 }}>
         <thead>
           <tr>
             <th>Cliente</th>
-            <th>Dominio</th>
+            <th>Dominio registrado</th>
+            <th>Dominio para publicar</th>
             {grupo.targetType === "database" && <th>Base</th>}
             <th>Estado</th>
             <th>Nota</th>
@@ -326,13 +405,18 @@ function DetalleGrupo({ grupo, usuario, guardado, onAccion }: {
           {grupo.tareas.map((tarea) => {
             const estado = guardado[tarea.id];
             const puedeCambiar = puedeCambiarTarea(usuario, tarea);
+            const notaMostrada = tarea.completedWithProblems
+              ? `⚠ ${tarea.problemNote || "Reportó problema"}`
+              : (tarea.completionNote || tarea.notes || "-");
+            const dominioPublicable = formatDomainForPublishing(tarea.domainName);
             return (
               <tr key={tarea.id}>
                 <td>{tarea.clientName}</td>
-                <td>{tarea.domainName}</td>
+                <td style={{ fontSize: 12, color: "#6b7280" }}>{tarea.domainName}</td>
+                <td style={{ fontFamily: "monospace" }}>{dominioPublicable}</td>
                 {grupo.targetType === "database" && <td>{tarea.targetName}</td>}
-                <td><EtiquetaEstado estado={tarea.status} /></td>
-                <td>{tarea.notes || "-"}</td>
+                <td><EtiquetaEstado estado={tarea.completedWithProblems ? "blocked" : tarea.status} /></td>
+                <td style={{ maxWidth: 240, fontSize: 12 }}>{notaMostrada}</td>
                 <td>
                   {estado?.estado === "guardando" && "Guardando..."}
                   {estado?.estado === "guardado" && "Guardado"}
@@ -346,15 +430,29 @@ function DetalleGrupo({ grupo, usuario, guardado, onAccion }: {
                   )}
                 </td>
                 <td className="acciones-tabla">
-                  <button type="button" onClick={() => copiarTexto(grupo.targetType === "domain" ? tarea.domainName : tarea.targetName)}>
-                    {grupo.targetType === "domain" ? "Copiar dominio" : "Copiar base"}
-                  </button>
-                  {grupo.targetType === "database" && <button type="button" onClick={() => copiarTexto(tarea.domainName)}>Copiar dominio</button>}
-                  {puedeCambiar && tarea.status === "pending" && <button type="button" onClick={() => pedirNotaYEnviar(tarea, "start")}>Iniciar</button>}
-                  {puedeCambiar && tarea.status !== "completed" && <button type="button" className="exito" onClick={() => pedirNotaYEnviar(tarea, "complete")}>Completar</button>}
-                  {puedeCambiar && tarea.status !== "completed" && <button type="button" className="peligro" onClick={() => pedirNotaYEnviar(tarea, "fail")}>Problema</button>}
-                  {puedeCambiar && tarea.status !== "completed" && <button type="button" className="advertencia" onClick={() => pedirNotaYEnviar(tarea, "block")}>Bloquear</button>}
-                  {puedeCambiar && tarea.status === "completed" && <button type="button" onClick={() => pedirNotaYEnviar(tarea, "reopen")}>Reabrir</button>}
+                  {grupo.targetType === "domain" ? (
+                    <>
+                      <button type="button" className="primario" onClick={() => copiarTexto(dominioPublicable)}>
+                        Copiar dominio para publicar
+                      </button>
+                      <button type="button" onClick={() => copiarTexto(tarea.domainName)}>
+                        Copiar URL completa
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" onClick={() => copiarTexto(tarea.targetName)}>Copiar base</button>
+                      <button type="button" onClick={() => copiarTexto(dominioPublicable)}>Copiar dominio para publicar</button>
+                    </>
+                  )}
+                  {puedeCambiar && tarea.status === "pending" && <button type="button" onClick={() => onAccion(tarea.id, "start")}>Iniciar</button>}
+                  {puedeCambiar && tarea.status !== "completed" && <button type="button" className="exito" onClick={() => onSolicitarCompletar(tarea)}>Completar</button>}
+                  {puedeCambiar && tarea.status !== "completed" && <button type="button" className="peligro" onClick={() => {
+                    const nota = window.prompt("Describe el problema encontrado");
+                    if (!nota?.trim()) return;
+                    onAccion(tarea.id, "fail", { notes: nota.trim(), result: "failure" });
+                  }}>Reportar problema</button>}
+                  {puedeCambiar && tarea.status === "completed" && <button type="button" onClick={() => onAccion(tarea.id, "reopen")}>Reabrir</button>}
                   {!puedeCambiar && <span className="texto-ayuda">Sin permiso</span>}
                 </td>
               </tr>
@@ -363,5 +461,88 @@ function DetalleGrupo({ grupo, usuario, guardado, onAccion }: {
         </tbody>
       </table>
     </>
+  );
+}
+
+function ModalConfirmarCompletar({ abierto, tarea, onCerrar, onConfirmar }: {
+  abierto: boolean;
+  tarea: Tarea | null;
+  onCerrar: () => void;
+  onConfirmar: (payload: { withProblems: boolean; problemNote?: string; completionNote?: string; notes?: string; result?: string }) => void;
+}) {
+  const [tuvoProblemas, setTuvoProblemas] = useState(false);
+  const [problema, setProblema] = useState("");
+  const [nota, setNota] = useState("");
+
+  // Reset cuando se abre/cambia la tarea.
+  useEffect(() => {
+    if (abierto) { setTuvoProblemas(false); setProblema(""); setNota(""); }
+  }, [abierto, tarea?.id]);
+
+  if (!tarea) return null;
+  return (
+    <Modal titulo="Confirmar actualización" abierto={abierto} onCerrar={onCerrar}>
+      <p>Confirma que completaste esta actualización.</p>
+      <p style={{ fontSize: 12, color: "#6b7280" }}>
+        {tarea.targetType === "domain"
+          ? `Dominio: ${tarea.domainName}`
+          : `${tarea.targetName} (dominio ${tarea.domainName})`}
+      </p>
+
+      <div className="fila-formulario">
+        <label>
+          <input
+            type="checkbox"
+            style={{ width: "auto", marginRight: 6 }}
+            checked={tuvoProblemas}
+            onChange={(e) => setTuvoProblemas(e.target.checked)}
+          />
+          ¿Tuviste algún problema durante la actualización?
+        </label>
+      </div>
+
+      {tuvoProblemas && (
+        <div className="fila-formulario">
+          <label htmlFor="problema-note">Describe el problema encontrado</label>
+          <textarea
+            id="problema-note"
+            rows={3}
+            maxLength={4000}
+            value={problema}
+            onChange={(e) => setProblema(e.target.value)}
+            placeholder="¿Qué pasó? Esta nota se enviará a los administradores."
+          />
+        </div>
+      )}
+
+      <div className="fila-formulario">
+        <label htmlFor="completion-note">Nota de actualización (opcional)</label>
+        <textarea
+          id="completion-note"
+          rows={2}
+          maxLength={4000}
+          value={nota}
+          onChange={(e) => setNota(e.target.value)}
+        />
+      </div>
+
+      <div className="acciones-formulario">
+        <button type="button" onClick={onCerrar}>Cancelar</button>
+        <button
+          type="button"
+          className="primario"
+          disabled={tuvoProblemas && !problema.trim()}
+          onClick={() => onConfirmar({
+            withProblems: tuvoProblemas,
+            problemNote: tuvoProblemas ? problema.trim() : undefined,
+            completionNote: nota.trim() || undefined,
+            notes: nota.trim() || undefined,
+            result: tuvoProblemas ? "completed_with_problems" : "success",
+          })}
+        >
+          Confirmar actualización
+        </button>
+      </div>
+    </Modal>
   );
 }

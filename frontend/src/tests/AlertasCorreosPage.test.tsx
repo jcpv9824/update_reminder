@@ -105,6 +105,87 @@ describe("AlertasCorreosPage", () => {
     expect(await screen.findByText(/Reporte enviado correctamente/i)).toBeInTheDocument();
   });
 
+  it("la sección SMTP muestra el botón 'Guardar configuración SMTP'", async () => {
+    apiMock.get.mockResolvedValueOnce(settings);
+    render_();
+    await screen.findByRole("heading", { name: /Alertas y correos/i });
+    fireEvent.click(screen.getByText(/Configuración SMTP avanzada/i));
+    expect(screen.getByRole("button", { name: /Guardar configuración SMTP/i })).toBeInTheDocument();
+  });
+
+  it("guardar SMTP llama PUT /settings/email-alerts y muestra el mensaje de éxito", async () => {
+    apiMock.get.mockResolvedValueOnce(settings);
+    apiMock.put.mockResolvedValueOnce({ ...settings, smtpPasswordConfigured: true });
+    render_();
+    await screen.findByRole("heading", { name: /Alertas y correos/i });
+    fireEvent.click(screen.getByText(/Configuración SMTP avanzada/i));
+    fireEvent.click(screen.getByRole("button", { name: /Guardar configuración SMTP/i }));
+    await waitFor(() => expect(apiMock.put).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(/Configuración SMTP guardada correctamente/i)).toBeInTheDocument();
+  });
+
+  it("guardar SMTP sin contraseña NO envía smtpPassword al backend (preserva la actual)", async () => {
+    apiMock.get.mockResolvedValueOnce(settings);
+    apiMock.put.mockResolvedValueOnce({ ...settings, smtpPasswordConfigured: true });
+    render_();
+    await screen.findByRole("heading", { name: /Alertas y correos/i });
+    fireEvent.click(screen.getByText(/Configuración SMTP avanzada/i));
+    fireEvent.click(screen.getByRole("button", { name: /Guardar configuración SMTP/i }));
+    await waitFor(() => expect(apiMock.put).toHaveBeenCalledTimes(1));
+    const [ruta, body] = apiMock.put.mock.calls[0];
+    expect(ruta).toBe("/settings/email-alerts");
+    expect(body).not.toHaveProperty("smtpPassword");
+    expect(body).not.toHaveProperty("smtpPasswordConfigured");
+  });
+
+  it("guardar SMTP con contraseña nueva la envía y luego limpia el campo", async () => {
+    apiMock.get.mockResolvedValueOnce(settings);
+    apiMock.put.mockResolvedValueOnce({ ...settings, smtpPasswordConfigured: true });
+    render_();
+    await screen.findByRole("heading", { name: /Alertas y correos/i });
+    fireEvent.click(screen.getByText(/Configuración SMTP avanzada/i));
+    fireEvent.click(screen.getByRole("button", { name: /Cambiar contraseña SMTP/i }));
+    const inputPwd = screen.getByLabelText(/Contraseña SMTP/i) as HTMLInputElement;
+    fireEvent.change(inputPwd, { target: { value: "AppPwd-1234" } });
+    fireEvent.click(screen.getByRole("button", { name: /Guardar configuración SMTP/i }));
+    await waitFor(() => expect(apiMock.put).toHaveBeenCalledTimes(1));
+    const [, body] = apiMock.put.mock.calls[0];
+    expect(body.smtpPassword).toBe("AppPwd-1234");
+    // Tras el éxito el campo de contraseña queda limpio en el DOM:
+    await waitFor(() => {
+      expect(screen.queryByDisplayValue("AppPwd-1234")).toBeNull();
+    });
+    // Y el indicador "Sí" sigue visible.
+    expect(screen.getByText(/Contraseña SMTP configurada:/i).parentElement?.textContent).toMatch(/Sí/);
+  });
+
+  it("Cancelar en SMTP descarta cambios locales y recarga la configuración guardada", async () => {
+    apiMock.get.mockResolvedValueOnce(settings);
+    render_();
+    await screen.findByRole("heading", { name: /Alertas y correos/i });
+    fireEvent.click(screen.getByText(/Configuración SMTP avanzada/i));
+    const inputHost = screen.getByDisplayValue("smtp.example.com") as HTMLInputElement;
+    fireEvent.change(inputHost, { target: { value: "smtp.cambiado.com" } });
+    expect(inputHost.value).toBe("smtp.cambiado.com");
+    fireEvent.click(screen.getByRole("button", { name: /^Cancelar$/i }));
+    // Vuelve al valor original:
+    expect((screen.getByDisplayValue("smtp.example.com") as HTMLInputElement).value).toBe("smtp.example.com");
+  });
+
+  it("muestra error si guardar SMTP falla y NO limpia el formulario", async () => {
+    apiMock.get.mockResolvedValueOnce(settings);
+    apiMock.put.mockRejectedValueOnce(new Error("Error en Key Vault"));
+    render_();
+    await screen.findByRole("heading", { name: /Alertas y correos/i });
+    fireEvent.click(screen.getByText(/Configuración SMTP avanzada/i));
+    fireEvent.click(screen.getByRole("button", { name: /Cambiar contraseña SMTP/i }));
+    fireEvent.change(screen.getByLabelText(/Contraseña SMTP/i), { target: { value: "Secreto-1" } });
+    fireEvent.click(screen.getByRole("button", { name: /Guardar configuración SMTP/i }));
+    expect(await screen.findByText(/Error en Key Vault/i)).toBeInTheDocument();
+    // El input de contraseña no se borra cuando hay error
+    expect((screen.getByLabelText(/Contraseña SMTP/i) as HTMLInputElement).value).toBe("Secreto-1");
+  });
+
   it("rechaza destinatarios inválidos antes de enviar reporte", async () => {
     apiMock.get.mockResolvedValueOnce(settings);
     render_();

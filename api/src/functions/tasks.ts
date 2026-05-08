@@ -37,7 +37,9 @@ app.http("tasksList", {
       const assignedToMe = req.query.get("assignedToMe") === "true";
       const range = req.query.get("range"); // overdue | today | upcoming
 
-      const today = new Date().toISOString().slice(0, 10);
+      // Today en zona Bogotá (UTC-5). Evita que después de las 7pm locales el
+      // backend reporte el día siguiente.
+      const today = new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10);
       const conditions: string[] = [];
       const parameters: { name: string; value: any }[] = [];
       if (date) {
@@ -103,6 +105,50 @@ app.http("tasksGet", {
   },
 });
 
+async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string): Promise<void> {
+  try {
+    const { loadEmailAlertsSettings } = await import("../lib/settingsService");
+    const { sendEmail, escapeHtml, formatDomainForPublishing } = await import("../lib/emailService");
+    const settings = await loadEmailAlertsSettings();
+    // Buscar admins activos.
+    const { resources: admins } = await getContainer("users")
+      .items.query<any>({ query: "SELECT * FROM c WHERE c.active = true AND ARRAY_CONTAINS(c.roles, 'admin')" })
+      .fetchAll();
+    const destinatarios = admins.map((u) => u.email).filter(Boolean);
+    if (destinatarios.length === 0) {
+      // Sin admins activos: no se envía email pero la tarea ya quedó guardada.
+      return;
+    }
+    const tipo = t.targetType === "domain" ? "dominio" : "base de datos";
+    const subject = t.targetType === "domain"
+      ? "Problema reportado en actualización de dominio"
+      : "Problema reportado en actualización de base de datos";
+    const linkApp = settings.frontendBaseUrl
+      ? `<p><a href="${settings.frontendBaseUrl.replace(/\/$/, "")}/tareas">Abrir tareas</a></p>`
+      : "";
+    const dominioPublicable = formatDomainForPublishing(t.domainName);
+    const html = `
+      <h3>${escapeHtml(subject)}</h3>
+      <p>Se reportó un problema al completar una actualización.</p>
+      <ul>
+        <li><strong>Tipo:</strong> ${escapeHtml(tipo)}</li>
+        <li><strong>Cliente:</strong> ${escapeHtml(t.clientName)}</li>
+        <li><strong>Dominio registrado:</strong> ${escapeHtml(t.domainName)}</li>
+        <li><strong>Dominio para publicar:</strong> <code>${escapeHtml(dominioPublicable)}</code></li>
+        ${t.targetType === "database" ? `<li><strong>Base / Empresa:</strong> ${escapeHtml(t.targetName)}</li>` : ""}
+        <li><strong>Fecha programada:</strong> ${escapeHtml(t.taskDate)}</li>
+        <li><strong>Completada por:</strong> ${escapeHtml(performedByEmail)}</li>
+        <li><strong>Completada:</strong> ${escapeHtml(t.completedAt ?? "")}</li>
+      </ul>
+      <p><strong>Problema reportado:</strong></p>
+      <blockquote>${escapeHtml(t.problemNote ?? "(sin detalle)")}</blockquote>
+      ${linkApp}
+    `;
+    const text = `${subject}. Cliente: ${t.clientName}. Dominio registrado: ${t.domainName}. Dominio para publicar: ${dominioPublicable}. Fecha: ${t.taskDate}. Completada por: ${performedByEmail}. Problema: ${t.problemNote ?? "(sin detalle)"}`;
+    await sendEmail({ to: destinatarios, subject, html, text }, settings);
+  } catch {/* no bloquear flujo de tarea */}
+}
+
 async function changeTaskStatus(
   req: HttpRequest,
   newStatus: UpdateTask["status"],
@@ -124,11 +170,21 @@ async function changeTaskStatus(
     t.status = newStatus;
     t.updatedAt = new Date().toISOString();
     t.updatedBy = user.id;
-    if (typeof body.notes === "string") t.notes = body.notes;
-    if (typeof body.result === "string") t.result = body.result;
+    if (typeof body.notes === "string") t.notes = body.notes.slice(0, 4000);
+    if (typeof body.result === "string") t.result = body.result.slice(0, 200);
+
+    // Marca de "completada con problemas" cuando llega withProblems=true.
+    const conProblemas = newStatus === "completed" && body.withProblems === true;
     if (newStatus === "completed") {
       t.completedAt = new Date().toISOString();
       t.completedBy = user.id;
+      t.completedWithProblems = conProblemas;
+      if (typeof body.completionNote === "string") t.completionNote = body.completionNote.slice(0, 4000);
+      if (conProblemas) {
+        t.problemNote = typeof body.problemNote === "string" ? body.problemNote.slice(0, 4000) : "";
+      } else {
+        t.problemNote = undefined;
+      }
     }
     await getContainer("updateTasks").item(t.id, t.taskBucket).replace(t);
 
@@ -157,6 +213,12 @@ async function changeTaskStatus(
       }
     }
 
+    // Si fue completada con problemas, ajustamos la acción de auditoría
+    // a algo más explícito y disparamos email a admins.
+    const accionFinal = newStatus === "completed" && t.completedWithProblems
+      ? "task_completed_with_problems"
+      : auditAction;
+
     await writeAuditLog({
       entityType: "task",
       entityId: t.id,
@@ -164,12 +226,17 @@ async function changeTaskStatus(
       clientName: t.clientName,
       domainId: t.domainId,
       domainName: t.domainName,
-      action: auditAction,
+      action: accionFinal,
       performedBy: user.id,
       performedByEmail: user.email,
       before,
       after: t,
     });
+
+    if (newStatus === "completed" && t.completedWithProblems) {
+      // Notificación a admins activos. No bloquea la respuesta.
+      void notificarProblemaAdmins(t, user.email);
+    }
 
     return ok(t);
   } catch (e) {

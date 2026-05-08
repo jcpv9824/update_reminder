@@ -83,12 +83,15 @@ export default function AlertasCorreosPage() {
 
   useEffect(() => { if (data) setForm({ ...PYA_DEFAULTS, ...data }); }, [data]);
 
+  // `mensajeExito` permite a quien dispara el guardado personalizar el mensaje
+  // (por ejemplo "Configuración SMTP guardada correctamente.").
   const guardar = useMutation({
-    mutationFn: (body: any) => api.put<Settings>(RUTA, body),
-    onSuccess: (s) => {
+    mutationFn: ({ body }: { body: any; mensajeExito?: string }) => api.put<Settings>(RUTA, body),
+    onSuccess: (s, variables) => {
       qc.setQueryData(["settings-email-alerts"], s);
-      setExito("Configuración guardada.");
+      setExito(variables?.mensajeExito ?? "Configuración guardada.");
       setError(null);
+      // Por seguridad: limpiar siempre el campo local de contraseña SMTP.
       setSmtpPassword("");
       setCambiarPwd(false);
     },
@@ -146,7 +149,42 @@ export default function AlertasCorreosPage() {
     if (cambiarPwd && smtpPassword) body.smtpPassword = smtpPassword;
     delete body.smtpPasswordConfigured;
     delete body.updatedAt;
-    guardar.mutate(body);
+    guardar.mutate({ body });
+  }
+
+  // Guarda únicamente la sección SMTP. Si el campo de contraseña está vacío
+  // NO envía smtpPassword, por lo que el backend conserva la contraseña actual.
+  function guardarSmtp() {
+    setError(null);
+    setExito(null);
+    if (!form) return;
+    if (form.emailProvider === "smtp") {
+      if (!form.smtpHost) return setError("El servidor SMTP es obligatorio.");
+      if (!form.smtpPort || form.smtpPort < 1 || form.smtpPort > 65535) return setError("El puerto SMTP debe estar entre 1 y 65535.");
+      if (!form.smtpUser || !isEmail(form.smtpUser)) return setError("El usuario SMTP debe ser un correo válido.");
+    }
+    if (!isEmail(form.emailFrom)) return setError("El correo remitente no es válido.");
+    const body: any = {
+      emailProvider: form.emailProvider,
+      emailFrom: form.emailFrom,
+      emailFromName: form.emailFromName,
+      frontendBaseUrl: form.frontendBaseUrl,
+      smtpHost: form.smtpHost,
+      smtpPort: form.smtpPort,
+      smtpSecure: !!form.smtpSecure,
+      smtpUser: form.smtpUser,
+    };
+    // Solo se envía smtpPassword si el usuario escribió una nueva.
+    if (cambiarPwd && smtpPassword) body.smtpPassword = smtpPassword;
+    guardar.mutate({ body, mensajeExito: "Configuración SMTP guardada correctamente." });
+  }
+
+  // Descarta cambios locales y vuelve a la configuración guardada.
+  function cancelarSmtp() {
+    if (data) setForm({ ...PYA_DEFAULTS, ...data });
+    setSmtpPassword("");
+    setCambiarPwd(false);
+    setError(null);
   }
 
   function probar() {
@@ -232,13 +270,31 @@ export default function AlertasCorreosPage() {
           <p className="texto-ayuda">La contraseña actual no se muestra por seguridad. Escriba una nueva solo si desea cambiarla.</p>
           <p className="texto-ayuda">Contraseña configurada: <strong>{form.smtpPasswordConfigured ? "Sí" : "No"}</strong></p>
           {!cambiarPwd ? (
-            <button onClick={() => setCambiarPwd(true)}>{form.smtpPasswordConfigured ? "Cambiar contraseña SMTP" : "Configurar contraseña SMTP"}</button>
+            <button type="button" onClick={() => setCambiarPwd(true)}>{form.smtpPasswordConfigured ? "Cambiar contraseña SMTP" : "Configurar contraseña SMTP"}</button>
           ) : (
             <>
-              <input type="password" autoComplete="new-password" value={smtpPassword} onChange={(e) => setSmtpPassword(e.target.value)} />
-              <button style={{ marginTop: 6 }} onClick={() => { setCambiarPwd(false); setSmtpPassword(""); }}>Cancelar</button>
+              <input
+                type="password"
+                autoComplete="new-password"
+                aria-label="Contraseña SMTP"
+                value={smtpPassword}
+                onChange={(e) => setSmtpPassword(e.target.value)}
+              />
+              <p className="texto-ayuda" style={{ marginTop: 4 }}>
+                Si deja este campo vacío, se conservará la contraseña actual.
+              </p>
+              <button type="button" style={{ marginTop: 6 }} onClick={() => { setCambiarPwd(false); setSmtpPassword(""); }}>
+                Descartar nueva contraseña
+              </button>
             </>
           )}
+        </div>
+
+        <div className="acciones-formulario" style={{ marginTop: 12 }}>
+          <button type="button" onClick={cancelarSmtp} disabled={guardar.isPending}>Cancelar</button>
+          <button type="button" className="primario" onClick={guardarSmtp} disabled={guardar.isPending}>
+            {guardar.isPending ? "Guardando..." : "Guardar configuración SMTP"}
+          </button>
         </div>
       </Acordeon>
 

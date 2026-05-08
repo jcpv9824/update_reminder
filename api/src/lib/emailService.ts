@@ -152,6 +152,10 @@ export function renderOverdueAlertEmail(args: {
 
 export { buildDatabaseReminderEmail, buildDomainReminderEmail, buildOverdueTasksEmail, buildTestEmail };
 
+// Reexporta el helper para usarlo en plantillas y otros módulos.
+export { formatDomainForPublishing } from "./domainFormat";
+import { formatDomainForPublishing as _formatDomainForPublishing } from "./domainFormat";
+
 // Escapa HTML para evitar inyección en plantillas.
 export function escapeHtml(s: string): string {
   return String(s ?? "")

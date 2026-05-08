@@ -7,6 +7,7 @@ import { Alerta, EtiquetaEstado, Modal, DialogoConfirmar } from "../components/C
 import { ETIQUETAS_AMBIENTE } from "../types";
 import { SeleccionFrecuencia, valoresFrecuenciaPorDefecto, depurarFrecuenciaParaEnvio, type ValoresFrecuencia } from "../components/SeleccionFrecuencia";
 import { SelectorBuscable } from "../components/SelectorBuscable";
+import { formatDomainForPublishing } from "../utils/dominio";
 
 type AccionDominio = "guardar" | "agregarBase" | "crearNuevo";
 
@@ -121,13 +122,21 @@ export default function DominiosPage() {
             filtrados.map((d) => (
               <tr key={d.id}>
                 <td>{d.clientName}</td>
-                <td>{d.domainName}</td>
+                <td>
+                  <div>{d.domainName}</div>
+                  <div style={{ fontSize: 11, color: "#6b7280", fontFamily: "monospace" }}>
+                    Para publicar: {formatDomainForPublishing(d.domainName)}
+                  </div>
+                </td>
                 <td>{ETIQUETAS_AMBIENTE[d.environment] ?? d.environment}</td>
                 <td>{d.currentWebVersion ?? "-"}</td>
                 <td><EtiquetaEstado estado={d.status} /></td>
                 <td>{d.lastUpdatedAt ? new Date(d.lastUpdatedAt).toLocaleDateString("es-CO") : "-"}</td>
                 <td className="acciones-tabla">
                   <button onClick={() => setEditando(d)}>Editar</button>
+                  <button onClick={async () => { try { await navigator.clipboard?.writeText(formatDomainForPublishing(d.domainName)); } catch { /* ignore */ } }}>
+                    Copiar para publicar
+                  </button>
                   {d.status === "active" && <button className="advertencia" onClick={() => setConfirmar({ tipo: "desactivar", dominio: d })}>Desactivar</button>}
                   <button className="peligro" onClick={() => setConfirmar({ tipo: "eliminar", dominio: d })}>Eliminar</button>
                 </td>

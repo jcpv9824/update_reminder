@@ -165,32 +165,133 @@ describe("TareasPage (vista unificada)", () => {
     expect(screen.getAllByRole("button", { name: /Copiar dominio/i }).length).toBeGreaterThan(0);
   });
 
-  it("al completar una tarea llama inmediatamente el endpoint y actualiza contador del grupo", async () => {
+  it("al completar una tarea abre modal de confirmación y llama endpoint con withProblems=false", async () => {
     usuarioMock.id = "u";
     usuarioMock.roles = ["admin"];
-    vi.spyOn(window, "prompt").mockReturnValue("");
     mockTareas({ dominios: [tarea({ id: "d1" }), tarea({ id: "d2" })] });
     renderPagina();
     expect(await screen.findByText(/Completadas: 0 \/ 2/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Ver detalle/i }));
-    fireEvent.click((await screen.findAllByRole("button", { name: /Completar/i }))[0]);
-    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/tasks/d1/complete", { notes: "", result: "success" }));
-    expect((await screen.findAllByText(/Guardado/i)).length).toBeGreaterThan(0);
+    fireEvent.click((await screen.findAllByRole("button", { name: /^Completar$/i }))[0]);
+    // Aparece el modal de confirmación.
+    expect(await screen.findByRole("heading", { name: /Confirmar actualización/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Confirmar actualización/i }));
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/tasks/d1/complete", expect.objectContaining({ withProblems: false })));
     expect((await screen.findAllByText(/Completadas: 1 \/ 2/i)).length).toBeGreaterThan(0);
+  });
+
+  it("completar marcando 'tuve problemas' envía withProblems=true con problemNote", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    mockTareas({ dominios: [tarea({ id: "d1" })] });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    fireEvent.click((await screen.findAllByRole("button", { name: /^Completar$/i }))[0]);
+    // Marcar el checkbox de problema.
+    const checkbox = await screen.findByLabelText(/¿Tuviste algún problema/i);
+    fireEvent.click(checkbox);
+    fireEvent.change(screen.getByLabelText(/Describe el problema/i), { target: { value: "DNS no resolvía" } });
+    fireEvent.click(screen.getByRole("button", { name: /Confirmar actualización/i }));
+    await waitFor(() =>
+      expect(apiMock.post).toHaveBeenCalledWith("/tasks/d1/complete", expect.objectContaining({ withProblems: true, problemNote: "DNS no resolvía" }))
+    );
+  });
+
+  it("no muestra el botón Bloquear en el detalle del grupo", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    mockTareas({ dominios: [tarea({ id: "d1" })] });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    expect(screen.queryByRole("button", { name: /^Bloquear$/i })).toBeNull();
   });
 
   it("si el guardado falla muestra error y permite reintentar", async () => {
     usuarioMock.id = "u";
     usuarioMock.roles = ["admin"];
-    vi.spyOn(window, "prompt").mockReturnValue("");
     apiMock.post.mockRejectedValueOnce(new Error("Fallo de red")).mockResolvedValueOnce({});
     mockTareas({ dominios: [tarea({ id: "d1" })] });
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
-    fireEvent.click((await screen.findAllByRole("button", { name: /Completar/i }))[0]);
+    fireEvent.click((await screen.findAllByRole("button", { name: /^Completar$/i }))[0]);
+    fireEvent.click(await screen.findByRole("button", { name: /Confirmar actualización/i }));
     expect(await screen.findByText(/Fallo de red/i)).toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: /Reintentar/i }));
     await waitFor(() => expect(apiMock.post).toHaveBeenCalledTimes(2));
+  });
+
+  it("una tarea de mañana aparece en PRÓXIMAS, no en HOY", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    const { hoyEnBogotaIso, sumarDiasIso } = await import("../utils/fechas");
+    const manana = sumarDiasIso(hoyEnBogotaIso(), 1);
+    mockTareas({ dominios: [tarea({ id: "d_manana", taskDate: manana, taskBucket: `${manana}_domain` })] });
+    renderPagina();
+    // Buscamos los headers de sección "Próximas" y "Hoy" dentro de la columna de dominios.
+    await waitFor(() => {
+      const proximasHeaders = screen.getAllByText(/^Próximas/i);
+      // Al menos una sección "Próximas" debe contener (1).
+      expect(proximasHeaders.some((h) => /\(1\)/.test(h.parentElement?.textContent ?? ""))).toBe(true);
+    });
+    // Y ninguna "Hoy" debe contener (1).
+    const hoyHeaders = screen.getAllByText(/^Hoy/i);
+    expect(hoyHeaders.every((h) => !/\(1\)/.test(h.parentElement?.textContent ?? ""))).toBe(true);
+  });
+
+  it("resalta el grupo asignado al usuario actual con el badge 'Asignado a ti'", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    mockTareas({ dominios: [tarea({ id: "d1", assignedUserIds: ["u"] })] });
+    renderPagina();
+    expect(await screen.findByText(/Asignado a ti/i)).toBeInTheDocument();
+  });
+
+  it("detalle muestra 'Dominio para publicar' y botón copia con formato limpio", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    mockTareas({
+      dominios: [tarea({
+        id: "d_publicable",
+        domainName: "https://argatex.sagerp.cloud:54678/",
+        targetName: "https://argatex.sagerp.cloud:54678/",
+        assignedUserIds: ["u"],
+      })],
+    });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    // El botón principal copia el dominio limpio.
+    fireEvent.click(await screen.findByRole("button", { name: /^Copiar dominio para publicar$/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("argatex.sagerp.cloud"));
+    // El botón secundario copia la URL completa.
+    fireEvent.click(screen.getByRole("button", { name: /^Copiar URL completa$/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("https://argatex.sagerp.cloud:54678/"));
+  });
+
+  it("'Copiar todos los dominios pendientes' usa formato publicable, uno por línea", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    mockTareas({
+      dominios: [
+        tarea({ id: "a", domainName: "https://argatex.sagerp.cloud:54678/", targetName: "https://argatex.sagerp.cloud:54678/" }),
+        tarea({ id: "b", domainName: "https://machineparts.sagerp.cloud:54678/path?x=1", targetName: "https://machineparts.sagerp.cloud:54678/" }),
+      ],
+    });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Copiar todos los dominios pendientes/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("argatex.sagerp.cloud\nmachineparts.sagerp.cloud"));
+  });
+
+  it("muestra 'Tu rol puede atender esta tarea' cuando no hay asignado y el rol coincide", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["domain_updater"];
+    mockTareas({ dominios: [tarea({ id: "d1", assignedUserIds: [] })] });
+    renderPagina();
+    expect(await screen.findByText(/Tu rol puede atender/i)).toBeInTheDocument();
   });
 
   it("un usuario sin permiso no puede cambiar tareas de otro responsable", async () => {

@@ -123,6 +123,9 @@ export type Tarea = {
   updatedAt: string;
   completedAt: string | null;
   completedBy: string | null;
+  completedWithProblems?: boolean;
+  problemNote?: string;
+  completionNote?: string;
 };
 
 export type RegistroAuditoria = {

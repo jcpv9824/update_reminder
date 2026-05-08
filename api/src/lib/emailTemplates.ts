@@ -1,3 +1,5 @@
+import { formatDomainForPublishing } from "./domainFormat";
+
 export type EmailBuildResult = {
   subject: string;
   html: string;
@@ -189,6 +191,8 @@ function domainRows(tasks: DomainTaskEmailItem[], timezone: string, overdue = fa
   return tasks.map((t) => [
     escapeHtml(t.clientName),
     escapeHtml(t.domainName),
+    // Dominio para publicar: lo importante para el actualizador (sin protocolo, sin puerto, sin path).
+    `<strong>${escapeHtml(formatDomainForPublishing(t.domainName))}</strong>`,
     escapeHtml(formatDate(t.dueAt ?? t.scheduledFor, "es-CO", timezone)),
     overdue ? escapeHtml(daysLate(t.dueAt ?? t.scheduledFor)?.toString() ?? "-") : escapeHtml(hasTime(t.scheduledFor) ? formatDate(t.scheduledFor, "es-CO", timezone).split(",").slice(-1)[0]?.trim() || "-" : "Sin hora definida"),
     escapeHtml(t.status || "-"),
@@ -200,6 +204,7 @@ function databaseRows(tasks: DatabaseTaskEmailItem[], timezone: string, overdue 
   return tasks.map((t) => [
     escapeHtml(t.clientName),
     escapeHtml(t.domainName || "-"),
+    `<strong>${escapeHtml(formatDomainForPublishing(t.domainName))}</strong>`,
     escapeHtml(t.databaseName || t.companyName || "-"),
     escapeHtml(formatDate(t.dueAt ?? t.scheduledFor, "es-CO", timezone)),
     overdue ? escapeHtml(daysLate(t.dueAt ?? t.scheduledFor)?.toString() ?? "-") : escapeHtml(hasTime(t.scheduledFor) ? formatDate(t.scheduledFor, "es-CO", timezone).split(",").slice(-1)[0]?.trim() || "-" : "Sin hora definida"),
@@ -211,7 +216,8 @@ function databaseRows(tasks: DatabaseTaskEmailItem[], timezone: string, overdue 
 function textDomainTasks(tasks: DomainTaskEmailItem[], timezone: string, overdue = false): string {
   return tasks.map((t, i) => [
     `${i + 1}. Cliente: ${t.clientName}`,
-    `Dominio: ${t.domainName}`,
+    `Dominio registrado: ${t.domainName}`,
+    `Dominio para publicar: ${formatDomainForPublishing(t.domainName)}`,
     `${overdue ? "Fecha programada original" : "Fecha programada"}: ${formatDate(t.dueAt ?? t.scheduledFor, "es-CO", timezone)}`,
     overdue ? `Días de atraso: ${daysLate(t.dueAt ?? t.scheduledFor) ?? "-"}` : `Hora: ${hasTime(t.scheduledFor) ? formatDate(t.scheduledFor, "es-CO", timezone).split(",").slice(-1)[0]?.trim() : "Sin hora definida"}`,
     `Estado: ${t.status || "-"}`,
@@ -223,6 +229,7 @@ function textDatabaseTasks(tasks: DatabaseTaskEmailItem[], timezone: string, ove
   return tasks.map((t, i) => [
     `${i + 1}. Cliente: ${t.clientName}`,
     `Dominio asociado: ${t.domainName || "-"}`,
+    `Dominio para publicar: ${formatDomainForPublishing(t.domainName)}`,
     `Empresa / base: ${t.databaseName || t.companyName || "-"}`,
     `${overdue ? "Fecha programada original" : "Fecha programada"}: ${formatDate(t.dueAt ?? t.scheduledFor, "es-CO", timezone)}`,
     overdue ? `Días de atraso: ${daysLate(t.dueAt ?? t.scheduledFor) ?? "-"}` : `Hora: ${hasTime(t.scheduledFor) ? formatDate(t.scheduledFor, "es-CO", timezone).split(",").slice(-1)[0]?.trim() : "Sin hora definida"}`,
@@ -244,7 +251,7 @@ export function buildDomainReminderEmail(input: {
   const intro = `Hola${input.recipientName ? ` ${input.recipientName}` : ""}, estos son los dominios que debes actualizar.`;
   const body = `
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>${metric("Dominios por actualizar", input.tasks.length)}</tr></table>
-    ${taskTable(["Cliente", "Dominio", "Fecha programada", "Hora", "Estado", "Observaciones"], domainRows(input.tasks, timezone))}`;
+    ${taskTable(["Cliente", "Dominio registrado", "Dominio para publicar", "Fecha programada", "Hora", "Estado", "Observaciones"], domainRows(input.tasks, timezone))}`;
   return {
     subject,
     html: layout({ title: "Dominios por actualizar", intro, preheader: intro, body, cta: "Abrir tareas en la aplicación", ctaHref: `${baseUrl}/tareas` }),
@@ -265,7 +272,7 @@ export function buildDatabaseReminderEmail(input: {
   const intro = `Hola${input.recipientName ? ` ${input.recipientName}` : ""}, estas son las empresas o bases de datos que debes actualizar.`;
   const body = `
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>${metric("Bases / empresas por actualizar", input.tasks.length)}</tr></table>
-    ${taskTable(["Cliente", "Dominio asociado", "Empresa / base", "Fecha programada", "Hora", "Estado", "Observaciones"], databaseRows(input.tasks, timezone))}`;
+    ${taskTable(["Cliente", "Dominio asociado", "Dominio para publicar", "Empresa / base", "Fecha programada", "Hora", "Estado", "Observaciones"], databaseRows(input.tasks, timezone))}`;
   return {
     subject,
     html: layout({ title: "Bases de datos por actualizar", intro, preheader: intro, body, cta: "Abrir tareas en la aplicación", ctaHref: `${baseUrl}/tareas` }),
@@ -294,10 +301,10 @@ export function buildOverdueTasksEmail(input: {
         : "Alerta: tareas vencidas de actualización";
   const intro = `Hola${input.recipientName ? ` ${input.recipientName}` : ""}, estas tareas aparecen como vencidas y requieren atención.`;
   const domainSection = domainCount > 0
-    ? `<h2 style="font-size:17px; color:${COLORS.primary}; margin:18px 0 8px;">Dominios vencidos</h2>${taskTable(["Cliente", "Dominio", "Fecha original", "Días de atraso", "Estado", "Observaciones"], domainRows(input.overdueDomainTasks, timezone, true))}`
+    ? `<h2 style="font-size:17px; color:${COLORS.primary}; margin:18px 0 8px;">Dominios vencidos</h2>${taskTable(["Cliente", "Dominio registrado", "Dominio para publicar", "Fecha original", "Días de atraso", "Estado", "Observaciones"], domainRows(input.overdueDomainTasks, timezone, true))}`
     : "";
   const databaseSection = databaseCount > 0
-    ? `<h2 style="font-size:17px; color:${COLORS.primary}; margin:18px 0 8px;">Bases de datos / empresas vencidas</h2>${taskTable(["Cliente", "Dominio asociado", "Empresa / base", "Fecha original", "Días de atraso", "Estado", "Observaciones"], databaseRows(input.overdueDatabaseTasks, timezone, true))}`
+    ? `<h2 style="font-size:17px; color:${COLORS.primary}; margin:18px 0 8px;">Bases de datos / empresas vencidas</h2>${taskTable(["Cliente", "Dominio asociado", "Dominio para publicar", "Empresa / base", "Fecha original", "Días de atraso", "Estado", "Observaciones"], databaseRows(input.overdueDatabaseTasks, timezone, true))}`
     : "";
   const body = `
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
