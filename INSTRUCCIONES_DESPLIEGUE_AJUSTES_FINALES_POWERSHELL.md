@@ -2,7 +2,7 @@
 
 Fecha: 2026-05-07
 
-Estos pasos publican los cambios finales de flujo **Cliente → Dominio → Base de datos → Tareas**, responsables manuales opcionales, recordatorios por responsable, **Programaciones especiales** separadas de la frecuencia normal del dominio, el tablero agrupado de tareas, el modal amplio de detalle, la ventana visible de tareas, las frecuencias con fecha de fin opcional y la reorganización de **Alertas y correos**.
+Estos pasos publican los cambios finales de flujo **Cliente → Dominio → Base de datos → Tareas**, responsables manuales opcionales, recordatorios por responsable, **Programaciones especiales** separadas de la frecuencia normal del dominio, el tablero agrupado de tareas, el modal amplio de detalle, la ventana visible de tareas, las frecuencias con fecha de fin opcional, la reorganización de **Alertas y correos** y el fix urgente del detalle de tareas para quitar acciones antiguas.
 
 No incluya contraseñas reales en Git, documentación, capturas, logs ni comandos.
 
@@ -90,7 +90,7 @@ Set-Location $repo
 git status
 git add README.md DESPLIEGUE.md CAMBIOS_V6.md INSTRUCCIONES_DESPLIEGUE_AJUSTES_FINALES_POWERSHELL.md
 git add api/src frontend/src
-git commit -m "Ajusta responsables, programaciones especiales, tareas y alertas"
+git commit -m "Corrige detalle de tareas y acciones visibles"
 git push
 ```
 
@@ -190,15 +190,18 @@ correo1@empresa.com; correo2@empresa.com
    - Estado.
    - Nota.
    - Acciones: **Copiar dominio para publicar** y **Completar**.
-4. Confirme que no aparecen **Iniciar**, **Bloquear**, **Reportar problema** ni **Copiar URL completa** como acciones normales.
-5. Para bases, confirme que cada fila muestra:
+4. Confirme que arriba solo aparece **Copiar todos los dominios pendientes (formato publicable)**.
+5. Confirme que no aparece **Copiar URLs completas** arriba.
+6. Confirme que no aparecen **Iniciar**, **Bloquear**, **Reportar problema** ni **Copiar URL completa** como acciones normales.
+7. Para bases, confirme que cada fila muestra:
    - Cliente.
    - Dominio para publicar.
    - Base / conexión con servidor, base, usuario y contraseña.
    - Estado.
    - Nota.
    - Acción: **Completar**.
-6. Use **Ver** o **Copiar** contraseña solo cuando sea necesario. La contraseña se obtiene bajo demanda desde el backend y no se carga en la lista de tareas.
+8. Confirme que en la columna **Acciones** de bases solo aparece **Completar**; los botones **Copiar** de servidor/base/usuario/contraseña deben estar dentro de **Base / conexión**.
+9. Use **Ver** o **Copiar** contraseña solo cuando sea necesario. La contraseña se obtiene bajo demanda desde el backend y no se carga en la lista de tareas.
 
 ### 8.6 Actualizadores
 
