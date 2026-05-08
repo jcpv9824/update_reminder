@@ -2,6 +2,8 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import AppLayout from "./components/AppLayout";
 import LoginPage from "./pages/LoginPage";
+import ForgotPasswordPage from "./pages/ForgotPasswordPage";
+import ResetPasswordPage from "./pages/ResetPasswordPage";
 import DashboardPage from "./pages/DashboardPage";
 import ClientesPage from "./pages/ClientesPage";
 import DominiosPage from "./pages/DominiosPage";
@@ -28,6 +30,8 @@ function Enrutador() {
   return (
     <Routes>
       <Route path="/login" element={auth.usuario ? <Navigate to="/tareas" replace /> : <LoginPage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       {!auth.usuario ? (
         <Route path="*" element={<Navigate to="/login" replace />} />
       ) : (

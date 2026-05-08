@@ -152,6 +152,39 @@ export function renderOverdueAlertEmail(args: {
 
 export { buildDatabaseReminderEmail, buildDomainReminderEmail, buildOverdueTasksEmail, buildTestEmail };
 
+// Escapa HTML para evitar inyección en plantillas.
+export function escapeHtml(s: string): string {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+export function renderResetPasswordEmail(args: {
+  displayName: string;
+  email: string;
+  resetUrl: string;
+  expiresInMinutes: number;
+}): { subject: string; html: string; text: string } {
+  const subject = "Restablecer contraseña — Programador de Actualizaciones ERP";
+  const nombre = escapeHtml(args.displayName);
+  const correo = escapeHtml(args.email);
+  // El URL puede contener el token — no se loguea, solo se envía al destinatario.
+  const url = args.resetUrl;
+  const html = `
+    <h3>${subject}</h3>
+    <p>Hola ${nombre},</p>
+    <p>Recibimos una solicitud para restablecer la contraseña de la cuenta <strong>${correo}</strong>.</p>
+    <p><a href="${url}" style="display:inline-block;padding:10px 16px;background:#1C3664;color:white;border-radius:6px;text-decoration:none;">Restablecer contraseña</a></p>
+    <p>Este enlace vence en ${args.expiresInMinutes} minutos.</p>
+    <p>Si no solicitaste este cambio, puedes ignorar este mensaje.</p>
+  `;
+  const text = `${subject}\nAbre el siguiente enlace para restablecer tu contraseña: ${url}\nEste enlace vence en ${args.expiresInMinutes} minutos. Si no solicitaste este cambio, ignora este mensaje.`;
+  return { subject, html, text };
+}
+
 export function renderUserPasswordEmail(args: {
   displayName: string;
   email: string;

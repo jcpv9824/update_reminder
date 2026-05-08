@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 
 export default function LoginPage() {
@@ -46,6 +47,9 @@ export default function LoginPage() {
           <button type="submit" className="primario" style={{ width: "100%", padding: "10px", marginTop: 8 }} disabled={cargando}>
             {cargando ? "Verificando..." : "Iniciar sesión"}
           </button>
+          <p style={{ textAlign: "center", marginTop: 12, fontSize: 13 }}>
+            <Link to="/forgot-password">¿Olvidaste tu contraseña?</Link>
+          </p>
         </form>
       </div>
     </div>

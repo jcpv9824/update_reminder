@@ -25,15 +25,37 @@ export function BotonCopiar({ valor, etiqueta = "Copiar", onCopia }: { valor: st
   );
 }
 
-type ModalProps = { titulo: string; abierto: boolean; onCerrar: () => void; children: ReactNode };
-export function Modal({ titulo, abierto, onCerrar, children }: ModalProps) {
+type ModalProps = {
+  titulo: string;
+  abierto: boolean;
+  onCerrar: () => void;
+  children: ReactNode;
+  // Por defecto los formularios NO se cierran al hacer clic fuera
+  // (evita pérdida accidental de datos al seleccionar texto y soltar fuera).
+  // Las modales puramente informativas pueden pasar `cerrarPorFondo`.
+  cerrarPorFondo?: boolean;
+};
+export function Modal({ titulo, abierto, onCerrar, children, cerrarPorFondo = false }: ModalProps) {
   if (!abierto) return null;
   return (
-    <div className="modal-fondo" onClick={onCerrar}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="modal-fondo"
+      onClick={cerrarPorFondo ? onCerrar : undefined}
+      onMouseDown={(e) => {
+        // Si el usuario soltó el clic en el fondo pero el botón empezó dentro
+        // de la modal (drag de selección), no debemos cerrar.
+        if (cerrarPorFondo) return;
+        e.stopPropagation();
+      }}
+    >
+      <div
+        className="modal"
+        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
           <h3 style={{ margin: 0 }}>{titulo}</h3>
-          <button onClick={onCerrar}>Cerrar</button>
+          <button type="button" onClick={onCerrar} aria-label="Cerrar">Cerrar</button>
         </div>
         {children}
       </div>

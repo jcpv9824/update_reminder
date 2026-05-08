@@ -32,6 +32,10 @@ export type UserRecord = {
   passwordHash?: string;
   passwordUpdatedAt?: string | null;
   mustChangePassword?: boolean;
+  // Reset de contraseña: nunca guardar el token en texto plano.
+  passwordResetTokenHash?: string | null;
+  passwordResetExpiresAt?: string | null;
+  passwordResetUsedAt?: string | null;
 };
 
 // Configuración de recordatorios por email para una frecuencia.

@@ -9,8 +9,8 @@ import { badRequest, created, forbidden, noContent, notFound, ok, serverError } 
 import type { ClientRecord } from "../types/models";
 
 const ClientSchema = z.object({
-  name: z.string().min(1, "El nombre del cliente es obligatorio."),
-  notes: z.string().optional(),
+  name: z.string().min(1, "El nombre del cliente es obligatorio.").max(200),
+  notes: z.string().max(2000).optional(),
   status: z.enum(["active", "inactive", "deleted"]).optional(),
 });
 
