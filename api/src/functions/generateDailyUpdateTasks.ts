@@ -207,6 +207,27 @@ export async function runTaskGeneration(
       }
     }
 
+    for (const synced of summary.syncedTasks) {
+      try {
+        await getContainer("updateTasks").item(synced.id, synced.taskBucket).replace(synced);
+        reasons.push(`Tarea ${synced.id} sincronizada con responsable actual de la frecuencia.`);
+        await writeAuditLog({
+          entityType: "task",
+          entityId: synced.id,
+          clientId: synced.clientId,
+          clientName: synced.clientName,
+          domainId: synced.domainId,
+          domainName: synced.domainName,
+          action: "task_assignment_synced",
+          performedBy: "system",
+          performedByEmail: "system",
+          after: { assignedRole: synced.assignedRole, assignedUserIds: synced.assignedUserIds, scheduleId: synced.scheduleId },
+        });
+      } catch (e: any) {
+        reasons.push(`Tarea ${synced.id} no sincronizada: ${e?.message ?? e}`);
+      }
+    }
+
     totalSkipped += summary.skipped;
     if (summary.skipped > 0) {
       // Distribuir skipped por tipo a partir de las fechas evaluadas.

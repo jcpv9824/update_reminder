@@ -37,7 +37,7 @@ export default function ResetPasswordPage() {
           <>
             <div className="alerta alerta-exito">{exito}</div>
             <p style={{ textAlign: "center", marginTop: 12 }}>
-              <Link to="/login">Iniciar sesión</Link>
+              <Link to="/login">Entrar</Link>
             </p>
           </>
         ) : (

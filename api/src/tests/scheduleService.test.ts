@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildScheduleRecord, validateFrequency } from "../lib/scheduleService";
+import { buildScheduleRecord, normalizeFrequencyResponsibility, validateFrequency } from "../lib/scheduleService";
 import { filterSchedulesByOrigin } from "../lib/scheduleFilters";
 
 const user = { id: "u1", email: "u@x", displayName: "U", roles: ["admin"] };
@@ -69,6 +69,60 @@ describe("buildScheduleRecord", () => {
       currentUser: user,
     });
     expect(r.origin).toBe("special");
+  });
+});
+
+describe("normalizeFrequencyResponsibility", () => {
+  it("al volver a rol predeterminado limpia assignedUserIds y usa roleUsers", () => {
+    const r = normalizeFrequencyResponsibility({
+      frequencyType: "weekly",
+      weekdays: ["FRIDAY"],
+      startDate: "2026-05-01",
+      assignedRole: "domain_updater",
+      assignedUserIds: [],
+      reminders: {
+        remindersEnabled: true,
+        reminderDaysBefore: [1, 0],
+        reminderTime: "08:00",
+        reminderRecipientsMode: "assignedUsers",
+        customReminderEmails: ["viejo@empresa.com"],
+      },
+    });
+    expect(r.assignedUserIds).toEqual([]);
+    expect(r.reminders?.reminderRecipientsMode).toBe("roleUsers");
+    expect(r.reminders?.customReminderEmails).toEqual([]);
+  });
+
+  it("mantiene modo manual solo cuando hay assignedUserIds", () => {
+    const r = normalizeFrequencyResponsibility({
+      frequencyType: "weekly",
+      weekdays: ["FRIDAY"],
+      startDate: "2026-05-01",
+      assignedRole: "domain_updater",
+      assignedUserIds: ["rodrigo"],
+      reminders: {
+        remindersEnabled: true,
+        reminderDaysBefore: [1, 0],
+        reminderTime: "08:00",
+        reminderRecipientsMode: "roleUsers",
+      },
+    });
+    expect(r.assignedUserIds).toEqual(["rodrigo"]);
+    expect(r.reminders?.reminderRecipientsMode).toBe("assignedUsers");
+  });
+
+  it("limpia responsables heredados de bases al volver a rol predeterminado", () => {
+    const r = normalizeFrequencyResponsibility({
+      frequencyType: "weekly",
+      weekdays: ["FRIDAY"],
+      startDate: "2026-05-01",
+      assignedRole: "domain_updater",
+      assignedUserIds: [],
+      databaseAssignedUserIds: [],
+      databaseReminderRecipientsMode: "assignedUsers",
+    });
+    expect(r.databaseAssignedUserIds).toEqual([]);
+    expect(r.databaseReminderRecipientsMode).toBe("roleUsers");
   });
 });
 

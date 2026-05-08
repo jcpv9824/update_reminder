@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
-import type { Tarea, Usuario } from "../types";
+import type { BaseDeDatos, Tarea, Usuario } from "../types";
 import { ETIQUETAS_ROLES } from "../types";
 import { Alerta, EtiquetaEstado, Modal } from "../components/Comunes";
 import { hoyEnBogotaIso, sumarDiasIso, clasificarTareaPorFecha, type ClasificacionTarea } from "../utils/fechas";
@@ -16,7 +16,7 @@ const VENTANA_TAREAS = {
   hasta: sumarDiasIso(HOY, 7),
 };
 
-type AccionTarea = "start" | "complete" | "fail" | "reopen";
+type AccionTarea = "complete" | "reopen";
 type EstadoGuardado = "guardando" | "guardado" | "error";
 
 type GrupoResumen = {
@@ -74,9 +74,7 @@ export function puedeCambiarTarea(usuario: Usuario | null, tarea: Tarea): boolea
 }
 
 function estadoDespuesDeAccion(accion: AccionTarea): Tarea["status"] {
-  if (accion === "start") return "in_progress";
   if (accion === "complete") return "completed";
-  if (accion === "fail") return "failed";
   return "reopened";
 }
 
@@ -94,9 +92,8 @@ function etiquetaResponsableDeGrupo(items: Tarea[], usuariosMap: Map<string, str
   if (ids.length === 0) {
     return { etiqueta: ETIQUETAS_ROLES[items[0].assignedRole] ?? items[0].assignedRole, esRolFallback: true };
   }
-  // Caso especial: el único responsable es el usuario actual.
   if (ids.length === 1 && usuario?.id === ids[0]) {
-    return { etiqueta: "Tú", esRolFallback: false };
+    return { etiqueta: usuario.displayName || usuario.email || "Tú", esRolFallback: false };
   }
   if (ids.length <= 2) {
     return { etiqueta: ids.map((id) => nombreUsuarioPorId(id, usuariosMap)).join(", "), esRolFallback: false };
@@ -236,6 +233,7 @@ function ColumnaTareas({ titulo, targetType, usuario, usuariosMap }: { titulo: s
         titulo={grupoActivo ? `${grupoActivo.responsableEtiqueta} — ${etiquetaTipo(grupoActivo.targetType, true)} por actualizar` : ""}
         abierto={!!grupoActivo}
         onCerrar={() => setGrupoActivo(null)}
+        className="modal-detalle-tareas"
       >
         {grupoActivo && (
           <DetalleGrupo
@@ -353,6 +351,16 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
   onAccion: (id: string, accion: AccionTarea, body?: any) => void;
 }) {
   const pendientes = grupo.tareas.filter((t) => t.status !== "completed" && t.status !== "cancelled");
+  const dbIds = useMemo(
+    () => Array.from(new Set(grupo.targetType === "database" ? grupo.tareas.map((t) => t.targetId) : [])),
+    [grupo.targetType, grupo.tareas]
+  );
+  const { data: bases = [] } = useQuery({
+    queryKey: ["detalle-db-tareas", dbIds.join("|")],
+    queryFn: () => Promise.all(dbIds.map((id) => api.get<BaseDeDatos>(`/databases/${id}`))),
+    enabled: grupo.targetType === "database" && dbIds.length > 0,
+  });
+  const basesPorId = useMemo(() => new Map(bases.map((b) => [b.id, b])), [bases]);
 
   return (
     <>
@@ -372,12 +380,6 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
           >
             Copiar todos los dominios pendientes (formato publicable)
           </button>
-          <button
-            type="button"
-            onClick={() => copiarTexto(pendientes.map((t) => t.domainName).filter(Boolean).join("\n"))}
-          >
-            Copiar URLs completas
-          </button>
         </div>
       ) : (
         <button
@@ -392,12 +394,19 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
         <thead>
           <tr>
             <th>Cliente</th>
-            <th>Dominio registrado</th>
-            <th>Dominio para publicar</th>
-            {grupo.targetType === "database" && <th>Base</th>}
+            {grupo.targetType === "domain" ? (
+              <>
+                <th>Dominio registrado</th>
+                <th>Dominio para publicar</th>
+              </>
+            ) : (
+              <>
+                <th>Dominio para publicar</th>
+                <th>Base / conexión</th>
+              </>
+            )}
             <th>Estado</th>
             <th>Nota</th>
-            <th>Guardado</th>
             <th>Acciones</th>
           </tr>
         </thead>
@@ -406,53 +415,53 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
             const estado = guardado[tarea.id];
             const puedeCambiar = puedeCambiarTarea(usuario, tarea);
             const notaMostrada = tarea.completedWithProblems
-              ? `⚠ ${tarea.problemNote || "Reportó problema"}`
+              ? `Con problemas: ${tarea.problemNote || "Reportó problema"}`
               : (tarea.completionNote || tarea.notes || "-");
             const dominioPublicable = formatDomainForPublishing(tarea.domainName);
+            const db = basesPorId.get(tarea.targetId);
             return (
               <tr key={tarea.id}>
                 <td>{tarea.clientName}</td>
-                <td style={{ fontSize: 12, color: "#6b7280" }}>{tarea.domainName}</td>
-                <td style={{ fontFamily: "monospace" }}>{dominioPublicable}</td>
-                {grupo.targetType === "database" && <td>{tarea.targetName}</td>}
+                {grupo.targetType === "domain" ? (
+                  <>
+                    <td style={{ fontSize: 12, color: "#6b7280" }}>{tarea.domainName}</td>
+                    <td style={{ fontFamily: "monospace" }}>{dominioPublicable}</td>
+                  </>
+                ) : (
+                  <>
+                    <td style={{ fontFamily: "monospace" }}>{dominioPublicable}</td>
+                    <td>
+                      <ConexionBaseCelda bd={db} tarea={tarea} usuario={usuario} />
+                    </td>
+                  </>
+                )}
                 <td><EtiquetaEstado estado={tarea.completedWithProblems ? "blocked" : tarea.status} /></td>
-                <td style={{ maxWidth: 240, fontSize: 12 }}>{notaMostrada}</td>
-                <td>
-                  {estado?.estado === "guardando" && "Guardando..."}
-                  {estado?.estado === "guardado" && "Guardado"}
-                  {estado?.estado === "error" && (
-                    <>
-                      Error
-                      <button type="button" onClick={() => estado.reintento && onAccion(tarea.id, estado.reintento.accion, estado.reintento.body)}>
-                        Reintentar
-                      </button>
-                    </>
+                <td style={{ maxWidth: 260, fontSize: 12 }}>
+                  <div>{notaMostrada}</div>
+                  {estado?.estado && (
+                    <div className={`estado-guardado estado-guardado-${estado.estado}`}>
+                      {estado.estado === "guardando" && "Guardando..."}
+                      {estado.estado === "guardado" && "Guardado"}
+                      {estado.estado === "error" && (
+                        <>
+                          Error
+                          <button type="button" onClick={() => estado.reintento && onAccion(tarea.id, estado.reintento.accion, estado.reintento.body)}>
+                            Reintentar
+                          </button>
+                        </>
+                      )}
+                    </div>
                   )}
                 </td>
-                <td className="acciones-tabla">
+                <td className="acciones-tabla acciones-fila-tarea" data-testid={`acciones-tarea-${tarea.id}`}>
                   {grupo.targetType === "domain" ? (
-                    <>
-                      <button type="button" className="primario" onClick={() => copiarTexto(dominioPublicable)}>
-                        Copiar dominio para publicar
-                      </button>
-                      <button type="button" onClick={() => copiarTexto(tarea.domainName)}>
-                        Copiar URL completa
-                      </button>
-                    </>
+                    <button type="button" className="primario" onClick={() => copiarTexto(dominioPublicable)}>
+                      Copiar dominio para publicar
+                    </button>
                   ) : (
-                    <>
-                      <button type="button" onClick={() => copiarTexto(tarea.targetName)}>Copiar base</button>
-                      <button type="button" onClick={() => copiarTexto(dominioPublicable)}>Copiar dominio para publicar</button>
-                    </>
+                    null
                   )}
-                  {puedeCambiar && tarea.status === "pending" && <button type="button" onClick={() => onAccion(tarea.id, "start")}>Iniciar</button>}
                   {puedeCambiar && tarea.status !== "completed" && <button type="button" className="exito" onClick={() => onSolicitarCompletar(tarea)}>Completar</button>}
-                  {puedeCambiar && tarea.status !== "completed" && <button type="button" className="peligro" onClick={() => {
-                    const nota = window.prompt("Describe el problema encontrado");
-                    if (!nota?.trim()) return;
-                    onAccion(tarea.id, "fail", { notes: nota.trim(), result: "failure" });
-                  }}>Reportar problema</button>}
-                  {puedeCambiar && tarea.status === "completed" && <button type="button" onClick={() => onAccion(tarea.id, "reopen")}>Reabrir</button>}
                   {!puedeCambiar && <span className="texto-ayuda">Sin permiso</span>}
                 </td>
               </tr>
@@ -461,6 +470,66 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
         </tbody>
       </table>
     </>
+  );
+}
+
+function ConexionBaseCelda({ bd, tarea, usuario }: { bd?: BaseDeDatos; tarea: Tarea; usuario: Usuario | null }) {
+  const [passwordVisible, setPasswordVisible] = useState<string | null>(null);
+  const [cargandoPwd, setCargandoPwd] = useState(false);
+  const [errorPwd, setErrorPwd] = useState<string | null>(null);
+  const puedeVerPassword = puedeCambiarTarea(usuario, tarea);
+
+  async function revelarPassword(paraCopiar: boolean) {
+    if (!bd || !puedeVerPassword) return;
+    setCargandoPwd(true);
+    setErrorPwd(null);
+    try {
+      const r = await api.post<{ password: string }>(`/databases/${bd.id}/reveal-password`, { taskId: tarea.id, reason: "task_detail" });
+      if (paraCopiar) {
+        await copiarTexto(r.password);
+      } else {
+        setPasswordVisible(r.password);
+        window.setTimeout(() => setPasswordVisible(null), 30000);
+      }
+    } catch (e: any) {
+      setErrorPwd(e?.message ?? "No se pudo revelar la contraseña.");
+    } finally {
+      setCargandoPwd(false);
+    }
+  }
+
+  if (!bd) return <span className="texto-ayuda">Cargando conexión...</span>;
+  return (
+    <div className="conexion-celda">
+      <ConexionLinea etiqueta="Servidor" valor={bd.dbAccess.serverHostPort} />
+      <ConexionLinea etiqueta="Base" valor={bd.dbAccess.initialCatalog} />
+      <ConexionLinea etiqueta="Usuario" valor={bd.dbAccess.userId} />
+      <div className="conexion-linea">
+        <strong>Contraseña:</strong>
+        <span className="conexion-valor">{passwordVisible ?? "••••••••••••"}</span>
+        <span className="acciones-tabla">
+          {puedeVerPassword ? (
+            <>
+              <button type="button" disabled={cargandoPwd} onClick={() => revelarPassword(false)}>Ver</button>
+              <button type="button" disabled={cargandoPwd} onClick={() => revelarPassword(true)}>Copiar</button>
+            </>
+          ) : (
+            <button type="button" disabled title="No tienes permiso para ver esta contraseña.">Sin permiso</button>
+          )}
+        </span>
+      </div>
+      {errorPwd && <span className="texto-ayuda" style={{ color: "#991b1b" }}>{errorPwd}</span>}
+    </div>
+  );
+}
+
+function ConexionLinea({ etiqueta, valor }: { etiqueta: string; valor: string }) {
+  return (
+    <div className="conexion-linea">
+      <strong>{etiqueta}:</strong>
+      <span className="conexion-valor">{valor}</span>
+      <button type="button" onClick={() => copiarTexto(valor)}>Copiar</button>
+    </div>
   );
 }
 

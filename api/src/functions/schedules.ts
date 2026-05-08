@@ -6,7 +6,7 @@ import { canManageSchedules } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
-import { inferScheduleRole } from "../lib/scheduleService";
+import { inferScheduleRole, normalizeFrequencyResponsibility } from "../lib/scheduleService";
 import { filterSchedulesByOrigin } from "../lib/scheduleFilters";
 import type { ClientRecord, UpdateSchedule } from "../types/models";
 
@@ -73,6 +73,7 @@ app.http("schedulesCreate", {
       const body = await req.json();
       const parsed = ScheduleSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      const normalized = normalizeFrequencyResponsibility(parsed.data as any);
       const { resource: client } = await getContainer("clients").item(parsed.data.clientId, parsed.data.clientId).read<ClientRecord>();
       if (!client) return badRequest("Cliente no encontrado.");
       const now = new Date().toISOString();
@@ -84,22 +85,22 @@ app.http("schedulesCreate", {
         domainName: undefined,
         targetType: parsed.data.targetType,
         targetIds: parsed.data.targetIds,
-        frequencyType: parsed.data.frequencyType,
-        everyNWeeks: parsed.data.everyNWeeks,
-        weekdays: parsed.data.weekdays as any,
-        intervalDays: parsed.data.intervalDays,
-        preferredWeekdays: parsed.data.preferredWeekdays as any,
-        dayOfMonth: parsed.data.dayOfMonth,
-        startDate: parsed.data.startDate,
-        endDate: parsed.data.endDate ?? null,
-        timezone: parsed.data.timezone,
-        assignedRole: parsed.data.assignedRole ?? inferScheduleRole(parsed.data.targetType),
-        assignedUserIds: parsed.data.assignedUserIds,
-        databaseAssignedUserIds: parsed.data.databaseAssignedUserIds,
-        databaseReminderRecipientsMode:
-          parsed.data.databaseReminderRecipientsMode ?? (parsed.data.databaseAssignedUserIds.length > 0 ? "assignedUsers" : "roleUsers"),
-        origin: parsed.data.origin ?? "special",
-        active: parsed.data.active,
+        frequencyType: normalized.frequencyType,
+        everyNWeeks: normalized.everyNWeeks,
+        weekdays: normalized.weekdays as any,
+        intervalDays: normalized.intervalDays,
+        preferredWeekdays: normalized.preferredWeekdays as any,
+        dayOfMonth: normalized.dayOfMonth,
+        startDate: normalized.startDate,
+        endDate: normalized.endDate ?? null,
+        timezone: normalized.timezone ?? "America/Bogota",
+        assignedRole: normalized.assignedRole ?? inferScheduleRole(parsed.data.targetType),
+        assignedUserIds: normalized.assignedUserIds ?? [],
+        databaseAssignedUserIds: normalized.databaseAssignedUserIds ?? [],
+        databaseReminderRecipientsMode: normalized.databaseReminderRecipientsMode,
+        reminders: normalized.reminders,
+        origin: normalized.origin ?? "special",
+        active: normalized.active ?? true,
         notes: parsed.data.notes,
         createdAt: now,
         createdBy: user.id,
@@ -156,13 +157,18 @@ app.http("schedulesUpdate", {
       const existing = await findSchedule(req.params.id);
       if (!existing) return notFound();
       const body = await req.json() as any;
+      const normalized = normalizeFrequencyResponsibility({ ...body });
       const before = { ...existing };
       const targetType = body.targetType === "domain" || body.targetType === "database" ? body.targetType : existing.targetType;
       const merged: UpdateSchedule = {
         ...existing,
-        ...body,
+        ...normalized,
         targetType,
-        assignedRole: body.assignedRole ?? inferScheduleRole(targetType),
+        assignedRole: normalized.assignedRole ?? inferScheduleRole(targetType),
+        assignedUserIds: normalized.assignedUserIds ?? [],
+        databaseAssignedUserIds: normalized.databaseAssignedUserIds ?? [],
+        databaseReminderRecipientsMode: normalized.databaseReminderRecipientsMode ?? "roleUsers",
+        reminders: normalized.reminders,
         origin: body.origin ?? existing.origin ?? "special",
         targetIds: Array.isArray(body.targetIds) ? body.targetIds : existing.targetIds,
         endDate: body.endDate ?? null,

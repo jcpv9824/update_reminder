@@ -6,7 +6,7 @@ import { canManageClients, canEditDomainLimited } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
-import { buildScheduleRecord, validateFrequency, type FrequencyInput } from "../lib/scheduleService";
+import { buildScheduleRecord, normalizeFrequencyResponsibility, validateFrequency, type FrequencyInput } from "../lib/scheduleService";
 import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
@@ -105,7 +105,7 @@ app.http("domainsCreate", {
       // Crear la frecuencia asociada en la misma operación, si vino en el cuerpo.
       if (parsed.data.frequency) {
         try {
-          const freq = { ...(parsed.data.frequency as FrequencyInput), origin: "domain_default" };
+          const freq = normalizeFrequencyResponsibility({ ...(parsed.data.frequency as FrequencyInput), origin: "domain_default" });
           validateFrequency(freq);
           const schedule = buildScheduleRecord({
             input: freq,
@@ -214,7 +214,7 @@ app.http("domainsUpdate", {
       });
       if (body.frequency) {
         try {
-          const freq = body.frequency as FrequencyInput;
+          const freq = normalizeFrequencyResponsibility(body.frequency as FrequencyInput);
           validateFrequency(freq);
           const scheduleContainer = getContainer("updateSchedules");
           const { resources: schedules } = await scheduleContainer.items
@@ -238,10 +238,9 @@ app.http("domainsUpdate", {
               endDate: freq.endDate ?? null,
               timezone: freq.timezone ?? "America/Bogota",
               assignedRole: "domain_updater",
-              assignedUserIds: freq.assignedUserIds ?? existing.assignedUpdaterIds ?? [],
-              databaseAssignedUserIds: freq.databaseAssignedUserIds ?? existingSchedule.databaseAssignedUserIds ?? [],
-              databaseReminderRecipientsMode:
-                freq.databaseReminderRecipientsMode ?? ((freq.databaseAssignedUserIds ?? existingSchedule.databaseAssignedUserIds ?? []).length > 0 ? "assignedUsers" : "roleUsers"),
+              assignedUserIds: freq.assignedUserIds ?? [],
+              databaseAssignedUserIds: freq.databaseAssignedUserIds ?? [],
+              databaseReminderRecipientsMode: freq.databaseReminderRecipientsMode ?? "roleUsers",
               origin: "domain_default",
               active: freq.active ?? true,
               reminders: freq.reminders,

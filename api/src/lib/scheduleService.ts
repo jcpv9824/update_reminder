@@ -61,6 +61,24 @@ export function inferScheduleRole(targetType: "domain" | "database"): string {
   return targetType === "domain" ? "domain_updater" : "database_updater";
 }
 
+export function normalizeFrequencyResponsibility(input: FrequencyInput): FrequencyInput {
+  const assignedUserIds = input.assignedUserIds ?? [];
+  const databaseAssignedUserIds = input.databaseAssignedUserIds ?? [];
+  return {
+    ...input,
+    assignedUserIds,
+    databaseAssignedUserIds,
+    databaseReminderRecipientsMode: databaseAssignedUserIds.length > 0 ? "assignedUsers" : "roleUsers",
+    reminders: input.reminders
+      ? {
+          ...input.reminders,
+          reminderRecipientsMode: assignedUserIds.length > 0 ? "assignedUsers" : "roleUsers",
+          customReminderEmails: [],
+        }
+      : input.reminders,
+  };
+}
+
 export function buildScheduleRecord(args: {
   input: FrequencyInput;
   clientId: string;
@@ -72,6 +90,7 @@ export function buildScheduleRecord(args: {
   currentUser: CurrentUser;
 }): UpdateSchedule {
   const now = new Date().toISOString();
+  const normalized = normalizeFrequencyResponsibility(args.input);
   return {
     id: `schedule_${uuid()}`,
     clientId: args.clientId,
@@ -80,23 +99,22 @@ export function buildScheduleRecord(args: {
     domainName: args.domainName,
     targetType: args.targetType,
     targetIds: args.targetIds,
-    frequencyType: args.input.frequencyType,
-    everyNWeeks: args.input.everyNWeeks,
-    weekdays: args.input.weekdays,
-    intervalDays: args.input.intervalDays,
-    preferredWeekdays: args.input.preferredWeekdays,
-    dayOfMonth: args.input.dayOfMonth,
-    startDate: args.input.startDate,
-    endDate: args.input.endDate ?? null,
-    timezone: args.input.timezone ?? "America/Bogota",
-    assignedRole: args.input.assignedRole ?? inferScheduleRole(args.targetType),
-    assignedUserIds: args.input.assignedUserIds ?? [],
-    databaseAssignedUserIds: args.input.databaseAssignedUserIds ?? [],
-    databaseReminderRecipientsMode:
-      args.input.databaseReminderRecipientsMode ?? ((args.input.databaseAssignedUserIds ?? []).length > 0 ? "assignedUsers" : "roleUsers"),
-    origin: args.input.origin,
-    active: args.input.active ?? true,
-    reminders: args.input.reminders,
+    frequencyType: normalized.frequencyType,
+    everyNWeeks: normalized.everyNWeeks,
+    weekdays: normalized.weekdays,
+    intervalDays: normalized.intervalDays,
+    preferredWeekdays: normalized.preferredWeekdays,
+    dayOfMonth: normalized.dayOfMonth,
+    startDate: normalized.startDate,
+    endDate: normalized.endDate ?? null,
+    timezone: normalized.timezone ?? "America/Bogota",
+    assignedRole: normalized.assignedRole ?? inferScheduleRole(args.targetType),
+    assignedUserIds: normalized.assignedUserIds ?? [],
+    databaseAssignedUserIds: normalized.databaseAssignedUserIds ?? [],
+    databaseReminderRecipientsMode: normalized.databaseReminderRecipientsMode,
+    origin: normalized.origin,
+    active: normalized.active ?? true,
+    reminders: normalized.reminders,
     createdAt: now,
     createdBy: args.currentUser.id,
     updatedAt: now,

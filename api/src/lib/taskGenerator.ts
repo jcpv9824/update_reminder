@@ -7,15 +7,48 @@ import type { DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from ".
 
 export type TargetNameResolver = (id: string) => string;
 
+function taskTargetKey(targetType: "domain" | "database", targetId: string, isoDate: string): string {
+  return `${targetType}|${targetId}|${isoDate}`;
+}
+
+function canSyncExistingTask(task: UpdateTask): boolean {
+  return task.status !== "completed" && task.status !== "cancelled";
+}
+
+function syncTaskAssignmentFromSchedule(task: UpdateTask, schedule: UpdateSchedule, targetName: string): boolean {
+  const nextAssignedUserIds = schedule.assignedUserIds ?? [];
+  const changed =
+    task.assignedRole !== schedule.assignedRole ||
+    JSON.stringify(task.assignedUserIds ?? []) !== JSON.stringify(nextAssignedUserIds) ||
+    task.scheduleId !== schedule.id ||
+    task.targetName !== targetName ||
+    task.clientName !== schedule.clientName ||
+    task.domainName !== (schedule.domainName ?? "");
+
+  if (!changed) return false;
+  task.scheduleId = schedule.id;
+  task.assignedRole = schedule.assignedRole;
+  task.assignedUserIds = nextAssignedUserIds;
+  task.clientName = schedule.clientName;
+  task.domainId = schedule.domainId ?? task.domainId;
+  task.domainName = schedule.domainName ?? task.domainName;
+  task.targetName = targetName;
+  task.updatedAt = new Date().toISOString();
+  task.updatedBy = "system";
+  return true;
+}
+
 export function summarizeTaskGenerationForDate(
   schedules: UpdateSchedule[],
   isoDate: string,
   existingTasks: UpdateTask[],
   resolveTargetName: TargetNameResolver
-): { tasks: UpdateTask[]; skipped: number } {
+): { tasks: UpdateTask[]; skipped: number; syncedTasks: UpdateTask[] } {
   const existingIds = new Set(existingTasks.map((t) => t.id));
+  const existingByTarget = new Map(existingTasks.map((t) => [taskTargetKey(t.targetType, t.targetId, t.taskDate), t]));
   const now = new Date().toISOString();
   const tasks: UpdateTask[] = [];
+  const syncedTasks: UpdateTask[] = [];
   let skipped = 0;
 
   for (const schedule of schedules) {
@@ -24,7 +57,14 @@ export function summarizeTaskGenerationForDate(
 
     for (const targetId of schedule.targetIds) {
       const id = buildTaskId(schedule.id, targetId, isoDate);
-      if (existingIds.has(id)) {
+      const existing = existingIds.has(id)
+        ? existingTasks.find((t) => t.id === id)
+        : existingByTarget.get(taskTargetKey(schedule.targetType, targetId, isoDate));
+      if (existing) {
+        if (canSyncExistingTask(existing)) {
+          const changed = syncTaskAssignmentFromSchedule(existing, schedule, resolveTargetName(targetId));
+          if (changed) syncedTasks.push(existing);
+        }
         skipped += 1;
         continue;
       }
@@ -56,7 +96,7 @@ export function summarizeTaskGenerationForDate(
     }
   }
 
-  return { tasks, skipped };
+  return { tasks, skipped, syncedTasks };
 }
 
 export function generateTasksForDate(

@@ -118,6 +118,77 @@ describe("generateTasksForDate", () => {
     expect(tasks[0].targetId).toBe("db_2");
   });
 
+  it("sincroniza responsables de una tarea pendiente existente cuando la frecuencia volvió a rol", () => {
+    const existing: UpdateTask[] = [
+      {
+        id: "schedule_1_db_1_2026-05-08",
+        taskDate: "2026-05-08",
+        taskBucket: "2026-05-08_database",
+        clientId: "client_1",
+        clientName: "Cliente",
+        domainId: "domain_1",
+        domainName: "ejemplo.sagerp.co",
+        targetType: "database",
+        targetId: "db_1",
+        targetName: "BD vieja",
+        scheduleId: "schedule_1",
+        assignedRole: "database_updater",
+        assignedUserIds: ["rodrigo"],
+        status: "pending",
+        result: null,
+        notes: "",
+        createdAt: "",
+        createdBy: "system",
+        updatedAt: "",
+        updatedBy: "system",
+        completedAt: null,
+        completedBy: null,
+      },
+    ];
+    const roleSchedule: UpdateSchedule = { ...schedule, targetIds: ["db_1"], assignedUserIds: [] };
+    const summary = summarizeTaskGenerationForDate([roleSchedule], "2026-05-08", existing, () => "BD actual");
+    expect(summary.tasks).toHaveLength(0);
+    expect(summary.skipped).toBe(1);
+    expect(summary.syncedTasks).toHaveLength(1);
+    expect(existing[0].assignedUserIds).toEqual([]);
+    expect(existing[0].assignedRole).toBe("database_updater");
+    expect(existing[0].targetName).toBe("BD actual");
+  });
+
+  it("no sincroniza responsables de tareas completadas", () => {
+    const existing: UpdateTask[] = [
+      {
+        id: "schedule_1_db_1_2026-05-08",
+        taskDate: "2026-05-08",
+        taskBucket: "2026-05-08_database",
+        clientId: "client_1",
+        clientName: "Cliente",
+        domainId: "domain_1",
+        domainName: "ejemplo.sagerp.co",
+        targetType: "database",
+        targetId: "db_1",
+        targetName: "BD vieja",
+        scheduleId: "schedule_1",
+        assignedRole: "database_updater",
+        assignedUserIds: ["rodrigo"],
+        status: "completed",
+        completedWithProblems: true,
+        result: null,
+        notes: "",
+        createdAt: "",
+        createdBy: "system",
+        updatedAt: "",
+        updatedBy: "system",
+        completedAt: "2026-05-08T10:00:00Z",
+        completedBy: "rodrigo",
+      },
+    ];
+    const roleSchedule: UpdateSchedule = { ...schedule, targetIds: ["db_1"], assignedUserIds: [] };
+    const summary = summarizeTaskGenerationForDate([roleSchedule], "2026-05-08", existing, () => "BD actual");
+    expect(summary.syncedTasks).toHaveLength(0);
+    expect(existing[0].assignedUserIds).toEqual(["rodrigo"]);
+  });
+
   it("ignora frecuencias inactivas", () => {
     const inactive = { ...schedule, active: false };
     const tasks = generateTasksForDate([inactive], "2026-05-08", [], (i) => i);

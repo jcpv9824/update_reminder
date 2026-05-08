@@ -196,6 +196,57 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
   overflow: auto;
   border-top: 4px solid var(--color-primary);
 }
+.modal-detalle-tareas {
+  width: min(95vw, 1400px);
+  max-width: min(95vw, 1400px);
+  max-height: 90vh;
+}
+.modal-detalle-tareas .modal-body {
+  overflow: auto;
+}
+.modal-detalle-tareas table {
+  width: 100%;
+}
+.modal-detalle-tareas th,
+.modal-detalle-tareas td {
+  vertical-align: top;
+}
+.conexion-celda {
+  display: grid;
+  gap: 8px;
+  min-width: 320px;
+}
+.conexion-linea {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.conexion-linea strong {
+  color: var(--color-text);
+}
+.conexion-valor {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.estado-guardado {
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.estado-guardado-guardado { color: var(--color-success); }
+.estado-guardado-guardando { color: var(--color-primary); }
+.estado-guardado-error { color: var(--color-danger); }
+.badge-asignado {
+  display: inline-block;
+  border-radius: 999px;
+  background: var(--color-success-bg);
+  color: var(--color-success);
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
 
 .fila-formulario { margin-bottom: 12px; }
 .acciones-formulario { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }

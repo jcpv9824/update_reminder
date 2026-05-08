@@ -31,7 +31,7 @@ export default function ForgotPasswordPage() {
           <>
             <div className="alerta alerta-info">{MENSAJE_GENERICO}</div>
             <p style={{ textAlign: "center", marginTop: 12 }}>
-              <Link to="/login">Volver a iniciar sesión</Link>
+              <Link to="/login">Volver a entrar</Link>
             </p>
           </>
         ) : (

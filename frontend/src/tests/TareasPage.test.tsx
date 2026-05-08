@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Tarea } from "../types";
+import type { BaseDeDatos, Tarea } from "../types";
 
 const apiMock = vi.hoisted(() => ({
-  get: vi.fn<[string?], Promise<any[]>>(async (_path?: string) => []),
+  get: vi.fn<[string?], Promise<any>>(async (_path?: string) => []),
   post: vi.fn<[string, any?], Promise<any>>(async () => ({})),
 }));
 vi.mock("../api/client", () => ({ api: apiMock }));
@@ -62,10 +62,38 @@ function tarea(overrides: Partial<Tarea>): Tarea {
   };
 }
 
-function mockTareas({ dominios = [], bases = [] }: { dominios?: Tarea[]; bases?: Tarea[] }) {
+function bd(id: string, overrides: Partial<BaseDeDatos> = {}): BaseDeDatos {
+  return {
+    id,
+    clientId: "client_1",
+    clientName: "Cliente Uno",
+    domainId: "domain_1",
+    domainName: "https://cliente1.example.com",
+    companyName: "Empresa",
+    environment: "production",
+    dbAccess: {
+      serverHostPort: "data-ims.imsampedro.cloud,54101",
+      initialCatalog: "SAMPEDRO",
+      userId: "IMSAMPEDRO-IMS01-API",
+      passwordSecretName: "secret-no-visible",
+    },
+    assignedUpdaterIds: ["u"],
+    status: "active",
+    createdAt: "",
+    updatedAt: "",
+    ...overrides,
+  };
+}
+
+function mockTareas({ dominios = [], bases = [], basesDetalle = [], usuarios = [] }: { dominios?: Tarea[]; bases?: Tarea[]; basesDetalle?: BaseDeDatos[]; usuarios?: any[] }) {
   apiMock.get.mockImplementation((path = "") => {
+    if (path === "/users") return Promise.resolve(usuarios);
     if (path.includes("targetType=domain")) return Promise.resolve(dominios);
     if (path.includes("targetType=database")) return Promise.resolve(bases);
+    if (path.startsWith("/databases/")) {
+      const id = path.split("/").at(-1);
+      return Promise.resolve(basesDetalle.find((b) => b.id === id) ?? bd(id ?? "db_1"));
+    }
     return Promise.resolve([]);
   });
 }
@@ -144,10 +172,10 @@ describe("TareasPage (vista unificada)", () => {
       ],
     });
     renderPagina();
-    expect(await screen.findByText(/Tú — Dominios por actualizar/i)).toBeInTheDocument();
+    expect(await screen.findByText(/U — Dominios por actualizar/i)).toBeInTheDocument();
     expect(await screen.findByText(/Total: 2 dominios/i)).toBeInTheDocument();
     expect((await screen.findAllByText(/Completadas: 1 \/ 2/i)).length).toBeGreaterThan(0);
-    expect(await screen.findByText(/Tú — Bases de datos por actualizar/i)).toBeInTheDocument();
+    expect(await screen.findByText(/U — Bases de datos por actualizar/i)).toBeInTheDocument();
     expect(await screen.findByText(/Total: 2 bases de datos/i)).toBeInTheDocument();
     expect(screen.queryByText(/dominio-dos.example.com/i)).toBeNull();
     expect(screen.queryByText(/BD_DOS/i)).toBeNull();
@@ -162,7 +190,7 @@ describe("TareasPage (vista unificada)", () => {
     expect(await screen.findByText("https://cliente1.example.com")).toBeInTheDocument();
     expect(screen.getByText("https://cliente2.example.com")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Copiar todos los dominios pendientes/i })).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /Copiar dominio/i }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: /Copiar dominio para publicar/i }).length).toBeGreaterThan(0);
   });
 
   it("al completar una tarea abre modal de confirmación y llama endpoint con withProblems=false", async () => {
@@ -246,7 +274,7 @@ describe("TareasPage (vista unificada)", () => {
     expect(await screen.findByText(/Asignado a ti/i)).toBeInTheDocument();
   });
 
-  it("detalle muestra 'Dominio para publicar' y botón copia con formato limpio", async () => {
+  it("detalle de dominio usa modal grande y solo muestra copiar dominio para publicar y completar", async () => {
     usuarioMock.id = "u";
     usuarioMock.roles = ["admin"];
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -261,12 +289,23 @@ describe("TareasPage (vista unificada)", () => {
     });
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
-    // El botón principal copia el dominio limpio.
+    expect(screen.getByRole("heading", { name: /U — dominios por actualizar/i }).closest(".modal")).toHaveClass("modal-detalle-tareas");
+    expect(screen.getAllByText(/Dominio para publicar/i).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /Copiar URLs completas/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Copiar URL completa$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Iniciar$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Bloquear$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Reportar problema/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /Copiar todos los dominios pendientes \(formato publicable\)/i })).toBeInTheDocument();
+    const accionesFila = within(screen.getByTestId("acciones-tarea-d_publicable"));
+    expect(accionesFila.getByRole("button", { name: /^Copiar dominio para publicar$/i })).toBeInTheDocument();
+    expect(accionesFila.getByRole("button", { name: /^Completar$/i })).toBeInTheDocument();
+    expect(accionesFila.queryByRole("button", { name: /^Copiar URL completa$/i })).toBeNull();
+    expect(accionesFila.queryByRole("button", { name: /^Iniciar$/i })).toBeNull();
+    expect(accionesFila.queryByRole("button", { name: /^Bloquear$/i })).toBeNull();
+    expect(accionesFila.queryByRole("button", { name: /Reportar problema/i })).toBeNull();
     fireEvent.click(await screen.findByRole("button", { name: /^Copiar dominio para publicar$/i }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("argatex.sagerp.cloud"));
-    // El botón secundario copia la URL completa.
-    fireEvent.click(screen.getByRole("button", { name: /^Copiar URL completa$/i }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith("https://argatex.sagerp.cloud:54678/"));
   });
 
   it("'Copiar todos los dominios pendientes' usa formato publicable, uno por línea", async () => {
@@ -302,5 +341,86 @@ describe("TareasPage (vista unificada)", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
     expect(await screen.findByText(/Sin permiso/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Completar/i })).toBeNull();
+  });
+
+  it("detalle de base muestra conexión apilada, contraseña oculta y solo completar como acción de fila", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    const baseTask = tarea({
+      id: "b1",
+      targetType: "database",
+      targetId: "db_1",
+      targetName: "SAMPEDRO",
+      assignedRole: "database_updater",
+    });
+    mockTareas({ bases: [baseTask], basesDetalle: [bd("db_1")] });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    expect(await screen.findByText(/Servidor:/i)).toBeInTheDocument();
+    expect(screen.getByText(/Base:/i)).toBeInTheDocument();
+    expect(screen.getByText(/Usuario:/i)).toBeInTheDocument();
+    expect(screen.getByText(/Contraseña:/i)).toBeInTheDocument();
+    expect(screen.getByText("••••••••••••")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^Copiar$/i }).length).toBeGreaterThanOrEqual(4);
+    expect(screen.getByRole("button", { name: /^Ver$/i })).toBeInTheDocument();
+    const accionesFila = within(screen.getByTestId("acciones-tarea-b1"));
+    expect(accionesFila.getByRole("button", { name: /^Completar$/i })).toBeInTheDocument();
+    expect(accionesFila.queryByRole("button", { name: /^Copiar$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Iniciar$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Bloquear$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Reportar problema/i })).toBeNull();
+  });
+
+  it("ver y copiar contraseña llaman endpoint seguro sin precargar password", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    apiMock.post.mockResolvedValue({ password: "pwd-secreta" });
+    mockTareas({ bases: [tarea({ id: "b1", targetType: "database", targetId: "db_1", targetName: "SAMPEDRO", assignedRole: "database_updater" })], basesDetalle: [bd("db_1")] });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    expect(screen.queryByText("pwd-secreta")).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: /^Ver$/i }));
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/databases/db_1/reveal-password", { taskId: "b1", reason: "task_detail" }));
+    expect(await screen.findByText("pwd-secreta")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: /^Copiar$/i }).at(-1)!);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("pwd-secreta"));
+  });
+
+  it("no renderiza contraseña ni botones de reveal para usuario sin permiso", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["database_updater"];
+    mockTareas({ bases: [tarea({ id: "b1", targetType: "database", targetId: "db_1", assignedRole: "database_updater", assignedUserIds: ["otro"] })], basesDetalle: [bd("db_1")] });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    expect(await screen.findByText("••••••••••••")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Ver$/i })).toBeNull();
+    expect(screen.queryByText("pwd-secreta")).toBeNull();
+  });
+
+  it("las tarjetas muestran nombres de responsables cuando hay usuarios cargados", async () => {
+    usuarioMock.id = "admin";
+    usuarioMock.roles = ["admin"];
+    usuarioMock.displayName = "Admin";
+    mockTareas({
+      dominios: [tarea({ id: "d1", assignedUserIds: ["mateo"] })],
+      usuarios: [{ id: "mateo", displayName: "Mateo Palacio", email: "mateo@empresa.com" }],
+    });
+    renderPagina();
+    expect(await screen.findByText(/Mateo Palacio — Dominios por actualizar/i)).toBeInTheDocument();
+    expect(screen.getByText(/Responsable: Mateo Palacio/i)).toBeInTheDocument();
+  });
+
+  it("la tarjeta vuelve a mostrar el rol y no el responsable viejo cuando assignedUserIds está vacío", async () => {
+    usuarioMock.id = "admin";
+    usuarioMock.roles = ["admin"];
+    mockTareas({
+      dominios: [tarea({ id: "d1", assignedUserIds: [], assignedRole: "domain_updater" })],
+      usuarios: [{ id: "rodrigo", displayName: "Rodrigo Kammerer", email: "rodrigo@empresa.com" }],
+    });
+    renderPagina();
+    expect(await screen.findByText(/Actualizador de dominios — Dominios por actualizar/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Rodrigo Kammerer — Dominios por actualizar/i)).toBeNull();
   });
 });

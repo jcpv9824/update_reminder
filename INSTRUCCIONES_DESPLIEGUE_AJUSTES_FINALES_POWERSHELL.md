@@ -2,7 +2,7 @@
 
 Fecha: 2026-05-07
 
-Estos pasos publican los cambios finales de flujo **Cliente → Dominio → Base de datos → Tareas**, responsables manuales opcionales, recordatorios por responsable, **Programaciones especiales** separadas de la frecuencia normal del dominio, el tablero agrupado de tareas, el modal amplio de detalle, la ventana visible de tareas, las frecuencias con fecha de fin opcional, la reorganización de **Alertas y correos** y el fix urgente del detalle de tareas para quitar acciones antiguas.
+Estos pasos publican los cambios finales de flujo **Cliente → Dominio → Base de datos → Tareas**, responsables manuales opcionales, recordatorios por responsable, **Programaciones especiales** separadas de la frecuencia normal del dominio, el tablero agrupado de tareas, el modal amplio de detalle, la ventana visible de tareas, las frecuencias con fecha de fin opcional, la reorganización de **Alertas y correos**, el fix urgente del detalle de tareas para quitar acciones antiguas y la corrección para limpiar responsables específicos al volver al rol predeterminado.
 
 No incluya contraseñas reales en Git, documentación, capturas, logs ni comandos.
 
@@ -24,7 +24,7 @@ git diff -- README.md DESPLIEGUE.md CAMBIOS_V6.md
 git diff -- api/src frontend/src
 ```
 
-Verifique especialmente que no se incluyan secretos y que los cambios de frecuencia usen `origin = "domain_default"` para dominios y `origin = "special"` para **Programaciones especiales**.
+Verifique especialmente que no se incluyan secretos, que los cambios de frecuencia usen `origin = "domain_default"` para dominios y `origin = "special"` para **Programaciones especiales**, y que al volver a **Usar rol predeterminado** se envíe `assignedUserIds = []` con `reminderRecipientsMode = "roleUsers"`.
 
 ## 3. Ejecutar pruebas y build del backend
 
@@ -89,8 +89,8 @@ Si el frontend se despliega por GitHub Actions de Azure Static Web Apps, use Git
 Set-Location $repo
 git status
 git add README.md DESPLIEGUE.md CAMBIOS_V6.md INSTRUCCIONES_DESPLIEGUE_AJUSTES_FINALES_POWERSHELL.md
-git add api/src frontend/src
-git commit -m "Corrige detalle de tareas y acciones visibles"
+git add api/src frontend/src frontend/public/staticwebapp.config.json
+git commit -m "Corrige detalle de tareas y responsables"
 git push
 ```
 
@@ -153,6 +153,19 @@ correo1@empresa.com; correo2@empresa.com
 7. Repita con **Responsable de bases de datos asociadas** para validar que las tareas heredadas de bases se asignen al responsable manual de bases.
 8. Confirme que los recordatorios se envían a responsables manuales cuando existen y al rol cuando no existen.
 
+### 8.4.1.1 Volver de responsable específico a rol
+
+1. En **Dominios**, edite el dominio de prueba, por ejemplo `demo.sagerp.cloud`.
+2. Seleccione **Asignar responsable específico** y elija a Rodrigo Kammerer.
+3. Guarde y pulse **Generar tareas ahora**.
+4. Confirme que la tarjeta muestra **Rodrigo Kammerer — Dominios por actualizar**.
+5. Vuelva a editar el mismo dominio.
+6. Cambie a **Usar rol predeterminado**.
+7. Guarde y pulse **Generar tareas ahora**.
+8. Confirme que la tarjeta ya no muestra Rodrigo Kammerer.
+9. Confirme que la tarjeta muestra **Actualizador de dominios — Dominios por actualizar**.
+10. Confirme que usuarios con rol **Actualizador de dominios** pueden atenderla si no hay `assignedUserIds`.
+
 ### 8.4.2 Programaciones especiales
 
 1. Abra **Programaciones especiales**.
@@ -174,10 +187,10 @@ correo1@empresa.com; correo2@empresa.com
 1. Cree o genere varias tareas para el mismo día.
 2. Confirme que la vista principal muestra grupos por responsable, fecha y tipo.
 3. Confirme que no aparecen todos los dominios o bases como tarjetas principales.
-4. Abra un grupo de dominios y use **Copiar dominio** o **Copiar todos los dominios pendientes**.
+4. Abra un grupo de dominios y use **Copiar dominio para publicar** o **Copiar todos los dominios pendientes (formato publicable)**.
 5. Abra un grupo de bases y use **Copiar base**, **Copiar dominio** o **Copiar todas las bases pendientes**.
 6. Marque una tarea como completada. Debe mostrar `Guardando` y luego `Guardado`.
-7. Si una acción falla, debe verse `Error` y el botón **Reintentar**.
+7. Si una acción falla, debe verse `Error` y el botón **Reintentar** dentro de la fila.
 
 ### 8.5.2 Modal de detalle de tareas
 
@@ -202,10 +215,20 @@ correo1@empresa.com; correo2@empresa.com
    - Acción: **Completar**.
 8. Confirme que en la columna **Acciones** de bases solo aparece **Completar**; los botones **Copiar** de servidor/base/usuario/contraseña deben estar dentro de **Base / conexión**.
 9. Use **Ver** o **Copiar** contraseña solo cuando sea necesario. La contraseña se obtiene bajo demanda desde el backend y no se carga en la lista de tareas.
+10. Verifique en el frontend compilado que no existan acciones antiguas:
+
+```powershell
+Set-Location "$repo\frontend"
+Select-String -Path .\dist\assets\*.js `
+  -Pattern "Copiar URLs completas","Copiar URL completa","Iniciar","Reportar problema","Bloquear"
+```
+
+El comando no debe devolver resultados.
 
 ### 8.6 Actualizadores
 
 1. Inicie sesión con rol **Actualizador de dominios** o **Actualizador de bases de datos**.
 2. Abra **Tareas**.
-3. Cambie una tarea de su tipo a iniciada, completada, fallida o bloqueada.
-4. Agregue notas cuando corresponda.
+3. Abra un grupo asignado a su usuario o permitido por su rol.
+4. Copie la información necesaria y pulse **Completar**.
+5. Si tuvo problemas, marque la casilla dentro de la confirmación y describa el problema.

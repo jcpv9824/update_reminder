@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 
 export default function LoginPage() {
-  const { iniciarSesion, mensaje } = useAuth() as any;
+  const { entrar, mensaje } = useAuth() as any;
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -18,9 +18,9 @@ export default function LoginPage() {
     }
     setCargando(true);
     try {
-      await iniciarSesion(email.trim(), password);
+      await entrar(email.trim(), password);
     } catch (err: any) {
-      setError(err?.message ?? "No se pudo iniciar sesión.");
+      setError(err?.message ?? "No se pudo entrar.");
     } finally {
       setCargando(false);
     }
@@ -45,7 +45,7 @@ export default function LoginPage() {
             <input id="login-password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
           </div>
           <button type="submit" className="primario" style={{ width: "100%", padding: "10px", marginTop: 8 }} disabled={cargando}>
-            {cargando ? "Verificando..." : "Iniciar sesión"}
+            {cargando ? "Verificando..." : "Entrar"}
           </button>
           <p style={{ textAlign: "center", marginTop: 12, fontSize: 13 }}>
             <Link to="/forgot-password">¿Olvidaste tu contraseña?</Link>

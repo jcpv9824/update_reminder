@@ -8,7 +8,7 @@ type EstadoAuth =
   | { cargando: false; usuario: Usuario };
 
 type Contexto = EstadoAuth & {
-  iniciarSesion: (email: string, password: string) => Promise<void>;
+  entrar: (email: string, password: string) => Promise<void>;
   cerrarSesion: () => void;
   recargar: () => Promise<void>;
 };
@@ -43,7 +43,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { cargar(); }, []);
 
-  async function iniciarSesion(email: string, password: string) {
+  async function entrar(email: string, password: string) {
     const r = await api.post<{ token: string; user: Usuario }>("/auth/login", { email, password });
     setToken(r.token);
     setEstado({ cargando: false, usuario: r.user });
@@ -55,7 +55,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <Ctx.Provider value={{ ...estado, iniciarSesion, cerrarSesion, recargar: cargar }}>
+    <Ctx.Provider value={{ ...estado, entrar, cerrarSesion, recargar: cargar }}>
       {children}
     </Ctx.Provider>
   );
