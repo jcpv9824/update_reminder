@@ -34,8 +34,9 @@ type ModalProps = {
   // (evita pérdida accidental de datos al seleccionar texto y soltar fuera).
   // Las modales puramente informativas pueden pasar `cerrarPorFondo`.
   cerrarPorFondo?: boolean;
+  className?: string;
 };
-export function Modal({ titulo, abierto, onCerrar, children, cerrarPorFondo = false }: ModalProps) {
+export function Modal({ titulo, abierto, onCerrar, children, cerrarPorFondo = false, className = "" }: ModalProps) {
   if (!abierto) return null;
   return (
     <div
@@ -49,7 +50,7 @@ export function Modal({ titulo, abierto, onCerrar, children, cerrarPorFondo = fa
       }}
     >
       <div
-        className="modal"
+        className={`modal ${className}`.trim()}
         onClick={(e) => e.stopPropagation()}
         onMouseDown={(e) => e.stopPropagation()}
       >
@@ -57,7 +58,9 @@ export function Modal({ titulo, abierto, onCerrar, children, cerrarPorFondo = fa
           <h3 style={{ margin: 0 }}>{titulo}</h3>
           <button type="button" onClick={onCerrar} aria-label="Cerrar">Cerrar</button>
         </div>
-        {children}
+        <div className="modal-body">
+          {children}
+        </div>
       </div>
     </div>
   );
