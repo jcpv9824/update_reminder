@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import FrecuenciasPage from "../pages/FrecuenciasPage";
 import type { Frecuencia } from "../types";
@@ -24,6 +24,7 @@ const base1 = {
   assignedUpdaterIds: [], status: "active", createdAt: "", updatedAt: "",
 };
 const base2 = { ...base1, id: "db_2", companyName: "Empresa Dos", dbAccess: { ...base1.dbAccess, initialCatalog: "EMPRESA_DOS" } };
+const modulo = { id: "module_mobile", name: "Mobile App", code: "MOBILE", status: "active" };
 
 function renderPagina() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -57,6 +58,11 @@ function frecuencia(overrides: Partial<Frecuencia> = {}): Frecuencia {
   };
 }
 
+function select(label: RegExp | string) {
+  const node = screen.getByText(label);
+  return within(node.parentElement!).getByRole("combobox");
+}
+
 beforeEach(() => {
   apiMock.get.mockReset();
   apiMock.post.mockReset();
@@ -67,6 +73,7 @@ beforeEach(() => {
     if (path === "/clients") return Promise.resolve([cliente]);
     if (path === "/domains") return Promise.resolve([dominio, dominio2]);
     if (path === "/databases") return Promise.resolve([base1, base2]);
+    if (path === "/license-modules") return Promise.resolve([modulo]);
     if (path === "/schedules?origin=special") return Promise.resolve([]);
     return Promise.resolve([]);
   });
@@ -87,6 +94,7 @@ describe("FrecuenciasPage", () => {
       if (path === "/clients") return Promise.resolve([cliente]);
       if (path === "/domains") return Promise.resolve([dominio]);
       if (path === "/databases") return Promise.resolve([]);
+      if (path === "/license-modules") return Promise.resolve([modulo]);
       if (path === "/schedules?origin=special") return Promise.resolve([frecuencia()]);
       return Promise.resolve([]);
     });
@@ -100,6 +108,7 @@ describe("FrecuenciasPage", () => {
       if (path === "/clients") return Promise.resolve([cliente]);
       if (path === "/domains") return Promise.resolve([dominio]);
       if (path === "/databases") return Promise.resolve([]);
+      if (path === "/license-modules") return Promise.resolve([modulo]);
       if (path === "/schedules?origin=special") return Promise.resolve([
         frecuencia({ id: "schedule_normal", clientName: "Normal Oculta", origin: "domain_default" }),
         frecuencia({ id: "schedule_special", clientName: "Especial Visible", origin: "special" }),
@@ -148,5 +157,46 @@ describe("FrecuenciasPage", () => {
     expect(await screen.findByText(/Empresa Uno — EMPRESA_UNO — production/i)).toBeInTheDocument();
     expect(screen.getByText(/Empresa Dos — EMPRESA_DOS — production/i)).toBeInTheDocument();
     expect(screen.getByText(/Resumen del alcance: 1 cliente\(s\), 2 dominio\(s\), 2 base\(s\) de datos/i)).toBeInTheDocument();
+  });
+
+  it("modo Por licenciamiento oculta selección manual y exige licencias", async () => {
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    fireEvent.change(select("Tipo de alcance"), { target: { value: "licensing" } });
+    expect(screen.getByText("Licencias a actualizar")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Buscar cliente...")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^Guardar$/i }));
+    expect(screen.getByText("Seleccione al menos una licencia.")).toBeInTheDocument();
+  });
+
+  it("previsualiza y guarda programación por licenciamiento", async () => {
+    apiMock.post.mockImplementation((path: string, body: any) => {
+      if (path === "/special-schedules/preview-licensing-scope") {
+        return Promise.resolve({
+          clientsCount: 1,
+          domainsCount: 1,
+          databasesCount: 1,
+          groups: [{
+            client: { id: "client_1", name: "Cliente Uno", licenses: ["Mobile App"] },
+            domains: [{ id: "domain_1", name: "cliente.sagerp.co", environment: "production", databases: [{ id: "db_1", companyName: "Empresa Uno", databaseName: "EMPRESA_UNO", environment: "production" }] }],
+          }],
+        });
+      }
+      return Promise.resolve({ id: "schedule_license", ...body });
+    });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    fireEvent.change(select("Tipo de alcance"), { target: { value: "licensing" } });
+    fireEvent.click(await screen.findByText("Mobile App"));
+    fireEvent.change(select("Ambiente"), { target: { value: "production" } });
+    fireEvent.change(select("Objetivo de actualización"), { target: { value: "domains_and_databases" } });
+    fireEvent.click(screen.getByRole("button", { name: /Previsualizar alcance/i }));
+    expect(await screen.findByText(/1 cliente\(s\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/Cliente: Cliente Uno/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Guardar$/i }));
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/schedules", expect.objectContaining({
+      selectionMode: "licensing",
+      licensingScope: expect.objectContaining({ licenseModuleIds: ["module_mobile"], environment: "production" }),
+    })));
   });
 });

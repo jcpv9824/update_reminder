@@ -6,6 +6,7 @@ const client: ClientRecord = {
   id: "client_1",
   name: "Cliente Uno",
   status: "active",
+  licenseModuleIds: ["module_mobile"],
   createdAt: "2026-05-01T00:00:00.000Z",
   createdBy: "admin",
   updatedAt: "2026-05-01T00:00:00.000Z",
@@ -134,12 +135,12 @@ describe("parseSemicolonEmails", () => {
 describe("buildMastersReportEmail", () => {
   it("genera HTML y texto con clientes, dominios y empresas", () => {
     const report = buildMastersReportEmail({
-      clients: [client],
+      clients: [{ ...client, licenseModuleIds: ["module_mobile", "module_mobile", "module_wms"] }],
       domains: [domain],
       databases: [database],
       schedules: [schedule],
       licenseModules: [mobileModule],
-      licenseAssignments: [clientAssignment],
+      licenseAssignments: [],
     });
     expect(report.subject).toBe("Reporte maestro ERP — clientes, dominios y empresas");
     expect(report.html).toContain("Cliente Uno");
@@ -152,7 +153,7 @@ describe("buildMastersReportEmail", () => {
   });
 
   it("no incluye passwords, usuarios SQL, secretos ni connection strings completas", () => {
-    const report = buildMastersReportEmail({ clients: [client], domains: [domain], databases: [database], schedules: [schedule], licenseModules: [mobileModule], licenseAssignments: [clientAssignment] });
+    const report = buildMastersReportEmail({ clients: [client], domains: [domain], databases: [database], schedules: [schedule], licenseModules: [mobileModule], licenseAssignments: [] });
     const serialized = `${report.html}\n${report.text}`;
     expect(serialized).not.toContain("usuario_sql_sensible");
     expect(serialized).not.toContain("secret-password-db-1");
@@ -163,7 +164,7 @@ describe("buildMastersReportEmail", () => {
 
   it("incluye licencias activas del cliente y las deduplica", () => {
     const report = buildMastersReportEmail({
-      clients: [client],
+      clients: [{ ...client, licenseModuleIds: ["module_mobile", "module_mobile", "module_wms"] }],
       domains: [domain],
       databases: [database],
       schedules: [schedule],
@@ -212,7 +213,7 @@ describe("buildMastersReportEmail", () => {
 
   it("muestra Sin licencias registradas cuando el cliente no tiene módulos activos", () => {
     const report = buildMastersReportEmail({
-      clients: [client],
+      clients: [{ ...client, licenseModuleIds: [] }],
       domains: [domain],
       databases: [database],
       schedules: [schedule],

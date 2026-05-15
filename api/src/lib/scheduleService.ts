@@ -19,6 +19,8 @@ export type FrequencyInput = {
   databaseAssignedUserIds?: string[];
   databaseReminderRecipientsMode?: "assignedUsers" | "roleUsers";
   scopeGroups?: import("../types/models").ScheduleScopeGroup[];
+  selectionMode?: import("../types/models").ScheduleSelectionMode;
+  licensingScope?: import("../types/models").LicensingScope;
   assignmentMode?: import("../types/models").ScheduleAssignmentMode;
   domainAssignedRole?: string;
   databaseAssignedRole?: string;
@@ -117,6 +119,8 @@ export function buildScheduleRecord(args: {
     databaseAssignedUserIds: normalized.databaseAssignedUserIds ?? [],
     databaseReminderRecipientsMode: normalized.databaseReminderRecipientsMode,
     scopeGroups: normalized.scopeGroups,
+    selectionMode: normalized.selectionMode,
+    licensingScope: normalized.licensingScope,
     assignmentMode: normalized.assignmentMode,
     domainAssignedRole: normalized.domainAssignedRole,
     databaseAssignedRole: normalized.databaseAssignedRole,

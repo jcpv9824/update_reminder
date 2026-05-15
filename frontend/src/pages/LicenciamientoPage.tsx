@@ -16,6 +16,7 @@ const NIVELES: Array<{ value: NivelAsignacionLicencia; label: string }> = [
 ];
 
 const AMBIENTES_BASE = ["all", "production", "test", "demo"];
+const MOSTRAR_ASIGNACIONES_AVANZADAS = import.meta.env.VITE_ENABLE_ADVANCED_LICENSE_ASSIGNMENTS === "true";
 
 function ambienteTexto(value?: string) {
   return ETIQUETAS_AMBIENTE[value ?? "all"] ?? value ?? "Todos";
@@ -124,7 +125,7 @@ export default function LicenciamientoPage() {
       <div className="encabezado-pagina">
         <div>
           <h2>Licenciamiento</h2>
-          <p className="texto-ayuda">Gestione módulos licenciados y sus asignaciones por cliente, dominio o base de datos.</p>
+          <p className="texto-ayuda">Gestione los módulos licenciados que pueden ser asignados a los clientes.</p>
         </div>
         {tab === "modulos" && puedeAdministrarModulos && (
           <button className="primario" onClick={() => setModalModulo("nuevo")}>Nuevo módulo</button>
@@ -137,13 +138,15 @@ export default function LicenciamientoPage() {
       {exito && <Alerta tipo="exito">{exito}</Alerta>}
       {error && <Alerta tipo="error">{error}</Alerta>}
 
-      <div className="pestanas" role="tablist" aria-label="Licenciamiento">
-        <button className={tab === "modulos" ? "activo" : ""} role="tab" aria-selected={tab === "modulos"} onClick={() => setTab("modulos")}>Módulos</button>
-        <button className={tab === "asignaciones" ? "activo" : ""} role="tab" aria-selected={tab === "asignaciones"} onClick={() => setTab("asignaciones")}>Asignaciones</button>
-      </div>
+      {MOSTRAR_ASIGNACIONES_AVANZADAS && (
+        <div className="pestanas" role="tablist" aria-label="Licenciamiento">
+          <button className={tab === "modulos" ? "activo" : ""} role="tab" aria-selected={tab === "modulos"} onClick={() => setTab("modulos")}>Módulos</button>
+          <button className={tab === "asignaciones" ? "activo" : ""} role="tab" aria-selected={tab === "asignaciones"} onClick={() => setTab("asignaciones")}>Asignaciones</button>
+        </div>
+      )}
 
       {cargandoDatos ? <div className="cargando">Cargando licenciamiento...</div> : (
-        tab === "modulos" ? (
+        !MOSTRAR_ASIGNACIONES_AVANZADAS || tab === "modulos" ? (
           <TablaModulos
             modulos={modulos.data ?? []}
             puedeAdministrar={puedeAdministrarModulos}
@@ -333,7 +336,6 @@ function FormularioModulo({ inicial, cargando, onSubmit }: { inicial?: ModuloLic
   function enviar(e: FormEvent) {
     e.preventDefault();
     if (!name.trim()) return setError("El nombre es obligatorio.");
-    if (!code.trim()) return setError("El código es obligatorio.");
     setError(null);
     onSubmit({ name: name.trim(), code: code.trim(), description: description.trim(), status });
   }
@@ -346,8 +348,9 @@ function FormularioModulo({ inicial, cargando, onSubmit }: { inicial?: ModuloLic
         <input value={name} onChange={(e) => setName(e.target.value)} required />
       </div>
       <div className="fila-formulario">
-        <label>Código *</label>
-        <input value={code} onChange={(e) => setCode(e.target.value)} required />
+        <label>Código</label>
+        <input value={code} onChange={(e) => setCode(e.target.value)} />
+        <p className="texto-ayuda">Opcional. Si lo deja vacío, se generará automáticamente.</p>
       </div>
       <div className="fila-formulario">
         <label>Descripción</label>

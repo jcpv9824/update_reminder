@@ -52,6 +52,8 @@ export type ClientRecord = {
   name: string;
   status: EntityStatus;
   notes?: string;
+  licenseModuleIds?: string[];
+  licenseModuleNames?: string[];
   createdAt: string;
   createdBy: string;
   updatedAt: string;
@@ -163,6 +165,17 @@ export type ScheduleScopeGroup = {
 };
 
 export type ScheduleAssignmentMode = "role" | "users";
+export type ScheduleSelectionMode = "manual" | "licensing";
+export type LicenseMatchMode = "any" | "all";
+export type LicensingTargetTypes = "domains_and_databases" | "domains_only" | "databases_only";
+
+export type LicensingScope = {
+  licenseModuleIds: string[];
+  licenseMatchMode: LicenseMatchMode;
+  environment: "all" | string;
+  targetTypes: LicensingTargetTypes;
+  activeOnly: boolean;
+};
 
 export type Weekday =
   | "MONDAY"
@@ -198,6 +211,8 @@ export type UpdateSchedule = {
   databaseAssignedUserIds?: string[];
   databaseReminderRecipientsMode?: "assignedUsers" | "roleUsers";
   scopeGroups?: ScheduleScopeGroup[];
+  selectionMode?: ScheduleSelectionMode;
+  licensingScope?: LicensingScope;
   assignmentMode?: ScheduleAssignmentMode;
   domainAssignedRole?: Role | string;
   databaseAssignedRole?: Role | string;

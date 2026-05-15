@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, generateTasksForDate, obsoleteTasksOutsideExpected, summarizeTaskGenerationForDate, taskTargetKey } from "../lib/taskGenerator";
-import type { DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
+import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 const schedule: UpdateSchedule = {
   id: "schedule_1",
@@ -447,5 +447,52 @@ describe("expandSchedulesWithDomainInheritance", () => {
     expect(tasks).toHaveLength(2);
     expect(tasks.some((t) => t.scheduleId === "schedule_db_specific" && t.targetId === "db_1")).toBe(true);
     expect(tasks.some((t) => t.scheduleId.includes("__db_inherited"))).toBe(false);
+  });
+
+  it("programación por licenciamiento incluye clientes licenciados agregados después", () => {
+    const module: LicenseModuleRecord = { id: "lic_mobile", name: "Mobile App", status: "active" };
+    const client: ClientRecord = { id: "client_1", name: "Cliente", status: "active", licenseModuleIds: ["lic_mobile"], createdAt: "", createdBy: "", updatedAt: "", updatedBy: "" };
+    const licensingSchedule: UpdateSchedule = {
+      ...domainSchedule,
+      id: "schedule_licensing",
+      selectionMode: "licensing",
+      licensingScope: {
+        licenseModuleIds: ["lic_mobile"],
+        licenseMatchMode: "any",
+        environment: "production",
+        targetTypes: "domains_and_databases",
+        activeOnly: true,
+      },
+      scopeGroups: undefined,
+      targetIds: [],
+      origin: "licensing",
+    };
+    const expanded = expandSchedulesWithDomainInheritance([licensingSchedule], [domain], [db("db_1")], [client], [module]);
+    const tasks = generateTasksForDate(expanded, "2026-05-08", [], (id) => id);
+    expect(tasks.map((task) => task.targetType).sort()).toEqual(["database", "domain"]);
+  });
+
+  it("programación por licenciamiento y normal el mismo día crean una sola tarea por entidad", () => {
+    const module: LicenseModuleRecord = { id: "lic_mobile", name: "Mobile App", status: "active" };
+    const client: ClientRecord = { id: "client_1", name: "Cliente", status: "active", licenseModuleIds: ["lic_mobile"], createdAt: "", createdBy: "", updatedAt: "", updatedBy: "" };
+    const licensingSchedule: UpdateSchedule = {
+      ...domainSchedule,
+      id: "schedule_licensing",
+      selectionMode: "licensing",
+      licensingScope: {
+        licenseModuleIds: ["lic_mobile"],
+        licenseMatchMode: "any",
+        environment: "production",
+        targetTypes: "domains_only",
+        activeOnly: true,
+      },
+      scopeGroups: undefined,
+      targetIds: [],
+      origin: "licensing",
+    };
+    const expanded = expandSchedulesWithDomainInheritance([domainSchedule, licensingSchedule], [domain], [db("db_1")], [client], [module]);
+    const summary = summarizeTaskGenerationForDate(expanded, "2026-05-08", [], (id) => id);
+    expect(summary.tasks.filter((task) => task.targetType === "domain" && task.targetId === "domain_1")).toHaveLength(1);
+    expect(summary.skipped).toBeGreaterThanOrEqual(1);
   });
 });

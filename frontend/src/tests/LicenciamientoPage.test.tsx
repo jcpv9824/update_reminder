@@ -72,11 +72,6 @@ function renderPage() {
   );
 }
 
-function field(label: string) {
-  const node = screen.getByText(label);
-  return within(node.parentElement!).getByRole("combobox");
-}
-
 function textField(label: string) {
   const node = screen.getByText(label);
   return within(node.parentElement!).getByRole("textbox");
@@ -91,66 +86,22 @@ beforeEach(() => {
 });
 
 describe("LicenciamientoPage", () => {
-  it("renderiza la página y la pestaña Módulos", async () => {
+  it("renderiza la página como maestro de Módulos y oculta Asignaciones", async () => {
     renderPage();
     expect(await screen.findByRole("heading", { name: "Licenciamiento" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Módulos" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText(/Gestione los módulos licenciados que pueden ser asignados a los clientes/i)).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Asignaciones" })).toBeNull();
     expect(await screen.findByText("Mobile App")).toBeInTheDocument();
   });
 
-  it("renderiza la pestaña Asignaciones", async () => {
-    renderPage();
-    fireEvent.click(await screen.findByRole("tab", { name: "Asignaciones" }));
-    expect(screen.getByRole("tab", { name: "Asignaciones" })).toHaveAttribute("aria-selected", "true");
-    expect((await screen.findAllByText("Cliente completo")).length).toBeGreaterThan(0);
-  });
-
-  it("cambia los campos requeridos según el nivel de asignación", async () => {
-    renderPage();
-    fireEvent.click(await screen.findByRole("tab", { name: "Asignaciones" }));
-    fireEvent.click(screen.getByRole("button", { name: "Nueva asignación" }));
-
-    expect(screen.queryByText("Dominio *")).toBeNull();
-    expect(screen.queryByText("Base de datos *")).toBeNull();
-
-    fireEvent.change(field("Nivel de asignación *"), { target: { value: "domain" } });
-    expect(screen.getByText("Dominio *")).toBeInTheDocument();
-    expect(screen.queryByText("Base de datos *")).toBeNull();
-
-    fireEvent.change(field("Nivel de asignación *"), { target: { value: "database" } });
-    expect(screen.getByText("Dominio *")).toBeInTheDocument();
-    expect(screen.getByText("Base de datos *")).toBeInTheDocument();
-  });
-
-  it("crear módulo llama la API", async () => {
+  it("crear módulo permite omitir código y llama la API", async () => {
     apiMock.post.mockResolvedValue({ id: "module_wms", name: "WMS", code: "WMS", status: "active" });
     renderPage();
     fireEvent.click(await screen.findByRole("button", { name: "Nuevo módulo" }));
     await userEvent.type(textField("Nombre *"), "WMS");
-    await userEvent.type(textField("Código *"), "WMS");
+    expect(screen.queryByText("Código *")).toBeNull();
+    expect(screen.getByText(/Opcional. Si lo deja vacío/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
-    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/license-modules", expect.objectContaining({ name: "WMS", code: "WMS" })));
-  });
-
-  it("crear asignación llama la API", async () => {
-    apiMock.post.mockResolvedValue({ id: "assignment_2" });
-    renderPage();
-    fireEvent.click(await screen.findByRole("tab", { name: "Asignaciones" }));
-    fireEvent.click(screen.getByRole("button", { name: "Nueva asignación" }));
-
-    fireEvent.change(field("Módulo *"), { target: { value: "module_mobile" } });
-    fireEvent.change(field("Nivel de asignación *"), { target: { value: "database" } });
-    fireEvent.change(field("Cliente *"), { target: { value: "client_1" } });
-    fireEvent.change(field("Dominio *"), { target: { value: "domain_1" } });
-    fireEvent.change(field("Base de datos *"), { target: { value: "db_1" } });
-    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
-
-    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/license-assignments", expect.objectContaining({
-      moduleId: "module_mobile",
-      targetType: "database",
-      clientId: "client_1",
-      domainId: "domain_1",
-      databaseId: "db_1",
-    })));
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/license-modules", expect.objectContaining({ name: "WMS", code: "" })));
   });
 });

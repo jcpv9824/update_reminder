@@ -3,6 +3,8 @@ import {
   canManageLicenseAssignments,
   canManageLicenseModules,
   canViewLicensing,
+  buildUniqueLicenseCode,
+  generateLicenseCodeFromName,
   hasDuplicateLicenseCode,
   normalizeLicenseCode,
   validateLicenseAssignmentRequirements,
@@ -24,6 +26,12 @@ describe("licenseRules", () => {
     expect(hasDuplicateLicenseCode(modules, " mobile ")).toBe(true);
     expect(hasDuplicateLicenseCode(modules, " mobile ", "module_mobile")).toBe(false);
     expect(hasDuplicateLicenseCode(modules, "old")).toBe(false);
+  });
+
+  it("genera códigos automáticos sin tildes y evita duplicados", () => {
+    expect(generateLicenseCodeFromName("Facturación electrónica")).toBe("FACTURACION_ELECTRONICA");
+    expect(buildUniqueLicenseCode(modules, "Mobile")).toBe("MOBILE_2");
+    expect(buildUniqueLicenseCode(modules, generateLicenseCodeFromName("AI Extract"))).toBe("AI_EXTRACT");
   });
 
   it("valida los campos requeridos por nivel de asignación", () => {

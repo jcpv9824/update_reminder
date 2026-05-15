@@ -10,6 +10,8 @@ import {
   canManageLicenseAssignments,
   canManageLicenseModules,
   canViewLicensing,
+  buildUniqueLicenseCode,
+  generateLicenseCodeFromName,
   hasDuplicateLicenseCode,
   normalizeLicenseCode,
   validateLicenseAssignmentRequirements,
@@ -25,7 +27,7 @@ import type {
 
 const ModuleSchema = z.object({
   name: z.string().min(1, "El nombre del módulo es obligatorio.").max(200),
-  code: z.string().min(1, "El código del módulo es obligatorio.").max(80),
+  code: z.string().max(80).optional().default(""),
   description: z.string().max(2000).optional().default(""),
   status: z.enum(["active", "inactive", "deleted"]).optional().default("active"),
 });
@@ -65,9 +67,14 @@ async function getModuleManager(req: HttpRequest): Promise<CurrentUser> {
   return user;
 }
 
-async function codeExists(code: string, excludeId?: string): Promise<boolean> {
+async function nextModuleCode(name: string, code?: string, excludeId?: string): Promise<string | HttpResponseInit> {
   const { resources } = await getContainer("licenseModules").items.readAll<LicenseModuleRecord>().fetchAll();
-  return hasDuplicateLicenseCode(resources, code, excludeId);
+  if (code?.trim()) {
+    const normalized = normalizeLicenseCode(code);
+    if (hasDuplicateLicenseCode(resources, normalized, excludeId)) return conflict("Ya existe un módulo con ese código.");
+    return normalized;
+  }
+  return buildUniqueLicenseCode(resources, generateLicenseCodeFromName(name), excludeId);
 }
 
 async function findModule(id: string): Promise<LicenseModuleRecord | null> {
@@ -170,12 +177,13 @@ app.http("licenseModulesCreate", {
       const user = await getModuleManager(req);
       const parsed = ModuleSchema.safeParse(await req.json().catch(() => ({})));
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
-      if (await codeExists(parsed.data.code)) return conflict("Ya existe un módulo con ese código.");
+      const code = await nextModuleCode(parsed.data.name, parsed.data.code);
+      if (typeof code !== "string") return code;
       const now = new Date().toISOString();
       const record: LicenseModuleRecord = {
         id: `license_module_${uuid()}`,
         name: parsed.data.name.trim(),
-        code: normalizeLicenseCode(parsed.data.code),
+        code,
         description: parsed.data.description?.trim(),
         status: parsed.data.status,
         active: parsed.data.status === "active",
@@ -206,8 +214,10 @@ app.http("licenseModulesUpdate", {
       if (!current || current.status === "deleted" || current.deletedAt) return notFound("Licencia o módulo no encontrado.");
       const parsed = ModuleSchema.partial().safeParse(await req.json().catch(() => ({})));
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
-      const nextCode = parsed.data.code !== undefined ? normalizeLicenseCode(parsed.data.code) : current.code;
-      if (nextCode && await codeExists(nextCode, id)) return conflict("Ya existe un módulo con ese código.");
+      const nextCode = parsed.data.code !== undefined
+        ? await nextModuleCode(parsed.data.name ?? current.name, parsed.data.code, id)
+        : current.code ?? await nextModuleCode(parsed.data.name ?? current.name, undefined, id);
+      if (typeof nextCode !== "string") return nextCode;
       const before = { ...current };
       const updated: LicenseModuleRecord = {
         ...current,

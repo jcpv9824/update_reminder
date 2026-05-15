@@ -3,7 +3,7 @@ import { getContainer } from "../lib/cosmos";
 import { writeAuditLog } from "../lib/audit";
 import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, obsoleteTasksOutsideExpected, summarizeTaskGenerationForDate } from "../lib/taskGenerator";
 import { isScheduleDueOnDate } from "../lib/scheduleEngine";
-import type { DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
+import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 function todayInBogotaIso(): string {
   // America/Bogota es UTC-5 sin horario de verano.
@@ -99,8 +99,12 @@ export async function runTaskGeneration(
     .items.query<UpdateSchedule>({ query: "SELECT * FROM c WHERE c.active = true" })
     .fetchAll();
   const { resources: clients } = await getContainer("clients")
-    .items.query<any>({ query: "SELECT * FROM c WHERE c.status = 'active'" })
+    .items.query<ClientRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" })
     .fetchAll();
+  const { resources: licenseModules } = await getContainer("licenseModules")
+    .items.query<LicenseModuleRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" })
+    .fetchAll()
+    .catch(() => ({ resources: [] as LicenseModuleRecord[] }));
   const { resources: domainsRaw } = await getContainer("domains")
     .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" })
     .fetchAll();
@@ -128,7 +132,7 @@ export async function runTaskGeneration(
   }
   const initialExistingTasks = existing.length;
 
-  const expandedSchedules = expandSchedulesWithDomainInheritance(activeSchedules, domains, databases);
+  const expandedSchedules = expandSchedulesWithDomainInheritance(activeSchedules, domains, databases, clients, licenseModules);
 
   // Diagnostics
   const reasons: string[] = [];

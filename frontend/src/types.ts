@@ -23,6 +23,8 @@ export type Cliente = {
   name: string;
   status: "active" | "inactive" | "deleted";
   notes?: string;
+  licenseModuleIds?: string[];
+  licenseModuleNames?: string[];
   createdAt: string;
   createdBy: string;
   updatedAt: string;
@@ -128,6 +130,14 @@ export type Frecuencia = {
     includeAllDomains: boolean;
     domains: Array<{ domainId: string; includeAllDatabases: boolean; databaseIds: string[] }>;
   }>;
+  selectionMode?: "manual" | "licensing";
+  licensingScope?: {
+    licenseModuleIds: string[];
+    licenseMatchMode: "any" | "all";
+    environment: "all" | string;
+    targetTypes: "domains_and_databases" | "domains_only" | "databases_only";
+    activeOnly: boolean;
+  };
   assignmentMode?: "role" | "users";
   domainAssignedRole?: string;
   databaseAssignedRole?: string;

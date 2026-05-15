@@ -6,12 +6,13 @@ import { canManageClients } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
-import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
+import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 const ClientSchema = z.object({
   name: z.string().min(1, "El nombre del cliente es obligatorio.").max(200),
   notes: z.string().max(2000).optional(),
   status: z.enum(["active", "inactive", "deleted"]).optional(),
+  licenseModuleIds: z.array(z.string()).optional(),
 });
 
 async function getUserOrFail(req: HttpRequest) {
@@ -19,6 +20,32 @@ async function getUserOrFail(req: HttpRequest) {
   const profile = await loadUserProfile(auth);
   if (!profile) throw Object.assign(new Error("Usuario no registrado."), { status: 403 });
   return profile;
+}
+
+function uniqueIds(ids?: string[]): string[] {
+  return Array.from(new Set((ids ?? []).map((id) => id.trim()).filter(Boolean)));
+}
+
+async function resolveClientLicenses(ids?: string[], existingIds: string[] = []): Promise<{ ids: string[]; names: string[] } | HttpResponseInit> {
+  const unique = uniqueIds(ids);
+  if (unique.length === 0) return { ids: [], names: [] };
+  const { resources } = await getContainer("licenseModules").items.readAll<LicenseModuleRecord>().fetchAll();
+  const modulesById = new Map(resources.map((module) => [module.id, module]));
+  const previous = new Set(existingIds);
+  const names: string[] = [];
+  for (const id of unique) {
+    const module = modulesById.get(id);
+    if (!module || module.status === "deleted" || module.deletedAt) return badRequest("Una de las licencias seleccionadas no existe.");
+    if ((module.status !== "active" || module.active === false) && !previous.has(id)) {
+      return badRequest("Solo puede asignar licencias activas al cliente.");
+    }
+    names.push(module.name);
+  }
+  return { ids: unique, names };
+}
+
+function isHttpResponse(value: { ids: string[]; names: string[] } | HttpResponseInit): value is HttpResponseInit {
+  return typeof (value as HttpResponseInit).status === "number";
 }
 
 app.http("clientsList", {
@@ -55,12 +82,16 @@ app.http("clientsCreate", {
       const body = await req.json();
       const parsed = ClientSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      const licenses = await resolveClientLicenses(parsed.data.licenseModuleIds);
+      if (isHttpResponse(licenses)) return licenses;
       const now = new Date().toISOString();
       const record: ClientRecord = {
         id: `client_${uuid()}`,
         name: parsed.data.name.trim(),
         status: "active",
         notes: parsed.data.notes,
+        licenseModuleIds: licenses.ids,
+        licenseModuleNames: licenses.names,
         createdAt: now,
         createdBy: user.id,
         updatedAt: now,
@@ -151,11 +182,16 @@ app.http("clientsUpdate", {
       const { resource } = await container.item(id, id).read<ClientRecord>();
       if (!resource) return notFound("Cliente no encontrado.");
       const before = { ...resource };
+      const licenses = parsed.data.licenseModuleIds !== undefined
+        ? await resolveClientLicenses(parsed.data.licenseModuleIds, resource.licenseModuleIds ?? [])
+        : null;
+      if (licenses && isHttpResponse(licenses)) return licenses;
       const updated: ClientRecord = {
         ...resource,
         ...(parsed.data.name !== undefined ? { name: parsed.data.name.trim() } : {}),
         ...(parsed.data.notes !== undefined ? { notes: parsed.data.notes } : {}),
         ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
+        ...(licenses ? { licenseModuleIds: licenses.ids, licenseModuleNames: licenses.names } : {}),
         updatedAt: new Date().toISOString(),
         updatedBy: user.id,
       };

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { BaseDeDatos, Cliente, Dominio } from "../types";
+import type { BaseDeDatos, Cliente, Dominio, ModuloLicencia } from "../types";
 import { Alerta, DialogoConfirmar, EtiquetaEstado, Modal } from "../components/Comunes";
 import { ETIQUETAS_AMBIENTE } from "../types";
 
@@ -24,9 +24,13 @@ export default function ClientesPage() {
     queryKey: ["clientes"],
     queryFn: () => api.get<Cliente[]>("/clients"),
   });
+  const { data: modulosLicencia = [] } = useQuery({
+    queryKey: ["license-modules"],
+    queryFn: () => api.get<ModuloLicencia[]>("/license-modules"),
+  });
 
   const crear = useMutation({
-    mutationFn: ({ body }: { body: { name: string; notes?: string }; accion: AccionCliente }) => api.post<Cliente>("/clients", body),
+    mutationFn: ({ body }: { body: { name: string; notes?: string; licenseModuleIds?: string[] }; accion: AccionCliente }) => api.post<Cliente>("/clients", body),
     onSuccess: (cliente, variables) => {
       qc.invalidateQueries({ queryKey: ["clientes"] });
       setExito("Cliente creado correctamente.");
@@ -125,7 +129,7 @@ export default function ClientesPage() {
       )}
 
       <Modal titulo="Nuevo cliente" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
-        <FormularioCliente key={crear.submittedAt || "nuevo"} onSubmit={(v, accion) => crear.mutate({ body: v, accion })} cargando={crear.isPending} />
+        <FormularioCliente key={crear.submittedAt || "nuevo"} modulosLicencia={modulosLicencia} onSubmit={(v, accion) => crear.mutate({ body: v, accion })} cargando={crear.isPending} />
       </Modal>
       <Modal titulo="Ver dominios y bases" abierto={!!verArbol} onCerrar={() => setVerArbol(null)}>
         {verArbol && <ArbolCliente cliente={verArbol} />}
@@ -134,6 +138,7 @@ export default function ClientesPage() {
         {editando && (
           <FormularioCliente
             inicial={editando}
+            modulosLicencia={modulosLicencia}
             cargando={actualizar.isPending}
             onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })}
           />
@@ -170,6 +175,9 @@ function ArbolCliente({ cliente }: { cliente: Cliente }) {
       {isLoading && <div className="cargando">Cargando dominios y bases...</div>}
       {isError && <Alerta tipo="error">No se pudo cargar la información relacionada.</Alerta>}
       {data?.domains.length === 0 && <p className="vacio">No hay dominios activos asociados.</p>}
+      {data?.client && (
+        <p><strong>Licencias:</strong> {(data.client.licenseModuleNames ?? []).length > 0 ? data.client.licenseModuleNames?.join(", ") : "Sin licencias registradas"}</p>
+      )}
       {data?.domains.map(({ domain, databases }) => (
         <div className="tarjeta tarjeta-compacta" key={domain.id}>
           <h4>{domain.domainName}</h4>
@@ -194,14 +202,35 @@ function ArbolCliente({ cliente }: { cliente: Cliente }) {
   );
 }
 
-function FormularioCliente({ inicial, onSubmit, cargando }: { inicial?: Cliente; onSubmit: (v: { name: string; notes?: string }, accion: AccionCliente) => void; cargando: boolean }) {
+function FormularioCliente({
+  inicial,
+  modulosLicencia,
+  onSubmit,
+  cargando,
+}: {
+  inicial?: Cliente;
+  modulosLicencia: ModuloLicencia[];
+  onSubmit: (v: { name: string; notes?: string; licenseModuleIds?: string[] }, accion: AccionCliente) => void;
+  cargando: boolean;
+}) {
   const [name, setName] = useState(inicial?.name ?? "");
   const [notes, setNotes] = useState(inicial?.notes ?? "");
+  const [busquedaLicencia, setBusquedaLicencia] = useState("");
+  const [licenseModuleIds, setLicenseModuleIds] = useState<string[]>(inicial?.licenseModuleIds ?? []);
   const [err, setErr] = useState<string | null>(null);
+  const modulosVisibles = modulosLicencia.filter((module) => {
+    const asignada = licenseModuleIds.includes(module.id);
+    if (module.status !== "active" && !asignada) return false;
+    if (!busquedaLicencia.trim()) return true;
+    return `${module.name} ${module.code ?? ""}`.toLowerCase().includes(busquedaLicencia.trim().toLowerCase());
+  });
+  function alternarLicencia(id: string) {
+    setLicenseModuleIds((actuales) => actuales.includes(id) ? actuales.filter((x) => x !== id) : [...actuales, id]);
+  }
   function enviar(accion: AccionCliente) {
     if (!name.trim()) { setErr("El nombre es obligatorio."); return; }
     setErr(null);
-    onSubmit({ name: name.trim(), notes: notes.trim() || undefined }, accion);
+    onSubmit({ name: name.trim(), notes: notes.trim() || undefined, licenseModuleIds }, accion);
   }
   return (
     <form onSubmit={(e) => {
@@ -216,6 +245,26 @@ function FormularioCliente({ inicial, onSubmit, cargando }: { inicial?: Cliente;
       <div className="fila-formulario">
         <label>Notas</label>
         <textarea rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} />
+      </div>
+      <div className="fila-formulario">
+        <label>Licencias del cliente</label>
+        <p className="texto-ayuda">Seleccione los módulos que este cliente tiene contratados.</p>
+        <input value={busquedaLicencia} onChange={(e) => setBusquedaLicencia(e.target.value)} placeholder="Buscar licencia..." />
+        <div className="lista-seleccion" style={{ marginTop: 8, maxHeight: 220 }}>
+          {modulosVisibles.map((module) => {
+            const inactiva = module.status !== "active";
+            return (
+              <label key={module.id} className="fila-seleccion">
+                <input type="checkbox" checked={licenseModuleIds.includes(module.id)} disabled={inactiva} onChange={() => alternarLicencia(module.id)} />
+                <span>
+                  <strong>{module.name}</strong>
+                  <small>{module.code ?? ""}{inactiva ? " · Inactiva" : ""}</small>
+                </span>
+              </label>
+            );
+          })}
+          {modulosVisibles.length === 0 && <div className="vacio">No hay licencias activas para seleccionar.</div>}
+        </div>
       </div>
       <div className="acciones-formulario">
         <button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button>

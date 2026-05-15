@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { BaseDeDatos, Cliente, Dominio, Frecuencia, Usuario } from "../types";
+import type { BaseDeDatos, Cliente, Dominio, Frecuencia, ModuloLicencia, Usuario } from "../types";
 import { Alerta, EtiquetaEstado, Modal, DialogoConfirmar } from "../components/Comunes";
-import { DIAS_SEMANA, ETIQUETAS_FRECUENCIA, ETIQUETAS_ROLES } from "../types";
+import { DIAS_SEMANA, ETIQUETAS_AMBIENTE, ETIQUETAS_FRECUENCIA, ETIQUETAS_ROLES } from "../types";
 import { SelectorBuscable } from "../components/SelectorBuscable";
 
 const DIAS_LISTA = Object.keys(DIAS_SEMANA);
@@ -19,6 +19,7 @@ export default function FrecuenciasPage() {
   const { data: dominios = [] } = useQuery({ queryKey: ["dominios"], queryFn: () => api.get<Dominio[]>("/domains") });
   const { data: bds = [] } = useQuery({ queryKey: ["bases-de-datos"], queryFn: () => api.get<BaseDeDatos[]>("/databases") });
   const { data: usuarios = [] } = useQuery({ queryKey: ["usuarios"], queryFn: () => api.get<Usuario[]>("/users") });
+  const { data: modulosLicencia = [] } = useQuery({ queryKey: ["license-modules"], queryFn: () => api.get<ModuloLicencia[]>("/license-modules") });
   const { data: frecuencias = [], isLoading } = useQuery({ queryKey: ["frecuencias", "special"], queryFn: () => api.get<Frecuencia[]>("/schedules?origin=special") });
   const programacionesEspeciales = useMemo(() => frecuencias.filter((f) => f.origin === "special"), [frecuencias]);
 
@@ -91,10 +92,10 @@ export default function FrecuenciasPage() {
       )}
 
       <Modal titulo="Nueva programación especial" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
-        <FormularioFrecuencia clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />
+        <FormularioFrecuencia clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} modulosLicencia={modulosLicencia} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />
       </Modal>
       <Modal titulo="Editar programación especial" abierto={!!editando} onCerrar={() => setEditando(null)}>
-        {editando && <FormularioFrecuencia inicial={editando} clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
+        {editando && <FormularioFrecuencia inicial={editando} clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} modulosLicencia={modulosLicencia} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
       </Modal>
 
       <DialogoConfirmar
@@ -113,9 +114,32 @@ export default function FrecuenciasPage() {
 }
 
 type ScopeGroup = NonNullable<Frecuencia["scopeGroups"]>[number];
+type LicensingScope = NonNullable<Frecuencia["licensingScope"]>;
+type LicensingPreview = {
+  clientsCount: number;
+  domainsCount: number;
+  databasesCount: number;
+  groups: Array<{
+    client: { id: string; name: string; licenses: string[] };
+    domains: Array<{
+      id: string;
+      name: string;
+      environment: string;
+      databases: Array<{ id: string; companyName: string; databaseName: string; environment: string }>;
+    }>;
+  }>;
+};
 
-function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, onSubmit, cargando }: { inicial?: Frecuencia; clientes: Cliente[]; dominios: Dominio[]; bds: BaseDeDatos[]; usuarios: Usuario[]; onSubmit: (v: any) => void; cargando: boolean }) {
+function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modulosLicencia, onSubmit, cargando }: { inicial?: Frecuencia; clientes: Cliente[]; dominios: Dominio[]; bds: BaseDeDatos[]; usuarios: Usuario[]; modulosLicencia: ModuloLicencia[]; onSubmit: (v: any) => void; cargando: boolean }) {
+  const [selectionMode, setSelectionMode] = useState<"manual" | "licensing">(inicial?.selectionMode ?? "manual");
   const [scopeGroups, setScopeGroups] = useState<ScopeGroup[]>(inicial?.scopeGroups ?? []);
+  const [licenseModuleIds, setLicenseModuleIds] = useState<string[]>(inicial?.licensingScope?.licenseModuleIds ?? []);
+  const [licenseMatchMode, setLicenseMatchMode] = useState<"any" | "all">(inicial?.licensingScope?.licenseMatchMode ?? "any");
+  const [licenseEnvironment, setLicenseEnvironment] = useState(inicial?.licensingScope?.environment ?? "all");
+  const [licenseTargetTypes, setLicenseTargetTypes] = useState<LicensingScope["targetTypes"]>(inicial?.licensingScope?.targetTypes ?? "domains_and_databases");
+  const [licenseActiveOnly, setLicenseActiveOnly] = useState(inicial?.licensingScope?.activeOnly ?? true);
+  const [licenseSearch, setLicenseSearch] = useState("");
+  const [preview, setPreview] = useState<LicensingPreview | null>(null);
   const [clienteAAgregar, setClienteAAgregar] = useState("");
   const [selectorDominios, setSelectorDominios] = useState<{ clientId: string } | null>(null);
   const [selectorBases, setSelectorBases] = useState<{ clientId: string; domainId: string } | null>(null);
@@ -132,6 +156,12 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, onSu
   const [endDate, setEndDate] = useState(inicial?.endDate ?? "");
   const [active, setActive] = useState(inicial?.active ?? true);
   const [err, setErr] = useState<string | null>(null);
+
+  const previewLicencias = useMutation({
+    mutationFn: (body: LicensingScope) => api.post<LicensingPreview>("/special-schedules/preview-licensing-scope", body),
+    onSuccess: (data) => { setPreview(data); setErr(null); },
+    onError: (e: any) => setErr(e?.message ?? "No se pudo previsualizar el alcance por licenciamiento."),
+  });
 
   const resumen = useMemo(() => {
     let domainsCount = 0;
@@ -154,17 +184,30 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, onSu
   function alternarDia(d: string) {
     setWeekdays((p) => (p.includes(d) ? p.filter((x) => x !== d) : [...p, d]));
   }
+  function licensingScope(): LicensingScope {
+    return { licenseModuleIds, licenseMatchMode, environment: licenseEnvironment, targetTypes: licenseTargetTypes, activeOnly: licenseActiveOnly };
+  }
+  function alternarLicencia(id: string) {
+    setLicenseModuleIds((actuales) => actuales.includes(id) ? actuales.filter((x) => x !== id) : [...actuales, id]);
+    setPreview(null);
+  }
+  const modulosActivos = modulosLicencia.filter((m) => m.status === "active" && (!licenseSearch.trim() || `${m.name} ${m.code ?? ""}`.toLowerCase().includes(licenseSearch.trim().toLowerCase())));
 
   return (
     <form onSubmit={(e) => {
       e.preventDefault();
-      if (scopeGroups.length === 0 || (resumen.dominios === 0 && resumen.bases === 0)) return setErr("Agregue al menos un cliente, dominio o base al alcance.");
+      if (selectionMode === "manual" && (scopeGroups.length === 0 || (resumen.dominios === 0 && resumen.bases === 0))) return setErr("Agregue al menos un cliente, dominio o base al alcance.");
+      if (selectionMode === "licensing" && licenseModuleIds.length === 0) return setErr("Seleccione al menos una licencia.");
+      if (selectionMode === "licensing" && !preview) return setErr("Previsualice el alcance antes de guardar.");
+      if (selectionMode === "licensing" && preview && preview.clientsCount === 0) return setErr("No se encontraron clientes activos con las licencias y filtros seleccionados.");
       if (assignmentMode === "users" && domainUsers.length === 0 && databaseUsers.length === 0) return setErr("Seleccione responsables o cambie a asignación por rol.");
       onSubmit({
-        clientId: scopeGroups[0].clientId,
+        clientId: selectionMode === "licensing" ? (preview?.groups[0]?.client.id ?? clientes.find((c) => c.status === "active")?.id ?? "") : scopeGroups[0].clientId,
         targetType: "domain",
         targetIds: [],
-        scopeGroups,
+        scopeGroups: selectionMode === "manual" ? scopeGroups : [],
+        selectionMode,
+        licensingScope: selectionMode === "licensing" ? licensingScope() : undefined,
         assignmentMode,
         domainAssignedRole: "domain_updater",
         databaseAssignedRole: "database_updater",
@@ -182,6 +225,62 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, onSu
     }}>
       {err && <Alerta tipo="error">{err}</Alerta>}
       <h4>Alcance de la programación especial</h4>
+      <div className="fila-formulario">
+        <label>Tipo de alcance</label>
+        <select value={selectionMode} onChange={(e) => { setSelectionMode(e.target.value as "manual" | "licensing"); setErr(null); }}>
+          <option value="manual">Selección manual</option>
+          <option value="licensing">Por licenciamiento</option>
+        </select>
+      </div>
+      {selectionMode === "licensing" ? (
+        <div className="tarjeta tarjeta-compacta">
+          <h4>Licencias a actualizar</h4>
+          <input value={licenseSearch} onChange={(e) => setLicenseSearch(e.target.value)} placeholder="Buscar licencia..." />
+          <div className="lista-seleccion" style={{ marginTop: 8, maxHeight: 220 }}>
+            {modulosActivos.map((module) => (
+              <label key={module.id} className="fila-seleccion">
+                <input type="checkbox" checked={licenseModuleIds.includes(module.id)} onChange={() => alternarLicencia(module.id)} />
+                <span><strong>{module.name}</strong><small>{module.code ?? ""}</small></span>
+              </label>
+            ))}
+            {modulosActivos.length === 0 && <div className="vacio">No hay licencias activas para seleccionar.</div>}
+          </div>
+          <div className="fila-formulario">
+            <label>Coincidencia de licencias</label>
+            <select value={licenseMatchMode} onChange={(e) => { setLicenseMatchMode(e.target.value as "any" | "all"); setPreview(null); }}>
+              <option value="any">Cualquiera de las licencias seleccionadas</option>
+              <option value="all">Todas las licencias seleccionadas</option>
+            </select>
+          </div>
+          <div className="fila-formulario">
+            <label>Ambiente</label>
+            <select value={licenseEnvironment} onChange={(e) => { setLicenseEnvironment(e.target.value); setPreview(null); }}>
+              <option value="all">Todos</option>
+              <option value="production">Producción</option>
+              <option value="test">Pruebas</option>
+              <option value="demo">Demo</option>
+            </select>
+          </div>
+          <div className="fila-formulario">
+            <label>Objetivo de actualización</label>
+            <select value={licenseTargetTypes} onChange={(e) => { setLicenseTargetTypes(e.target.value as LicensingScope["targetTypes"]); setPreview(null); }}>
+              <option value="domains_and_databases">Dominios y bases de datos</option>
+              <option value="domains_only">Solo dominios</option>
+              <option value="databases_only">Solo bases de datos</option>
+            </select>
+          </div>
+          <div className="fila-formulario"><label>
+            <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={licenseActiveOnly} onChange={(e) => { setLicenseActiveOnly(e.target.checked); setPreview(null); }} />
+            Solo clientes, dominios y bases activos
+          </label></div>
+          <button type="button" className="primario" onClick={() => {
+            if (licenseModuleIds.length === 0) { setErr("Seleccione al menos una licencia."); return; }
+            previewLicencias.mutate(licensingScope());
+          }}>{previewLicencias.isPending ? "Previsualizando..." : "Previsualizar alcance"}</button>
+          {preview && <PreviewLicenciamiento preview={preview} />}
+        </div>
+      ) : (
+      <>
       <div className="fila-formulario"><label>Agregar cliente al alcance</label>
         <SelectorBuscable
           opciones={clientes.filter((c) => c.status === "active" && !scopeGroups.some((g) => g.clientId === c.id)).map((c) => ({ id: c.id, etiqueta: c.name }))}
@@ -242,6 +341,8 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, onSu
         );
       })}
       <Alerta tipo="info">Resumen del alcance: {resumen.clientes} cliente(s), {resumen.dominios} dominio(s), {resumen.bases} base(s) de datos.</Alerta>
+      </>
+      )}
       <ModalSeleccionDominios
         abierto={!!selectorDominios}
         clientId={selectorDominios?.clientId ?? ""}
@@ -380,6 +481,37 @@ function ModalSeleccionDominios({ abierto, clientId, dominios, seleccionados, on
         <button type="button" className="primario" onClick={() => onAgregar(marcados)}>Agregar seleccionados</button>
       </div>
     </Modal>
+  );
+}
+
+function PreviewLicenciamiento({ preview }: { preview: LicensingPreview }) {
+  return (
+    <div className="tarjeta tarjeta-compacta" style={{ marginTop: 12 }}>
+      <strong>Se incluirán:</strong>
+      <ul>
+        <li>{preview.clientsCount} cliente(s)</li>
+        <li>{preview.domainsCount} dominio(s)</li>
+        <li>{preview.databasesCount} base(s) de datos</li>
+      </ul>
+      {preview.groups.length === 0 ? (
+        <Alerta tipo="info">No se encontraron clientes activos con las licencias y filtros seleccionados.</Alerta>
+      ) : preview.groups.map((group) => (
+        <details key={group.client.id} open>
+          <summary><strong>Cliente: {group.client.name}</strong> · Licencias: {group.client.licenses.join(", ") || "Sin licencias registradas"}</summary>
+          {group.domains.map((domain) => (
+            <div key={domain.id} style={{ margin: "8px 0 8px 16px" }}>
+              <div><strong>Dominio:</strong> {domain.name}</div>
+              <div className="texto-ayuda">Ambiente: {ETIQUETAS_AMBIENTE[domain.environment] ?? domain.environment}</div>
+              {domain.databases.map((db) => (
+                <div key={db.id} style={{ marginLeft: 16 }}>
+                  Base: {db.databaseName} · Empresa: {db.companyName} · Ambiente: {ETIQUETAS_AMBIENTE[db.environment] ?? db.environment}
+                </div>
+              ))}
+            </div>
+          ))}
+        </details>
+      ))}
+    </div>
   );
 }
 

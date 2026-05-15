@@ -8,7 +8,8 @@ import { getContainer } from "../lib/cosmos";
 import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
 import { inferScheduleRole, normalizeFrequencyResponsibility } from "../lib/scheduleService";
 import { filterSchedulesByOrigin } from "../lib/scheduleFilters";
-import type { ClientRecord, UpdateSchedule } from "../types/models";
+import { previewLicensingScope } from "../lib/licensingScope";
+import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, LicensingScope, UpdateSchedule } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -46,6 +47,14 @@ const ScheduleSchema = z.object({
       databaseIds: z.array(z.string()),
     })),
   })).optional(),
+  selectionMode: z.enum(["manual", "licensing"]).optional().default("manual"),
+  licensingScope: z.object({
+    licenseModuleIds: z.array(z.string()).default([]),
+    licenseMatchMode: z.enum(["any", "all"]).default("any"),
+    environment: z.string().default("all"),
+    targetTypes: z.enum(["domains_and_databases", "domains_only", "databases_only"]).default("domains_and_databases"),
+    activeOnly: z.boolean().default(true),
+  }).optional(),
   assignmentMode: z.enum(["role", "users"]).optional(),
   domainAssignedRole: z.string().optional(),
   databaseAssignedRole: z.string().optional(),
@@ -53,6 +62,41 @@ const ScheduleSchema = z.object({
   active: z.boolean().default(true),
   notes: z.string().optional(),
 });
+
+const LicensingPreviewSchema = z.object({
+  licenseModuleIds: z.array(z.string()).default([]),
+  licenseMatchMode: z.enum(["any", "all"]).default("any"),
+  environment: z.string().default("all"),
+  targetTypes: z.enum(["domains_and_databases", "domains_only", "databases_only"]).default("domains_and_databases"),
+  activeOnly: z.boolean().default(true),
+});
+
+async function loadLicensingScopeData() {
+  const [{ resources: clients }, { resources: domains }, { resources: databases }, modulesResult] = await Promise.all([
+    getContainer("clients").items.readAll<ClientRecord>().fetchAll(),
+    getContainer("domains").items.readAll<DomainRecord>().fetchAll(),
+    getContainer("databases").items.readAll<DatabaseRecord>().fetchAll(),
+    getContainer("licenseModules").items.readAll<LicenseModuleRecord>().fetchAll().catch(() => ({ resources: [] as LicenseModuleRecord[] })),
+  ]);
+  return { clients, domains, databases, licenseModules: modulesResult.resources };
+}
+
+function validateLicensingScope(scope?: LicensingScope): string | null {
+  if (!scope) return "Configure el alcance por licenciamiento.";
+  const ids = Array.from(new Set(scope.licenseModuleIds.map((id) => id.trim()).filter(Boolean)));
+  if (ids.length === 0) return "Seleccione al menos una licencia.";
+  return null;
+}
+
+async function validateActiveLicenseModules(ids: string[]): Promise<string | null> {
+  const { licenseModules } = await loadLicensingScopeData();
+  const modulesById = new Map(licenseModules.map((module) => [module.id, module]));
+  for (const id of ids) {
+    const module = modulesById.get(id);
+    if (!module || module.status !== "active" || module.active === false || module.deletedAt) return "Seleccione solo licencias activas.";
+  }
+  return null;
+}
 
 app.http("schedulesList", {
   route: "schedules",
@@ -85,6 +129,12 @@ app.http("schedulesCreate", {
       const body = await req.json();
       const parsed = ScheduleSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      if (parsed.data.selectionMode === "licensing") {
+        const missing = validateLicensingScope(parsed.data.licensingScope as LicensingScope | undefined);
+        if (missing) return badRequest(missing);
+        const moduleError = await validateActiveLicenseModules(parsed.data.licensingScope!.licenseModuleIds);
+        if (moduleError) return badRequest(moduleError);
+      }
       const normalized = normalizeFrequencyResponsibility(parsed.data as any);
       const { resource: client } = await getContainer("clients").item(parsed.data.clientId, parsed.data.clientId).read<ClientRecord>();
       if (!client) return badRequest("Cliente no encontrado.");
@@ -111,6 +161,8 @@ app.http("schedulesCreate", {
         databaseAssignedUserIds: normalized.databaseAssignedUserIds ?? [],
         databaseReminderRecipientsMode: normalized.databaseReminderRecipientsMode,
         scopeGroups: normalized.scopeGroups,
+        selectionMode: normalized.selectionMode ?? parsed.data.selectionMode ?? "manual",
+        licensingScope: normalized.licensingScope ?? parsed.data.licensingScope,
         assignmentMode: normalized.assignmentMode,
         domainAssignedRole: normalized.domainAssignedRole,
         databaseAssignedRole: normalized.databaseAssignedRole,
@@ -173,6 +225,12 @@ app.http("schedulesUpdate", {
       const existing = await findSchedule(req.params.id);
       if (!existing) return notFound();
       const body = await req.json() as any;
+      if (body.selectionMode === "licensing") {
+        const missing = validateLicensingScope(body.licensingScope);
+        if (missing) return badRequest(missing);
+        const moduleError = await validateActiveLicenseModules(body.licensingScope.licenseModuleIds);
+        if (moduleError) return badRequest(moduleError);
+      }
       const normalized = normalizeFrequencyResponsibility({ ...body });
       const before = { ...existing };
       const targetType = body.targetType === "domain" || body.targetType === "database" ? body.targetType : existing.targetType;
@@ -185,6 +243,8 @@ app.http("schedulesUpdate", {
         databaseAssignedUserIds: normalized.databaseAssignedUserIds ?? [],
         databaseReminderRecipientsMode: normalized.databaseReminderRecipientsMode ?? "roleUsers",
         scopeGroups: normalized.scopeGroups,
+        selectionMode: normalized.selectionMode ?? body.selectionMode ?? existing.selectionMode ?? "manual",
+        licensingScope: normalized.licensingScope ?? body.licensingScope,
         assignmentMode: normalized.assignmentMode,
         domainAssignedRole: normalized.domainAssignedRole,
         databaseAssignedRole: normalized.databaseAssignedRole,
@@ -212,6 +272,26 @@ app.http("schedulesUpdate", {
       });
       return ok(merged);
     } catch (e) { return serverError(e); }
+  },
+});
+
+app.http("previewLicensingScope", {
+  route: "special-schedules/preview-licensing-scope",
+  methods: ["POST"],
+  authLevel: "anonymous",
+  handler: async (req): Promise<HttpResponseInit> => {
+    try {
+      const user = await getUserOrFail(req);
+      if (!canManageSchedules(user)) return forbidden();
+      const parsed = LicensingPreviewSchema.safeParse(await req.json().catch(() => ({})));
+      if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      const missing = validateLicensingScope(parsed.data);
+      if (missing) return badRequest(missing);
+      const data = await loadLicensingScopeData();
+      return ok(previewLicensingScope({ scope: parsed.data, ...data }));
+    } catch (e) {
+      return serverError(e);
+    }
   },
 });
 

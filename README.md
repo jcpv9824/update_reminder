@@ -14,8 +14,8 @@ Aplicación web para gestionar las actualizaciones programadas de los clientes d
 - **Diseño con colores corporativos**: `#1C3664`, `#7E99B2`, `#D1D3D2`, `#D3C193`.
 - Página principal **Tareas** con dos columnas (dominios y bases de datos) divididas en *Vencidas / Hoy / Próximas / Completadas*.
 - Gestión de **clientes**, **dominios** y **bases de datos** con eliminación en cascada confirmada y soft-delete de maestros. La frecuencia principal se configura en el **dominio**; las bases de datos heredan esa frecuencia desde el dominio seleccionado.
-- **Licenciamiento** visible para administradores y administradores de clientes, con módulos y asignaciones a cliente completo, dominio específico o base de datos específica.
-- **Programaciones especiales** (semanal, intervalo, mensual, manual) con alcance jerárquico por cliente → dominio → base de datos y responsables por rol o usuarios específicos.
+- **Licenciamiento** visible para administradores y administradores de clientes, como maestro de módulos que luego se asignan al cliente completo desde **Clientes**.
+- **Programaciones especiales** (semanal, intervalo, mensual, manual) con alcance jerárquico manual o alcance por licenciamiento, y responsables por rol o usuarios específicos.
 - **Generación automática diaria** de tareas mediante Azure Functions Timer Trigger y refresco manual desde la vista **Tareas** con **Refrescar**. El refresco no envía correos.
 - Panel del actualizador con las cuatro partes del acceso (servidor, Initial Catalog, usuario y contraseña) y botones independientes para copiar; cada acción se audita.
 - Desde **Dominios** se puede abrir **Ver bases asociadas**; desde **Clientes**, **Ver dominios y bases**.
@@ -112,7 +112,7 @@ Cubre vistas principales, selectores buscables, tareas, alertas y correos, progr
 | Rol | Puede hacer |
 |---|---|
 | Administrador | Todo: usuarios, roles, clientes, dominios, bases, licenciamiento, frecuencias, tareas, auditoría. |
-| Administrador de clientes | CRUD de clientes, dominios, bases, frecuencias y asignaciones de licencias; ver módulos de licencias y auditoría. |
+| Administrador de clientes | CRUD de clientes, dominios, bases y frecuencias; asignar licencias compradas a clientes; ver módulos de licencias y auditoría. |
 | Actualizador de bases de datos | Ver y completar tareas de bases de datos asignadas; revelar/copiar contraseñas autorizadas. |
 | Actualizador de dominios | Ver y completar tareas de dominios asignadas. |
 | Visualizador | Solo lectura. |
@@ -150,30 +150,32 @@ En **Recordatorios administrativos** configure los dos recordatorios mensuales: 
 
 Para enviar el reporte maestro, abra **Reporte de clientes/dominios/empresas**, escriba destinatarios separados por punto y coma, por ejemplo `correo1@empresa.com; correo2@empresa.com`, y pulse **Enviar reporte**. El reporte incluye solo clientes, licencias/módulos, dominios y bases activos, con ambiente. Las licencias se muestran debajo de cada cliente, se deduplican por módulo y si no hay licencias activas aparece **Sin licencias registradas**.
 
-## Licenciamiento en reporte maestro
+## Licenciamiento
 
 La vista **Licenciamiento** está disponible en `/licenciamiento` para administradores y administradores de clientes, entre **Bases de datos** y **Programaciones especiales** en el menú lateral.
 
-La pestaña **Módulos** permite a administradores crear, editar, activar/desactivar y eliminar módulos. Si un módulo tiene asignaciones activas, la eliminación se bloquea con un mensaje claro para quitar primero esas asignaciones.
+La vista queda como maestro de módulos. Permite crear, editar, activar/desactivar y eliminar módulos. El campo **Código** es opcional; si se deja vacío, el backend genera un código a partir del nombre, sin tildes, en mayúsculas y con sufijo si ya existe.
 
-La pestaña **Asignaciones** permite asignar un módulo a:
+Las licencias compradas se asignan desde **Clientes**, en la sección **Licencias del cliente** del modal de creación o edición. La fuente principal del modelo es:
 
-- Cliente completo.
-- Dominio específico.
-- Base de datos específica.
+```json
+{
+  "licenseModuleIds": ["module_mobile", "module_wms"]
+}
+```
 
-Las asignaciones guardan módulo, nivel, cliente, dominio/base cuando aplica, ambiente y estado. Los actualizadores y visualizadores no ven el menú de licenciamiento.
+Las asignaciones avanzadas por dominio/base (`licenseAssignments`) quedan ocultas y reservadas para una fase futura. No son usadas por el frontend normal ni por el reporte maestro actual salvo que se active explícitamente `ENABLE_ADVANCED_LICENSE_ASSIGNMENTS=true` en backend y `VITE_ENABLE_ADVANCED_LICENSE_ASSIGNMENTS=true` en frontend.
 
-El endpoint `POST /api/reports/masters/send-email` carga módulos de licencia y asignaciones activas desde `licenseModules` y `licenseAssignments`. Una licencia se muestra en el cliente si existe una asignación activa al cliente completo, a un dominio activo del cliente o a una base activa del cliente.
+El endpoint `POST /api/reports/masters/send-email` carga módulos activos desde `licenseModules` y usa `licenseModuleIds` de cada cliente activo para mostrar sus licencias.
 
 Reglas del reporte:
 
-- Solo se muestran módulos activos y asignaciones activas.
-- Se excluyen módulos/asignaciones inactivas, eliminadas o con `deletedAt`.
+- Solo se muestran módulos activos.
+- Se excluyen módulos inactivos, eliminados o con `deletedAt`.
 - Los módulos se deduplican por `moduleId` y se ordenan alfabéticamente.
 - Los nombres y códigos de módulos son permitidos; datos técnicos y secretos siguen excluidos.
 
-Si se intenta eliminar un módulo con asignaciones activas, `DELETE /api/license-modules/{id}` responde `409 Conflict` con los clientes asociados para que la interfaz pueda explicar qué registros bloquean la eliminación.
+Si se intenta eliminar un módulo con asignaciones avanzadas activas, `DELETE /api/license-modules/{id}` responde `409 Conflict`. En la versión actual las licencias de cliente se guardan en `clients.licenseModuleIds`.
 
 Endpoints disponibles:
 
@@ -181,10 +183,7 @@ Endpoints disponibles:
 - `POST /api/license-modules`
 - `PUT /api/license-modules/{id}`
 - `DELETE /api/license-modules/{id}`
-- `GET /api/license-assignments`
-- `POST /api/license-assignments`
-- `PUT /api/license-assignments/{id}`
-- `DELETE /api/license-assignments/{id}`
+- `GET/POST/PUT/DELETE /api/license-assignments` existe como soporte avanzado oculto para fase futura.
 
 ## Frecuencias heredadas
 
@@ -222,11 +221,14 @@ Los formularios normales usan por defecto el rol responsable: **Actualizador de 
 
 La vista **Programaciones especiales** queda para excepciones avanzadas. El alcance se construye por grupos: agregar cliente, incluir todos los dominios o agregar dominios específicos, e incluir todas las bases o bases puntuales. Para seleccionar varios dominios o bases se usan modales con búsqueda y checkboxes. Las frecuencias normales creadas desde **Dominios** se guardan con `origin = "domain_default"` y no aparecen en esta página; las creadas desde **Programaciones especiales** se guardan con `origin = "special"`.
 
+También puede crear programaciones especiales **Por licenciamiento**. En ese modo se seleccionan una o varias licencias, coincidencia `cualquiera/todas`, ambiente, y objetivo `dominios`, `bases` o ambos. La app previsualiza clientes, dominios y bases activos afectados, y al generar tareas re-resuelve el criterio para incluir clientes que compren esa licencia en el futuro. La deduplicación de tareas por entidad/día se mantiene aunque coincidan programaciones normales, manuales o por licenciamiento.
+
 ## Cambios recientes
 
-- [CAMBIOS_V8.md](CAMBIOS_V8.md): cascada, vistas relacionadas, programaciones por grupos, estados de tareas, alertas por tipo, Refrescar, reporte activo con ambiente y recordatorios administrativos.
-- [CAMBIOS_V9.md](CAMBIOS_V9.md): licencias/módulos en reporte maestro y bloqueo claro al eliminar licencias asignadas.
+- [CAMBIOS_V11.md](CAMBIOS_V11.md): licenciamiento a nivel cliente, código opcional, asignaciones avanzadas ocultas y programaciones especiales por licenciamiento.
 - [CAMBIOS_V10.md](CAMBIOS_V10.md): modales de tareas, selección múltiple jerárquica, recordatorios globales/overrides, bloqueos no resueltos y reglas administrativas de último día hábil.
+- [CAMBIOS_V9.md](CAMBIOS_V9.md): licencias/módulos en reporte maestro y bloqueo claro al eliminar licencias asignadas.
+- [CAMBIOS_V8.md](CAMBIOS_V8.md): cascada, vistas relacionadas, programaciones por grupos, estados de tareas, alertas por tipo, Refrescar, reporte activo con ambiente y recordatorios administrativos.
 - [CAMBIOS_V6.md](CAMBIOS_V6.md): Alertas y correos simplificado, reporte maestro por correo, frecuencias heredadas desde dominio y generación manual de tareas.
 - [CAMBIOS_V5.md](CAMBIOS_V5.md): fix del 404 al refrescar, listas sin eliminados, eliminación física con integridad y selectores buscables.
 - [CAMBIOS_V4.md](CAMBIOS_V4.md): vista administrativa **Alertas y correos** (SMTP, recordatorios, alertas, prueba). Contraseña SMTP en Key Vault.

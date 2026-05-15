@@ -12,6 +12,16 @@ export function normalizeLicenseCode(code: string): string {
   return code.trim().toUpperCase();
 }
 
+export function generateLicenseCodeFromName(name: string): string {
+  const normalized = name
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized || "MODULO";
+}
+
 export function hasDuplicateLicenseCode(modules: LicenseModuleRecord[], code: string, excludeId?: string): boolean {
   const normalized = normalizeLicenseCode(code);
   return modules.some((module) => {
@@ -19,6 +29,17 @@ export function hasDuplicateLicenseCode(modules: LicenseModuleRecord[], code: st
     if (module.status === "deleted" || module.deletedAt) return false;
     return normalizeLicenseCode(module.code ?? "") === normalized;
   });
+}
+
+export function buildUniqueLicenseCode(modules: LicenseModuleRecord[], baseCode: string, excludeId?: string): string {
+  const base = normalizeLicenseCode(baseCode) || "MODULO";
+  let candidate = base;
+  let suffix = 2;
+  while (hasDuplicateLicenseCode(modules, candidate, excludeId)) {
+    candidate = `${base}_${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
 }
 
 export function validateLicenseAssignmentRequirements(input: LicenseAssignmentInput): string | null {

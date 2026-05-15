@@ -64,6 +64,7 @@ export function buildMastersReportEmail(args: {
   frontendBaseUrl?: string;
   timezone?: string;
 }): { subject: string; html: string; text: string } {
+  const includeAdvancedAssignments = process.env.ENABLE_ADVANCED_LICENSE_ASSIGNMENTS === "true";
   const domainsByClient = new Map<string, DomainRecord[]>();
   const dbsByDomain = new Map<string, DatabaseRecord[]>();
   const activeDomainSchedule = new Map<string, UpdateSchedule>();
@@ -103,10 +104,17 @@ export function buildMastersReportEmail(args: {
     const clientDatabaseIds = new Set(activeDatabasesList.filter((db) => db.clientId === client.id && activeDomains.has(db.domainId)).map((db) => db.id));
     const licensesByModuleId = new Map<string, LicenseModuleRecord>();
 
-    for (const assignment of activeLicenseAssignments) {
-      if (!assignmentBelongsToClient({ assignment, clientId: client.id, domainIds: clientDomainIds, databaseIds: clientDatabaseIds })) continue;
-      const module = activeLicenseModules.get(assignment.moduleId);
+    for (const moduleId of client.licenseModuleIds ?? []) {
+      const module = activeLicenseModules.get(moduleId);
       if (module) licensesByModuleId.set(module.id, module);
+    }
+
+    if (includeAdvancedAssignments) {
+      for (const assignment of activeLicenseAssignments) {
+        if (!assignmentBelongsToClient({ assignment, clientId: client.id, domainIds: clientDomainIds, databaseIds: clientDatabaseIds })) continue;
+        const module = activeLicenseModules.get(assignment.moduleId);
+        if (module) licensesByModuleId.set(module.id, module);
+      }
     }
 
     const licenses = Array.from(licensesByModuleId.values())

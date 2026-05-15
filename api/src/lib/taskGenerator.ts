@@ -3,7 +3,8 @@ import {
   getTaskDateBucket,
   isScheduleDueOnDate,
 } from "./scheduleEngine";
-import type { DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
+import { expandLicensingSchedule } from "./licensingScope";
+import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 export type TargetNameResolver = (id: string) => string;
 
@@ -82,7 +83,7 @@ export function summarizeTaskGenerationForDate(
         continue;
       }
 
-      tasks.push({
+      const task: UpdateTask = {
         id,
         dedupeKey: taskDedupeKey(schedule.targetType, targetId, isoDate),
         sources: [{
@@ -111,7 +112,10 @@ export function summarizeTaskGenerationForDate(
         updatedBy: "system",
         completedAt: null,
         completedBy: null,
-      });
+      };
+      tasks.push(task);
+      existingIds.add(task.id);
+      existingByTarget.set(taskTargetKey(task.targetType, task.targetId, task.taskDate), task);
     }
   }
 
@@ -167,7 +171,9 @@ export function obsoleteTasksOutsideExpected(
 export function expandSchedulesWithDomainInheritance(
   schedules: UpdateSchedule[],
   domains: DomainRecord[],
-  databases: DatabaseRecord[]
+  databases: DatabaseRecord[],
+  clients: ClientRecord[] = [],
+  licenseModules: LicenseModuleRecord[] = []
 ): UpdateSchedule[] {
   const activeDomains = new Map(domains.filter((d) => d.status === "active").map((d) => [d.id, d]));
   const activeDatabases = databases.filter((d) => d.status === "active" && activeDomains.has(d.domainId));
@@ -191,6 +197,11 @@ export function expandSchedulesWithDomainInheritance(
 
   for (const schedule of schedules) {
     if (!schedule.active) continue;
+
+    if (schedule.selectionMode === "licensing" && schedule.licensingScope) {
+      expanded.push(...expandLicensingSchedule({ schedule, clients, domains, databases, licenseModules }));
+      continue;
+    }
 
     if (schedule.scopeGroups && schedule.scopeGroups.length > 0) {
       for (const group of schedule.scopeGroups) {
