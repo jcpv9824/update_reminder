@@ -8,6 +8,7 @@ import DashboardPage from "./pages/DashboardPage";
 import ClientesPage from "./pages/ClientesPage";
 import DominiosPage from "./pages/DominiosPage";
 import BasesDeDatosPage from "./pages/BasesDeDatosPage";
+import LicenciamientoPage from "./pages/LicenciamientoPage";
 import FrecuenciasPage from "./pages/FrecuenciasPage";
 import TareasPage from "./pages/TareasPage";
 import AuditoriaPage from "./pages/AuditoriaPage";
@@ -42,6 +43,7 @@ function Enrutador() {
           <Route path="clientes" element={<Protegido roles={["admin", "client_manager", "viewer"]} element={<ClientesPage />} />} />
           <Route path="dominios" element={<Protegido roles={["admin", "client_manager", "viewer", "domain_updater"]} element={<DominiosPage />} />} />
           <Route path="bases-de-datos" element={<Protegido roles={["admin", "client_manager", "viewer", "database_updater"]} element={<BasesDeDatosPage />} />} />
+          <Route path="licenciamiento" element={<Protegido roles={["admin", "client_manager"]} element={<LicenciamientoPage />} />} />
           <Route path="frecuencias" element={<Protegido roles={["admin", "client_manager"]} element={<FrecuenciasPage />} />} />
           <Route path="alertas-correos" element={<Protegido roles={["admin"]} element={<AlertasCorreosPage />} />} />
           <Route path="auditoria" element={<Protegido roles={["admin", "client_manager", "viewer", "database_updater", "domain_updater"]} element={<AuditoriaPage />} />} />

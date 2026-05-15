@@ -114,6 +114,7 @@ export type LicenseModuleRecord = {
   id: string;
   name: string;
   code?: string;
+  description?: string;
   status?: EntityStatus;
   active?: boolean;
   notes?: string;
@@ -138,6 +139,7 @@ export type LicenseAssignmentRecord = {
   domainName?: string;
   databaseId?: string;
   databaseName?: string;
+  environment?: string;
   targetType?: LicenseAssignmentLevel;
   targetId?: string;
   status?: EntityStatus;

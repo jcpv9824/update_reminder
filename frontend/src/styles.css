@@ -167,6 +167,26 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
 }
 .barra-filtros .campo { flex: 1; min-width: 160px; }
 
+.pestanas {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+.pestanas button {
+  border: none;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  padding: 10px 12px;
+  font-weight: 600;
+}
+.pestanas button.activo {
+  color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
+}
+
 .estado {
   display: inline-block;
   padding: 2px 8px;

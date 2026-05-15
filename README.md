@@ -14,6 +14,7 @@ Aplicación web para gestionar las actualizaciones programadas de los clientes d
 - **Diseño con colores corporativos**: `#1C3664`, `#7E99B2`, `#D1D3D2`, `#D3C193`.
 - Página principal **Tareas** con dos columnas (dominios y bases de datos) divididas en *Vencidas / Hoy / Próximas / Completadas*.
 - Gestión de **clientes**, **dominios** y **bases de datos** con eliminación en cascada confirmada y soft-delete de maestros. La frecuencia principal se configura en el **dominio**; las bases de datos heredan esa frecuencia desde el dominio seleccionado.
+- **Licenciamiento** visible para administradores y administradores de clientes, con módulos y asignaciones a cliente completo, dominio específico o base de datos específica.
 - **Programaciones especiales** (semanal, intervalo, mensual, manual) con alcance jerárquico por cliente → dominio → base de datos y responsables por rol o usuarios específicos.
 - **Generación automática diaria** de tareas mediante Azure Functions Timer Trigger y refresco manual desde la vista **Tareas** con **Refrescar**. El refresco no envía correos.
 - Panel del actualizador con las cuatro partes del acceso (servidor, Initial Catalog, usuario y contraseña) y botones independientes para copiar; cada acción se audita.
@@ -110,8 +111,8 @@ Cubre vistas principales, selectores buscables, tareas, alertas y correos, progr
 
 | Rol | Puede hacer |
 |---|---|
-| Administrador | Todo: usuarios, roles, clientes, dominios, bases, frecuencias, tareas, auditoría. |
-| Administrador de clientes | CRUD de clientes, dominios, bases y frecuencias; ver auditoría. |
+| Administrador | Todo: usuarios, roles, clientes, dominios, bases, licenciamiento, frecuencias, tareas, auditoría. |
+| Administrador de clientes | CRUD de clientes, dominios, bases, frecuencias y asignaciones de licencias; ver módulos de licencias y auditoría. |
 | Actualizador de bases de datos | Ver y completar tareas de bases de datos asignadas; revelar/copiar contraseñas autorizadas. |
 | Actualizador de dominios | Ver y completar tareas de dominios asignadas. |
 | Visualizador | Solo lectura. |
@@ -151,6 +152,18 @@ Para enviar el reporte maestro, abra **Reporte de clientes/dominios/empresas**, 
 
 ## Licenciamiento en reporte maestro
 
+La vista **Licenciamiento** está disponible en `/licenciamiento` para administradores y administradores de clientes, entre **Bases de datos** y **Programaciones especiales** en el menú lateral.
+
+La pestaña **Módulos** permite a administradores crear, editar, activar/desactivar y eliminar módulos. Si un módulo tiene asignaciones activas, la eliminación se bloquea con un mensaje claro para quitar primero esas asignaciones.
+
+La pestaña **Asignaciones** permite asignar un módulo a:
+
+- Cliente completo.
+- Dominio específico.
+- Base de datos específica.
+
+Las asignaciones guardan módulo, nivel, cliente, dominio/base cuando aplica, ambiente y estado. Los actualizadores y visualizadores no ven el menú de licenciamiento.
+
 El endpoint `POST /api/reports/masters/send-email` carga módulos de licencia y asignaciones activas desde `licenseModules` y `licenseAssignments`. Una licencia se muestra en el cliente si existe una asignación activa al cliente completo, a un dominio activo del cliente o a una base activa del cliente.
 
 Reglas del reporte:
@@ -161,6 +174,17 @@ Reglas del reporte:
 - Los nombres y códigos de módulos son permitidos; datos técnicos y secretos siguen excluidos.
 
 Si se intenta eliminar un módulo con asignaciones activas, `DELETE /api/license-modules/{id}` responde `409 Conflict` con los clientes asociados para que la interfaz pueda explicar qué registros bloquean la eliminación.
+
+Endpoints disponibles:
+
+- `GET /api/license-modules`
+- `POST /api/license-modules`
+- `PUT /api/license-modules/{id}`
+- `DELETE /api/license-modules/{id}`
+- `GET /api/license-assignments`
+- `POST /api/license-assignments`
+- `PUT /api/license-assignments/{id}`
+- `DELETE /api/license-assignments/{id}`
 
 ## Frecuencias heredadas
 

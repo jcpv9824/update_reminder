@@ -69,6 +69,39 @@ export type BaseDeDatos = {
   lastUpdatedBy?: string | null;
 };
 
+export type ModuloLicencia = {
+  id: string;
+  name: string;
+  code?: string;
+  description?: string;
+  status: "active" | "inactive" | "deleted";
+  active?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type NivelAsignacionLicencia = "client" | "domain" | "database";
+
+export type AsignacionLicencia = {
+  id: string;
+  moduleId: string;
+  moduleName?: string;
+  moduleCode?: string;
+  targetType: NivelAsignacionLicencia;
+  targetId?: string;
+  clientId: string;
+  clientName?: string;
+  domainId?: string;
+  domainName?: string;
+  databaseId?: string;
+  databaseName?: string;
+  environment?: string;
+  status: "active" | "inactive" | "deleted";
+  active?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export type Frecuencia = {
   id: string;
   clientId: string;
@@ -190,9 +223,11 @@ export const ETIQUETAS_ESTADO: Record<string, string> = {
 };
 
 export const ETIQUETAS_AMBIENTE: Record<string, string> = {
+  all: "Todos",
   production: "Producción",
   staging: "Pre-producción",
   test: "Pruebas",
+  demo: "Demo",
   development: "Desarrollo",
 };
 
@@ -248,4 +283,10 @@ export const ETIQUETAS_ACCION_AUDITORIA: Record<string, string> = {
   task_blocked: "Tarea bloqueada",
   task_reopened: "Tarea reabierta",
   task_cancelled: "Tarea cancelada",
+  license_module_created: "Módulo de licencia creado",
+  license_module_updated: "Módulo de licencia actualizado",
+  license_module_deleted: "Módulo de licencia eliminado",
+  license_assignment_created: "Asignación de licencia creada",
+  license_assignment_updated: "Asignación de licencia actualizada",
+  license_assignment_deleted: "Asignación de licencia eliminada",
 };

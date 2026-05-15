@@ -186,9 +186,11 @@ az cosmosdb sql container create --account-name $cosmosAccount --resource-group 
 az cosmosdb sql container create --account-name $cosmosAccount --resource-group $resourceGroup --database-name $cosmosDatabase --name updateTasks    --partition-key-path "/taskBucket"
 az cosmosdb sql container create --account-name $cosmosAccount --resource-group $resourceGroup --database-name $cosmosDatabase --name auditLogs      --partition-key-path "/clientId"
 az cosmosdb sql container create --account-name $cosmosAccount --resource-group $resourceGroup --database-name $cosmosDatabase --name emailNotifications --partition-key-path "/id"
+az cosmosdb sql container create --account-name $cosmosAccount --resource-group $resourceGroup --database-name $cosmosDatabase --name licenseModules --partition-key-path "/id"
+az cosmosdb sql container create --account-name $cosmosAccount --resource-group $resourceGroup --database-name $cosmosDatabase --name licenseAssignments --partition-key-path "/clientId"
 ```
 
-`emailNotifications` se usa para idempotencia de recordatorios administrativos mensuales. Si el contenedor ya existe, el comando puede omitirse.
+`emailNotifications` se usa para idempotencia de recordatorios administrativos mensuales. `licenseModules` y `licenseAssignments` se usan para la vista **Licenciamiento** y para el reporte maestro con licencias por cliente. Si un contenedor ya existe, su comando puede omitirse.
 
 ### 4.4 Crear Key Vault
 

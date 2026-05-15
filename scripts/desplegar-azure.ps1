@@ -32,7 +32,10 @@ $contenedores = @(
   @{ Name = "databases";      Pk = "/clientId" },
   @{ Name = "updateSchedules"; Pk = "/clientId" },
   @{ Name = "updateTasks";    Pk = "/taskBucket" },
-  @{ Name = "auditLogs";      Pk = "/clientId" }
+  @{ Name = "auditLogs";      Pk = "/clientId" },
+  @{ Name = "emailNotifications"; Pk = "/id" },
+  @{ Name = "licenseModules"; Pk = "/id" },
+  @{ Name = "licenseAssignments"; Pk = "/clientId" }
 )
 foreach ($c in $contenedores) {
   az cosmosdb sql container create --account-name $cosmosAccount --resource-group $ResourceGroup `

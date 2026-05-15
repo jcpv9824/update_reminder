@@ -68,8 +68,19 @@
 
 - Se mantiene la integración V9: el reporte maestro incluye licencias/módulos activos por cliente.
 - Las licencias se deduplican y no se incluyen secretos ni datos técnicos sensibles.
+- Se cableó la vista **Licenciamiento** en `/licenciamiento`.
+- El menú lateral muestra **Licenciamiento** solo para `admin` y `client_manager`, entre **Bases de datos** y **Programaciones especiales**.
+- La pestaña **Módulos** permite crear, editar, activar/desactivar y eliminar módulos. La eliminación queda bloqueada con `409 Conflict` si existen asignaciones activas.
+- La pestaña **Asignaciones** permite asignar módulos a cliente completo, dominio específico o base de datos específica, con ambiente y estado.
+- Endpoints implementados/verificados:
+  - `GET/POST/PUT/DELETE /api/license-modules`
+  - `GET/POST/PUT/DELETE /api/license-assignments`
+- Permisos:
+  - Admin administra módulos y asignaciones.
+  - Administrador de clientes administra asignaciones y ve módulos.
+  - Actualizadores y visualizadores no ven el menú de licenciamiento.
 
 ## Pruebas validadas
 
-- Backend: 23 archivos, 147 pruebas.
-- Frontend: 14 archivos, 94 pruebas.
+- Backend: 24 archivos, 152 pruebas.
+- Frontend: 15 archivos, 102 pruebas.
