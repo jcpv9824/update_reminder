@@ -1,6 +1,6 @@
 // Cliente HTTP. Agrega automáticamente Authorization: Bearer <token>
 // si hay un token guardado en localStorage.
-const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL ?? "/api";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const TOKEN_KEY = "erp_update_token";
 
 export function getToken(): string | null {
