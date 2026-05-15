@@ -43,10 +43,15 @@ const SettingsSchema = z.object({
   blockedAlertCustomEmails: z.array(z.string().email()).optional(),
   blockedAlertSendImmediately: z.boolean().optional(),
   blockedAlertIncludeInOverdueSummary: z.boolean().optional(),
+  blockedReminderEnabled: z.boolean().optional(),
+  blockedReminderDaysAfter: z.array(z.number().int().min(1)).optional(),
+  blockedReminderTime: z.string().optional(),
+  blockedReminderTimezone: z.string().optional(),
   administrativeReminders: z.object({
     sagWebVersionReminder: z.object({
       enabled: z.boolean(),
       recipients: z.array(z.string().email()),
+      sendRule: z.enum(["first_day", "last_day", "last_business_day", "fixed_day"]).optional(),
       dayOfMonth: z.number().int().min(1).max(28),
       time: z.string(),
       timezone: z.string(),
@@ -55,6 +60,7 @@ const SettingsSchema = z.object({
     whatsNewReminder: z.object({
       enabled: z.boolean(),
       recipients: z.array(z.string().email()),
+      sendRule: z.enum(["first_day", "last_day", "last_business_day", "fixed_day"]).optional(),
       dayOfMonth: z.number().int().min(1).max(28),
       time: z.string(),
       timezone: z.string(),

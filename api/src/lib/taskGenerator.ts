@@ -11,6 +11,10 @@ export function taskTargetKey(targetType: "domain" | "database", targetId: strin
   return `${targetType}|${targetId}|${isoDate}`;
 }
 
+export function taskDedupeKey(targetType: "domain" | "database", targetId: string, isoDate: string): string {
+  return `${targetType}:${targetId}:${isoDate}`;
+}
+
 export function isTerminalTask(task: UpdateTask): boolean {
   return task.status === "completed" || task.status === "cancelled";
 }
@@ -20,6 +24,11 @@ function canSyncExistingTask(task: UpdateTask): boolean {
 }
 
 function syncTaskAssignmentFromSchedule(task: UpdateTask, schedule: UpdateSchedule, targetName: string): boolean {
+  const sourceType = schedule.origin === "special" ? "special" : schedule.origin === "licensing" ? "licensing" : "normal";
+  const sourceExists = (task.sources ?? []).some((s) => s.scheduleId === schedule.id);
+  if (!sourceExists) {
+    task.sources = [...(task.sources ?? []), { scheduleId: schedule.id, scheduleType: sourceType as any, createdAt: new Date().toISOString() }];
+  }
   const nextAssignedUserIds = schedule.assignedUserIds ?? [];
   const changed =
     task.assignedRole !== schedule.assignedRole ||
@@ -75,6 +84,12 @@ export function summarizeTaskGenerationForDate(
 
       tasks.push({
         id,
+        dedupeKey: taskDedupeKey(schedule.targetType, targetId, isoDate),
+        sources: [{
+          scheduleId: schedule.id,
+          scheduleType: schedule.origin === "special" ? "special" : schedule.origin === "licensing" ? "licensing" : "normal",
+          createdAt: now,
+        }],
         taskDate: isoDate,
         taskBucket: getTaskDateBucket(isoDate, schedule.targetType),
         clientId: schedule.clientId,

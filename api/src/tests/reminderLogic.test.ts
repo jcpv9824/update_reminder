@@ -98,4 +98,37 @@ describe("valoresRecordatoriosPorDefecto", () => {
       customReminderEmails: [],
     });
   });
+
+  it("usa configuración global si la frecuencia no tiene recordatorios propios", () => {
+    const schSinOverride = { ...sch, reminders: undefined };
+    const r = decidirRecordatorios({
+      ahoraIsoDate: "2026-05-09",
+      ahoraHoraLocal: "08:10",
+      tareas: [tarea({ taskDate: "2026-05-10" })],
+      frecuenciasPorId: new Map([[sch.id, schSinOverride]]),
+      globalDefaults: {
+        remindersEnabled: true,
+        reminderDaysBefore: [1],
+        reminderTime: "08:00",
+        reminderRecipientsMode: "roleUsers",
+      },
+    });
+    expect(r).toHaveLength(1);
+  });
+
+  it("el override de la frecuencia prevalece sobre la configuración global", () => {
+    const r = decidirRecordatorios({
+      ahoraIsoDate: "2026-05-09",
+      ahoraHoraLocal: "08:10",
+      tareas: [tarea({ taskDate: "2026-05-10" })],
+      frecuenciasPorId: new Map([[sch.id, { ...sch, reminders: { ...sch.reminders!, reminderDaysBefore: [3] } }]]),
+      globalDefaults: {
+        remindersEnabled: true,
+        reminderDaysBefore: [1],
+        reminderTime: "08:00",
+        reminderRecipientsMode: "roleUsers",
+      },
+    });
+    expect(r).toHaveLength(0);
+  });
 });

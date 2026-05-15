@@ -53,6 +53,8 @@ export type GenerationResult = {
   updated: number;
   obsoleted: number;
   skipped: number;
+  deduplicated: number;
+  updatedSources: number;
   windowStart: string;
   windowEnd: string;
   message: string;
@@ -304,6 +306,8 @@ export async function runTaskGeneration(
     updated: totalUpdated,
     obsoleted: obsoletedTasks.length,
     skipped: totalSkipped,
+    deduplicated: totalSkipped,
+    updatedSources: totalUpdated,
     windowStart,
     windowEnd,
     message: "Tareas generadas correctamente.",

@@ -7,7 +7,7 @@ import { getContainer } from "../lib/cosmos";
 import { sendEmail } from "../lib/emailService";
 import { badRequest, forbidden, ok, serverError } from "../lib/http";
 import { buildMastersReportEmail, parseSemicolonEmails } from "../lib/reportsService";
-import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule } from "../types/models";
+import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseAssignmentRecord, LicenseModuleRecord, UpdateSchedule } from "../types/models";
 
 async function getAllowedUser(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -23,6 +23,17 @@ const SendMastersReportSchema = z.object({
   to: z.string().optional(),
   recipients: z.string().optional(),
 });
+
+async function queryOptionalContainer<T>(name: "licenseModules" | "licenseAssignments", query: string): Promise<T[]> {
+  try {
+    const { resources } = await getContainer(name).items.query<T>({ query }).fetchAll();
+    return resources;
+  } catch (e: any) {
+    const code = e?.code ?? e?.statusCode;
+    if (code === 404) return [];
+    throw e;
+  }
+}
 
 app.http("mastersReportSendEmail", {
   route: "reports/masters/send-email",
@@ -43,11 +54,13 @@ app.http("mastersReportSendEmail", {
         return badRequest(e?.message ?? "Destinatarios inválidos.");
       }
 
-      const [{ resources: clients }, { resources: domains }, { resources: databases }, { resources: schedules }] = await Promise.all([
+      const [{ resources: clients }, { resources: domains }, { resources: databases }, { resources: schedules }, licenseModules, licenseAssignments] = await Promise.all([
         getContainer("clients").items.query<ClientRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll(),
         getContainer("domains").items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll(),
         getContainer("databases").items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll(),
         getContainer("updateSchedules").items.query<UpdateSchedule>({ query: "SELECT * FROM c WHERE c.active = true" }).fetchAll(),
+        queryOptionalContainer<LicenseModuleRecord>("licenseModules", "SELECT * FROM c"),
+        queryOptionalContainer<LicenseAssignmentRecord>("licenseAssignments", "SELECT * FROM c"),
       ]);
 
       const settings = await (await import("../lib/settingsService")).loadEmailAlertsSettings();
@@ -56,6 +69,8 @@ app.http("mastersReportSendEmail", {
         domains,
         databases,
         schedules,
+        licenseModules,
+        licenseAssignments,
         generatedAt: new Date(),
         frontendBaseUrl: settings.frontendBaseUrl || process.env.FRONTEND_BASE_URL,
         timezone: process.env.APP_TIMEZONE || "America/Bogota",

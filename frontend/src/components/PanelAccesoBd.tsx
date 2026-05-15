@@ -9,6 +9,7 @@ import type { BaseDeDatos } from "../types";
 export function PanelAccesoBd({ bd }: { bd: BaseDeDatos }) {
   const [contrasena, setContrasena] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mensaje, setMensaje] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
 
   async function copiarParte(parte: "serverHostPort" | "initialCatalog" | "userId") {
@@ -19,6 +20,7 @@ export function PanelAccesoBd({ bd }: { bd: BaseDeDatos }) {
 
   async function revelarContrasena() {
     setError(null);
+    setMensaje(null);
     setCargando(true);
     try {
       const r = await api.post<{ password: string }>(`/databases/${bd.id}/reveal-password`, {});
@@ -32,11 +34,12 @@ export function PanelAccesoBd({ bd }: { bd: BaseDeDatos }) {
 
   async function copiarContrasena() {
     setError(null);
+    setMensaje(null);
     setCargando(true);
     try {
       const r = await api.post<{ part: string; value: string }>(`/databases/${bd.id}/copy-access-part`, { part: "password" });
       await navigator.clipboard.writeText(r.value);
-      alert("Contraseña copiada al portapapeles.");
+      setMensaje("Contraseña copiada al portapapeles.");
     } catch (e: any) {
       setError(e?.message ?? "No se pudo copiar la contraseña.");
     } finally {
@@ -69,6 +72,7 @@ export function PanelAccesoBd({ bd }: { bd: BaseDeDatos }) {
         {contrasena && <button onClick={() => setContrasena(null)}>Ocultar</button>}
       </div>
       {error && <div className="alerta alerta-error">{error}</div>}
+      {mensaje && <div className="alerta alerta-exito">{mensaje}</div>}
     </div>
   );
 }

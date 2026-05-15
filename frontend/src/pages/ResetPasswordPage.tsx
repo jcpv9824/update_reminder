@@ -6,7 +6,7 @@ export default function ResetPasswordPage() {
   const [params] = useSearchParams();
   const token = params.get("token") ?? "";
   const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
+  const [confirmacion, setConfirmacion] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [exito, setExito] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
@@ -16,7 +16,7 @@ export default function ResetPasswordPage() {
     setError(null); setExito(null);
     if (!token) { setError("El enlace no es válido o ya expiró. Solicita uno nuevo."); return; }
     if (password.length < 6) { setError("La contraseña debe tener al menos 6 caracteres."); return; }
-    if (password !== confirm) { setError("Las contraseñas no coinciden."); return; }
+    if (password !== confirmacion) { setError("Las contraseñas no coinciden."); return; }
     setCargando(true);
     try {
       const r = await api.post<{ message: string }>("/auth/reset-password", { token, password });
@@ -48,7 +48,7 @@ export default function ResetPasswordPage() {
             </div>
             <div className="fila-formulario">
               <label htmlFor="reset-conf">Confirmar contraseña</label>
-              <input id="reset-conf" type="password" autoComplete="new-password" maxLength={200} value={confirm} onChange={(e) => setConfirm(e.target.value)} required />
+              <input id="reset-conf" type="password" autoComplete="new-password" maxLength={200} value={confirmacion} onChange={(e) => setConfirmacion(e.target.value)} required />
             </div>
             <button type="submit" className="primario" style={{ width: "100%", padding: "10px", marginTop: 8 }} disabled={cargando}>
               {cargando ? "Guardando..." : "Restablecer contraseña"}

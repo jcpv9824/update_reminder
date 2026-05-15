@@ -256,6 +256,37 @@ describe("TareasPage (vista unificada)", () => {
     expect(screen.getByRole("button", { name: /^Bloquear$/i })).toBeInTheDocument();
   });
 
+  it("tarea completada muestra Reabrir y usa modal sin prompt del navegador", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    const promptSpy = vi.spyOn(window, "prompt").mockImplementation(() => "no usar");
+    mockTareas({ dominios: [tarea({ id: "d_done", status: "completed", completedAt: "2026-05-08T10:00:00Z", completedBy: "u" })] });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Reabrir$/i }));
+    expect(await screen.findByRole("heading", { name: /Reabrir tarea completada/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/Motivo de reapertura/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Reabrir tarea/i }));
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/tasks/d_done/reopen", { reopenReason: undefined }));
+    expect(promptSpy).not.toHaveBeenCalled();
+    promptSpy.mockRestore();
+  });
+
+  it("tarea bloqueada muestra Resolver bloqueo, no Reabrir, y permite comentario vacío", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    mockTareas({ dominios: [tarea({ id: "d_blocked", status: "blocked", blockReason: "Error" })] });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    expect(screen.getByRole("button", { name: /Resolver bloqueo/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Reabrir$/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Resolver bloqueo/i }));
+    expect(await screen.findByRole("heading", { name: /Resolver bloqueo/i })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/Nuevo estado/i), { target: { value: "in_progress" } });
+    fireEvent.click(screen.getByRole("button", { name: /Guardar resolución/i }));
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/tasks/d_blocked/resolve-block", { resolutionComment: undefined, newStatus: "in_progress" }));
+  });
+
   it("si el guardado falla muestra error y permite reintentar", async () => {
     usuarioMock.id = "u";
     usuarioMock.roles = ["admin"];

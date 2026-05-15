@@ -748,6 +748,25 @@ az webapp log tail `
 
 ---
 
+## Notas V10
+
+La ronda V10 mantiene el despliegue existente:
+
+- Backend: ZIP completo con `dist` y `node_modules`.
+- Frontend: Azure Static Web Apps vía GitHub Actions.
+- `VITE_API_BASE_URL` debe apuntar a `https://erpupdsch4645-api.azurewebsites.net/api` durante el build.
+
+Cambios funcionales incluidos:
+
+- Reabrir tareas completadas y resolver bloqueos usan modales propios, sin `alert`, `confirm` ni `prompt` del navegador.
+- Programaciones especiales permiten seleccionar múltiples dominios y bases mediante modales con checkboxes.
+- Recordatorios a actualizadores usan configuración global por defecto cuando una frecuencia no tiene override.
+- Alertas de bloqueo envían inmediato por defecto y pueden enviar recordatorios de bloqueos no resueltos.
+- Recordatorios administrativos soportan reglas de envío, incluyendo último día hábil con viernes + lunes si el mes termina en fin de semana.
+- El reporte maestro conserva licencias/módulos activos por cliente y exclusión de datos sensibles.
+
+---
+
 ## 14. Errores comunes y soluciones reales
 
 | Síntoma | Causa probable | Solución |

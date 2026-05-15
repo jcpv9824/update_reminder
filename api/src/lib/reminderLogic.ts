@@ -24,12 +24,13 @@ export function decidirRecordatorios(args: {
   ahoraHoraLocal: string;        // "HH:mm"
   tareas: UpdateTask[];
   frecuenciasPorId: Map<string, UpdateSchedule>;
+  globalDefaults?: RemindersConfig;
 }): ReminderDecision[] {
   const decisiones: ReminderDecision[] = [];
   for (const t of args.tareas) {
     if (t.status === "completed" || t.status === "cancelled") continue;
     const sch = args.frecuenciasPorId.get(t.scheduleId);
-    const cfg = sch?.reminders;
+    const cfg = sch?.reminders ?? args.globalDefaults;
     if (!cfg || !cfg.remindersEnabled) continue;
     if (!cfg.reminderDaysBefore || cfg.reminderDaysBefore.length === 0) continue;
     const dias = diffInDays(t.taskDate, args.ahoraIsoDate);

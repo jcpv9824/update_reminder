@@ -821,6 +821,10 @@ Rules:
 - Include environment on domain.
 - Include environment on database.
 - Include domain frequency when available.
+- Include active licenses/modules per client from active license assignments.
+- License assignments may be client-level, domain-level, or database-level.
+- Deduplicate licenses by module id and sort them alphabetically.
+- If a client has no active licenses, show `Sin licencias registradas`.
 - Do not include secrets.
 
 Must not include:
@@ -833,6 +837,24 @@ Must not include:
 - Tokens
 - JWT
 - Password hashes
+
+License data model expected by the V9 report:
+
+- `licenseModules`: records with `id`, `name`, optional `code`, `status`, `active`, `deletedAt`.
+- `licenseAssignments`: records with `moduleId` and assignment fields such as `clientId`, `domainId`, `databaseId`, or `targetType` + `targetId`.
+
+Only active modules and active assignments should be rendered. Deleted/inactive modules or assignments are excluded. `DELETE /api/license-modules/{id}` returns `409 Conflict` if the module still has active assignments, including a client summary that a licensing UI can show to explain why deletion is blocked.
+
+## V10 UX And Reminder Corrections
+
+- Business flows must not use browser `alert`, `confirm`, or `prompt`.
+- Completed tasks show **Reabrir** and open an app modal. Optional reason. Backend transition is `completed -> pending`, with `task_reopened`.
+- Blocked tasks show **Resolver bloqueo** and do not show **Reabrir**. Optional resolution comment. Required target status: pending, in progress, or completed. Backend transition is `blocked -> selected`, with `task_block_resolved`.
+- Special schedules keep `scopeGroups`, but domain/database selection should use modal panels with search and checkboxes so users can add multiple items at once.
+- Updater reminders have two levels: global defaults from `settings/email-alerts`, and per-schedule/domain overrides in `schedule.reminders`. If no override exists, the scheduled reminder timer uses global defaults.
+- Blocked task alerts send immediately by default when blocked alerts are enabled. Optional unresolved-block reminders use days-after-block, time, timezone, and `emailNotifications` idempotency keys.
+- Administrative reminders support send rules: first day, last day, last business day, fixed day. Default is last business day. If the month ends Saturday/Sunday, send Friday before and Monday after, preserving the previous month period.
+- Actions columns are aligned right; destructive actions stay last.
 
 ## Administrative Monthly Reminders
 
@@ -1212,4 +1234,3 @@ Future AI assistants should follow these rules:
 - Email sending is best-effort in some task flows; failures should not block task state changes.
 - If no recipients are configured for blocked/overdue alerts, the system should skip sending safely.
 - Keep an eye on Azure Functions runtime version support. Deployment notes previously observed Azure rejecting Node 20 in some contexts; use the currently supported Node runtime in Azure.
-

@@ -5,6 +5,7 @@ import { buildAdministrativeReminderEmail } from "../lib/emailTemplates";
 import { parseSemicolonEmails, uniqueEmails } from "../lib/emailRecipients";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
+import { administrativeReminderDueToday, type AdministrativeReminderDue } from "../lib/administrativeReminderSchedule";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { hasRole } from "../lib/permissions";
 import { badRequest, forbidden, ok, serverError } from "../lib/http";
@@ -16,18 +17,9 @@ function nowInBogota(): Date {
   return new Date(Date.now() - 5 * 3600_000);
 }
 
-function periodKey(now = nowInBogota()): string {
-  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-}
-
-function due(reminder: AdministrativeReminderSettings, now = nowInBogota()): boolean {
-  const hhmm = now.toISOString().slice(11, 16);
-  return reminder.enabled && now.getUTCDate() === reminder.dayOfMonth && hhmm >= reminder.time;
-}
-
-async function wasSent(key: ReminderKey, period: string): Promise<boolean> {
+async function wasSent(key: ReminderKey, period: string, sendDate: string): Promise<boolean> {
   try {
-    const id = `admin-reminder:${key}:${period}`;
+    const id = `admin-reminder:${key}:${period}:${sendDate}`;
     const { resource } = await getContainer("emailNotifications").item(id, id).read<any>();
     return !!resource;
   } catch {
@@ -35,28 +27,33 @@ async function wasSent(key: ReminderKey, period: string): Promise<boolean> {
   }
 }
 
-async function markSent(key: ReminderKey, period: string, recipients: string[]): Promise<void> {
-  const id = `admin-reminder:${key}:${period}`;
+async function markSent(key: ReminderKey, due: AdministrativeReminderDue, recipients: string[]): Promise<void> {
+  const id = `admin-reminder:${key}:${due.period}:${due.sendDate}`;
   await getContainer("emailNotifications").items.upsert({
     id,
     type: "administrative_reminder",
     key,
-    period,
+    period: due.period,
+    sendDate: due.sendDate,
     recipients,
     sentAt: new Date().toISOString(),
   });
 }
 
-async function sendOne(key: ReminderKey, reminder: AdministrativeReminderSettings, frontendBaseUrl?: string, testRecipients?: string[]): Promise<{ sent: boolean; reason?: string }> {
-  const period = periodKey();
+async function sendOne(key: ReminderKey, reminder: AdministrativeReminderSettings, frontendBaseUrl?: string, testRecipients?: string[], due?: AdministrativeReminderDue): Promise<{ sent: boolean; reason?: string }> {
+  const effectiveDue = due ?? administrativeReminderDueToday({ ...reminder, enabled: true }, nowInBogota()) ?? {
+    period: `${nowInBogota().getUTCFullYear()}-${String(nowInBogota().getUTCMonth() + 1).padStart(2, "0")}`,
+    sendDate: nowInBogota().toISOString().slice(0, 10),
+    scheduledFor: `${nowInBogota().toISOString().slice(0, 10)} ${reminder.time}`,
+  };
   const recipients = uniqueEmails(testRecipients ?? reminder.recipients ?? []);
   if (recipients.length === 0) return { sent: false, reason: "Sin destinatarios configurados." };
-  if (!testRecipients && await wasSent(key, period)) return { sent: false, reason: "Ya fue enviado para este mes." };
+  if (!testRecipients && await wasSent(key, effectiveDue.period, effectiveDue.sendDate)) return { sent: false, reason: "Ya fue enviado para esta fecha." };
   const email = buildAdministrativeReminderEmail({
     type: key === "sag-web-version" ? "sagWebVersion" : "whatsNew",
     subject: reminder.subject,
-    periodo: period,
-    fechaProgramada: `${period}-${String(reminder.dayOfMonth).padStart(2, "0")} ${reminder.time}`,
+    periodo: effectiveDue.period,
+    fechaProgramada: effectiveDue.scheduledFor,
     frontendBaseUrl,
   });
   const settings = await loadEmailAlertsSettings();
@@ -67,10 +64,10 @@ async function sendOne(key: ReminderKey, reminder: AdministrativeReminderSetting
     action: testRecipients ? (result.ok ? "admin_reminder_test_sent" : "admin_reminder_test_failed") : (result.ok ? "administrative_reminder_sent" : "administrative_reminder_failed"),
     performedBy: testRecipients ? "admin" : "system",
     performedByEmail: testRecipients ? "admin" : "system",
-    metadata: { key, period, recipientsCount: recipients.length, error: result.ok ? undefined : result.error },
+    metadata: { key, period: effectiveDue.period, sendDate: effectiveDue.sendDate, recipientsCount: recipients.length, error: result.ok ? undefined : result.error },
   });
   if (!result.ok) return { sent: false, reason: result.error };
-  if (!testRecipients) await markSent(key, period, recipients);
+  if (!testRecipients) await markSent(key, effectiveDue, recipients);
   return { sent: true };
 }
 
@@ -83,8 +80,9 @@ export async function ejecutarRecordatoriosAdministrativos(log: (m: string) => v
     ["sag-web-version", reminders.sagWebVersionReminder],
     ["whats-new", reminders.whatsNewReminder],
   ] as const) {
-    if (!due(reminder)) continue;
-    const result = await sendOne(key, reminder, settings.frontendBaseUrl);
+    const due = administrativeReminderDueToday(reminder, nowInBogota());
+    if (!due) continue;
+    const result = await sendOne(key, reminder, settings.frontendBaseUrl, undefined, due);
     if (result.sent) enviados++;
     else log(`Recordatorio ${key} omitido: ${result.reason ?? "no aplica"}`);
   }

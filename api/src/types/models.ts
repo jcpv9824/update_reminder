@@ -110,6 +110,46 @@ export type DatabaseRecord = {
   lastUpdatedBy?: string | null;
 };
 
+export type LicenseModuleRecord = {
+  id: string;
+  name: string;
+  code?: string;
+  status?: EntityStatus;
+  active?: boolean;
+  notes?: string;
+  createdAt?: string;
+  createdBy?: string;
+  updatedAt?: string;
+  updatedBy?: string;
+  deletedAt?: string | null;
+  deletedBy?: string | null;
+};
+
+export type LicenseAssignmentLevel = "client" | "domain" | "database";
+
+export type LicenseAssignmentRecord = {
+  id: string;
+  moduleId: string;
+  moduleName?: string;
+  moduleCode?: string;
+  clientId?: string;
+  clientName?: string;
+  domainId?: string;
+  domainName?: string;
+  databaseId?: string;
+  databaseName?: string;
+  targetType?: LicenseAssignmentLevel;
+  targetId?: string;
+  status?: EntityStatus;
+  active?: boolean;
+  createdAt?: string;
+  createdBy?: string;
+  updatedAt?: string;
+  updatedBy?: string;
+  deletedAt?: string | null;
+  deletedBy?: string | null;
+};
+
 export type ScheduleScopeGroup = {
   clientId: string;
   includeAllDomains: boolean;
@@ -180,6 +220,13 @@ export type TaskStatus =
 
 export type UpdateTask = {
   id: string;
+  dedupeKey?: string;
+  sources?: Array<{
+    scheduleId: string;
+    scheduleType: "normal" | "special" | "licensing" | "manual";
+    reason?: string;
+    createdAt: string;
+  }>;
   taskDate: string;
   taskBucket: string;
   clientId: string;
@@ -264,6 +311,10 @@ export type EmailAlertsSettings = {
   blockedAlertCustomEmails?: string[];
   blockedAlertSendImmediately?: boolean;
   blockedAlertIncludeInOverdueSummary?: boolean;
+  blockedReminderEnabled?: boolean;
+  blockedReminderDaysAfter?: number[];
+  blockedReminderTime?: string;
+  blockedReminderTimezone?: string;
 
   administrativeReminders?: {
     sagWebVersionReminder: AdministrativeReminderSettings;
@@ -282,6 +333,7 @@ export type EmailAlertsSettings = {
 export type AdministrativeReminderSettings = {
   enabled: boolean;
   recipients: string[];
+  sendRule?: "first_day" | "last_day" | "last_business_day" | "fixed_day";
   dayOfMonth: number;
   time: string;
   timezone: string;

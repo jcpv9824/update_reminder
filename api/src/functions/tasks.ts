@@ -211,11 +211,23 @@ async function changeTaskStatus(
       t.blockReason = String(body.blockReason ?? body.notes ?? "").slice(0, 4000);
       t.problemNote = t.blockReason;
     }
-    if (newStatus === "pending") {
+    if (newStatus === "pending" && auditAction === "task_reopened") {
       t.reopenedAt = new Date().toISOString();
       t.reopenedBy = user.id;
-      t.reopenReason = typeof body.reopenReason === "string" ? body.reopenReason.slice(0, 4000) : undefined;
+      t.reopenReason = typeof body.reopenReason === "string" && body.reopenReason.trim()
+        ? body.reopenReason.trim().slice(0, 4000)
+        : undefined;
       t.completedWithProblems = false;
+    }
+    if (auditAction === "task_block_resolved") {
+      t.resolvedAt = new Date().toISOString();
+      t.resolvedBy = user.id;
+      t.resolutionComment = typeof body.resolutionComment === "string" && body.resolutionComment.trim()
+        ? body.resolutionComment.trim().slice(0, 4000)
+        : undefined;
+      if (newStatus !== "blocked") {
+        t.blockReason = t.blockReason ?? null;
+      }
     }
     await getContainer("updateTasks").item(t.id, t.taskBucket).replace(t);
 
@@ -262,12 +274,13 @@ async function changeTaskStatus(
       performedByEmail: user.email,
       before,
       after: t,
+      metadata: { previousStatus: before.status, newStatus },
     });
 
     if ((newStatus === "completed" && t.completedWithProblems) || newStatus === "blocked") {
       // Notificación a admins activos. No bloquea la respuesta.
       const settings = await (await import("../lib/settingsService")).loadEmailAlertsSettings();
-      if (newStatus !== "blocked" || (settings.blockedAlertsEnabled !== false && settings.blockedAlertSendImmediately !== false)) {
+      if (newStatus !== "blocked" || settings.blockedAlertsEnabled !== false) {
         void notificarProblemaAdmins(t, user.email);
       }
     }
@@ -292,22 +305,12 @@ app.http("tasksResolveBlock", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const body = (await req.json().catch(() => ({}))) as any;
-      const resolutionComment = String(body.resolutionComment ?? "").trim();
       const newStatus = String(body.newStatus ?? "");
-      if (!resolutionComment) return badRequest("El comentario de resolución es obligatorio.");
       if (!["pending", "in_progress", "completed"].includes(newStatus)) return badRequest("Seleccione un nuevo estado válido.");
-      const response = await changeTaskStatus(req, newStatus as UpdateTask["status"], "task_block_resolved", {
+      return await changeTaskStatus(req, newStatus as UpdateTask["status"], "task_block_resolved", {
         ...body,
-        notes: resolutionComment,
+        resolutionComment: String(body.resolutionComment ?? "").trim(),
       });
-      if (response.status !== 200) return response;
-      const task = (response as any).jsonBody as UpdateTask;
-      task.resolvedAt = new Date().toISOString();
-      const user = await getUserOrFail(req);
-      task.resolvedBy = user.id;
-      task.resolutionComment = resolutionComment.slice(0, 4000);
-      await getContainer("updateTasks").item(task.id, task.taskBucket).replace(task);
-      return ok(task);
     } catch (e) {
       return serverError(e);
     }

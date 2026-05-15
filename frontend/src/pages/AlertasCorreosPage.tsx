@@ -34,6 +34,10 @@ type Settings = {
   blockedAlertCustomEmails?: string[];
   blockedAlertSendImmediately?: boolean;
   blockedAlertIncludeInOverdueSummary?: boolean;
+  blockedReminderEnabled?: boolean;
+  blockedReminderDaysAfter?: number[];
+  blockedReminderTime?: string;
+  blockedReminderTimezone?: string;
   administrativeReminders?: {
     sagWebVersionReminder: AdminReminder;
     whatsNewReminder: AdminReminder;
@@ -45,6 +49,7 @@ type Settings = {
 type AdminReminder = {
   enabled: boolean;
   recipients: string[];
+  sendRule?: "first_day" | "last_day" | "last_business_day" | "fixed_day";
   dayOfMonth: number;
   time: string;
   timezone: string;
@@ -66,14 +71,16 @@ const ADMIN_REMINDER_DEFAULTS: Settings["administrativeReminders"] = {
   sagWebVersionReminder: {
     enabled: false,
     recipients: [],
+    sendRule: "last_business_day",
     dayOfMonth: 1,
     time: "08:00",
     timezone: "America/Bogota",
-    subject: "Recordatorio: registrar la versión mensual de SAG Web",
+    subject: "Recordatorio: guardar la última versión mensual de SAG Web",
   },
   whatsNewReminder: {
     enabled: false,
     recipients: [],
+    sendRule: "last_business_day",
     dayOfMonth: 1,
     time: "08:00",
     timezone: "America/Bogota",
@@ -96,10 +103,10 @@ function validarCorreosSeparadosPorPuntoYComa(valor: string): string | null {
   return invalido ? `Correo inválido: ${invalido}` : null;
 }
 
-function Acordeon({ titulo, children, abiertoInicial = true }: { titulo: string; children: React.ReactNode; abiertoInicial?: boolean }) {
+function Acordeon({ titulo, resumen, children, abiertoInicial = true }: { titulo: string; resumen?: string; children: React.ReactNode; abiertoInicial?: boolean }) {
   return (
     <details className="acordeon" open={abiertoInicial}>
-      <summary>{titulo}</summary>
+      <summary><span>{titulo}</span>{resumen && <small>{resumen}</small>}</summary>
       <div className="acordeon-contenido">{children}</div>
     </details>
   );
@@ -144,6 +151,10 @@ export default function AlertasCorreosPage() {
         blockedAlertRecipientRoleIds: data.blockedAlertRecipientRoleIds ?? ["admin"],
         blockedAlertCustomEmails: data.blockedAlertCustomEmails ?? [],
         blockedAlertSendImmediately: data.blockedAlertSendImmediately ?? true,
+        blockedReminderEnabled: data.blockedReminderEnabled ?? false,
+        blockedReminderDaysAfter: data.blockedReminderDaysAfter ?? [1, 3, 5],
+        blockedReminderTime: data.blockedReminderTime ?? "08:00",
+        blockedReminderTimezone: data.blockedReminderTimezone ?? "America/Bogota",
         administrativeReminders: {
           sagWebVersionReminder: { ...ADMIN_REMINDER_DEFAULTS!.sagWebVersionReminder, ...data.administrativeReminders?.sagWebVersionReminder },
           whatsNewReminder: { ...ADMIN_REMINDER_DEFAULTS!.whatsNewReminder, ...data.administrativeReminders?.whatsNewReminder },
@@ -220,8 +231,9 @@ export default function AlertasCorreosPage() {
       if (form.overdueAlertFrequency === "weekly" && (form.overdueAlertWeekdays ?? []).length === 0) return setError("Seleccione al menos un día para la frecuencia semanal.");
     }
     if ((form.blockedAlertCustomEmails ?? []).some((e) => !isEmail(e))) return setError("Ingrese correos válidos separados por punto y coma para las alertas de bloqueos.");
+    if (form.blockedReminderEnabled && !(form.blockedReminderDaysAfter ?? []).every((n) => Number.isFinite(n) && n > 0)) return setError("Los días después del bloqueo deben ser números mayores a 0.");
     for (const r of Object.values(form.administrativeReminders ?? {})) {
-      if (r.dayOfMonth < 1 || r.dayOfMonth > 28) return setError("El día del mes de los recordatorios administrativos debe estar entre 1 y 28.");
+      if ((r.sendRule ?? "last_business_day") === "fixed_day" && (r.dayOfMonth < 1 || r.dayOfMonth > 28)) return setError("El día fijo de los recordatorios administrativos debe estar entre 1 y 28.");
       if (r.recipients.some((e) => !isEmail(e))) return setError("Hay destinatarios inválidos en recordatorios administrativos.");
     }
     const body: any = { ...form };
@@ -286,6 +298,7 @@ export default function AlertasCorreosPage() {
   }
 
   const proveedor = form.emailProvider === "mock" ? "Mock" : form.emailProvider.toUpperCase();
+  const adminActivos = Object.values(form.administrativeReminders ?? {}).filter((r) => r.enabled).length;
 
   return (
     <>
@@ -313,7 +326,7 @@ export default function AlertasCorreosPage() {
         <button type="button" onClick={usarConfiguracionPya}>Usar configuración recomendada de P&A</button>
       </Acordeon>
 
-      <Acordeon titulo="Configuración básica del remitente">
+      <Acordeon titulo="Configuración básica" resumen={`${form.emailFromName} · ${form.emailFrom}`}>
         <div className="fila-formulario" style={{ marginTop: 12 }}><label>Correo remitente</label>
           <p className="texto-ayuda">Correo desde el cual saldrán las notificaciones.</p>
           <input type="email" value={form.emailFrom} onChange={(e) => actualizar("emailFrom", e.target.value)} /></div>
@@ -377,14 +390,15 @@ export default function AlertasCorreosPage() {
         </div>
       </Acordeon>
 
-      <Acordeon titulo="Recordatorios a actualizadores">
+      <Acordeon titulo="Recordatorios a actualizadores" resumen={`${form.remindersEnabled ? "Activo" : "Inactivo"} · ${form.defaultReminderDaysBefore.join(",")} días · ${form.defaultReminderTime} · ${form.defaultTimezone}`}>
+        <p className="texto-ayuda">Esta configuración se usará como valor por defecto para los recordatorios de dominios y programaciones especiales, salvo que se defina una configuración específica.</p>
         <div className="fila-formulario"><label>
           <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={form.remindersEnabled} onChange={(e) => actualizar("remindersEnabled", e.target.checked)} />
           Activar recordatorios automáticos
         </label></div>
         {form.remindersEnabled && (
           <>
-            <div className="fila-formulario"><label>Días previos separados por coma</label>
+            <div className="fila-formulario"><label>Días previos separados por coma <Tooltip texto="0 significa el mismo día de la actualización." /></label>
               <input value={form.defaultReminderDaysBefore.join(", ")}
                 onChange={(e) => {
                   const arr = e.target.value.split(",").map((x) => parseInt(x.trim(), 10)).filter((n) => Number.isFinite(n) && n >= 0);
@@ -406,7 +420,7 @@ export default function AlertasCorreosPage() {
         )}
       </Acordeon>
 
-      <Acordeon titulo="Alertas de tareas vencidas">
+      <Acordeon titulo="Alertas de tareas vencidas" resumen={`${form.overdueAlertsEnabled ? "Activo" : "Inactivo"} · ${form.overdueAlertFrequency === "weekly" ? "Semanal" : "Diaria"} · ${form.overdueAlertTime}`}>
         <div className="fila-formulario"><label>
           <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={form.overdueAlertsEnabled} onChange={(e) => actualizar("overdueAlertsEnabled", e.target.checked)} />
           Activar alertas de vencidos <Tooltip texto="Las tareas vencidas son tareas con fecha programada anterior a hoy que aún no están completadas ni canceladas." />
@@ -444,7 +458,7 @@ export default function AlertasCorreosPage() {
         )}
       </Acordeon>
 
-      <Acordeon titulo="Alertas de tareas bloqueadas / errores de actualización">
+      <Acordeon titulo="Alertas de tareas bloqueadas / errores de actualización" resumen={`${form.blockedAlertsEnabled ?? true ? "Activo" : "Inactivo"} · Roles: ${(form.blockedAlertRecipientRoleIds ?? []).length} · ${(form.blockedAlertCustomEmails ?? []).length} correos adicionales`}>
         <div className="fila-formulario"><label>
           <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={form.blockedAlertsEnabled ?? true} onChange={(e) => actualizar("blockedAlertsEnabled", e.target.checked)} />
           Activar alertas de bloqueos <Tooltip texto="Una tarea bloqueada representa un error de actualización o un bloqueo operativo." />
@@ -453,13 +467,26 @@ export default function AlertasCorreosPage() {
         <div className="fila-formulario"><label>Correos adicionales</label>
           <input placeholder="bloqueos1@empresa.com; bloqueos2@empresa.com" value={(form.blockedAlertCustomEmails ?? []).join("; ")}
             onChange={(e) => actualizar("blockedAlertCustomEmails", parseCorreos(e.target.value))} /></div>
+        <Alerta tipo="info">Cuando una tarea se bloquee, se enviará una alerta inmediata a los destinatarios configurados.</Alerta>
+        <h4>Recordatorios si el bloqueo sigue sin resolverse</h4>
         <div className="fila-formulario"><label>
-          <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={form.blockedAlertSendImmediately ?? true} onChange={(e) => actualizar("blockedAlertSendImmediately", e.target.checked)} />
-          Enviar inmediatamente al bloquear <Tooltip texto="Si está activo, bloquear una tarea puede enviar correo a los destinatarios configurados." />
+          <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={form.blockedReminderEnabled ?? false} onChange={(e) => actualizar("blockedReminderEnabled", e.target.checked)} />
+          Activar recordatorios de bloqueos no resueltos <Tooltip texto="Solo se envían si la tarea sigue bloqueada en los días configurados." />
         </label></div>
+        {form.blockedReminderEnabled && (
+          <>
+            <div className="fila-formulario"><label>Días después del bloqueo <Tooltip texto="Ejemplo: 1,3,5 enviará recordatorios al día 1, 3 y 5 si sigue bloqueada." /></label>
+              <input value={(form.blockedReminderDaysAfter ?? []).join(", ")} onChange={(e) => actualizar("blockedReminderDaysAfter", e.target.value.split(",").map((x) => parseInt(x.trim(), 10)).filter((n) => Number.isFinite(n) && n > 0))} />
+            </div>
+            <div className="fila-formulario"><label>Hora de envío</label>
+              <input value={form.blockedReminderTime ?? "08:00"} onChange={(e) => actualizar("blockedReminderTime", e.target.value)} /></div>
+            <div className="fila-formulario"><label>Zona horaria</label>
+              <input value={form.blockedReminderTimezone ?? "America/Bogota"} onChange={(e) => actualizar("blockedReminderTimezone", e.target.value)} /></div>
+          </>
+        )}
       </Acordeon>
 
-      <Acordeon titulo="Recordatorios administrativos">
+      <Acordeon titulo="Recordatorios administrativos" resumen={`${adminActivos} activos · Último día hábil del mes`}>
         {form.administrativeReminders && (
           <>
             <AdminReminderCard
@@ -533,6 +560,8 @@ function RolesChecklist({ label, valores, onChange }: { label: string; valores: 
 
 function AdminReminderCard({ titulo, valor, onChange, onTest }: { titulo: string; valor: AdminReminder; onChange: (v: AdminReminder) => void; onTest: (recipients: string) => void }) {
   const recipientsText = valor.recipients.join("; ");
+  const sendRule = valor.sendRule ?? "last_business_day";
+  const idBase = titulo.toLowerCase().replace(/[^a-z0-9]+/g, "-");
   return (
     <div className="tarjeta tarjeta-compacta">
       <h4>{titulo}</h4>
@@ -542,8 +571,17 @@ function AdminReminderCard({ titulo, valor, onChange, onTest }: { titulo: string
       </label></div>
       <div className="fila-formulario"><label>Destinatarios</label>
         <input value={recipientsText} onChange={(e) => onChange({ ...valor, recipients: parseCorreos(e.target.value) })} placeholder="persona1@pya.com.co; persona2@pya.com.co" /></div>
-      <div className="fila-formulario"><label>Día del mes</label>
-        <input type="number" min={1} max={28} value={valor.dayOfMonth} onChange={(e) => onChange({ ...valor, dayOfMonth: Number(e.target.value) })} /></div>
+      <div className="fila-formulario"><label htmlFor={`${idBase}-regla`}>Regla de envío <Tooltip texto="Último día hábil envía viernes y lunes si el mes termina en fin de semana." /></label>
+        <select id={`${idBase}-regla`} value={sendRule} onChange={(e) => onChange({ ...valor, sendRule: e.target.value as any })}>
+          <option value="first_day">Primer día del mes</option>
+          <option value="last_day">Último día del mes</option>
+          <option value="last_business_day">Último día hábil del mes</option>
+          <option value="fixed_day">Día fijo del mes</option>
+        </select></div>
+      {sendRule === "fixed_day" && (
+        <div className="fila-formulario"><label htmlFor={`${idBase}-dia`}>Día del mes</label>
+          <input id={`${idBase}-dia`} type="number" min={1} max={28} value={valor.dayOfMonth} onChange={(e) => onChange({ ...valor, dayOfMonth: Number(e.target.value) })} /></div>
+      )}
       <div className="fila-formulario"><label>Hora</label>
         <input value={valor.time} onChange={(e) => onChange({ ...valor, time: e.target.value })} /></div>
       <div className="fila-formulario"><label>Zona horaria</label>

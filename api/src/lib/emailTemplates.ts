@@ -51,10 +51,16 @@ export type MasterReportDomain = {
   databases?: MasterReportDatabase[];
 };
 
+export type MasterReportLicense = {
+  name: string;
+  code?: string;
+};
+
 export type MasterReportClient = {
   name: string;
   status?: string;
   createdAt?: string | Date;
+  licenses?: MasterReportLicense[];
   domains?: MasterReportDomain[];
 };
 
@@ -369,14 +375,14 @@ export function buildAdministrativeReminderEmail(input: {
   const baseUrl = normalizeBaseUrl(input.frontendBaseUrl);
   const isVersion = input.type === "sagWebVersion";
   const subject = input.subject || (isVersion
-    ? "Recordatorio: registrar la versión mensual de SAG Web"
+    ? "Recordatorio: guardar la última versión mensual de SAG Web"
     : "Recordatorio: crear documento \"¿Qué hay de nuevo en SAG Web?\"");
   const title = isVersion ? "Recordatorio de versión mensual" : "Recordatorio de documentación mensual";
   const subtitle = isVersion ? "SAG Web" : "¿Qué hay de nuevo en SAG Web?";
-  const activity = isVersion ? "Registrar versión mensual de SAG Web" : "Crear documento \"¿Qué hay de nuevo en SAG Web?\"";
+  const activity = isVersion ? "Guardar última versión mensual de SAG Web" : "Crear documento \"¿Qué hay de nuevo en SAG Web?\"";
   const description = isVersion
-    ? "Este es un recordatorio para registrar o guardar la versión mensual más reciente de SAG Web."
-    : "Este es un recordatorio para crear o actualizar el documento mensual \"¿Qué hay de nuevo en SAG Web?\".";
+    ? `Este es un recordatorio para guardar o registrar la última versión mensual de SAG Web correspondiente al periodo ${input.periodo}.`
+    : `Este es un recordatorio para crear o actualizar el documento \"¿Qué hay de nuevo en SAG Web?\" correspondiente al periodo ${input.periodo}.`;
   const extra = isVersion
     ? "Por favor verifica la versión actual publicada y registra la información correspondiente según el procedimiento interno."
     : "Recuerda preparar el documento para que el equipo pueda agregar las novedades, mejoras y cambios desarrollados durante el periodo.";
@@ -429,13 +435,19 @@ export function buildMastersReportEmail(input: {
   const baseUrl = normalizeBaseUrl(input.frontendBaseUrl);
   const domainsCount = input.clients.reduce((acc, c) => acc + (c.domains?.length ?? 0), 0);
   const databasesCount = input.clients.reduce((acc, c) => acc + (c.domains ?? []).reduce((sum, d) => sum + (d.databases?.length ?? 0), 0), 0);
+  const licensesCount = input.clients.reduce((acc, c) => acc + (c.licenses?.length ?? 0), 0);
   const intro = `Hola${input.recipientName ? ` ${input.recipientName}` : ""}, este es el reporte maestro ERP de clientes, dominios y empresas.`;
   const note = "Este reporte omite usuarios SQL, contraseñas, cadenas de conexión, tokens y secretos.";
+  const licenseListHtml = (licenses?: MasterReportLicense[]) => (licenses ?? []).length > 0
+    ? `<ul style="margin:6px 0 12px 18px; padding:0;">${(licenses ?? []).map((license) => `<li style="margin:0 0 4px;">${escapeHtml(license.name)}${license.code ? ` <span style="color:${COLORS.muted};">(${escapeHtml(license.code)})</span>` : ""}</li>`).join("")}</ul>`
+    : `<ul style="margin:6px 0 12px 18px; padding:0;"><li style="margin:0 0 4px;">Sin licencias registradas</li></ul>`;
   const clientBlocks = input.clients.map((client) => `
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid ${COLORS.neutral}; border-radius:8px; margin:0 0 14px;">
       <tr><td style="padding:14px;">
         <div style="font-size:16px; font-weight:700; color:${COLORS.primary};">Cliente: ${escapeHtml(client.name)}</div>
         <div style="font-size:12px; color:${COLORS.muted}; margin:3px 0 10px;">Estado: ${escapeHtml(client.status || "-")} · Creación: ${escapeHtml(formatDate(client.createdAt, "es-CO", timezone))}</div>
+        <div style="font-size:13px; color:${COLORS.text}; margin-top:8px; font-weight:700;">Licencias / módulos:</div>
+        ${licenseListHtml(client.licenses)}
         ${(client.domains ?? []).map((domain) => `
           <div style="border-top:1px solid ${COLORS.neutral}; padding-top:10px; margin-top:10px;">
             <div style="font-size:14px; font-weight:700; color:${COLORS.text};">Dominio: ${escapeHtml(domain.name)}</div>
@@ -452,6 +464,7 @@ export function buildMastersReportEmail(input: {
       ${metric("Clientes", input.clients.length)}
       ${metric("Dominios", domainsCount, COLORS.secondary)}
       ${metric("Empresas / bases", databasesCount, COLORS.accent)}
+      ${metric("Licencias", licensesCount, COLORS.success)}
     </tr></table>
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc; border:1px solid ${COLORS.neutral}; border-radius:8px; margin:0 0 14px;">
       <tr><td style="padding:12px 14px; font-size:13px; color:${COLORS.text};">${escapeHtml(note)}</td></tr>
@@ -459,6 +472,13 @@ export function buildMastersReportEmail(input: {
     ${clientBlocks}`;
   const textClients = input.clients.map((client) => [
     `Cliente: ${client.name}`,
+    `Estado: ${client.status || "-"}`,
+    `Creación: ${formatDate(client.createdAt, "es-CO", timezone)}`,
+    ``,
+    `Licencias / módulos:`,
+    ...((client.licenses ?? []).length > 0 ? (client.licenses ?? []).map((license) => `- ${license.name}${license.code ? ` (${license.code})` : ""}`) : ["- Sin licencias registradas"]),
+    ``,
+    `Dominios:`,
     ...(client.domains ?? []).flatMap((domain) => [
       `  Dominio: ${domain.name}`,
       `  Dominio para publicar: ${formatDomainForPublishing(domain.publishableDomain || domain.url || domain.name)}`,
@@ -472,7 +492,7 @@ export function buildMastersReportEmail(input: {
   return {
     subject: "Reporte maestro ERP — clientes, dominios y empresas",
     html: layout({ title: "Reporte maestro ERP", intro, preheader: intro, body, cta: "Abrir aplicación", ctaHref: baseUrl, footerNote: note }),
-    text: `${intro}\nClientes: ${input.clients.length}\nDominios: ${domainsCount}\nEmpresas / bases: ${databasesCount}\n${note}\n\n${textClients}\n\nAbrir aplicación: ${baseUrl}`,
+    text: `${intro}\nClientes: ${input.clients.length}\nDominios: ${domainsCount}\nEmpresas / bases: ${databasesCount}\nLicencias: ${licensesCount}\n${note}\n\n${textClients}\n\nAbrir aplicación: ${baseUrl}`,
   };
 }
 

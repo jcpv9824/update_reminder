@@ -57,7 +57,7 @@ describe("AlertasCorreosPage", () => {
     expect(await screen.findByRole("heading", { name: /Alertas y correos/i })).toBeInTheDocument();
     expect(screen.getByText(/Estado del envío de correos/i)).toBeInTheDocument();
     expect(screen.getByText(/Configuración recomendada rápida/i)).toBeInTheDocument();
-    expect(screen.getByText(/Configuración básica del remitente/i)).toBeInTheDocument();
+    expect(screen.getByText(/Configuración básica/i)).toBeInTheDocument();
     expect(screen.getByText(/Recordatorios a actualizadores/i)).toBeInTheDocument();
     expect(screen.getByText(/Alertas de tareas vencidas/i)).toBeInTheDocument();
     expect(screen.getByText(/Reporte maestro de clientes\/dominios\/empresas/i)).toBeInTheDocument();
@@ -65,6 +65,27 @@ describe("AlertasCorreosPage", () => {
     const smtpSummary = screen.getByText(/Configuración SMTP avanzada/i);
     expect(smtpSummary.closest("details")).not.toHaveAttribute("open");
     expect(screen.getByText(/Contraseña SMTP configurada:/i)).toBeInTheDocument();
+  });
+
+  it("muestra ayuda de recordatorios globales y sección de bloqueos no resueltos", async () => {
+    apiMock.get.mockResolvedValueOnce(settings);
+    render_();
+    await screen.findByRole("heading", { name: /Alertas y correos/i });
+    expect(screen.getByText(/valor por defecto para los recordatorios de dominios/i)).toBeInTheDocument();
+    expect(screen.getByText(/Cuando una tarea se bloquee, se enviará una alerta inmediata/i)).toBeInTheDocument();
+    expect(screen.getByText(/Recordatorios si el bloqueo sigue sin resolverse/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Enviar inmediatamente al bloquear/i)).toBeNull();
+  });
+
+  it("recordatorios administrativos usan último día hábil por defecto y día fijo muestra input", async () => {
+    apiMock.get.mockResolvedValueOnce(settings);
+    render_();
+    await screen.findByRole("heading", { name: /Alertas y correos/i });
+    const reglas = screen.getAllByLabelText(/Regla de envío/i) as HTMLSelectElement[];
+    expect(reglas[0].value).toBe("last_business_day");
+    expect(screen.queryByLabelText(/^Día del mes$/i)).toBeNull();
+    fireEvent.change(reglas[0], { target: { value: "fixed_day" } });
+    expect(screen.getByLabelText(/^Día del mes$/i)).toBeInTheDocument();
   });
 
   it("el botón de configuración recomendada de P&A llena los valores correctos sin contraseña", async () => {

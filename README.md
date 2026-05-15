@@ -9,7 +9,8 @@ Aplicación web para gestionar las actualizaciones programadas de los clientes d
 - **Recordatorios por correo** a los actualizadores (días previos, hora y zona horaria configurables).
 - **Alertas globales de vencidos** con frecuencia diaria o semanal, destinatarios por roles y correos adicionales con deduplicación.
 - **Alertas de tareas bloqueadas / errores de actualización** con destinatarios propios. Los correos de error de bases incluyen servidor y puerto, base de datos y usuario, nunca contraseña.
-- **Reporte manual por correo** de clientes, dominios y empresas/bases de datos activos, con ambiente, sin contraseñas ni datos sensibles.
+- **Recordatorios de bloqueos no resueltos** configurables por días después del bloqueo, hora y zona horaria.
+- **Reporte manual por correo** de clientes, licencias/módulos, dominios y empresas/bases de datos activos, con ambiente, sin contraseñas ni datos sensibles.
 - **Diseño con colores corporativos**: `#1C3664`, `#7E99B2`, `#D1D3D2`, `#D3C193`.
 - Página principal **Tareas** con dos columnas (dominios y bases de datos) divididas en *Vencidas / Hoy / Próximas / Completadas*.
 - Gestión de **clientes**, **dominios** y **bases de datos** con eliminación en cascada confirmada y soft-delete de maestros. La frecuencia principal se configura en el **dominio**; las bases de datos heredan esa frecuencia desde el dominio seleccionado.
@@ -18,6 +19,7 @@ Aplicación web para gestionar las actualizaciones programadas de los clientes d
 - Panel del actualizador con las cuatro partes del acceso (servidor, Initial Catalog, usuario y contraseña) y botones independientes para copiar; cada acción se audita.
 - Desde **Dominios** se puede abrir **Ver bases asociadas**; desde **Clientes**, **Ver dominios y bases**.
 - **Recordatorios administrativos mensuales** para guardar la versión mensual de SAG Web y crear el documento “¿Qué hay de nuevo en SAG Web?”.
+- Los recordatorios administrativos soportan reglas de envío: primer día, último día, último día hábil y día fijo. Si el mes termina en fin de semana, la regla de último día hábil envía viernes y lunes manteniendo el periodo del mes anterior.
 - **Roles**: administrador, administrador de clientes, actualizador de bases de datos, actualizador de dominios, visualizador.
 - **Auditoría completa** de todas las acciones (incluyendo revelar/copiar contraseñas).
 - **Contraseñas en Azure Key Vault**, nombres de secreto sanitizados automáticamente (sin guiones bajos ni caracteres inválidos).
@@ -121,7 +123,7 @@ Cubre vistas principales, selectores buscables, tareas, alertas y correos, progr
 - En Cosmos DB solo se guarda la **referencia** al secreto, nunca la contraseña.
 - Los registros de auditoría **eliminan automáticamente** cualquier campo cuyo nombre incluya `password`, `secret`, `rawDbAccess`.
 - Cada acción de **revelar** o **copiar** la contraseña genera una entrada de auditoría con el usuario, la fecha y la base de datos asociada.
-- El reporte de clientes/dominios/empresas no incluye usuarios SQL, contraseñas, cadenas de conexión completas, secretos ni tokens.
+- El reporte de clientes/licencias/dominios/empresas no incluye usuarios SQL, servidores, puertos, contraseñas, cadenas de conexión completas, secretos ni tokens.
 - Las eliminaciones en cascada no eliminan auditoría y no borran secretos de Key Vault cuando el maestro queda en soft-delete.
 
 ## Alertas y correos
@@ -141,11 +143,24 @@ La contraseña SMTP no se llena automáticamente. Para configurarla, abra **Conf
 
 Para probar el envío, escriba un destinatario en **Correo de prueba** y pulse **Enviar correo de prueba**.
 
-En **Alertas de tareas vencidas** configure roles destinatarios, correos adicionales, frecuencia diaria/semanal, hora y zona horaria. En **Alertas de tareas bloqueadas / errores de actualización** configure destinatarios independientes y si se debe enviar inmediatamente al bloquear.
+En **Alertas de tareas vencidas** configure roles destinatarios, correos adicionales, frecuencia diaria/semanal, hora y zona horaria. En **Alertas de tareas bloqueadas / errores de actualización** configure destinatarios independientes. Cuando una tarea se bloquea, la alerta inmediata se envía por defecto si las alertas de bloqueos están activas. También puede activar recordatorios de bloqueos no resueltos.
 
-En **Recordatorios administrativos** configure los dos recordatorios mensuales: versión mensual de SAG Web y documento “¿Qué hay de nuevo en SAG Web?”. El día del mes se restringe a 1–28 para evitar problemas con febrero.
+En **Recordatorios administrativos** configure los dos recordatorios mensuales: guardar la última versión mensual de SAG Web y crear el documento “¿Qué hay de nuevo en SAG Web?”. La regla por defecto es **Último día hábil del mes**. Si el último día del mes cae sábado o domingo, se envían dos recordatorios: viernes anterior y lunes siguiente, ambos asociados al periodo del mes que terminó.
 
-Para enviar el reporte maestro, abra **Reporte de clientes/dominios/empresas**, escriba destinatarios separados por punto y coma, por ejemplo `correo1@empresa.com; correo2@empresa.com`, y pulse **Enviar reporte**. El reporte incluye solo clientes, dominios y bases activos, con ambiente.
+Para enviar el reporte maestro, abra **Reporte de clientes/dominios/empresas**, escriba destinatarios separados por punto y coma, por ejemplo `correo1@empresa.com; correo2@empresa.com`, y pulse **Enviar reporte**. El reporte incluye solo clientes, licencias/módulos, dominios y bases activos, con ambiente. Las licencias se muestran debajo de cada cliente, se deduplican por módulo y si no hay licencias activas aparece **Sin licencias registradas**.
+
+## Licenciamiento en reporte maestro
+
+El endpoint `POST /api/reports/masters/send-email` carga módulos de licencia y asignaciones activas desde `licenseModules` y `licenseAssignments`. Una licencia se muestra en el cliente si existe una asignación activa al cliente completo, a un dominio activo del cliente o a una base activa del cliente.
+
+Reglas del reporte:
+
+- Solo se muestran módulos activos y asignaciones activas.
+- Se excluyen módulos/asignaciones inactivas, eliminadas o con `deletedAt`.
+- Los módulos se deduplican por `moduleId` y se ordenan alfabéticamente.
+- Los nombres y códigos de módulos son permitidos; datos técnicos y secretos siguen excluidos.
+
+Si se intenta eliminar un módulo con asignaciones activas, `DELETE /api/license-modules/{id}` responde `409 Conflict` con los clientes asociados para que la interfaz pueda explicar qué registros bloquean la eliminación.
 
 ## Frecuencias heredadas
 
@@ -169,7 +184,7 @@ El tablero principal no lista todos los dominios o bases individualmente. Muestr
 
 El detalle de tareas usa un modal amplio. Para dominios muestra acciones como **Iniciar**, **Completar**, **Bloquear**, **Resolver bloqueo** y **Reabrir** según el estado. Para bases de datos muestra la conexión en campos apilados: servidor, base, usuario y contraseña. La contraseña no se precarga; se revela o copia bajo demanda con el endpoint seguro y auditoría sin incluir el valor.
 
-Las tareas bloqueadas se resuelven con comentario obligatorio hacia pendiente, en progreso o completada. Las completadas se pueden reabrir a pendiente con motivo.
+Las tareas bloqueadas se resuelven con modal propio hacia pendiente, en progreso o completada. El comentario de resolución es opcional. Las completadas se pueden reabrir a pendiente con modal propio y motivo opcional.
 
 ## Flujo rápido de creación
 
@@ -181,11 +196,13 @@ El flujo principal ahora es **Cliente → Dominio con frecuencia → Base de dat
 
 Los formularios normales usan por defecto el rol responsable: **Actualizador de dominios** para tareas de dominio y **Actualizador de bases de datos** para tareas de base. En la frecuencia del dominio el administrador puede cambiar a **Asignar responsable específico**; entonces las tareas y recordatorios se asignan solo a esas personas activas. Si vuelve a **Usar rol predeterminado**, se limpian los usuarios manuales y los recordatorios vuelven a todos los usuarios activos del rol.
 
-La vista **Programaciones especiales** queda para excepciones avanzadas. El alcance se construye por grupos: agregar cliente, incluir todos los dominios o agregar dominios específicos, e incluir todas las bases o bases puntuales. Las frecuencias normales creadas desde **Dominios** se guardan con `origin = "domain_default"` y no aparecen en esta página; las creadas desde **Programaciones especiales** se guardan con `origin = "special"`.
+La vista **Programaciones especiales** queda para excepciones avanzadas. El alcance se construye por grupos: agregar cliente, incluir todos los dominios o agregar dominios específicos, e incluir todas las bases o bases puntuales. Para seleccionar varios dominios o bases se usan modales con búsqueda y checkboxes. Las frecuencias normales creadas desde **Dominios** se guardan con `origin = "domain_default"` y no aparecen en esta página; las creadas desde **Programaciones especiales** se guardan con `origin = "special"`.
 
 ## Cambios recientes
 
 - [CAMBIOS_V8.md](CAMBIOS_V8.md): cascada, vistas relacionadas, programaciones por grupos, estados de tareas, alertas por tipo, Refrescar, reporte activo con ambiente y recordatorios administrativos.
+- [CAMBIOS_V9.md](CAMBIOS_V9.md): licencias/módulos en reporte maestro y bloqueo claro al eliminar licencias asignadas.
+- [CAMBIOS_V10.md](CAMBIOS_V10.md): modales de tareas, selección múltiple jerárquica, recordatorios globales/overrides, bloqueos no resueltos y reglas administrativas de último día hábil.
 - [CAMBIOS_V6.md](CAMBIOS_V6.md): Alertas y correos simplificado, reporte maestro por correo, frecuencias heredadas desde dominio y generación manual de tareas.
 - [CAMBIOS_V5.md](CAMBIOS_V5.md): fix del 404 al refrescar, listas sin eliminados, eliminación física con integridad y selectores buscables.
 - [CAMBIOS_V4.md](CAMBIOS_V4.md): vista administrativa **Alertas y correos** (SMTP, recordatorios, alertas, prueba). Contraseña SMTP en Key Vault.

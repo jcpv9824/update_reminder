@@ -7,21 +7,27 @@ export function EtiquetaEstado({ estado }: { estado: string }) {
 
 export function BotonCopiar({ valor, etiqueta = "Copiar", onCopia }: { valor: string; etiqueta?: string; onCopia?: () => void }) {
   const [copiado, setCopiado] = useState(false);
+  const [error, setError] = useState(false);
   return (
-    <button
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(valor);
-          setCopiado(true);
-          onCopia?.();
-          setTimeout(() => setCopiado(false), 1500);
-        } catch {
-          alert("No se pudo copiar al portapapeles.");
-        }
-      }}
-    >
-      {copiado ? "¡Copiado!" : etiqueta}
-    </button>
+    <span className="boton-copiar-wrapper">
+      <button
+        onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(valor);
+            setCopiado(true);
+            setError(false);
+            onCopia?.();
+            setTimeout(() => setCopiado(false), 1500);
+          } catch {
+            setError(true);
+            setTimeout(() => setError(false), 2500);
+          }
+        }}
+      >
+        {copiado ? "¡Copiado!" : etiqueta}
+      </button>
+      {error && <span className="texto-ayuda error-inline">No se pudo copiar.</span>}
+    </span>
   );
 }
 

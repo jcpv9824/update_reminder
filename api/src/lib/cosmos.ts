@@ -29,6 +29,8 @@ export type ContainerName =
   | "databases"
   | "updateSchedules"
   | "updateTasks"
+  | "licenseModules"
+  | "licenseAssignments"
   | "auditLogs"
   | "appSettings"
   | "emailNotifications";

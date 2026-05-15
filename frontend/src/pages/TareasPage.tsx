@@ -84,7 +84,6 @@ function estadoDespuesDeAccion(accion: AccionTarea): Tarea["status"] {
   if (accion === "complete") return "completed";
   if (accion === "start") return "in_progress";
   if (accion === "block") return "blocked";
-  if (accion === "resolve-block") return "pending";
   return "pending";
 }
 
@@ -189,7 +188,9 @@ function ColumnaTareas({ titulo, targetType, usuario, usuariosMap }: { titulo: s
       setError(null);
     },
     onSuccess: (_r, variables) => {
-      const nuevoEstado = estadoDespuesDeAccion(variables.accion);
+      const nuevoEstado = variables.accion === "resolve-block"
+        ? (variables.body?.newStatus ?? "pending")
+        : estadoDespuesDeAccion(variables.accion);
       qc.setQueryData<Tarea[]>(["tareas", targetType], (actuales = []) =>
         actuales.map((t) => t.id === variables.id ? {
           ...t,
@@ -362,6 +363,9 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
   onAccion: (id: string, accion: AccionTarea, body?: any) => void;
 }) {
   const pendientes = grupo.tareas.filter((t) => t.status !== "completed" && t.status !== "cancelled");
+  const [bloqueo, setBloqueo] = useState<Tarea | null>(null);
+  const [resolver, setResolver] = useState<Tarea | null>(null);
+  const [reabrir, setReabrir] = useState<Tarea | null>(null);
   return (
     <>
       <p>
@@ -407,7 +411,7 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
             )}
             <th>Estado</th>
             <th>Nota</th>
-            <th>Acciones</th>
+            <th className="columna-acciones">Acciones</th>
           </tr>
         </thead>
         <tbody>
@@ -452,7 +456,7 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
                     </div>
                   )}
                 </td>
-                <td className="acciones-tabla acciones-fila-tarea" data-testid={`acciones-tarea-${tarea.id}`}>
+                <td className="acciones-tabla acciones-fila-tarea celda-acciones" data-testid={`acciones-tarea-${tarea.id}`}>
                   {grupo.targetType === "domain" ? (
                     <button type="button" className="primario" onClick={() => copiarTexto(dominioPublicable)}>
                       Copiar dominio para publicar
@@ -463,22 +467,13 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
                   {puedeCambiar && tarea.status === "pending" && <button type="button" onClick={() => onAccion(tarea.id, "start")}>Iniciar</button>}
                   {puedeCambiar && tarea.status !== "completed" && tarea.status !== "cancelled" && tarea.status !== "blocked" && <button type="button" className="exito" onClick={() => onSolicitarCompletar(tarea)}>Completar</button>}
                   {puedeCambiar && tarea.status !== "completed" && tarea.status !== "cancelled" && tarea.status !== "blocked" && (
-                    <button type="button" className="advertencia" onClick={() => {
-                      const motivo = window.prompt("Motivo del bloqueo");
-                      if (motivo?.trim()) onAccion(tarea.id, "block", { blockReason: motivo.trim(), notes: motivo.trim() });
-                    }}>Bloquear</button>
+                    <button type="button" className="advertencia" onClick={() => setBloqueo(tarea)}>Bloquear</button>
                   )}
                   {puedeCambiar && tarea.status === "blocked" && (
-                    <button type="button" className="primario" onClick={() => {
-                      const comentario = window.prompt("Comentario de resolución del bloqueo");
-                      if (comentario?.trim()) onAccion(tarea.id, "resolve-block", { resolutionComment: comentario.trim(), newStatus: "pending" });
-                    }}>Resolver bloqueo</button>
+                    <button type="button" className="primario" onClick={() => setResolver(tarea)}>Resolver bloqueo</button>
                   )}
                   {puedeCambiar && tarea.status === "completed" && (
-                    <button type="button" onClick={() => {
-                      const motivo = window.prompt("Motivo de reapertura");
-                      if (motivo !== null) onAccion(tarea.id, "reopen", { reopenReason: motivo.trim() });
-                    }}>Reabrir</button>
+                    <button type="button" onClick={() => setReabrir(tarea)}>Reabrir</button>
                   )}
                   {!puedeCambiar && <span className="texto-ayuda">Sin permiso</span>}
                 </td>
@@ -487,7 +482,109 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
           })}
         </tbody>
       </table>
+      <ModalBloquearTarea
+        tarea={bloqueo}
+        onCerrar={() => setBloqueo(null)}
+        onConfirmar={(motivo) => {
+          if (!bloqueo) return;
+          onAccion(bloqueo.id, "block", { blockReason: motivo, notes: motivo });
+          setBloqueo(null);
+        }}
+      />
+      <ModalResolverBloqueo
+        tarea={resolver}
+        onCerrar={() => setResolver(null)}
+        onConfirmar={(payload) => {
+          if (!resolver) return;
+          onAccion(resolver.id, "resolve-block", payload);
+          setResolver(null);
+        }}
+      />
+      <ModalReabrirTarea
+        tarea={reabrir}
+        onCerrar={() => setReabrir(null)}
+        onConfirmar={(reopenReason) => {
+          if (!reabrir) return;
+          onAccion(reabrir.id, "reopen", { reopenReason });
+          setReabrir(null);
+        }}
+      />
     </>
+  );
+}
+
+function ModalBloquearTarea({ tarea, onCerrar, onConfirmar }: {
+  tarea: Tarea | null;
+  onCerrar: () => void;
+  onConfirmar: (motivo: string) => void;
+}) {
+  const [motivo, setMotivo] = useState("");
+  useEffect(() => { if (tarea) setMotivo(""); }, [tarea?.id]);
+  return (
+    <Modal titulo="Bloquear tarea" abierto={!!tarea} onCerrar={onCerrar}>
+      <p>Indique el motivo por el cual esta tarea queda bloqueada.</p>
+      <div className="fila-formulario">
+        <label htmlFor="motivo-bloqueo">Motivo del bloqueo *</label>
+        <textarea id="motivo-bloqueo" rows={3} maxLength={4000} value={motivo} onChange={(e) => setMotivo(e.target.value)} />
+      </div>
+      <div className="acciones-formulario">
+        <button type="button" onClick={onCerrar}>Cancelar</button>
+        <button type="button" className="advertencia" disabled={!motivo.trim()} onClick={() => onConfirmar(motivo.trim())}>Bloquear tarea</button>
+      </div>
+    </Modal>
+  );
+}
+
+function ModalResolverBloqueo({ tarea, onCerrar, onConfirmar }: {
+  tarea: Tarea | null;
+  onCerrar: () => void;
+  onConfirmar: (payload: { resolutionComment?: string; newStatus: "pending" | "in_progress" | "completed" }) => void;
+}) {
+  const [comentario, setComentario] = useState("");
+  const [newStatus, setNewStatus] = useState<"pending" | "in_progress" | "completed">("pending");
+  useEffect(() => { if (tarea) { setComentario(""); setNewStatus("pending"); } }, [tarea?.id]);
+  return (
+    <Modal titulo="Resolver bloqueo" abierto={!!tarea} onCerrar={onCerrar}>
+      <p>Esta tarea está bloqueada por un problema reportado. Indique cómo desea continuar.</p>
+      <div className="fila-formulario">
+        <label htmlFor="comentario-resolucion">Comentario de resolución (opcional)</label>
+        <textarea id="comentario-resolucion" rows={3} maxLength={4000} value={comentario} onChange={(e) => setComentario(e.target.value)} />
+      </div>
+      <div className="fila-formulario">
+        <label htmlFor="nuevo-estado-bloqueo">Nuevo estado *</label>
+        <select id="nuevo-estado-bloqueo" value={newStatus} onChange={(e) => setNewStatus(e.target.value as any)}>
+          <option value="pending">Pendiente</option>
+          <option value="in_progress">En progreso</option>
+          <option value="completed">Completada</option>
+        </select>
+      </div>
+      <div className="acciones-formulario">
+        <button type="button" onClick={onCerrar}>Cancelar</button>
+        <button type="button" className="primario" onClick={() => onConfirmar({ resolutionComment: comentario.trim() || undefined, newStatus })}>Guardar resolución</button>
+      </div>
+    </Modal>
+  );
+}
+
+function ModalReabrirTarea({ tarea, onCerrar, onConfirmar }: {
+  tarea: Tarea | null;
+  onCerrar: () => void;
+  onConfirmar: (motivo?: string) => void;
+}) {
+  const [motivo, setMotivo] = useState("");
+  useEffect(() => { if (tarea) setMotivo(""); }, [tarea?.id]);
+  return (
+    <Modal titulo="Reabrir tarea completada" abierto={!!tarea} onCerrar={onCerrar}>
+      <p>Esta tarea ya fue marcada como completada. Si la reabre, volverá a quedar pendiente y podrá completarse nuevamente.</p>
+      <div className="fila-formulario">
+        <label htmlFor="motivo-reapertura">Motivo de reapertura (opcional)</label>
+        <textarea id="motivo-reapertura" rows={3} maxLength={4000} value={motivo} onChange={(e) => setMotivo(e.target.value)} />
+      </div>
+      <div className="acciones-formulario">
+        <button type="button" onClick={onCerrar}>Cancelar</button>
+        <button type="button" className="primario" onClick={() => onConfirmar(motivo.trim() || undefined)}>Reabrir tarea</button>
+      </div>
+    </Modal>
   );
 }
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildMastersReportEmail, parseSemicolonEmails } from "../lib/reportsService";
-import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule } from "../types/models";
+import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseAssignmentRecord, LicenseModuleRecord, UpdateSchedule } from "../types/models";
 
 const client: ClientRecord = {
   id: "client_1",
@@ -70,6 +70,53 @@ const schedule: UpdateSchedule = {
   updatedBy: "",
 };
 
+const mobileModule: LicenseModuleRecord = {
+  id: "module_mobile",
+  name: "Mobile App",
+  code: "MOBILE",
+  status: "active",
+};
+
+const wmsModule: LicenseModuleRecord = {
+  id: "module_wms",
+  name: "WMS",
+  code: "WMS",
+  status: "active",
+};
+
+const inactiveModule: LicenseModuleRecord = {
+  id: "module_inactive",
+  name: "Modulo inactivo",
+  status: "inactive",
+};
+
+const clientAssignment: LicenseAssignmentRecord = {
+  id: "assignment_client",
+  moduleId: "module_mobile",
+  clientId: "client_1",
+  targetType: "client",
+  targetId: "client_1",
+  status: "active",
+};
+
+const duplicateDomainAssignment: LicenseAssignmentRecord = {
+  id: "assignment_domain_duplicate",
+  moduleId: "module_mobile",
+  domainId: "domain_1",
+  targetType: "domain",
+  targetId: "domain_1",
+  status: "active",
+};
+
+const databaseAssignment: LicenseAssignmentRecord = {
+  id: "assignment_database",
+  moduleId: "module_wms",
+  databaseId: "db_1",
+  targetType: "database",
+  targetId: "db_1",
+  status: "active",
+};
+
 describe("parseSemicolonEmails", () => {
   it("acepta varios correos separados por punto y coma", () => {
     expect(parseSemicolonEmails("uno@empresa.com; dos@empresa.com ; tres@empresa.com")).toEqual([
@@ -86,9 +133,18 @@ describe("parseSemicolonEmails", () => {
 
 describe("buildMastersReportEmail", () => {
   it("genera HTML y texto con clientes, dominios y empresas", () => {
-    const report = buildMastersReportEmail({ clients: [client], domains: [domain], databases: [database], schedules: [schedule] });
+    const report = buildMastersReportEmail({
+      clients: [client],
+      domains: [domain],
+      databases: [database],
+      schedules: [schedule],
+      licenseModules: [mobileModule],
+      licenseAssignments: [clientAssignment],
+    });
     expect(report.subject).toBe("Reporte maestro ERP — clientes, dominios y empresas");
     expect(report.html).toContain("Cliente Uno");
+    expect(report.html).toContain("Licencias / módulos");
+    expect(report.html).toContain("Mobile App");
     expect(report.html).toContain("cliente.pya.com.co");
     expect(report.html).toContain("Empresa Uno");
     expect(report.html).toContain("EMPRESA_UNO");
@@ -96,12 +152,73 @@ describe("buildMastersReportEmail", () => {
   });
 
   it("no incluye passwords, usuarios SQL, secretos ni connection strings completas", () => {
-    const report = buildMastersReportEmail({ clients: [client], domains: [domain], databases: [database], schedules: [schedule] });
+    const report = buildMastersReportEmail({ clients: [client], domains: [domain], databases: [database], schedules: [schedule], licenseModules: [mobileModule], licenseAssignments: [clientAssignment] });
     const serialized = `${report.html}\n${report.text}`;
     expect(serialized).not.toContain("usuario_sql_sensible");
     expect(serialized).not.toContain("secret-password-db-1");
     expect(serialized).not.toContain("sql.example.com,1433");
     expect(serialized).not.toMatch(/password/i);
     expect(serialized).not.toMatch(/connection string/i);
+  });
+
+  it("incluye licencias activas del cliente y las deduplica", () => {
+    const report = buildMastersReportEmail({
+      clients: [client],
+      domains: [domain],
+      databases: [database],
+      schedules: [schedule],
+      licenseModules: [mobileModule, wmsModule],
+      licenseAssignments: [clientAssignment, duplicateDomainAssignment, databaseAssignment],
+    });
+    const serialized = `${report.html}\n${report.text}`;
+    expect(serialized.match(/Mobile App/g)?.length).toBe(2);
+    expect(serialized).toContain("WMS");
+  });
+
+  it("excluye módulos y asignaciones inactivas o eliminadas", () => {
+    const inactiveAssignment: LicenseAssignmentRecord = {
+      id: "assignment_inactive",
+      moduleId: "module_wms",
+      clientId: "client_1",
+      status: "inactive",
+    };
+    const deletedAssignment: LicenseAssignmentRecord = {
+      id: "assignment_deleted",
+      moduleId: "module_wms",
+      clientId: "client_1",
+      status: "deleted",
+      deletedAt: "2026-05-10T00:00:00.000Z",
+    };
+    const inactiveModuleAssignment: LicenseAssignmentRecord = {
+      id: "assignment_inactive_module",
+      moduleId: "module_inactive",
+      clientId: "client_1",
+      status: "active",
+    };
+    const report = buildMastersReportEmail({
+      clients: [client],
+      domains: [domain],
+      databases: [database],
+      schedules: [schedule],
+      licenseModules: [mobileModule, wmsModule, inactiveModule],
+      licenseAssignments: [clientAssignment, inactiveAssignment, deletedAssignment, inactiveModuleAssignment],
+    });
+    const serialized = `${report.html}\n${report.text}`;
+    expect(serialized).toContain("Mobile App");
+    expect(serialized).not.toContain("Modulo inactivo");
+    expect(serialized).not.toContain("Sin licencias registradas");
+    expect(serialized.match(/WMS/g)?.length ?? 0).toBeLessThanOrEqual(1);
+  });
+
+  it("muestra Sin licencias registradas cuando el cliente no tiene módulos activos", () => {
+    const report = buildMastersReportEmail({
+      clients: [client],
+      domains: [domain],
+      databases: [database],
+      schedules: [schedule],
+      licenseModules: [],
+      licenseAssignments: [],
+    });
+    expect(`${report.html}\n${report.text}`).toContain("Sin licencias registradas");
   });
 });

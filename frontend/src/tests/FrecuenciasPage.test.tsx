@@ -17,6 +17,13 @@ const dominio = {
   id: "domain_1", clientId: "client_1", clientName: "Cliente Uno", domainName: "cliente.sagerp.co",
   environment: "production", assignedUpdaterIds: [], status: "active", createdAt: "", updatedAt: "",
 };
+const dominio2 = { ...dominio, id: "domain_2", domainName: "cliente2.sagerp.co" };
+const base1 = {
+  id: "db_1", clientId: "client_1", clientName: "Cliente Uno", domainId: "domain_1", domainName: "cliente.sagerp.co",
+  companyName: "Empresa Uno", environment: "production", dbAccess: { serverHostPort: "srv", initialCatalog: "EMPRESA_UNO", userId: "usr", passwordSecretName: "sec" },
+  assignedUpdaterIds: [], status: "active", createdAt: "", updatedAt: "",
+};
+const base2 = { ...base1, id: "db_2", companyName: "Empresa Dos", dbAccess: { ...base1.dbAccess, initialCatalog: "EMPRESA_DOS" } };
 
 function renderPagina() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -58,8 +65,8 @@ beforeEach(() => {
   apiMock.post.mockResolvedValue({});
   apiMock.get.mockImplementation((path: string) => {
     if (path === "/clients") return Promise.resolve([cliente]);
-    if (path === "/domains") return Promise.resolve([dominio]);
-    if (path === "/databases") return Promise.resolve([]);
+    if (path === "/domains") return Promise.resolve([dominio, dominio2]);
+    if (path === "/databases") return Promise.resolve([base1, base2]);
     if (path === "/schedules?origin=special") return Promise.resolve([]);
     return Promise.resolve([]);
   });
@@ -117,5 +124,29 @@ describe("FrecuenciasPage", () => {
       origin: "special",
       scopeGroups: expect.arrayContaining([expect.objectContaining({ clientId: "client_1", includeAllDomains: true })]),
     }));
+  });
+
+  it("permite agregar varios dominios y varias bases con modales de selección", async () => {
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    fireEvent.focus(screen.getByPlaceholderText("Buscar cliente..."));
+    fireEvent.mouseDown(await screen.findByRole("option", { name: "Cliente Uno" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /\+ Agregar dominios/i }));
+    expect(await screen.findByRole("heading", { name: /Seleccionar dominios/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("cliente.sagerp.co"));
+    fireEvent.click(screen.getByText("cliente2.sagerp.co"));
+    fireEvent.click(screen.getByRole("button", { name: /Agregar seleccionados/i }));
+    expect(await screen.findByText(/Dominio: cliente.sagerp.co/i)).toBeInTheDocument();
+    expect(screen.getByText(/Dominio: cliente2.sagerp.co/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /\+ Agregar bases/i })[0]);
+    expect(await screen.findByRole("heading", { name: /Seleccionar bases de datos/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Empresa Uno"));
+    fireEvent.click(screen.getByText("Empresa Dos"));
+    fireEvent.click(screen.getByRole("button", { name: /Agregar seleccionadas/i }));
+    expect(await screen.findByText(/Empresa Uno — EMPRESA_UNO — production/i)).toBeInTheDocument();
+    expect(screen.getByText(/Empresa Dos — EMPRESA_DOS — production/i)).toBeInTheDocument();
+    expect(screen.getByText(/Resumen del alcance: 1 cliente\(s\), 2 dominio\(s\), 2 base\(s\) de datos/i)).toBeInTheDocument();
   });
 });

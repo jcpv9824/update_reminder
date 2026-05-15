@@ -93,7 +93,7 @@ function FormularioCrear({ onSubmit, cargando }: { onSubmit: (v: any) => void; c
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
+  const [confirmacion, setConfirmacion] = useState("");
   const [roles, setRoles] = useState<string[]>(["viewer"]);
   const [active, setActive] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -108,14 +108,14 @@ function FormularioCrear({ onSubmit, cargando }: { onSubmit: (v: any) => void; c
       if (!displayName.trim()) return setErr("El nombre es obligatorio.");
       if (!email.trim()) return setErr("El correo es obligatorio.");
       if (password.length < 6) return setErr("La contraseña debe tener al menos 6 caracteres.");
-      if (password !== confirm) return setErr("Las contraseñas no coinciden.");
+      if (password !== confirmacion) return setErr("Las contraseñas no coinciden.");
       onSubmit({ displayName, email: email.trim(), password, roles, active });
     }}>
       {err && <Alerta tipo="error">{err}</Alerta>}
       <div className="fila-formulario"><label>Nombre *</label><input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required /></div>
       <div className="fila-formulario"><label>Correo electrónico *</label><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></div>
       <div className="fila-formulario"><label>Contraseña temporal *</label><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required /></div>
-      <div className="fila-formulario"><label>Confirmar contraseña *</label><input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required /></div>
+      <div className="fila-formulario"><label>Confirmar contraseña *</label><input type="password" value={confirmacion} onChange={(e) => setConfirmacion(e.target.value)} required /></div>
       <div className="fila-formulario"><label>Roles</label>
         {ROLES.map((r) => (
           <label key={r} style={{ display: "flex", fontWeight: 400, alignItems: "center" }}>

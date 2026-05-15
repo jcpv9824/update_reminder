@@ -138,6 +138,15 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
   padding: 12px 16px;
   color: var(--color-primary);
   font-weight: 700;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+.acordeon summary small {
+  color: var(--color-text-muted);
+  font-weight: 500;
+  font-size: 12px;
 }
 .acordeon-contenido {
   border-top: 1px solid var(--color-border);
@@ -291,8 +300,33 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
 .dashboard-tarjeta .numero { font-size: 28px; font-weight: bold; color: var(--color-primary); }
 .dashboard-tarjeta .etiqueta { color: var(--color-text-muted); font-size: 13px; }
 
-.acciones-tabla { display: flex; gap: 4px; flex-wrap: wrap; }
+.acciones-tabla { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
 .acciones-tabla button { padding: 4px 8px; font-size: 12px; }
+.columna-acciones,
+th:last-child { text-align: right; }
+td.celda-acciones,
+td.acciones-tabla,
+td:last-child:has(.acciones-tabla) { text-align: right; }
+.error-inline { color: var(--color-error); margin-left: 6px; }
+.lista-seleccion {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  max-height: 340px;
+  overflow: auto;
+  background: white;
+}
+.fila-seleccion {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  margin: 0;
+  border-bottom: 1px solid #eef2f7;
+  font-weight: 400;
+}
+.fila-seleccion input { width: auto; margin-top: 3px; }
+.fila-seleccion small { display: block; color: var(--color-text-muted); margin-top: 2px; }
 
 .login-pantalla {
   display: flex; align-items: center; justify-content: center;

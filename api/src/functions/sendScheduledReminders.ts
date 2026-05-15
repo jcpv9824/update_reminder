@@ -4,7 +4,7 @@ import { writeAuditLog } from "../lib/audit";
 import { buildDatabaseReminderEmail, buildDomainReminderEmail, sendEmail } from "../lib/emailService";
 import { decidirRecordatorios, type ReminderDecision } from "../lib/reminderLogic";
 import { loadEmailAlertsSettings } from "../lib/settingsService";
-import type { UpdateSchedule, UpdateTask, UserRecord, SentReminder } from "../types/models";
+import type { RemindersConfig, UpdateSchedule, UpdateTask, UserRecord, SentReminder } from "../types/models";
 
 type Recipient = { email: string; name?: string };
 
@@ -50,8 +50,8 @@ async function obtenerDestinatariosPorRol(role: string): Promise<Recipient[]> {
   return resources.map((u) => ({ email: u.email, name: u.displayName })).filter((u) => !!u.email);
 }
 
-async function obtenerDestinatarios(task: UpdateTask, schedule: UpdateSchedule | undefined, log?: (m: string) => void): Promise<Recipient[]> {
-  const cfg = schedule?.reminders;
+async function obtenerDestinatarios(task: UpdateTask, schedule: UpdateSchedule | undefined, globalDefaults?: RemindersConfig, log?: (m: string) => void): Promise<Recipient[]> {
+  const cfg = schedule?.reminders ?? globalDefaults;
   if (!cfg) return [];
   if (cfg.reminderRecipientsMode === "customEmails" && cfg.customReminderEmails && cfg.customReminderEmails.length > 0) {
     return cfg.customReminderEmails.map((email) => ({ email }));
@@ -161,12 +161,25 @@ export async function ejecutarRecordatorios(log: (m: string) => void): Promise<{
     if (ajustada) frecuencias.set(tarea.scheduleId, ajustada);
   }
 
-  const decisiones = decidirRecordatorios({ ahoraIsoDate: isoDate, ahoraHoraLocal: horaLocal, tareas, frecuenciasPorId: frecuencias });
+  const globalDefaults: RemindersConfig = {
+    remindersEnabled: settings.remindersEnabled,
+    reminderDaysBefore: settings.defaultReminderDaysBefore,
+    reminderTime: settings.defaultReminderTime,
+    reminderRecipientsMode: "roleUsers",
+    customReminderEmails: [],
+  };
+  const decisiones = decidirRecordatorios({
+    ahoraIsoDate: isoDate,
+    ahoraHoraLocal: horaLocal,
+    tareas,
+    frecuenciasPorId: frecuencias,
+    globalDefaults,
+  });
   const grupos = new Map<string, { recipient: Recipient; domains: ReminderDecision[]; databases: ReminderDecision[] }>();
 
   for (const decision of decisiones) {
     const sch = frecuencias.get(decision.task.scheduleId);
-    const destinatarios = await obtenerDestinatarios(decision.task, sch, log);
+    const destinatarios = await obtenerDestinatarios(decision.task, sch, globalDefaults, log);
     for (const recipient of destinatarios) {
       const group = grupos.get(recipient.email) ?? { recipient, domains: [], databases: [] };
       if (decision.task.targetType === "domain") group.domains.push(decision);
