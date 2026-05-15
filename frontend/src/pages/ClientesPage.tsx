@@ -2,8 +2,9 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { Cliente } from "../types";
+import type { BaseDeDatos, Cliente, Dominio } from "../types";
 import { Alerta, DialogoConfirmar, EtiquetaEstado, Modal } from "../components/Comunes";
+import { ETIQUETAS_AMBIENTE } from "../types";
 
 type AccionCliente = "guardar" | "agregarDominio" | "crearNuevo";
 
@@ -13,6 +14,7 @@ export default function ClientesPage() {
   const [modalAbierto, setModalAbierto] = useState(false);
   const [editando, setEditando] = useState<Cliente | null>(null);
   const [confirmar, setConfirmar] = useState<{ tipo: "eliminar" | "desactivar"; cliente: Cliente } | null>(null);
+  const [verArbol, setVerArbol] = useState<Cliente | null>(null);
   const [filtroNombre, setFiltroNombre] = useState("");
   const [filtroEstado, setFiltroEstado] = useState("");
   const [exito, setExito] = useState<string | null>(null);
@@ -49,8 +51,14 @@ export default function ClientesPage() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["clientes"] }); setExito("Cliente desactivado."); setConfirmar(null); },
   });
   const eliminar = useMutation({
-    mutationFn: (id: string) => api.del(`/clients/${id}`),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["clientes"] }); setExito("Cliente eliminado."); setConfirmar(null); },
+    mutationFn: (id: string) => api.del(`/clients/${id}?cascade=true`),
+    onSuccess: (_r, id) => {
+      qc.setQueryData<Cliente[]>(["clientes"], (actuales = []) => actuales.filter((c) => c.id !== id));
+      qc.invalidateQueries({ queryKey: ["clientes"] });
+      setExito("Cliente eliminado con sus dominios, bases y programaciones asociadas.");
+      setConfirmar(null);
+    },
+    onError: (e: any) => setError(e?.message ?? "No se pudo eliminar el cliente."),
   });
 
   const filtrados = data.filter((c) => {
@@ -106,6 +114,7 @@ export default function ClientesPage() {
                 <td>{new Date(c.createdAt).toLocaleDateString("es-CO")}</td>
                 <td className="acciones-tabla">
                   <button onClick={() => setEditando(c)}>Editar</button>
+                  <button onClick={() => setVerArbol(c)}>Ver dominios y bases</button>
                   {c.status === "active" && <button className="advertencia" onClick={() => setConfirmar({ tipo: "desactivar", cliente: c })}>Desactivar</button>}
                   <button className="peligro" onClick={() => setConfirmar({ tipo: "eliminar", cliente: c })}>Eliminar</button>
                 </td>
@@ -117,6 +126,9 @@ export default function ClientesPage() {
 
       <Modal titulo="Nuevo cliente" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
         <FormularioCliente key={crear.submittedAt || "nuevo"} onSubmit={(v, accion) => crear.mutate({ body: v, accion })} cargando={crear.isPending} />
+      </Modal>
+      <Modal titulo="Ver dominios y bases" abierto={!!verArbol} onCerrar={() => setVerArbol(null)}>
+        {verArbol && <ArbolCliente cliente={verArbol} />}
       </Modal>
       <Modal titulo="Editar cliente" abierto={!!editando} onCerrar={() => setEditando(null)}>
         {editando && (
@@ -132,9 +144,9 @@ export default function ClientesPage() {
         abierto={!!confirmar}
         titulo={confirmar?.tipo === "eliminar" ? "Eliminar cliente" : "Desactivar cliente"}
         mensaje={confirmar?.tipo === "eliminar"
-          ? `¿Seguro que desea eliminar el cliente "${confirmar?.cliente.name}"? Esta acción es lógica y puede revertirse.`
+          ? `Está a punto de eliminar el cliente "${confirmar?.cliente.name}". Se eliminarán también sus dominios, bases de datos y programaciones asociadas. Esta acción no eliminará los registros de auditoría.`
           : `¿Desactivar el cliente "${confirmar?.cliente.name}"?`}
-        textoConfirmar={confirmar?.tipo === "eliminar" ? "Eliminar" : "Desactivar"}
+        textoConfirmar={confirmar?.tipo === "eliminar" ? "Sí, eliminar todo" : "Desactivar"}
         variante={confirmar?.tipo === "eliminar" ? "peligro" : "primario"}
         onConfirmar={() => {
           if (!confirmar) return;
@@ -144,6 +156,41 @@ export default function ClientesPage() {
         onCancelar={() => setConfirmar(null)}
       />
     </>
+  );
+}
+
+function ArbolCliente({ cliente }: { cliente: Cliente }) {
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["cliente-tree", cliente.id],
+    queryFn: () => api.get<{ client: Cliente; domains: Array<{ domain: Dominio; databases: BaseDeDatos[] }> }>(`/clients/${cliente.id}/tree`),
+  });
+  return (
+    <div>
+      <h4>Cliente: {cliente.name}</h4>
+      {isLoading && <div className="cargando">Cargando dominios y bases...</div>}
+      {isError && <Alerta tipo="error">No se pudo cargar la información relacionada.</Alerta>}
+      {data?.domains.length === 0 && <p className="vacio">No hay dominios activos asociados.</p>}
+      {data?.domains.map(({ domain, databases }) => (
+        <div className="tarjeta tarjeta-compacta" key={domain.id}>
+          <h4>{domain.domainName}</h4>
+          <p><strong>Dominio para publicar:</strong> {domain.domainName}</p>
+          <p><strong>Ambiente:</strong> {ETIQUETAS_AMBIENTE[domain.environment] ?? domain.environment}</p>
+          <p><strong>Estado:</strong> <EtiquetaEstado estado={domain.status} /></p>
+          <div style={{ marginTop: 8 }}>
+            <strong>Empresas / bases</strong>
+            {databases.length === 0 ? <p className="texto-ayuda">Sin bases activas asociadas.</p> : (
+              <ul>
+                {databases.map((db) => (
+                  <li key={db.id}>
+                    {db.companyName} — {db.dbAccess.initialCatalog} — {ETIQUETAS_AMBIENTE[db.environment] ?? db.environment} — {db.status}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 

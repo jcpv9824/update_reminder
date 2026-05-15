@@ -10,8 +10,8 @@ import { buildDatabaseRecordFromInput } from "../lib/databaseService";
 import { buildDatabaseAccessInfo } from "../lib/databaseAccessInfo";
 import { parseDbAccessString } from "../lib/dbAccessParser";
 import { buildScheduleRecord, validateFrequency, type FrequencyInput } from "../lib/scheduleService";
-import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
-import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateTask } from "../types/models";
+import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
+import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -312,14 +312,25 @@ app.http("databasesDelete", {
       if (!canManageClients(user)) return forbidden();
       const db = await findDatabase(req.params.id);
       if (!db) return notFound("Base de datos no encontrada.");
-      // Cascada: eliminar frecuencias asociadas a esta BD (configuración del registro).
-      const schedContainer = getContainer("updateSchedules");
-      const { resources: schedulesAsociadas } = await schedContainer.items
-        .query<any>({
+      const cascade = req.query.get("cascade") === "true";
+      const { resources: schedulesAsociadas } = await getContainer("updateSchedules").items
+        .query<UpdateSchedule>({
           query: "SELECT * FROM c WHERE ARRAY_CONTAINS(c.targetIds, @t)",
           parameters: [{ name: "@t", value: db.id }],
         })
         .fetchAll();
+      const { resources: tasks } = await getContainer("updateTasks").items
+        .query<UpdateTask>({
+          query: "SELECT * FROM c WHERE c.targetType = 'database' AND c.targetId = @t AND c.status NOT IN ('completed', 'cancelled')",
+          parameters: [{ name: "@t", value: db.id }],
+        })
+        .fetchAll();
+      const dependencies = { schedules: schedulesAsociadas.length, pendingTasks: tasks.length };
+      if (!cascade && (dependencies.schedules > 0 || dependencies.pendingTasks > 0)) {
+        return conflict("La base de datos tiene dependencias. Confirme eliminación en cascada.", { dependencies });
+      }
+
+      const schedContainer = getContainer("updateSchedules");
       let cascadaSchedules = 0;
       for (const s of schedulesAsociadas) {
         try {
@@ -328,25 +339,25 @@ app.http("databasesDelete", {
           await writeAuditLog({
             entityType: "schedule", entityId: s.id, clientId: s.clientId, clientName: s.clientName,
             domainId: db.domainId, domainName: db.domainName,
-            action: "schedule_deleted", performedBy: user.id, performedByEmail: user.email,
+            action: "schedule_deleted_cascade", performedBy: user.id, performedByEmail: user.email,
             metadata: { cascadeFromDatabase: db.id }, before: s,
           });
         } catch {/* seguimos con las demás */}
       }
-      // Eliminar el secreto de la contraseña en Key Vault si existe.
-      try {
-        await keyVault.deleteSecret(db.dbAccess.passwordSecretName);
-      } catch {/* opcional: si falla no bloquea la eliminación del registro */}
-      await getContainer("databases").item(db.id, db.clientId).delete();
+      const now = new Date().toISOString();
+      const before = { ...db };
+      const deleted = { ...db, status: "deleted" as const, deletedAt: now, deletedBy: user.id, updatedAt: now, updatedBy: user.id };
+      await getContainer("databases").item(db.id, db.clientId).replace(deleted);
       const obsoletedTasks = await cancelPendingTasksForDatabase(db.id, user, "target_database_deleted");
       await writeAuditLog({
         entityType: "database", entityId: db.id, clientId: db.clientId, clientName: db.clientName,
         domainId: db.domainId, domainName: db.domainName, companyName: db.companyName,
-        action: "database_deleted", performedBy: user.id, performedByEmail: user.email,
-        metadata: { cascadeSchedules: cascadaSchedules, obsoletedTasks },
-        before: { ...db, dbAccess: { ...db.dbAccess, passwordSecretName: undefined } },
+        action: "database_deleted_cascade", performedBy: user.id, performedByEmail: user.email,
+        metadata: { ...dependencies, cascadeSchedules: cascadaSchedules, obsoletedTasks },
+        before: { ...before, dbAccess: { ...before.dbAccess, passwordSecretName: undefined } },
+        after: { status: "deleted" },
       });
-      return noContent();
+      return ok({ ok: true, deleted: { ...dependencies, obsoletedTasks } });
     } catch (e) {
       return serverError(e);
     }

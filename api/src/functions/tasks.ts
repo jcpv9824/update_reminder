@@ -55,7 +55,7 @@ app.http("tasksList", {
         parameters.push({ name: "@to", value: dateTo });
       }
       if (range === "overdue") {
-        conditions.push("c.taskDate < @today AND c.status IN ('pending','in_progress','reopened')");
+        conditions.push("c.taskDate < @today AND c.status IN ('pending','in_progress','failed','blocked','reopened')");
         parameters.push({ name: "@today", value: today });
       } else if (range === "today") {
         conditions.push("c.taskDate = @today");
@@ -111,42 +111,55 @@ async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string):
   try {
     const { loadEmailAlertsSettings } = await import("../lib/settingsService");
     const { sendEmail, escapeHtml, formatDomainForPublishing } = await import("../lib/emailService");
+    const { resolveConfiguredRecipients } = await import("../lib/emailRecipients");
     const settings = await loadEmailAlertsSettings();
-    // Buscar admins activos.
-    const { resources: admins } = await getContainer("users")
-      .items.query<any>({ query: "SELECT * FROM c WHERE c.active = true AND ARRAY_CONTAINS(c.roles, 'admin')" })
-      .fetchAll();
-    const destinatarios = admins.map((u) => u.email).filter(Boolean);
+    const destinatarios = await resolveConfiguredRecipients(
+      settings.blockedAlertRecipientRoleIds?.length ? settings.blockedAlertRecipientRoleIds : ["admin"],
+      settings.blockedAlertCustomEmails ?? []
+    );
     if (destinatarios.length === 0) {
       // Sin admins activos: no se envía email pero la tarea ya quedó guardada.
       return;
     }
-    const tipo = t.targetType === "domain" ? "dominio" : "base de datos";
+    const tipo = t.targetType === "domain" ? "Dominio" : "Base de datos";
     const subject = t.targetType === "domain"
-      ? "Problema reportado en actualización de dominio"
-      : "Problema reportado en actualización de base de datos";
+      ? "Error reportado en actualización de dominio"
+      : "Error reportado en actualización de base de datos";
     const linkApp = settings.frontendBaseUrl
       ? `<p><a href="${settings.frontendBaseUrl.replace(/\/$/, "")}/tareas">Abrir tareas</a></p>`
       : "";
     const dominioPublicable = formatDomainForPublishing(t.domainName);
+    let dbInfo: DatabaseRecord | null = null;
+    if (t.targetType === "database") {
+      const { resources } = await getContainer("databases")
+        .items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: t.targetId }] })
+        .fetchAll();
+      dbInfo = resources[0] ?? null;
+    }
     const html = `
       <h3>${escapeHtml(subject)}</h3>
-      <p>Se reportó un problema al completar una actualización.</p>
+      <p>Se reportó un problema durante la actualización.</p>
       <ul>
         <li><strong>Tipo:</strong> ${escapeHtml(tipo)}</li>
         <li><strong>Cliente:</strong> ${escapeHtml(t.clientName)}</li>
         <li><strong>Dominio registrado:</strong> ${escapeHtml(t.domainName)}</li>
         <li><strong>Dominio para publicar:</strong> <code>${escapeHtml(dominioPublicable)}</code></li>
-        ${t.targetType === "database" ? `<li><strong>Base / Empresa:</strong> ${escapeHtml(t.targetName)}</li>` : ""}
+        ${t.targetType === "database" ? `
+          <li><strong>Empresa:</strong> ${escapeHtml(dbInfo?.companyName ?? t.targetName)}</li>
+          <li><strong>Servidor y puerto:</strong> ${escapeHtml(dbInfo?.dbAccess.serverHostPort ?? "-")}</li>
+          <li><strong>Base de datos:</strong> ${escapeHtml(dbInfo?.dbAccess.initialCatalog ?? t.targetName)}</li>
+          <li><strong>Usuario:</strong> ${escapeHtml(dbInfo?.dbAccess.userId ?? "-")}</li>
+        ` : `<li><strong>Ambiente:</strong> ${escapeHtml((t as any).environment ?? "-")}</li>`}
         <li><strong>Fecha programada:</strong> ${escapeHtml(t.taskDate)}</li>
-        <li><strong>Completada por:</strong> ${escapeHtml(performedByEmail)}</li>
-        <li><strong>Completada:</strong> ${escapeHtml(t.completedAt ?? "")}</li>
+        <li><strong>Responsable:</strong> ${escapeHtml(performedByEmail)}</li>
+        <li><strong>Fecha de reporte:</strong> ${escapeHtml(new Date().toISOString())}</li>
       </ul>
       <p><strong>Problema reportado:</strong></p>
       <blockquote>${escapeHtml(t.problemNote ?? "(sin detalle)")}</blockquote>
       ${linkApp}
     `;
-    const text = `${subject}. Cliente: ${t.clientName}. Dominio registrado: ${t.domainName}. Dominio para publicar: ${dominioPublicable}. Fecha: ${t.taskDate}. Completada por: ${performedByEmail}. Problema: ${t.problemNote ?? "(sin detalle)"}`;
+    const dbText = dbInfo ? ` Empresa: ${dbInfo.companyName}. Servidor y puerto: ${dbInfo.dbAccess.serverHostPort}. Base de datos: ${dbInfo.dbAccess.initialCatalog}. Usuario: ${dbInfo.dbAccess.userId}.` : "";
+    const text = `${subject}. Tipo: ${tipo}. Cliente: ${t.clientName}. Dominio registrado: ${t.domainName}. Dominio para publicar: ${dominioPublicable}.${dbText} Fecha programada: ${t.taskDate}. Responsable: ${performedByEmail}. Problema: ${t.problemNote ?? "(sin detalle)"}`;
     await sendEmail({ to: destinatarios, subject, html, text }, settings);
   } catch {/* no bloquear flujo de tarea */}
 }
@@ -154,7 +167,8 @@ async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string):
 async function changeTaskStatus(
   req: HttpRequest,
   newStatus: UpdateTask["status"],
-  auditAction: string
+  auditAction: string,
+  providedBody?: any
 ): Promise<HttpResponseInit> {
   try {
     const user = await getUserOrFail(req);
@@ -167,8 +181,11 @@ async function changeTaskStatus(
     const isAdmin = hasRole(user, "admin");
     if (!allowed && !isAdmin) return forbidden("No puede cambiar el estado de esta tarea.");
 
-    const body = (await req.json().catch(() => ({}))) as any;
+    const body = providedBody ?? ((await req.json().catch(() => ({}))) as any);
     const before = { ...t };
+    if (newStatus === "blocked" && !String(body.notes ?? body.blockReason ?? "").trim()) {
+      return badRequest("El motivo del bloqueo es obligatorio.");
+    }
     t.status = newStatus;
     t.updatedAt = new Date().toISOString();
     t.updatedBy = user.id;
@@ -187,6 +204,18 @@ async function changeTaskStatus(
       } else {
         t.problemNote = undefined;
       }
+    }
+    if (newStatus === "blocked") {
+      t.blockedAt = new Date().toISOString();
+      t.blockedBy = user.id;
+      t.blockReason = String(body.blockReason ?? body.notes ?? "").slice(0, 4000);
+      t.problemNote = t.blockReason;
+    }
+    if (newStatus === "pending") {
+      t.reopenedAt = new Date().toISOString();
+      t.reopenedBy = user.id;
+      t.reopenReason = typeof body.reopenReason === "string" ? body.reopenReason.slice(0, 4000) : undefined;
+      t.completedWithProblems = false;
     }
     await getContainer("updateTasks").item(t.id, t.taskBucket).replace(t);
 
@@ -235,9 +264,12 @@ async function changeTaskStatus(
       after: t,
     });
 
-    if (newStatus === "completed" && t.completedWithProblems) {
+    if ((newStatus === "completed" && t.completedWithProblems) || newStatus === "blocked") {
       // Notificación a admins activos. No bloquea la respuesta.
-      void notificarProblemaAdmins(t, user.email);
+      const settings = await (await import("../lib/settingsService")).loadEmailAlertsSettings();
+      if (newStatus !== "blocked" || (settings.blockedAlertsEnabled !== false && settings.blockedAlertSendImmediately !== false)) {
+        void notificarProblemaAdmins(t, user.email);
+      }
     }
 
     return ok(t);
@@ -250,5 +282,34 @@ app.http("tasksStart", { route: "tasks/{id}/start", methods: ["POST"], authLevel
 app.http("tasksComplete", { route: "tasks/{id}/complete", methods: ["POST"], authLevel: "anonymous", handler: (req) => changeTaskStatus(req, "completed", "task_completed") });
 app.http("tasksFail", { route: "tasks/{id}/fail", methods: ["POST"], authLevel: "anonymous", handler: (req) => changeTaskStatus(req, "failed", "task_failed") });
 app.http("tasksBlock", { route: "tasks/{id}/block", methods: ["POST"], authLevel: "anonymous", handler: (req) => changeTaskStatus(req, "blocked", "task_blocked") });
-app.http("tasksReopen", { route: "tasks/{id}/reopen", methods: ["POST"], authLevel: "anonymous", handler: (req) => changeTaskStatus(req, "reopened", "task_reopened") });
+app.http("tasksReopen", { route: "tasks/{id}/reopen", methods: ["POST"], authLevel: "anonymous", handler: (req) => changeTaskStatus(req, "pending", "task_reopened") });
 app.http("tasksCancel", { route: "tasks/{id}/cancel", methods: ["POST"], authLevel: "anonymous", handler: (req) => changeTaskStatus(req, "cancelled", "task_cancelled") });
+
+app.http("tasksResolveBlock", {
+  route: "tasks/{id}/resolve-block",
+  methods: ["POST"],
+  authLevel: "anonymous",
+  handler: async (req): Promise<HttpResponseInit> => {
+    try {
+      const body = (await req.json().catch(() => ({}))) as any;
+      const resolutionComment = String(body.resolutionComment ?? "").trim();
+      const newStatus = String(body.newStatus ?? "");
+      if (!resolutionComment) return badRequest("El comentario de resolución es obligatorio.");
+      if (!["pending", "in_progress", "completed"].includes(newStatus)) return badRequest("Seleccione un nuevo estado válido.");
+      const response = await changeTaskStatus(req, newStatus as UpdateTask["status"], "task_block_resolved", {
+        ...body,
+        notes: resolutionComment,
+      });
+      if (response.status !== 200) return response;
+      const task = (response as any).jsonBody as UpdateTask;
+      task.resolvedAt = new Date().toISOString();
+      const user = await getUserOrFail(req);
+      task.resolvedBy = user.id;
+      task.resolutionComment = resolutionComment.slice(0, 4000);
+      await getContainer("updateTasks").item(task.id, task.taskBucket).replace(task);
+      return ok(task);
+    } catch (e) {
+      return serverError(e);
+    }
+  },
+});

@@ -365,10 +365,52 @@ app.http("generateDailyUpdateTasksManual", {
       const windowStart = typeof body.windowStart === "string" ? body.windowStart : undefined;
       const windowEnd = typeof body.windowEnd === "string" ? body.windowEnd : undefined;
       const r = await runTaskGeneration(date, (m) => ctx.log(m), { windowStart, windowEnd });
+      await writeAuditLog({
+        entityType: "task",
+        entityId: "manual_refresh",
+        action: "tasks_refreshed_manually",
+        performedBy: profile.id,
+        performedByEmail: profile.email,
+        metadata: { date, windowStart: r.windowStart, windowEnd: r.windowEnd, created: r.created, updated: r.updated, obsoleted: r.obsoleted, skipped: r.skipped },
+      });
       return { status: 200, jsonBody: r };
     } catch (e: any) {
       ctx.error("Error en generación manual", e);
       return { status: 500, jsonBody: { error: "Error al generar tareas." } };
+    }
+  },
+});
+
+app.http("refreshUpdateTasksManual", {
+  route: "tasks/refresh",
+  methods: ["POST"],
+  authLevel: "anonymous",
+  handler: async (req, ctx) => {
+    try {
+      const { requireUser, loadUserProfile } = await import("../lib/auth");
+      const { canGenerateTasks } = await import("../lib/permissions");
+      const auth = await requireUser(req);
+      const profile = await loadUserProfile(auth);
+      if (!profile || !canGenerateTasks(profile)) {
+        return { status: 403, jsonBody: { error: "Solo administradores y administradores de clientes." } };
+      }
+      const body = (await req.json().catch(() => ({}))) as any;
+      const date = typeof body.date === "string" ? body.date : todayInBogotaIso();
+      const windowStart = typeof body.windowStart === "string" ? body.windowStart : undefined;
+      const windowEnd = typeof body.windowEnd === "string" ? body.windowEnd : undefined;
+      const r = await runTaskGeneration(date, (m) => ctx.log(m), { windowStart, windowEnd });
+      await writeAuditLog({
+        entityType: "task",
+        entityId: "manual_refresh",
+        action: "tasks_refreshed_manually",
+        performedBy: profile.id,
+        performedByEmail: profile.email,
+        metadata: { date, windowStart: r.windowStart, windowEnd: r.windowEnd, created: r.created, updated: r.updated, obsoleted: r.obsoleted, skipped: r.skipped },
+      });
+      return { status: 200, jsonBody: { ...r, message: "Tareas actualizadas correctamente." } };
+    } catch (e: any) {
+      ctx.error("Error en refresco manual", e);
+      return { status: 500, jsonBody: { error: "No se pudieron actualizar las tareas." } };
     }
   },
 });

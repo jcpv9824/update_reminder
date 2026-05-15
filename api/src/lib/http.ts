@@ -16,6 +16,10 @@ export function badRequest(message: string): HttpResponseInit {
   return { status: 400, jsonBody: { error: message } };
 }
 
+export function conflict(message: string, details?: Record<string, unknown>): HttpResponseInit {
+  return { status: 409, jsonBody: { error: message, message, ...details } };
+}
+
 export function unauthorized(): HttpResponseInit {
   return { status: 401, jsonBody: { error: "No autenticado." } };
 }

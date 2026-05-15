@@ -4,8 +4,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { BaseDeDatos, Tarea } from "../types";
 
 const apiMock = vi.hoisted(() => ({
-  get: vi.fn<[string?], Promise<any>>(async (_path?: string) => []),
-  post: vi.fn<[string, any?], Promise<any>>(async () => ({})),
+  get: vi.fn<(path?: string) => Promise<any>>(async (_path?: string) => []),
+  post: vi.fn<(path: string, body?: any) => Promise<any>>(async () => ({})),
 }));
 vi.mock("../api/client", () => ({ api: apiMock }));
 
@@ -109,24 +109,24 @@ function mockTareas({ dominios = [], bases = [], basesDetalle = [], usuarios = [
 }
 
 describe("TareasPage (vista unificada)", () => {
-  it("admin ve ambas columnas y el botón Generar tareas ahora", () => {
+  it("admin ve ambas columnas y el botón Refrescar", () => {
     usuarioMock.roles = ["admin"];
     renderPagina();
     expect(screen.getByText(/Tareas de dominios/i)).toBeInTheDocument();
     expect(screen.getByText(/Tareas de bases de datos/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Generar tareas ahora/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Refrescar/i })).toBeInTheDocument();
   });
 
-  it("client_manager ve el botón Generar tareas ahora", () => {
+  it("client_manager ve el botón Refrescar", () => {
     usuarioMock.roles = ["client_manager"];
     renderPagina();
-    expect(screen.getByRole("button", { name: /Generar tareas ahora/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Refrescar/i })).toBeInTheDocument();
   });
 
   it("actualizador de dominios no ve el botón de generación manual", () => {
     usuarioMock.roles = ["domain_updater"];
     renderPagina();
-    expect(screen.queryByRole("button", { name: /Generar tareas ahora/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Refrescar/i })).toBeNull();
     expect(screen.getByText(/Tareas de dominios/i)).toBeInTheDocument();
     expect(screen.queryByText(/Tareas de bases de datos/i)).toBeNull();
   });
@@ -134,7 +134,7 @@ describe("TareasPage (vista unificada)", () => {
   it("actualizador de bases de datos no ve el botón de generación manual", () => {
     usuarioMock.roles = ["database_updater"];
     renderPagina();
-    expect(screen.queryByRole("button", { name: /Generar tareas ahora/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Refrescar/i })).toBeNull();
     expect(screen.queryByText(/Tareas de dominios/i)).toBeNull();
     expect(screen.getByText(/Tareas de bases de datos/i)).toBeInTheDocument();
   });
@@ -142,27 +142,27 @@ describe("TareasPage (vista unificada)", () => {
   it("visualizador no ve el botón de generación manual", () => {
     usuarioMock.roles = ["viewer"];
     renderPagina();
-    expect(screen.queryByRole("button", { name: /Generar tareas ahora/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Refrescar/i })).toBeNull();
   });
 
-  it("el botón Generar tareas ahora llama /tasks/generate y muestra mensaje", async () => {
+  it("el botón Refrescar llama /tasks/refresh y muestra mensaje", async () => {
     usuarioMock.roles = ["admin"];
-    apiMock.post.mockResolvedValueOnce({ created: 2, updated: 1, obsoleted: 3, skipped: 1, message: "Tareas generadas correctamente." });
+    apiMock.post.mockResolvedValueOnce({ created: 2, updated: 1, obsoleted: 3, skipped: 1, message: "Tareas actualizadas correctamente." });
     renderPagina();
-    fireEvent.click(screen.getByRole("button", { name: /Generar tareas ahora/i }));
-    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/tasks/generate", {}));
-    expect(await screen.findByText(/Tareas generadas correctamente/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Refrescar/i }));
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/tasks/refresh", {}));
+    expect(await screen.findByText(/Tareas actualizadas correctamente/i)).toBeInTheDocument();
     expect(screen.getByText(/Actualizadas: 1/i)).toBeInTheDocument();
-    expect(screen.getByText(/Obsoletas eliminadas: 3/i)).toBeInTheDocument();
+    expect(screen.getByText(/Obsoletas: 3/i)).toBeInTheDocument();
   });
 
   it("después de generar refresca el tablero", async () => {
     usuarioMock.roles = ["admin"];
-    apiMock.post.mockResolvedValueOnce({ created: 0, updated: 0, obsoleted: 1, skipped: 0, message: "Tareas generadas correctamente." });
+    apiMock.post.mockResolvedValueOnce({ created: 0, updated: 0, obsoleted: 1, skipped: 0, message: "Tareas actualizadas correctamente." });
     mockTareas({ dominios: [tarea({ id: "d1" })] });
     renderPagina();
     await screen.findByText(/U — Dominios por actualizar/i);
-    fireEvent.click(screen.getByRole("button", { name: /Generar tareas ahora/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Refrescar/i }));
     await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith(expect.stringMatching(/targetType=domain/)));
   });
 
@@ -247,13 +247,13 @@ describe("TareasPage (vista unificada)", () => {
     );
   });
 
-  it("no muestra el botón Bloquear en el detalle del grupo", async () => {
+  it("muestra el botón Bloquear en el detalle del grupo", async () => {
     usuarioMock.id = "u";
     usuarioMock.roles = ["admin"];
     mockTareas({ dominios: [tarea({ id: "d1" })] });
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
-    expect(screen.queryByRole("button", { name: /^Bloquear$/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Bloquear$/i })).toBeInTheDocument();
   });
 
   it("si el guardado falla muestra error y permite reintentar", async () => {
@@ -315,16 +315,16 @@ describe("TareasPage (vista unificada)", () => {
     expect(screen.getAllByText(/Dominio para publicar/i).length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: /Copiar URLs completas/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Copiar URL completa$/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Iniciar$/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Bloquear$/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Iniciar$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Bloquear$/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Reportar problema/i })).toBeNull();
     expect(screen.getByRole("button", { name: /Copiar todos los dominios pendientes \(formato publicable\)/i })).toBeInTheDocument();
     const accionesFila = within(screen.getByTestId("acciones-tarea-d_publicable"));
     expect(accionesFila.getByRole("button", { name: /^Copiar dominio para publicar$/i })).toBeInTheDocument();
     expect(accionesFila.getByRole("button", { name: /^Completar$/i })).toBeInTheDocument();
     expect(accionesFila.queryByRole("button", { name: /^Copiar URL completa$/i })).toBeNull();
-    expect(accionesFila.queryByRole("button", { name: /^Iniciar$/i })).toBeNull();
-    expect(accionesFila.queryByRole("button", { name: /^Bloquear$/i })).toBeNull();
+    expect(accionesFila.getByRole("button", { name: /^Iniciar$/i })).toBeInTheDocument();
+    expect(accionesFila.getByRole("button", { name: /^Bloquear$/i })).toBeInTheDocument();
     expect(accionesFila.queryByRole("button", { name: /Reportar problema/i })).toBeNull();
     fireEvent.click(await screen.findByRole("button", { name: /^Copiar dominio para publicar$/i }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("argatex.sagerp.cloud"));
@@ -388,8 +388,8 @@ describe("TareasPage (vista unificada)", () => {
     const accionesFila = within(screen.getByTestId("acciones-tarea-b1"));
     expect(accionesFila.getByRole("button", { name: /^Completar$/i })).toBeInTheDocument();
     expect(accionesFila.queryByRole("button", { name: /^Copiar$/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Iniciar$/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Bloquear$/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Iniciar$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Bloquear$/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Reportar problema/i })).toBeNull();
   });
 

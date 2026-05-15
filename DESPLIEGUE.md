@@ -185,7 +185,10 @@ az cosmosdb sql container create --account-name $cosmosAccount --resource-group 
 az cosmosdb sql container create --account-name $cosmosAccount --resource-group $resourceGroup --database-name $cosmosDatabase --name updateSchedules --partition-key-path "/clientId"
 az cosmosdb sql container create --account-name $cosmosAccount --resource-group $resourceGroup --database-name $cosmosDatabase --name updateTasks    --partition-key-path "/taskBucket"
 az cosmosdb sql container create --account-name $cosmosAccount --resource-group $resourceGroup --database-name $cosmosDatabase --name auditLogs      --partition-key-path "/clientId"
+az cosmosdb sql container create --account-name $cosmosAccount --resource-group $resourceGroup --database-name $cosmosDatabase --name emailNotifications --partition-key-path "/id"
 ```
+
+`emailNotifications` se usa para idempotencia de recordatorios administrativos mensuales. Si el contenedor ya existe, el comando puede omitirse.
 
 ### 4.4 Crear Key Vault
 

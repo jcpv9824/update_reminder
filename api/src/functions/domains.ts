@@ -6,9 +6,9 @@ import { canManageClients, canEditDomainLimited } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { cancelPendingTasksForDomain } from "../lib/taskCleanup";
-import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
+import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import { buildScheduleRecord, normalizeFrequencyResponsibility, validateFrequency, type FrequencyInput } from "../lib/scheduleService";
-import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule } from "../types/models";
+import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -155,6 +155,34 @@ app.http("domainsGet", {
         .fetchAll();
       if (!resources.length) return notFound("Dominio no encontrado.");
       return ok(resources[0]);
+    } catch (e) {
+      return serverError(e);
+    }
+  },
+});
+
+app.http("domainsDatabases", {
+  route: "domains/{id}/databases",
+  methods: ["GET"],
+  authLevel: "anonymous",
+  handler: async (req): Promise<HttpResponseInit> => {
+    try {
+      await getUserOrFail(req);
+      const id = req.params.id;
+      const includeDeleted = req.query.get("includeDeleted") === "true";
+      const { resources: domains } = await getContainer("domains")
+        .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })
+        .fetchAll();
+      if (!domains.length || (!includeDeleted && domains[0].status === "deleted")) return notFound("Dominio no encontrado.");
+      const { resources } = await getContainer("databases")
+        .items.query<DatabaseRecord>({
+          query: includeDeleted
+            ? "SELECT * FROM c WHERE c.domainId = @d"
+            : "SELECT * FROM c WHERE c.domainId = @d AND c.status != 'deleted' AND c.status != 'inactive'",
+          parameters: [{ name: "@d", value: id }],
+        })
+        .fetchAll();
+      return ok(resources);
     } catch (e) {
       return serverError(e);
     }
@@ -338,6 +366,7 @@ app.http("domainsDelete", {
       const user = await getUserOrFail(req);
       if (!canManageClients(user)) return forbidden();
       const id = req.params.id;
+      const cascade = req.query.get("cascade") === "true";
       const container = getContainer("domains");
       const { resources } = await container
         .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })
@@ -345,28 +374,31 @@ app.http("domainsDelete", {
       if (!resources.length) return notFound("Dominio no encontrado.");
       const dom = resources[0];
 
-      // Verificación de integridad: bloquear solo si hay bases de datos
-      // asociadas al dominio (datos importantes). Las frecuencias asociadas
-      // se eliminan en cascada porque son configuración del dominio.
       const dbsQ = await getContainer("databases")
         .items.query<DatabaseRecord>({
           query: "SELECT * FROM c WHERE c.domainId = @d AND c.status != 'deleted'",
           parameters: [{ name: "@d", value: id }],
         })
         .fetchAll();
-      const bdsCount = dbsQ.resources.length;
-      if (bdsCount > 0) {
-        return badRequest(`No se puede eliminar el dominio porque tiene ${bdsCount} base(s) de datos asociada(s). Elimine o desactive esas bases de datos primero.`);
-      }
-
-      // Cascada: eliminar las frecuencias asociadas a este dominio.
-      const schedContainer = getContainer("updateSchedules");
-      const { resources: schedulesAsociadas } = await schedContainer.items
+      const { resources: schedulesAsociadas } = await getContainer("updateSchedules").items
         .query<UpdateSchedule>({
           query: "SELECT * FROM c WHERE c.domainId = @d OR ARRAY_CONTAINS(c.targetIds, @d)",
           parameters: [{ name: "@d", value: id }],
         })
         .fetchAll();
+      const { resources: tasks } = await getContainer("updateTasks").items
+        .query<UpdateTask>({
+          query: "SELECT * FROM c WHERE c.domainId = @d AND c.status NOT IN ('completed', 'cancelled')",
+          parameters: [{ name: "@d", value: id }],
+        })
+        .fetchAll();
+      const dependencies = { databases: dbsQ.resources.length, schedules: schedulesAsociadas.length, pendingTasks: tasks.length };
+      if (!cascade && (dependencies.databases > 0 || dependencies.schedules > 0 || dependencies.pendingTasks > 0)) {
+        return conflict("El dominio tiene dependencias. Confirme eliminación en cascada.", { dependencies });
+      }
+
+      const now = new Date().toISOString();
+      const schedContainer = getContainer("updateSchedules");
       let cascadaSchedules = 0;
       for (const s of schedulesAsociadas) {
         try {
@@ -375,22 +407,37 @@ app.http("domainsDelete", {
           await writeAuditLog({
             entityType: "schedule", entityId: s.id, clientId: s.clientId, clientName: s.clientName,
             domainId: id, domainName: dom.domainName,
-            action: "schedule_deleted", performedBy: user.id, performedByEmail: user.email,
+            action: "schedule_deleted_cascade", performedBy: user.id, performedByEmail: user.email,
             metadata: { cascadeFromDomain: id }, before: s,
           });
         } catch {/* si falla una, seguimos con las demás */}
       }
 
-      await container.item(id, dom.clientId).delete();
+      for (const db of dbsQ.resources) {
+        const before = { ...db };
+        const deleted = { ...db, status: "deleted" as const, deletedAt: now, deletedBy: user.id, updatedAt: now, updatedBy: user.id };
+        await getContainer("databases").item(db.id, db.clientId).replace(deleted);
+        await writeAuditLog({
+          entityType: "database", entityId: db.id, clientId: db.clientId, clientName: db.clientName,
+          domainId: id, domainName: dom.domainName, companyName: db.companyName,
+          action: "database_deleted_cascade", performedBy: user.id, performedByEmail: user.email,
+          metadata: { cascadeFromDomain: id }, before: { ...before, dbAccess: { ...before.dbAccess, passwordSecretName: undefined } },
+          after: { status: "deleted" },
+        });
+      }
+      const beforeDomain = { ...dom };
+      const deletedDomain = { ...dom, status: "deleted" as const, deletedAt: now, deletedBy: user.id, updatedAt: now, updatedBy: user.id };
+      await container.item(id, dom.clientId).replace(deletedDomain);
       const obsoletedTasks = await cancelPendingTasksForDomain(id, user, "target_domain_deleted");
       await writeAuditLog({
         entityType: "domain", entityId: id, clientId: dom.clientId, clientName: dom.clientName,
         domainId: id, domainName: dom.domainName,
-        action: "domain_deleted", performedBy: user.id, performedByEmail: user.email,
-        metadata: { cascadeSchedules: cascadaSchedules, obsoletedTasks },
-        before: dom,
+        action: "domain_deleted_cascade", performedBy: user.id, performedByEmail: user.email,
+        metadata: { ...dependencies, cascadeSchedules: cascadaSchedules, obsoletedTasks },
+        before: beforeDomain,
+        after: { status: "deleted" },
       });
-      return noContent();
+      return ok({ ok: true, deleted: { ...dependencies, obsoletedTasks } });
     } catch (e) {
       return serverError(e);
     }

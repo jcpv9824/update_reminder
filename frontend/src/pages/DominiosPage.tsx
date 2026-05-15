@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { Cliente, Dominio, Frecuencia, Usuario } from "../types";
-import { Alerta, EtiquetaEstado, Modal, DialogoConfirmar } from "../components/Comunes";
+import type { BaseDeDatos, Cliente, Dominio, Frecuencia, Usuario } from "../types";
+import { Alerta, BotonCopiar, EtiquetaEstado, Modal, DialogoConfirmar } from "../components/Comunes";
 import { ETIQUETAS_AMBIENTE } from "../types";
 import { SeleccionFrecuencia, valoresFrecuenciaPorDefecto, depurarFrecuenciaParaEnvio, type ValoresFrecuencia } from "../components/SeleccionFrecuencia";
 import { SelectorBuscable } from "../components/SelectorBuscable";
@@ -18,6 +18,7 @@ export default function DominiosPage() {
   const [modalAbierto, setModalAbierto] = useState(false);
   const [editando, setEditando] = useState<Dominio | null>(null);
   const [confirmar, setConfirmar] = useState<{ tipo: "eliminar" | "desactivar"; dominio: Dominio } | null>(null);
+  const [verBases, setVerBases] = useState<Dominio | null>(null);
   const [filtroCliente, setFiltroCliente] = useState("");
   const [filtroEstado, setFiltroEstado] = useState("");
   const [filtroAmbiente, setFiltroAmbiente] = useState("");
@@ -64,7 +65,16 @@ export default function DominiosPage() {
     onError: (e: any) => setError(e?.message ?? "Error al actualizar."),
   });
   const desactivar = useMutation({ mutationFn: (id: string) => api.post(`/domains/${id}/deactivate`), onSuccess: () => { qc.invalidateQueries({ queryKey: ["dominios"] }); setConfirmar(null); setExito("Dominio desactivado."); } });
-  const eliminar = useMutation({ mutationFn: (id: string) => api.del(`/domains/${id}`), onSuccess: () => { qc.invalidateQueries({ queryKey: ["dominios"] }); setConfirmar(null); setExito("Dominio eliminado."); } });
+  const eliminar = useMutation({
+    mutationFn: (id: string) => api.del(`/domains/${id}?cascade=true`),
+    onSuccess: (_r, id) => {
+      qc.setQueryData<Dominio[]>(["dominios"], (actuales = []) => actuales.filter((d) => d.id !== id));
+      qc.invalidateQueries({ queryKey: ["dominios"] });
+      setConfirmar(null);
+      setExito("Dominio eliminado con bases y programaciones asociadas.");
+    },
+    onError: (e: any) => setError(e?.message ?? "No se pudo eliminar el dominio."),
+  });
 
   const filtrados = dominios.filter((d) => {
     if (filtroCliente && d.clientId !== filtroCliente) return false;
@@ -135,9 +145,7 @@ export default function DominiosPage() {
                 <td>{d.lastUpdatedAt ? new Date(d.lastUpdatedAt).toLocaleDateString("es-CO") : "-"}</td>
                 <td className="acciones-tabla">
                   <button onClick={() => setEditando(d)}>Editar</button>
-                  <button onClick={async () => { try { await navigator.clipboard?.writeText(formatDomainForPublishing(d.domainName)); } catch { /* ignore */ } }}>
-                    Copiar para publicar
-                  </button>
+                  <button onClick={() => setVerBases(d)}>Ver bases asociadas</button>
                   {d.status === "active" && <button className="advertencia" onClick={() => setConfirmar({ tipo: "desactivar", dominio: d })}>Desactivar</button>}
                   <button className="peligro" onClick={() => setConfirmar({ tipo: "eliminar", dominio: d })}>Eliminar</button>
                 </td>
@@ -160,12 +168,17 @@ export default function DominiosPage() {
       <Modal titulo="Editar dominio" abierto={!!editando} onCerrar={() => setEditando(null)}>
         {editando && <FormularioDominio inicial={editando} frecuenciaInicial={frecuencias.find((f) => f.targetType === "domain" && (f.domainId === editando.id || f.targetIds.includes(editando.id)))} clientes={clientes} usuarios={usuarios} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
       </Modal>
+      <Modal titulo="Bases asociadas al dominio" abierto={!!verBases} onCerrar={() => setVerBases(null)}>
+        {verBases && <BasesAsociadasDominio dominio={verBases} />}
+      </Modal>
 
       <DialogoConfirmar
         abierto={!!confirmar}
         titulo={confirmar?.tipo === "eliminar" ? "Eliminar dominio" : "Desactivar dominio"}
-        mensaje={confirmar?.tipo === "eliminar" ? `¿Eliminar el dominio "${confirmar?.dominio.domainName}"?` : `¿Desactivar el dominio "${confirmar?.dominio.domainName}"?`}
-        textoConfirmar={confirmar?.tipo === "eliminar" ? "Eliminar" : "Desactivar"}
+        mensaje={confirmar?.tipo === "eliminar"
+          ? `Está a punto de eliminar el dominio "${confirmar?.dominio.domainName}". Este dominio tiene bases de datos y programaciones asociadas que también se eliminarán. Esta acción no eliminará los registros de auditoría.`
+          : `¿Desactivar el dominio "${confirmar?.dominio.domainName}"?`}
+        textoConfirmar={confirmar?.tipo === "eliminar" ? "Sí, eliminar todo" : "Desactivar"}
         variante={confirmar?.tipo === "eliminar" ? "peligro" : "primario"}
         onConfirmar={() => {
           if (!confirmar) return;
@@ -175,6 +188,40 @@ export default function DominiosPage() {
         onCancelar={() => setConfirmar(null)}
       />
     </>
+  );
+}
+
+function BasesAsociadasDominio({ dominio }: { dominio: Dominio }) {
+  const { data: bases = [], isLoading, isError } = useQuery({
+    queryKey: ["dominio-bases", dominio.id],
+    queryFn: () => api.get<BaseDeDatos[]>(`/domains/${dominio.id}/databases`),
+  });
+  return (
+    <div>
+      <p><strong>Dominio:</strong> {dominio.domainName}</p>
+      <p><strong>Cliente:</strong> {dominio.clientName}</p>
+      <p><strong>Ambiente:</strong> {ETIQUETAS_AMBIENTE[dominio.environment] ?? dominio.environment}</p>
+      {isLoading && <div className="cargando">Cargando bases asociadas...</div>}
+      {isError && <Alerta tipo="error">No se pudieron cargar las bases asociadas.</Alerta>}
+      {!isLoading && bases.length === 0 && <p className="vacio">No hay bases asociadas activas para este dominio.</p>}
+      {bases.map((bd) => (
+        <div className="tarjeta tarjeta-compacta" key={bd.id}>
+          <h4>{bd.companyName}</h4>
+          <p><strong>Base de datos:</strong> {bd.dbAccess.initialCatalog}</p>
+          <p><strong>Ambiente:</strong> {ETIQUETAS_AMBIENTE[bd.environment] ?? bd.environment}</p>
+          <p><strong>Estado:</strong> <EtiquetaEstado estado={bd.status} /></p>
+          <p><strong>Servidor y puerto:</strong> <code>{bd.dbAccess.serverHostPort}</code></p>
+          <p><strong>Usuario:</strong> <code>{bd.dbAccess.userId}</code></p>
+          <p><strong>Contraseña:</strong> ••••••••••••</p>
+          <div className="acciones-tabla">
+            <BotonCopiar valor={bd.dbAccess.serverHostPort} etiqueta="Copiar servidor y puerto" />
+            <BotonCopiar valor={bd.dbAccess.initialCatalog} etiqueta="Copiar base de datos" />
+            <BotonCopiar valor={bd.dbAccess.userId} etiqueta="Copiar usuario" />
+            <button type="button" disabled title="La contraseña se revela solo desde Ver acceso o detalle de tarea según permisos.">Contraseña oculta</button>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 

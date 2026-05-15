@@ -44,7 +44,7 @@ app.http("mastersReportSendEmail", {
       }
 
       const [{ resources: clients }, { resources: domains }, { resources: databases }, { resources: schedules }] = await Promise.all([
-        getContainer("clients").items.query<ClientRecord>({ query: "SELECT * FROM c WHERE c.status != 'deleted'" }).fetchAll(),
+        getContainer("clients").items.query<ClientRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll(),
         getContainer("domains").items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll(),
         getContainer("databases").items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll(),
         getContainer("updateSchedules").items.query<UpdateSchedule>({ query: "SELECT * FROM c WHERE c.active = true" }).fetchAll(),

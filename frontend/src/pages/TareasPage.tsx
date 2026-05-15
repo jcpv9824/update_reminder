@@ -16,7 +16,7 @@ const VENTANA_TAREAS = {
   hasta: sumarDiasIso(HOY, 7),
 };
 
-type AccionTarea = "complete" | "reopen";
+type AccionTarea = "start" | "complete" | "block" | "reopen" | "resolve-block";
 type EstadoGuardado = "guardando" | "guardado" | "error";
 
 type GrupoResumen = {
@@ -82,7 +82,10 @@ export function puedeCambiarTarea(usuario: Usuario | null, tarea: Tarea): boolea
 
 function estadoDespuesDeAccion(accion: AccionTarea): Tarea["status"] {
   if (accion === "complete") return "completed";
-  return "reopened";
+  if (accion === "start") return "in_progress";
+  if (accion === "block") return "blocked";
+  if (accion === "resolve-block") return "pending";
+  return "pending";
 }
 
 async function copiarTexto(texto: string): Promise<void> {
@@ -133,15 +136,15 @@ export default function TareasPage() {
   }, [usuarios]);
 
   const generarTareas = useMutation({
-    mutationFn: () => api.post<{ created: number; updated?: number; obsoleted?: number; skipped: number; windowStart?: string; windowEnd?: string; message: string }>("/tasks/generate", {}),
+    mutationFn: () => api.post<{ created: number; updated?: number; obsoleted?: number; skipped: number; windowStart?: string; windowEnd?: string; message: string }>("/tasks/refresh", {}),
     onSuccess: (r) => {
-      setMensaje(`${r.message ?? "Tareas generadas correctamente."} Creadas: ${r.created ?? 0}. Actualizadas: ${r.updated ?? 0}. Obsoletas eliminadas: ${r.obsoleted ?? 0}. Omitidas: ${r.skipped ?? 0}.`);
+      setMensaje(`${r.message ?? "Tareas actualizadas correctamente."} Creadas: ${r.created ?? 0}. Actualizadas: ${r.updated ?? 0}. Obsoletas: ${r.obsoleted ?? 0}. Omitidas: ${r.skipped ?? 0}.`);
       setErrorGeneracion(null);
       qc.invalidateQueries({ queryKey: ["tareas"] });
     },
     onError: (e: any) => {
       setMensaje(null);
-      setErrorGeneracion(e?.message ?? "No se pudieron generar las tareas.");
+      setErrorGeneracion(e?.message ?? "No se pudieron actualizar las tareas.");
     },
   });
 
@@ -151,7 +154,7 @@ export default function TareasPage() {
         <h2>Tareas</h2>
         {puedeGenerar && (
           <button className="primario" onClick={() => generarTareas.mutate()} disabled={generarTareas.isPending}>
-            {generarTareas.isPending ? "Generando..." : "Generar tareas ahora"}
+            {generarTareas.isPending ? "Actualizando tareas..." : "↻ Refrescar"}
           </button>
         )}
       </div>
@@ -457,7 +460,26 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
                   ) : (
                     null
                   )}
-                  {puedeCambiar && tarea.status !== "completed" && <button type="button" className="exito" onClick={() => onSolicitarCompletar(tarea)}>Completar</button>}
+                  {puedeCambiar && tarea.status === "pending" && <button type="button" onClick={() => onAccion(tarea.id, "start")}>Iniciar</button>}
+                  {puedeCambiar && tarea.status !== "completed" && tarea.status !== "cancelled" && tarea.status !== "blocked" && <button type="button" className="exito" onClick={() => onSolicitarCompletar(tarea)}>Completar</button>}
+                  {puedeCambiar && tarea.status !== "completed" && tarea.status !== "cancelled" && tarea.status !== "blocked" && (
+                    <button type="button" className="advertencia" onClick={() => {
+                      const motivo = window.prompt("Motivo del bloqueo");
+                      if (motivo?.trim()) onAccion(tarea.id, "block", { blockReason: motivo.trim(), notes: motivo.trim() });
+                    }}>Bloquear</button>
+                  )}
+                  {puedeCambiar && tarea.status === "blocked" && (
+                    <button type="button" className="primario" onClick={() => {
+                      const comentario = window.prompt("Comentario de resolución del bloqueo");
+                      if (comentario?.trim()) onAccion(tarea.id, "resolve-block", { resolutionComment: comentario.trim(), newStatus: "pending" });
+                    }}>Resolver bloqueo</button>
+                  )}
+                  {puedeCambiar && tarea.status === "completed" && (
+                    <button type="button" onClick={() => {
+                      const motivo = window.prompt("Motivo de reapertura");
+                      if (motivo !== null) onAccion(tarea.id, "reopen", { reopenReason: motivo.trim() });
+                    }}>Reabrir</button>
+                  )}
                   {!puedeCambiar && <span className="texto-ayuda">Sin permiso</span>}
                 </td>
               </tr>

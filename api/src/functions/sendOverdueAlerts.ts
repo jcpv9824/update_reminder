@@ -2,7 +2,8 @@ import { app, InvocationContext, Timer } from "@azure/functions";
 import { getContainer } from "../lib/cosmos";
 import { writeAuditLog } from "../lib/audit";
 import { buildOverdueTasksEmail, sendEmail } from "../lib/emailService";
-import { loadEmailAlertsSettings } from "../lib/settingsService";
+import { loadEmailAlertsSettings, saveEmailAlertsSettings } from "../lib/settingsService";
+import { resolveConfiguredRecipients } from "../lib/emailRecipients";
 import type { UpdateTask, UserRecord } from "../types/models";
 
 type Recipient = { email: string; name?: string };
@@ -39,6 +40,10 @@ async function recipientsFromAssigned(task: UpdateTask): Promise<Recipient[]> {
 }
 
 async function fallbackRecipients(settings: Awaited<ReturnType<typeof loadEmailAlertsSettings>>): Promise<Recipient[]> {
+  if ((settings.overdueAlertRecipientRoleIds?.length ?? 0) > 0 || (settings.overdueAlertCustomEmails?.length ?? 0) > 0) {
+    const emails = await resolveConfiguredRecipients(settings.overdueAlertRecipientRoleIds ?? [], settings.overdueAlertCustomEmails ?? []);
+    return emails.map((email) => ({ email }));
+  }
   if (settings.overdueAlertRecipientsMode === "customEmails") {
     return (settings.customAdminAlertEmails ?? []).map((email) => ({ email }));
   }
@@ -49,6 +54,23 @@ async function fallbackRecipients(settings: Awaited<ReturnType<typeof loadEmailA
   return resources.map((u) => ({ email: u.email, name: u.displayName })).filter((r) => !!r.email);
 }
 
+const WEEKDAY_BY_JS = ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"] as const;
+
+function shouldSendForFrequency(settings: Awaited<ReturnType<typeof loadEmailAlertsSettings>>, todayIso: string): { send: boolean; period: string; reason?: string } {
+  const today = new Date(`${todayIso}T12:00:00Z`);
+  const frequency = settings.overdueAlertFrequency ?? "daily";
+  if (frequency === "weekly") {
+    const weekday = WEEKDAY_BY_JS[today.getUTCDay()];
+    if (!(settings.overdueAlertWeekdays ?? ["MONDAY"]).includes(weekday as any)) {
+      return { send: false, period: `weekly:${todayIso.slice(0, 7)}`, reason: "Hoy no corresponde a la frecuencia semanal configurada." };
+    }
+    const yearStart = Date.UTC(today.getUTCFullYear(), 0, 1);
+    const week = Math.ceil((((today.getTime() - yearStart) / 86_400_000) + new Date(yearStart).getUTCDay() + 1) / 7);
+    return { send: settings.overdueAlertLastSentPeriod !== `${today.getUTCFullYear()}-W${week}`, period: `${today.getUTCFullYear()}-W${week}` };
+  }
+  return { send: settings.overdueAlertLastSentPeriod !== todayIso, period: todayIso };
+}
+
 export async function ejecutarAlertasVencidas(log: (m: string) => void): Promise<{ enviados: number; tareas: number }> {
   const settings = await loadEmailAlertsSettings();
   if (settings.overdueAlertsEnabled === false) {
@@ -56,6 +78,11 @@ export async function ejecutarAlertasVencidas(log: (m: string) => void): Promise
     return { enviados: 0, tareas: 0 };
   }
   const hoy = ahoraEnBogotaIso();
+  const frequency = shouldSendForFrequency(settings, hoy);
+  if (!frequency.send) {
+    log(frequency.reason ?? "La alerta de vencidos ya fue enviada para este periodo.");
+    return { enviados: 0, tareas: 0 };
+  }
   const { resources: tareas } = await getContainer("updateTasks")
     .items.query<UpdateTask>({ query: "SELECT * FROM c WHERE c.taskDate < @hoy AND c.status IN ('pending','in_progress','failed','blocked','reopened')", parameters: [{ name: "@hoy", value: hoy }] })
     .fetchAll();
@@ -146,6 +173,9 @@ export async function ejecutarAlertasVencidas(log: (m: string) => void): Promise
   }
 
   log(`Alertas de vencidos enviadas: ${enviados}; tareas incluidas: ${alertedTaskIds.size}.`);
+  if (enviados > 0) {
+    await saveEmailAlertsSettings({ patch: { overdueAlertLastSentPeriod: frequency.period } as any, performedBy: "system" });
+  }
   return { enviados, tareas: pendientes.length };
 }
 

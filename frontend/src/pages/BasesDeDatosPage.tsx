@@ -15,6 +15,7 @@ export default function BasesDeDatosPage() {
   const qc = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const [modalAbierto, setModalAbierto] = useState(false);
+  const [editando, setEditando] = useState<BaseDeDatos | null>(null);
   const [verAcceso, setVerAcceso] = useState<BaseDeDatos | null>(null);
   const [confirmar, setConfirmar] = useState<{ tipo: "eliminar" | "desactivar"; bd: BaseDeDatos } | null>(null);
   const [filtroCliente, setFiltroCliente] = useState("");
@@ -55,8 +56,26 @@ export default function BasesDeDatosPage() {
     },
     onError: (e: any) => setError(e?.message ?? "Error al crear la base de datos."),
   });
+  const actualizar = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: any }) => api.put<BaseDeDatos>(`/databases/${id}`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["bases-de-datos"] });
+      setEditando(null);
+      setExito("Base de datos actualizada correctamente.");
+    },
+    onError: (e: any) => setError(e?.message ?? "Error al actualizar la base de datos."),
+  });
   const desactivar = useMutation({ mutationFn: (id: string) => api.post(`/databases/${id}/deactivate`), onSuccess: () => { qc.invalidateQueries({ queryKey: ["bases-de-datos"] }); setConfirmar(null); setExito("Base de datos desactivada."); } });
-  const eliminar = useMutation({ mutationFn: (id: string) => api.del(`/databases/${id}`), onSuccess: () => { qc.invalidateQueries({ queryKey: ["bases-de-datos"] }); setConfirmar(null); setExito("Base de datos eliminada."); } });
+  const eliminar = useMutation({
+    mutationFn: (id: string) => api.del(`/databases/${id}?cascade=true`),
+    onSuccess: (_r, id) => {
+      qc.setQueryData<BaseDeDatos[]>(["bases-de-datos"], (actuales = []) => actuales.filter((b) => b.id !== id));
+      qc.invalidateQueries({ queryKey: ["bases-de-datos"] });
+      setConfirmar(null);
+      setExito("Base de datos eliminada con sus programaciones asociadas.");
+    },
+    onError: (e: any) => setError(e?.message ?? "No se pudo eliminar la base de datos."),
+  });
 
   const filtradas = bds.filter((b) => {
     if (filtroCliente && b.clientId !== filtroCliente) return false;
@@ -110,28 +129,28 @@ export default function BasesDeDatosPage() {
             <option value="inactive">Inactivo</option>
             <option value="deleted">Eliminado</option>
           </select></div>
-        <div className="campo"><label>Buscar empresa/servidor</label>
+        <div className="campo"><label>Buscar empresa/base/servidor</label>
           <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} /></div>
       </div>
 
       {isLoading ? <div className="cargando">Cargando...</div> : (
         <table>
           <thead><tr>
-            <th>Cliente</th><th>Dominio</th><th>Empresa</th><th>Base de datos</th><th>Servidor</th><th>Estado</th><th>Versión</th><th>Última actualización</th><th>Acciones</th>
+            <th>Cliente</th><th>Dominio</th><th>Empresa</th><th>Base de datos</th><th>Ambiente</th><th>Estado</th><th>Última actualización</th><th>Acciones</th>
           </tr></thead>
           <tbody>
-            {filtradas.length === 0 ? (<tr><td colSpan={9} className="vacio">No hay bases de datos para mostrar.</td></tr>) :
+            {filtradas.length === 0 ? (<tr><td colSpan={8} className="vacio">No hay bases de datos para mostrar.</td></tr>) :
             filtradas.map((b) => (
               <tr key={b.id}>
                 <td>{b.clientName}</td>
                 <td>{b.domainName}</td>
                 <td>{b.companyName}</td>
                 <td>{b.dbAccess.initialCatalog}</td>
-                <td>{b.dbAccess.serverHostPort}</td>
+                <td>{ETIQUETAS_AMBIENTE[b.environment] ?? b.environment}</td>
                 <td><EtiquetaEstado estado={b.status} /></td>
-                <td>{b.currentDbVersion ?? "-"}</td>
                 <td>{b.lastUpdatedAt ? new Date(b.lastUpdatedAt).toLocaleDateString("es-CO") : "-"}</td>
                 <td className="acciones-tabla">
+                  <button onClick={() => setEditando(b)}>Editar</button>
                   <button onClick={() => setVerAcceso(b)}>Ver acceso</button>
                   {b.status === "active" && <button className="advertencia" onClick={() => setConfirmar({ tipo: "desactivar", bd: b })}>Desactivar</button>}
                   <button className="peligro" onClick={() => setConfirmar({ tipo: "eliminar", bd: b })}>Eliminar</button>
@@ -155,6 +174,19 @@ export default function BasesDeDatosPage() {
         />
       </Modal>
 
+      <Modal titulo={`Editar base de datos${editando ? `: ${editando.companyName}` : ""}`} abierto={!!editando} onCerrar={() => setEditando(null)}>
+        {editando && (
+          <FormularioBd
+            inicial={editando}
+            clientes={clientes}
+            dominios={dominios}
+            frecuencias={frecuencias}
+            cargando={actualizar.isPending}
+            onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })}
+          />
+        )}
+      </Modal>
+
       <Modal titulo={`Acceso: ${verAcceso?.companyName ?? ""}`} abierto={!!verAcceso} onCerrar={() => setVerAcceso(null)}>
         {verAcceso && <PanelAccesoBd bd={verAcceso} />}
       </Modal>
@@ -162,8 +194,10 @@ export default function BasesDeDatosPage() {
       <DialogoConfirmar
         abierto={!!confirmar}
         titulo={confirmar?.tipo === "eliminar" ? "Eliminar base de datos" : "Desactivar base de datos"}
-        mensaje={confirmar?.tipo === "eliminar" ? `¿Eliminar la base de datos "${confirmar?.bd.companyName}"?` : `¿Desactivar la base de datos "${confirmar?.bd.companyName}"?`}
-        textoConfirmar={confirmar?.tipo === "eliminar" ? "Eliminar" : "Desactivar"}
+        mensaje={confirmar?.tipo === "eliminar"
+          ? `Está a punto de eliminar la base de datos "${confirmar?.bd.companyName} / ${confirmar?.bd.dbAccess.initialCatalog}". Esta base tiene ${frecuencias.filter((f) => f.targetIds.includes(confirmar?.bd.id ?? "")).length} programación(es) asociada(s). Si continúa, se eliminarán también sus programaciones asociadas. Esta acción no eliminará auditoría.`
+          : `¿Desactivar la base de datos "${confirmar?.bd.companyName}"?`}
+        textoConfirmar={confirmar?.tipo === "eliminar" ? "Sí, eliminar todo" : "Desactivar"}
         variante={confirmar?.tipo === "eliminar" ? "peligro" : "primario"}
         onConfirmar={() => {
           if (!confirmar) return;
@@ -184,14 +218,16 @@ function describirFrecuencia(f?: Frecuencia): string {
   return `Manual desde ${f.startDate}`;
 }
 
-function FormularioBd({ clientes, dominios, frecuencias, clienteInicialId = "", dominioInicialId = "", onSubmit, cargando }: { clientes: Cliente[]; dominios: Dominio[]; frecuencias: Frecuencia[]; clienteInicialId?: string; dominioInicialId?: string; onSubmit: (v: any, accion: AccionBd) => void; cargando: boolean }) {
-  const [clientId, setClientId] = useState(clienteInicialId);
-  const [domainId, setDomainId] = useState(dominioInicialId);
-  const [companyName, setCompanyName] = useState("");
-  const [environment, setEnvironment] = useState("production");
+function FormularioBd({ inicial, clientes, dominios, frecuencias, clienteInicialId = "", dominioInicialId = "", onSubmit, cargando }: { inicial?: BaseDeDatos; clientes: Cliente[]; dominios: Dominio[]; frecuencias: Frecuencia[]; clienteInicialId?: string; dominioInicialId?: string; onSubmit: (v: any, accion: AccionBd) => void; cargando: boolean }) {
+  const editando = !!inicial;
+  const [clientId, setClientId] = useState(inicial?.clientId ?? clienteInicialId);
+  const [domainId, setDomainId] = useState(inicial?.domainId ?? dominioInicialId);
+  const [companyName, setCompanyName] = useState(inicial?.companyName ?? "");
+  const [environment, setEnvironment] = useState(inicial?.environment ?? "production");
   const [rawDbAccess, setRawDbAccess] = useState("");
-  const [currentDbVersion, setCurrentDbVersion] = useState("");
-  const [notes, setNotes] = useState("");
+  const [cambiarAcceso, setCambiarAcceso] = useState(false);
+  const [currentDbVersion, setCurrentDbVersion] = useState(inicial?.currentDbVersion ?? "");
+  const [notes, setNotes] = useState(inicial?.notes ?? "");
   const [err, setErr] = useState<string | null>(null);
 
   const dominiosFiltrados = useMemo(() => dominios.filter((d) => d.clientId === clientId && d.status === "active"), [dominios, clientId]);
@@ -203,9 +239,26 @@ function FormularioBd({ clientes, dominios, frecuencias, clienteInicialId = "", 
     if (!clientId) return setErr("Seleccione el cliente.");
     if (!domainId) return setErr("Seleccione el dominio.");
     if (!companyName.trim()) return setErr("El nombre de la empresa es obligatorio.");
-    if (!rawDbAccess.trim()) return setErr("La cadena de acceso es obligatoria.");
+    // Al crear, la cadena de acceso es obligatoria. Al editar, solo si el
+    // usuario decidió cambiarla.
+    if (!editando && !rawDbAccess.trim()) return setErr("La cadena de acceso es obligatoria.");
+    if (editando && cambiarAcceso && !rawDbAccess.trim()) return setErr("Escriba la nueva cadena de acceso o cancele el cambio.");
     setErr(null);
-    const body: any = { clientId, domainId, companyName: companyName.trim(), environment, rawDbAccess, currentDbVersion: currentDbVersion || undefined, notes, assignedUpdaterIds: [] };
+    const body: any = {
+      clientId,
+      domainId,
+      companyName: companyName.trim(),
+      environment,
+      currentDbVersion: currentDbVersion || undefined,
+      notes,
+      assignedUpdaterIds: inicial?.assignedUpdaterIds ?? [],
+    };
+    if (!editando) {
+      body.rawDbAccess = rawDbAccess;
+    } else if (cambiarAcceso && rawDbAccess.trim()) {
+      // Solo se manda si el admin decidió reemplazar la cadena de conexión.
+      body.rawDbAccess = rawDbAccess;
+    }
     onSubmit(body, accion);
   }
 
@@ -219,15 +272,16 @@ function FormularioBd({ clientes, dominios, frecuencias, clienteInicialId = "", 
         <SelectorBuscable
           opciones={clientes.filter((c) => c.status === "active").map((c) => ({ id: c.id, etiqueta: c.name }))}
           valor={clientId}
-          onChange={(id) => { setClientId(id); setDomainId(""); }}
+          onChange={(id) => { setClientId(id); if (!editando) setDomainId(""); }}
           placeholder="Buscar cliente..."
+          disabled={editando}
         /></div>
       <div className="fila-formulario"><label>Dominio *</label>
         <SelectorBuscable
           opciones={dominiosFiltrados.map((d) => ({ id: d.id, etiqueta: d.domainName }))}
           valor={domainId}
           onChange={setDomainId}
-          disabled={!clientId}
+          disabled={!clientId || editando}
           placeholder={clientId ? "Buscar dominio..." : "Seleccione un cliente primero"}
         /></div>
       <div className="fila-formulario"><label>Nombre de la empresa *</label>
@@ -238,12 +292,49 @@ function FormularioBd({ clientes, dominios, frecuencias, clienteInicialId = "", 
         </select></div>
       <div className="fila-formulario"><label>Versión actual de la base de datos</label>
         <input value={currentDbVersion} onChange={(e) => setCurrentDbVersion(e.target.value)} /></div>
-      <div className="fila-formulario">
-        <label>Cadena de acceso a la base de datos *</label>
-        <textarea rows={3} value={rawDbAccess} onChange={(e) => setRawDbAccess(e.target.value)}
-          placeholder="data12.sagerp.co,54101; Initial Catalog = LA-COCINA-DE-LA-CASA; User ID = ATYNCONSULS-INS01; Password = ejemplo;" />
-        <div style={{ marginTop: 8 }}><AccesoBdParseado texto={rawDbAccess} /></div>
-      </div>
+      {!editando && (
+        <div className="fila-formulario">
+          <label>Cadena de acceso a la base de datos *</label>
+          <textarea rows={3} value={rawDbAccess} onChange={(e) => setRawDbAccess(e.target.value)}
+            placeholder="data12.sagerp.co,54101; Initial Catalog = LA-COCINA-DE-LA-CASA; User ID = ATYNCONSULS-INS01; Password = ejemplo;" />
+          <div style={{ marginTop: 8 }}><AccesoBdParseado texto={rawDbAccess} /></div>
+        </div>
+      )}
+
+      {editando && (
+        <div className="fila-formulario">
+          <label>Acceso a la base de datos</label>
+          <p className="texto-ayuda" style={{ marginBottom: 6 }}>
+            Servidor: <code>{inicial!.dbAccess.serverHostPort}</code><br />
+            Base / Initial Catalog: <code>{inicial!.dbAccess.initialCatalog}</code><br />
+            Usuario: <code>{inicial!.dbAccess.userId}</code><br />
+            Contraseña: <strong>(no se muestra por seguridad)</strong>
+          </p>
+          {!cambiarAcceso ? (
+            <button type="button" onClick={() => setCambiarAcceso(true)}>
+              Cambiar cadena de acceso
+            </button>
+          ) : (
+            <>
+              <textarea
+                rows={3}
+                value={rawDbAccess}
+                onChange={(e) => setRawDbAccess(e.target.value)}
+                placeholder="data12.sagerp.co,54101; Initial Catalog = ...; User ID = ...; Password = ...;"
+              />
+              <p className="texto-ayuda" style={{ marginTop: 4 }}>
+                Si deja este campo vacío al guardar, se conservará la cadena actual.
+              </p>
+              {rawDbAccess.trim() && (
+                <div style={{ marginTop: 8 }}><AccesoBdParseado texto={rawDbAccess} /></div>
+              )}
+              <button type="button" style={{ marginTop: 6 }} onClick={() => { setCambiarAcceso(false); setRawDbAccess(""); }}>
+                Descartar nueva cadena
+              </button>
+            </>
+          )}
+        </div>
+      )}
       <div className="fila-formulario"><label>Notas</label>
         <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
 
@@ -258,7 +349,9 @@ function FormularioBd({ clientes, dominios, frecuencias, clienteInicialId = "", 
 
       <div className="acciones-formulario">
         <button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button>
-        <button type="button" onClick={() => enviar("crearNueva")} disabled={cargando}>Guardar y crear nueva base de datos</button>
+        {!editando && (
+          <button type="button" onClick={() => enviar("crearNueva")} disabled={cargando}>Guardar y crear nueva base de datos</button>
+        )}
       </div>
     </form>
   );

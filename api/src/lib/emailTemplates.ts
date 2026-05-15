@@ -44,6 +44,8 @@ export type MasterReportDatabase = {
 export type MasterReportDomain = {
   name: string;
   url?: string;
+  publishableDomain?: string;
+  environment?: string;
   status?: string;
   frequencyName?: string;
   databases?: MasterReportDatabase[];
@@ -357,6 +359,65 @@ export function buildTestEmail(input: {
   };
 }
 
+export function buildAdministrativeReminderEmail(input: {
+  type: "sagWebVersion" | "whatsNew";
+  subject?: string;
+  periodo: string;
+  fechaProgramada: string;
+  frontendBaseUrl?: string;
+}): EmailBuildResult {
+  const baseUrl = normalizeBaseUrl(input.frontendBaseUrl);
+  const isVersion = input.type === "sagWebVersion";
+  const subject = input.subject || (isVersion
+    ? "Recordatorio: registrar la versión mensual de SAG Web"
+    : "Recordatorio: crear documento \"¿Qué hay de nuevo en SAG Web?\"");
+  const title = isVersion ? "Recordatorio de versión mensual" : "Recordatorio de documentación mensual";
+  const subtitle = isVersion ? "SAG Web" : "¿Qué hay de nuevo en SAG Web?";
+  const activity = isVersion ? "Registrar versión mensual de SAG Web" : "Crear documento \"¿Qué hay de nuevo en SAG Web?\"";
+  const description = isVersion
+    ? "Este es un recordatorio para registrar o guardar la versión mensual más reciente de SAG Web."
+    : "Este es un recordatorio para crear o actualizar el documento mensual \"¿Qué hay de nuevo en SAG Web?\".";
+  const extra = isVersion
+    ? "Por favor verifica la versión actual publicada y registra la información correspondiente según el procedimiento interno."
+    : "Recuerda preparar el documento para que el equipo pueda agregar las novedades, mejoras y cambios desarrollados durante el periodo.";
+  const html = `<div style="font-family: Arial, sans-serif; color: ${COLORS.primary}; line-height: 1.5;">
+  <div style="border-left: 6px solid ${COLORS.accent}; padding-left: 16px; margin-bottom: 20px;">
+    <h2 style="margin: 0; color: ${COLORS.primary};">${escapeHtml(title)}</h2>
+    <p style="margin: 4px 0 0 0; color: ${COLORS.secondary};">${escapeHtml(subtitle)}</p>
+  </div>
+  <p>Hola,</p>
+  <p>${escapeHtml(description)}</p>
+  <div style="background: #f5f7f8; border: 1px solid ${COLORS.neutral}; border-radius: 8px; padding: 14px; margin: 18px 0;">
+    <p style="margin: 0;"><strong>Actividad:</strong> ${escapeHtml(activity)}</p>
+    <p style="margin: 6px 0 0 0;"><strong>Periodo:</strong> ${escapeHtml(input.periodo)}</p>
+    <p style="margin: 6px 0 0 0;"><strong>Fecha sugerida:</strong> ${escapeHtml(input.fechaProgramada)}</p>
+  </div>
+  <p>${escapeHtml(extra)}</p>
+  ${!isVersion ? "<p>Si ya existe un documento base, usa la estructura correspondiente y actualiza el periodo.</p>" : ""}
+  <p>Puedes ingresar al Programador de Actualizaciones desde el siguiente enlace:</p>
+  <p><a href="${escapeHtml(baseUrl)}" style="display:inline-block; background:${COLORS.primary}; color:white; padding:10px 16px; border-radius:6px; text-decoration:none;">Abrir Programador de Actualizaciones</a></p>
+  <p style="margin-top: 24px;">Gracias,<br /><strong>Programador de Actualizaciones</strong></p>
+</div>`;
+  const text = `${title} - ${subtitle}
+
+Hola,
+
+${description}
+
+Actividad: ${activity}
+Periodo: ${input.periodo}
+Fecha sugerida: ${input.fechaProgramada}
+
+${extra}
+
+Abrir Programador de Actualizaciones:
+${baseUrl}
+
+Gracias,
+Programador de Actualizaciones`;
+  return { subject, html, text };
+}
+
 export function buildMastersReportEmail(input: {
   recipientName?: string;
   generatedAt?: string | Date;
@@ -378,10 +439,10 @@ export function buildMastersReportEmail(input: {
         ${(client.domains ?? []).map((domain) => `
           <div style="border-top:1px solid ${COLORS.neutral}; padding-top:10px; margin-top:10px;">
             <div style="font-size:14px; font-weight:700; color:${COLORS.text};">Dominio: ${escapeHtml(domain.name)}</div>
-            <div style="font-size:12px; color:${COLORS.muted};">URL: ${escapeHtml(domain.url || domain.name)} · Frecuencia: ${escapeHtml(domain.frequencyName || "Sin frecuencia activa")}</div>
+            <div style="font-size:12px; color:${COLORS.muted};">Dominio para publicar: ${escapeHtml(formatDomainForPublishing(domain.publishableDomain || domain.url || domain.name))} · Ambiente: ${escapeHtml(domain.environment || "-")} · Estado: ${escapeHtml(domain.status || "-")} · Frecuencia: ${escapeHtml(domain.frequencyName || "Sin frecuencia activa")}</div>
             <div style="font-size:13px; color:${COLORS.text}; margin-top:8px; font-weight:700;">Empresas / bases:</div>
             ${(domain.databases ?? []).length > 0
-              ? `<ul style="margin:6px 0 0 18px; padding:0;">${(domain.databases ?? []).map((db) => `<li style="margin:0 0 4px;">${escapeHtml(db.name || db.companyName || "-")} <span style="color:${COLORS.muted};">(${escapeHtml(db.status || "-")})</span></li>`).join("")}</ul>`
+              ? `<ul style="margin:6px 0 0 18px; padding:0;">${(domain.databases ?? []).map((db) => `<li style="margin:0 0 4px;">Empresa: ${escapeHtml(db.companyName || "-")} · Base de datos: ${escapeHtml(db.name || "-")} · Ambiente: ${escapeHtml(db.environment || "-")} · Estado: ${escapeHtml(db.status || "-")} · Creación: ${escapeHtml(formatDate(db.createdAt, "es-CO", timezone))}</li>`).join("")}</ul>`
               : `<div style="font-size:12px; color:${COLORS.muted}; margin-top:5px;">Sin empresas o bases activas asociadas.</div>`}
           </div>`).join("")}
       </td></tr>
@@ -400,10 +461,12 @@ export function buildMastersReportEmail(input: {
     `Cliente: ${client.name}`,
     ...(client.domains ?? []).flatMap((domain) => [
       `  Dominio: ${domain.name}`,
-      `  URL: ${domain.url || domain.name}`,
+      `  Dominio para publicar: ${formatDomainForPublishing(domain.publishableDomain || domain.url || domain.name)}`,
+      `  Ambiente: ${domain.environment || "-"}`,
+      `  Estado: ${domain.status || "-"}`,
       `  Frecuencia: ${domain.frequencyName || "Sin frecuencia activa"}`,
       `    Empresas / bases:`,
-      ...((domain.databases ?? []).length > 0 ? (domain.databases ?? []).map((db) => `    - ${db.name || db.companyName || "-"}`) : ["    - Sin empresas o bases activas asociadas."]),
+      ...((domain.databases ?? []).length > 0 ? (domain.databases ?? []).map((db) => `    - Empresa: ${db.companyName || "-"} · Base de datos: ${db.name || "-"} · Ambiente: ${db.environment || "-"} · Estado: ${db.status || "-"} · Creación: ${formatDate(db.createdAt, "es-CO", timezone)}`) : ["    - Sin empresas o bases activas asociadas."]),
     ]),
   ].join("\n")).join("\n\n");
   return {

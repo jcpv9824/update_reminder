@@ -13,3 +13,4 @@ import "./functions/reports";
 import "./functions/generateDailyUpdateTasks";
 import "./functions/sendScheduledReminders";
 import "./functions/sendOverdueAlerts";
+import "./functions/sendAdministrativeReminders";

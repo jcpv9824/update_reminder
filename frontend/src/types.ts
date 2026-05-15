@@ -90,6 +90,14 @@ export type Frecuencia = {
   assignedUserIds: string[];
   databaseAssignedUserIds?: string[];
   databaseReminderRecipientsMode?: "assignedUsers" | "roleUsers";
+  scopeGroups?: Array<{
+    clientId: string;
+    includeAllDomains: boolean;
+    domains: Array<{ domainId: string; includeAllDatabases: boolean; databaseIds: string[] }>;
+  }>;
+  assignmentMode?: "role" | "users";
+  domainAssignedRole?: string;
+  databaseAssignedRole?: string;
   origin?: "domain_default" | "special" | "database_inherited" | string;
   active: boolean;
   reminders?: {
@@ -137,6 +145,9 @@ export type Tarea = {
   completedWithProblems?: boolean;
   problemNote?: string;
   completionNote?: string;
+  blockReason?: string | null;
+  resolutionComment?: string | null;
+  reopenReason?: string | null;
 };
 
 export type RegistroAuditoria = {

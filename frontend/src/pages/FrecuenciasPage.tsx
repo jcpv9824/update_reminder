@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { BaseDeDatos, Cliente, Dominio, Frecuencia } from "../types";
+import type { BaseDeDatos, Cliente, Dominio, Frecuencia, Usuario } from "../types";
 import { Alerta, EtiquetaEstado, Modal, DialogoConfirmar } from "../components/Comunes";
 import { DIAS_SEMANA, ETIQUETAS_FRECUENCIA, ETIQUETAS_ROLES } from "../types";
 import { SelectorBuscable } from "../components/SelectorBuscable";
@@ -18,6 +18,7 @@ export default function FrecuenciasPage() {
   const { data: clientes = [] } = useQuery({ queryKey: ["clientes"], queryFn: () => api.get<Cliente[]>("/clients") });
   const { data: dominios = [] } = useQuery({ queryKey: ["dominios"], queryFn: () => api.get<Dominio[]>("/domains") });
   const { data: bds = [] } = useQuery({ queryKey: ["bases-de-datos"], queryFn: () => api.get<BaseDeDatos[]>("/databases") });
+  const { data: usuarios = [] } = useQuery({ queryKey: ["usuarios"], queryFn: () => api.get<Usuario[]>("/users") });
   const { data: frecuencias = [], isLoading } = useQuery({ queryKey: ["frecuencias", "special"], queryFn: () => api.get<Frecuencia[]>("/schedules?origin=special") });
   const programacionesEspeciales = useMemo(() => frecuencias.filter((f) => f.origin === "special"), [frecuencias]);
 
@@ -90,10 +91,10 @@ export default function FrecuenciasPage() {
       )}
 
       <Modal titulo="Nueva programación especial" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
-        <FormularioFrecuencia clientes={clientes} dominios={dominios} bds={bds} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />
+        <FormularioFrecuencia clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />
       </Modal>
       <Modal titulo="Editar programación especial" abierto={!!editando} onCerrar={() => setEditando(null)}>
-        {editando && <FormularioFrecuencia inicial={editando} clientes={clientes} dominios={dominios} bds={bds} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
+        {editando && <FormularioFrecuencia inicial={editando} clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
       </Modal>
 
       <DialogoConfirmar
@@ -111,10 +112,16 @@ export default function FrecuenciasPage() {
   );
 }
 
-function FormularioFrecuencia({ inicial, clientes, dominios, bds, onSubmit, cargando }: { inicial?: Frecuencia; clientes: Cliente[]; dominios: Dominio[]; bds: BaseDeDatos[]; onSubmit: (v: any) => void; cargando: boolean }) {
-  const [clientId, setClientId] = useState(inicial?.clientId ?? "");
-  const [targetType, setTargetType] = useState<"domain" | "database">(inicial?.targetType ?? "database");
-  const [targetIds, setTargetIds] = useState<string[]>(inicial?.targetIds ?? []);
+type ScopeGroup = NonNullable<Frecuencia["scopeGroups"]>[number];
+
+function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, onSubmit, cargando }: { inicial?: Frecuencia; clientes: Cliente[]; dominios: Dominio[]; bds: BaseDeDatos[]; usuarios: Usuario[]; onSubmit: (v: any) => void; cargando: boolean }) {
+  const [scopeGroups, setScopeGroups] = useState<ScopeGroup[]>(inicial?.scopeGroups ?? []);
+  const [clienteAAgregar, setClienteAAgregar] = useState("");
+  const [dominioAAgregar, setDominioAAgregar] = useState<Record<string, string>>({});
+  const [bdAAgregar, setBdAAgregar] = useState<Record<string, string>>({});
+  const [assignmentMode, setAssignmentMode] = useState<"role" | "users">(inicial?.assignmentMode ?? ((inicial?.assignedUserIds?.length || inicial?.databaseAssignedUserIds?.length) ? "users" : "role"));
+  const [domainUsers, setDomainUsers] = useState<string[]>(inicial?.assignedUserIds ?? []);
+  const [databaseUsers, setDatabaseUsers] = useState<string[]>(inicial?.databaseAssignedUserIds ?? []);
   const [frequencyType, setFrequencyType] = useState<"weekly" | "interval" | "monthly" | "manual">(inicial?.frequencyType ?? "weekly");
   const [everyNWeeks, setEveryNWeeks] = useState(inicial?.everyNWeeks ?? 1);
   const [weekdays, setWeekdays] = useState<string[]>(inicial?.weekdays ?? ["FRIDAY"]);
@@ -126,10 +133,23 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, onSubmit, carg
   const [active, setActive] = useState(inicial?.active ?? true);
   const [err, setErr] = useState<string | null>(null);
 
-  const objetivos = useMemo(() => {
-    if (targetType === "database") return bds.filter((b) => b.clientId === clientId && b.status === "active");
-    return dominios.filter((d) => d.clientId === clientId && d.status === "active");
-  }, [targetType, clientId, bds, dominios]);
+  const resumen = useMemo(() => {
+    let domainsCount = 0;
+    let dbsCount = 0;
+    for (const group of scopeGroups) {
+      const groupDomains = group.includeAllDomains
+        ? dominios.filter((d) => d.clientId === group.clientId && d.status === "active")
+        : group.domains.map((d) => dominios.find((x) => x.id === d.domainId)).filter(Boolean) as Dominio[];
+      domainsCount += groupDomains.length;
+      for (const domain of groupDomains) {
+        const config = group.domains.find((d) => d.domainId === domain.id);
+        dbsCount += (group.includeAllDomains || config?.includeAllDatabases)
+          ? bds.filter((db) => db.domainId === domain.id && db.status === "active").length
+          : (config?.databaseIds.length ?? 0);
+      }
+    }
+    return { clientes: scopeGroups.length, dominios: domainsCount, bases: dbsCount };
+  }, [scopeGroups, dominios, bds]);
 
   function alternarDia(d: string) {
     setWeekdays((p) => (p.includes(d) ? p.filter((x) => x !== d) : [...p, d]));
@@ -138,35 +158,125 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, onSubmit, carg
   return (
     <form onSubmit={(e) => {
       e.preventDefault();
-      if (!clientId) return setErr("Seleccione el cliente.");
+      if (scopeGroups.length === 0 || (resumen.dominios === 0 && resumen.bases === 0)) return setErr("Agregue al menos un cliente, dominio o base al alcance.");
+      if (assignmentMode === "users" && domainUsers.length === 0 && databaseUsers.length === 0) return setErr("Seleccione responsables o cambie a asignación por rol.");
       onSubmit({
-        clientId, targetType, targetIds, frequencyType,
+        clientId: scopeGroups[0].clientId,
+        targetType: "domain",
+        targetIds: [],
+        scopeGroups,
+        assignmentMode,
+        domainAssignedRole: "domain_updater",
+        databaseAssignedRole: "database_updater",
+        frequencyType,
         everyNWeeks: frequencyType === "weekly" ? everyNWeeks : undefined,
         weekdays: frequencyType === "weekly" ? weekdays : undefined,
         intervalDays: frequencyType === "interval" ? intervalDays : undefined,
         dayOfMonth: frequencyType === "monthly" ? dayOfMonth : undefined,
         startDate, endDate: hasEndDate ? endDate || null : null, timezone: "America/Bogota",
-        assignedRole: targetType === "database" ? "database_updater" : "domain_updater", assignedUserIds: inicial?.assignedUserIds ?? [], origin: "special", active,
+        assignedRole: "domain_updater",
+        assignedUserIds: assignmentMode === "users" ? domainUsers : [],
+        databaseAssignedUserIds: assignmentMode === "users" ? databaseUsers : [],
+        origin: "special", active,
       });
     }}>
       {err && <Alerta tipo="error">{err}</Alerta>}
-      <div className="fila-formulario"><label>Cliente *</label>
+      <h4>Alcance de la programación especial</h4>
+      <div className="fila-formulario"><label>Agregar cliente al alcance</label>
         <SelectorBuscable
-          opciones={clientes.filter((c) => c.status === "active").map((c) => ({ id: c.id, etiqueta: c.name }))}
-          valor={clientId}
-          onChange={(id) => { setClientId(id); setTargetIds([]); }}
+          opciones={clientes.filter((c) => c.status === "active" && !scopeGroups.some((g) => g.clientId === c.id)).map((c) => ({ id: c.id, etiqueta: c.name }))}
+          valor={clienteAAgregar}
+          onChange={(id) => {
+            if (!id) return;
+            setScopeGroups((prev) => [...prev, { clientId: id, includeAllDomains: false, domains: [] }]);
+            setClienteAAgregar("");
+          }}
           placeholder="Buscar cliente..."
         /></div>
-      <div className="fila-formulario"><label>Tipo de objetivo *</label>
-        <select value={targetType} onChange={(e) => { setTargetType(e.target.value as any); setTargetIds([]); }}>
-          <option value="database">Base de datos</option>
-          <option value="domain">Dominio</option>
+      {scopeGroups.map((group) => {
+        const cliente = clientes.find((c) => c.id === group.clientId);
+        const dominiosCliente = dominios.filter((d) => d.clientId === group.clientId && d.status === "active");
+        return (
+          <div className="tarjeta tarjeta-compacta" key={group.clientId}>
+            <h4>Cliente: {cliente?.name ?? group.clientId}</h4>
+            <button type="button" className="peligro" onClick={() => setScopeGroups((prev) => prev.filter((g) => g.clientId !== group.clientId))}>Eliminar cliente del alcance</button>
+            <div className="fila-formulario"><label>
+              <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={group.includeAllDomains} onChange={(e) => setScopeGroups((prev) => prev.map((g) => g.clientId === group.clientId ? { ...g, includeAllDomains: e.target.checked, domains: e.target.checked ? [] : g.domains } : g))} />
+              Incluir todos los dominios activos de este cliente
+            </label></div>
+            {!group.includeAllDomains && (
+              <>
+                <div className="fila-formulario"><label>Agregar dominio</label>
+                  <SelectorBuscable
+                    opciones={dominiosCliente.filter((d) => !group.domains.some((x) => x.domainId === d.id)).map((d) => ({ id: d.id, etiqueta: d.domainName, subtitulo: `${ETIQUETAS_FRECUENCIA[inicial?.frequencyType ?? "weekly"] ?? ""} · ${d.environment}` }))}
+                    valor={dominioAAgregar[group.clientId] ?? ""}
+                    onChange={(id) => {
+                      if (!id) return;
+                      setScopeGroups((prev) => prev.map((g) => g.clientId === group.clientId ? { ...g, domains: [...g.domains, { domainId: id, includeAllDatabases: false, databaseIds: [] }] } : g));
+                      setDominioAAgregar((m) => ({ ...m, [group.clientId]: "" }));
+                    }}
+                    placeholder="Buscar dominio..."
+                  /></div>
+                {group.domains.map((domainScope) => {
+                  const domain = dominios.find((d) => d.id === domainScope.domainId);
+                  const basesDominio = bds.filter((bd) => bd.domainId === domainScope.domainId && bd.status === "active");
+                  return (
+                    <div className="tarjeta tarjeta-compacta" key={domainScope.domainId}>
+                      <strong>Dominio: {domain?.domainName ?? domainScope.domainId}</strong>
+                      <p className="texto-ayuda">Ambiente: {domain?.environment ?? "-"}</p>
+                      <button type="button" onClick={() => setScopeGroups((prev) => prev.map((g) => g.clientId === group.clientId ? { ...g, domains: g.domains.filter((d) => d.domainId !== domainScope.domainId) } : g))}>Eliminar dominio</button>
+                      <div className="fila-formulario"><label>
+                        <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={domainScope.includeAllDatabases} onChange={(e) => setScopeGroups((prev) => prev.map((g) => g.clientId === group.clientId ? { ...g, domains: g.domains.map((d) => d.domainId === domainScope.domainId ? { ...d, includeAllDatabases: e.target.checked, databaseIds: e.target.checked ? [] : d.databaseIds } : d) } : g))} />
+                        Incluir todas las bases activas de este dominio
+                      </label></div>
+                      {!domainScope.includeAllDatabases && (
+                        <>
+                          <SelectorBuscable
+                            opciones={basesDominio.filter((bd) => !domainScope.databaseIds.includes(bd.id)).map((bd) => ({ id: bd.id, etiqueta: `${bd.companyName} — ${bd.dbAccess.initialCatalog}`, subtitulo: bd.environment }))}
+                            valor={bdAAgregar[domainScope.domainId] ?? ""}
+                            onChange={(id) => {
+                              if (!id) return;
+                              setScopeGroups((prev) => prev.map((g) => g.clientId === group.clientId ? { ...g, domains: g.domains.map((d) => d.domainId === domainScope.domainId ? { ...d, databaseIds: [...d.databaseIds, id] } : d) } : g));
+                              setBdAAgregar((m) => ({ ...m, [domainScope.domainId]: "" }));
+                            }}
+                            placeholder="Buscar base de datos..."
+                          />
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                            {domainScope.databaseIds.map((id) => {
+                              const bd = bds.find((x) => x.id === id);
+                              return <span className="estado estado-active" key={id}>{bd ? `${bd.companyName} — ${bd.dbAccess.initialCatalog} — ${bd.environment}` : id} <button type="button" onClick={() => setScopeGroups((prev) => prev.map((g) => g.clientId === group.clientId ? { ...g, domains: g.domains.map((d) => d.domainId === domainScope.domainId ? { ...d, databaseIds: d.databaseIds.filter((x) => x !== id) } : d) } : g))}>x</button></span>;
+                            })}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </div>
+        );
+      })}
+      <Alerta tipo="info">Resumen del alcance: {resumen.clientes} cliente(s), {resumen.dominios} dominio(s), {resumen.bases} base(s) de datos.</Alerta>
+      <h4>Responsables de la programación</h4>
+      <div className="fila-formulario"><label>Modo de asignación</label>
+        <select value={assignmentMode} onChange={(e) => setAssignmentMode(e.target.value as any)}>
+          <option value="role">Asignar por rol</option>
+          <option value="users">Asignar a usuarios específicos</option>
         </select></div>
-      <div className="fila-formulario"><label>Objetivos</label>
-        <select multiple value={targetIds} onChange={(e) => setTargetIds(Array.from(e.target.selectedOptions).map((o) => o.value))} style={{ height: 120 }}>
-          {objetivos.map((o: any) => <option key={o.id} value={o.id}>{o.companyName ? `${o.companyName} / ${o.dbAccess?.initialCatalog}` : o.domainName}</option>)}
-        </select></div>
-      <p className="texto-ayuda">El objetivo es opcional para casos especiales. El responsable se infiere según el tipo: dominio o base de datos.</p>
+      {assignmentMode === "users" && (
+        <>
+          <div className="fila-formulario"><label>Responsables para dominios</label>
+            <select multiple value={domainUsers} onChange={(e) => setDomainUsers(Array.from(e.target.selectedOptions).map((o) => o.value))} style={{ height: 90 }}>
+              {usuarios.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.displayName || u.email}</option>)}
+            </select></div>
+          <div className="fila-formulario"><label>Responsables para bases de datos</label>
+            <select multiple value={databaseUsers} onChange={(e) => setDatabaseUsers(Array.from(e.target.selectedOptions).map((o) => o.value))} style={{ height: 90 }}>
+              {usuarios.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.displayName || u.email}</option>)}
+            </select></div>
+        </>
+      )}
+      {assignmentMode === "role" && <p className="texto-ayuda">Tareas de dominio → Actualizador de dominios. Tareas de base de datos → Actualizador de bases de datos.</p>}
       <div className="fila-formulario"><label>Tipo de frecuencia *</label>
         <select value={frequencyType} onChange={(e) => setFrequencyType(e.target.value as any)}>
           {Object.entries(ETIQUETAS_FRECUENCIA).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
@@ -207,7 +317,7 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, onSubmit, carg
         <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={active} onChange={(e) => setActive(e.target.checked)} />
         Frecuencia activa
       </label></div>
-      <p className="texto-ayuda">No se pide rol manualmente. Se usará {targetType === "database" ? "Actualizador de bases de datos" : "Actualizador de dominios"}.</p>
+      <p className="texto-ayuda">Las tareas usarán responsables por rol o usuarios específicos según la sección de responsables.</p>
       <div className="acciones-formulario">
         <button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button>
       </div>

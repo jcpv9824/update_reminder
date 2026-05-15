@@ -18,6 +18,10 @@ export type FrequencyInput = {
   assignedUserIds?: string[];
   databaseAssignedUserIds?: string[];
   databaseReminderRecipientsMode?: "assignedUsers" | "roleUsers";
+  scopeGroups?: import("../types/models").ScheduleScopeGroup[];
+  assignmentMode?: import("../types/models").ScheduleAssignmentMode;
+  domainAssignedRole?: string;
+  databaseAssignedRole?: string;
   origin?: "domain_default" | "special" | "database_inherited" | string;
   active?: boolean;
   reminders?: RemindersConfig;
@@ -112,6 +116,10 @@ export function buildScheduleRecord(args: {
     assignedUserIds: normalized.assignedUserIds ?? [],
     databaseAssignedUserIds: normalized.databaseAssignedUserIds ?? [],
     databaseReminderRecipientsMode: normalized.databaseReminderRecipientsMode,
+    scopeGroups: normalized.scopeGroups,
+    assignmentMode: normalized.assignmentMode,
+    domainAssignedRole: normalized.domainAssignedRole,
+    databaseAssignedRole: normalized.databaseAssignedRole,
     origin: normalized.origin,
     active: normalized.active ?? true,
     reminders: normalized.reminders,

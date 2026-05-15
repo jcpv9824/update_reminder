@@ -5,8 +5,8 @@ import { requireUser, loadUserProfile } from "../lib/auth";
 import { canManageClients } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
-import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
-import type { ClientRecord } from "../types/models";
+import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
+import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 const ClientSchema = z.object({
   name: z.string().min(1, "El nombre del cliente es obligatorio.").max(200),
@@ -96,6 +96,39 @@ app.http("clientsGet", {
       const { resource } = await getContainer("clients").item(id, id).read<ClientRecord>();
       if (!resource) return notFound("Cliente no encontrado.");
       return ok(resource);
+    } catch (e) {
+      return serverError(e);
+    }
+  },
+});
+
+app.http("clientsTree", {
+  route: "clients/{id}/tree",
+  methods: ["GET"],
+  authLevel: "anonymous",
+  handler: async (req): Promise<HttpResponseInit> => {
+    try {
+      await getUserOrFail(req);
+      const id = req.params.id;
+      const { resource: client } = await getContainer("clients").item(id, id).read<ClientRecord>();
+      if (!client || client.status === "deleted") return notFound("Cliente no encontrado.");
+      const [{ resources: domains }, { resources: databases }] = await Promise.all([
+        getContainer("domains").items.query<DomainRecord>({
+          query: "SELECT * FROM c WHERE c.clientId = @c AND c.status != 'deleted'",
+          parameters: [{ name: "@c", value: id }],
+        }).fetchAll(),
+        getContainer("databases").items.query<DatabaseRecord>({
+          query: "SELECT * FROM c WHERE c.clientId = @c AND c.status != 'deleted'",
+          parameters: [{ name: "@c", value: id }],
+        }).fetchAll(),
+      ]);
+      return ok({
+        client,
+        domains: domains.map((domain) => ({
+          domain,
+          databases: databases.filter((db) => db.domainId === domain.id),
+        })),
+      });
     } catch (e) {
       return serverError(e);
     }
@@ -220,36 +253,84 @@ app.http("clientsDelete", {
       const user = await getUserOrFail(req);
       if (!canManageClients(user)) return forbidden();
       const id = req.params.id;
+      const cascade = req.query.get("cascade") === "true";
       const container = getContainer("clients");
       const { resource } = await container.item(id, id).read<ClientRecord>();
       if (!resource) return notFound("Cliente no encontrado.");
 
-      // Verificación de integridad: no permitir eliminar si tiene dominios o BDs vivas.
-      const domsQ = await getContainer("domains")
-        .items.query({ query: "SELECT VALUE COUNT(1) FROM c WHERE c.clientId = @c AND c.status != 'deleted'", parameters: [{ name: "@c", value: id }] })
-        .fetchAll();
-      const dbsQ = await getContainer("databases")
-        .items.query({ query: "SELECT VALUE COUNT(1) FROM c WHERE c.clientId = @c AND c.status != 'deleted'", parameters: [{ name: "@c", value: id }] })
-        .fetchAll();
-      const dominios = (domsQ.resources[0] as any) ?? 0;
-      const bds = (dbsQ.resources[0] as any) ?? 0;
-      if (dominios > 0 || bds > 0) {
-        return badRequest(`No se puede eliminar el cliente porque tiene ${dominios} dominio(s) y ${bds} base(s) de datos asociadas. Elimine o desactive esos registros primero.`);
+      const [{ resources: domains }, { resources: databases }, { resources: schedules }, { resources: tasks }] = await Promise.all([
+        getContainer("domains").items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.clientId = @c AND c.status != 'deleted'", parameters: [{ name: "@c", value: id }] }).fetchAll(),
+        getContainer("databases").items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.clientId = @c AND c.status != 'deleted'", parameters: [{ name: "@c", value: id }] }).fetchAll(),
+        getContainer("updateSchedules").items.query<UpdateSchedule>({ query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: id }] }).fetchAll(),
+        getContainer("updateTasks").items.query<UpdateTask>({ query: "SELECT * FROM c WHERE c.clientId = @c AND c.status NOT IN ('completed', 'cancelled')", parameters: [{ name: "@c", value: id }] }).fetchAll(),
+      ]);
+      const dependencies = { domains: domains.length, databases: databases.length, schedules: schedules.length, pendingTasks: tasks.length };
+      if (!cascade && (dependencies.domains > 0 || dependencies.databases > 0 || dependencies.schedules > 0 || dependencies.pendingTasks > 0)) {
+        return conflict("El cliente tiene dependencias. Confirme eliminación en cascada.", { dependencies });
       }
 
-      // Eliminación física.
-      await container.item(id, id).delete();
+      const now = new Date().toISOString();
+      for (const schedule of schedules) {
+        await getContainer("updateSchedules").item(schedule.id, schedule.clientId).delete();
+        await writeAuditLog({
+          entityType: "schedule", entityId: schedule.id, clientId: id, clientName: resource.name,
+          action: "schedule_deleted_cascade", performedBy: user.id, performedByEmail: user.email,
+          metadata: { cascadeFromClient: id }, before: schedule,
+        });
+      }
+      for (const task of tasks) {
+        const before = { ...task };
+        task.status = "cancelled";
+        task.result = "obsolete";
+        task.notes = task.notes ? `${task.notes}\nCancelada por eliminación en cascada del cliente.` : "Cancelada por eliminación en cascada del cliente.";
+        task.updatedAt = now;
+        task.updatedBy = user.id;
+        await getContainer("updateTasks").item(task.id, task.taskBucket).replace(task);
+        await writeAuditLog({
+          entityType: "task", entityId: task.id, clientId: id, clientName: resource.name,
+          action: "task_cancelled", performedBy: user.id, performedByEmail: user.email,
+          metadata: { cascadeFromClient: id }, before, after: { status: task.status, result: task.result },
+        });
+      }
+      for (const db of databases) {
+        const before = { ...db };
+        const deleted = { ...db, status: "deleted" as const, deletedAt: now, deletedBy: user.id, updatedAt: now, updatedBy: user.id };
+        await getContainer("databases").item(db.id, db.clientId).replace(deleted);
+        await writeAuditLog({
+          entityType: "database", entityId: db.id, clientId: id, clientName: resource.name,
+          domainId: db.domainId, domainName: db.domainName, companyName: db.companyName,
+          action: "database_deleted_cascade", performedBy: user.id, performedByEmail: user.email,
+          metadata: { cascadeFromClient: id }, before: { ...before, dbAccess: { ...before.dbAccess, passwordSecretName: undefined } },
+          after: { status: "deleted" },
+        });
+      }
+      for (const domain of domains) {
+        const before = { ...domain };
+        const deleted = { ...domain, status: "deleted" as const, deletedAt: now, deletedBy: user.id, updatedAt: now, updatedBy: user.id };
+        await getContainer("domains").item(domain.id, domain.clientId).replace(deleted);
+        await writeAuditLog({
+          entityType: "domain", entityId: domain.id, clientId: id, clientName: resource.name,
+          domainId: domain.id, domainName: domain.domainName,
+          action: "domain_deleted_cascade", performedBy: user.id, performedByEmail: user.email,
+          metadata: { cascadeFromClient: id }, before, after: { status: "deleted" },
+        });
+      }
+      const beforeClient = { ...resource };
+      const deletedClient = { ...resource, status: "deleted" as const, deletedAt: now, deletedBy: user.id, updatedAt: now, updatedBy: user.id };
+      await container.item(id, id).replace(deletedClient);
       await writeAuditLog({
         entityType: "client",
         entityId: id,
         clientId: id,
         clientName: resource.name,
-        action: "client_deleted",
+        action: "client_deleted_cascade",
         performedBy: user.id,
         performedByEmail: user.email,
-        before: resource,
+        metadata: dependencies,
+        before: beforeClient,
+        after: { status: "deleted" },
       });
-      return noContent();
+      return ok({ ok: true, deleted: dependencies });
     } catch (e) {
       return serverError(e);
     }

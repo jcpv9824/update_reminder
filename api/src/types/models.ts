@@ -56,6 +56,8 @@ export type ClientRecord = {
   createdBy: string;
   updatedAt: string;
   updatedBy: string;
+  deletedAt?: string | null;
+  deletedBy?: string | null;
 };
 
 export type DomainRecord = {
@@ -72,6 +74,8 @@ export type DomainRecord = {
   createdBy: string;
   updatedAt: string;
   updatedBy: string;
+  deletedAt?: string | null;
+  deletedBy?: string | null;
   lastUpdatedAt?: string | null;
   lastUpdatedBy?: string | null;
 };
@@ -100,9 +104,23 @@ export type DatabaseRecord = {
   createdBy: string;
   updatedAt: string;
   updatedBy: string;
+  deletedAt?: string | null;
+  deletedBy?: string | null;
   lastUpdatedAt?: string | null;
   lastUpdatedBy?: string | null;
 };
+
+export type ScheduleScopeGroup = {
+  clientId: string;
+  includeAllDomains: boolean;
+  domains: Array<{
+    domainId: string;
+    includeAllDatabases: boolean;
+    databaseIds: string[];
+  }>;
+};
+
+export type ScheduleAssignmentMode = "role" | "users";
 
 export type Weekday =
   | "MONDAY"
@@ -137,6 +155,10 @@ export type UpdateSchedule = {
   assignedUserIds: string[];
   databaseAssignedUserIds?: string[];
   databaseReminderRecipientsMode?: "assignedUsers" | "roleUsers";
+  scopeGroups?: ScheduleScopeGroup[];
+  assignmentMode?: ScheduleAssignmentMode;
+  domainAssignedRole?: Role | string;
+  databaseAssignedRole?: Role | string;
   origin?: ScheduleOrigin | string;
   active: boolean;
   notes?: string;
@@ -185,6 +207,15 @@ export type UpdateTask = {
   completedWithProblems?: boolean;
   problemNote?: string;
   completionNote?: string;
+  blockedAt?: string | null;
+  blockedBy?: string | null;
+  blockReason?: string | null;
+  resolvedAt?: string | null;
+  resolvedBy?: string | null;
+  resolutionComment?: string | null;
+  reopenedAt?: string | null;
+  reopenedBy?: string | null;
+  reopenReason?: string | null;
   remindersSent?: SentReminder[];
   overdueAlertSentDates?: string[];
 };
@@ -222,6 +253,22 @@ export type EmailAlertsSettings = {
   overdueAlertTimezone: string;
   overdueAlertRecipientsMode: "admins" | "adminsAndClientManagers" | "customEmails";
   customAdminAlertEmails?: string[];
+  overdueAlertRecipientRoleIds?: string[];
+  overdueAlertCustomEmails?: string[];
+  overdueAlertFrequency?: "daily" | "weekly";
+  overdueAlertWeekdays?: Weekday[];
+  overdueAlertLastSentPeriod?: string | null;
+
+  blockedAlertsEnabled?: boolean;
+  blockedAlertRecipientRoleIds?: string[];
+  blockedAlertCustomEmails?: string[];
+  blockedAlertSendImmediately?: boolean;
+  blockedAlertIncludeInOverdueSummary?: boolean;
+
+  administrativeReminders?: {
+    sagWebVersionReminder: AdministrativeReminderSettings;
+    whatsNewReminder: AdministrativeReminderSettings;
+  };
 
   passwordNotificationEnabled: boolean;
   sendTemporaryPasswordByEmail: boolean;
@@ -230,6 +277,15 @@ export type EmailAlertsSettings = {
   createdBy?: string;
   updatedAt?: string;
   updatedBy?: string;
+};
+
+export type AdministrativeReminderSettings = {
+  enabled: boolean;
+  recipients: string[];
+  dayOfMonth: number;
+  time: string;
+  timezone: string;
+  subject: string;
 };
 
 export type AuditAction = string;

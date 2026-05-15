@@ -110,8 +110,12 @@ describe("FrecuenciasPage", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
     fireEvent.focus(screen.getByPlaceholderText("Buscar cliente..."));
     fireEvent.mouseDown(await screen.findByRole("option", { name: "Cliente Uno" }));
+    fireEvent.click(screen.getByLabelText(/Incluir todos los dominios activos/i));
     fireEvent.click(screen.getByRole("button", { name: /^Guardar$/i }));
     await waitFor(() => expect(apiMock.post).toHaveBeenCalled());
-    expect(apiMock.post).toHaveBeenCalledWith("/schedules", expect.objectContaining({ origin: "special" }));
+    expect(apiMock.post).toHaveBeenCalledWith("/schedules", expect.objectContaining({
+      origin: "special",
+      scopeGroups: expect.arrayContaining([expect.objectContaining({ clientId: "client_1", includeAllDomains: true })]),
+    }));
   });
 });

@@ -3,6 +3,7 @@ import type React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { Alerta } from "../components/Comunes";
+import { ETIQUETAS_ROLES, DIAS_SEMANA } from "../types";
 
 type Settings = {
   emailProvider: "mock" | "smtp" | "sendgrid" | "acs";
@@ -24,8 +25,30 @@ type Settings = {
   overdueAlertTimezone: string;
   overdueAlertRecipientsMode: "admins" | "adminsAndClientManagers" | "customEmails";
   customAdminAlertEmails?: string[];
+  overdueAlertRecipientRoleIds?: string[];
+  overdueAlertCustomEmails?: string[];
+  overdueAlertFrequency?: "daily" | "weekly";
+  overdueAlertWeekdays?: string[];
+  blockedAlertsEnabled?: boolean;
+  blockedAlertRecipientRoleIds?: string[];
+  blockedAlertCustomEmails?: string[];
+  blockedAlertSendImmediately?: boolean;
+  blockedAlertIncludeInOverdueSummary?: boolean;
+  administrativeReminders?: {
+    sagWebVersionReminder: AdminReminder;
+    whatsNewReminder: AdminReminder;
+  };
   passwordNotificationEnabled: boolean;
   sendTemporaryPasswordByEmail: boolean;
+};
+
+type AdminReminder = {
+  enabled: boolean;
+  recipients: string[];
+  dayOfMonth: number;
+  time: string;
+  timezone: string;
+  subject: string;
 };
 
 const RUTA = "/settings/email-alerts";
@@ -38,6 +61,24 @@ const PYA_DEFAULTS = {
   smtpSecure: false,
   smtpUser: "info@pya.com.co",
   frontendBaseUrl: "https://agreeable-wave-07469d50f.7.azurestaticapps.net",
+};
+const ADMIN_REMINDER_DEFAULTS: Settings["administrativeReminders"] = {
+  sagWebVersionReminder: {
+    enabled: false,
+    recipients: [],
+    dayOfMonth: 1,
+    time: "08:00",
+    timezone: "America/Bogota",
+    subject: "Recordatorio: registrar la versión mensual de SAG Web",
+  },
+  whatsNewReminder: {
+    enabled: false,
+    recipients: [],
+    dayOfMonth: 1,
+    time: "08:00",
+    timezone: "America/Bogota",
+    subject: "Recordatorio: crear documento \"¿Qué hay de nuevo en SAG Web?\"",
+  },
 };
 
 function isEmail(v: string): boolean {
@@ -64,6 +105,14 @@ function Acordeon({ titulo, children, abiertoInicial = true }: { titulo: string;
   );
 }
 
+function Tooltip({ texto }: { texto: string }) {
+  return <span className="tooltip" title={texto}>ⓘ</span>;
+}
+
+function alternar(lista: string[] = [], valor: string): string[] {
+  return lista.includes(valor) ? lista.filter((x) => x !== valor) : [...lista, valor];
+}
+
 export default function AlertasCorreosPage() {
   const qc = useQueryClient();
   const { data, isLoading } = useQuery({
@@ -80,8 +129,28 @@ export default function AlertasCorreosPage() {
   const [error, setError] = useState<string | null>(null);
   const [resultadoPrueba, setResultadoPrueba] = useState<{ ok: boolean; message: string; details?: string } | null>(null);
   const [resultadoReporte, setResultadoReporte] = useState<{ ok: boolean; message: string; details?: string } | null>(null);
+  const [resultadoAdmin, setResultadoAdmin] = useState<{ ok: boolean; message: string; details?: string } | null>(null);
 
-  useEffect(() => { if (data) setForm({ ...PYA_DEFAULTS, ...data }); }, [data]);
+  useEffect(() => {
+    if (data) {
+      setForm({
+        ...PYA_DEFAULTS,
+        ...data,
+        overdueAlertRecipientRoleIds: data.overdueAlertRecipientRoleIds ?? ["admin"],
+        overdueAlertCustomEmails: data.overdueAlertCustomEmails ?? data.customAdminAlertEmails ?? [],
+        overdueAlertFrequency: data.overdueAlertFrequency ?? "daily",
+        overdueAlertWeekdays: data.overdueAlertWeekdays ?? ["MONDAY"],
+        blockedAlertsEnabled: data.blockedAlertsEnabled ?? true,
+        blockedAlertRecipientRoleIds: data.blockedAlertRecipientRoleIds ?? ["admin"],
+        blockedAlertCustomEmails: data.blockedAlertCustomEmails ?? [],
+        blockedAlertSendImmediately: data.blockedAlertSendImmediately ?? true,
+        administrativeReminders: {
+          sagWebVersionReminder: { ...ADMIN_REMINDER_DEFAULTS!.sagWebVersionReminder, ...data.administrativeReminders?.sagWebVersionReminder },
+          whatsNewReminder: { ...ADMIN_REMINDER_DEFAULTS!.whatsNewReminder, ...data.administrativeReminders?.whatsNewReminder },
+        },
+      });
+    }
+  }, [data]);
 
   // `mensajeExito` permite a quien dispara el guardado personalizar el mensaje
   // (por ejemplo "Configuración SMTP guardada correctamente.").
@@ -108,6 +177,13 @@ export default function AlertasCorreosPage() {
     mutationFn: (recipients: string) => api.post<{ ok: boolean; sent?: boolean; recipientsCount?: number; message: string; details?: string }>("/reports/masters/send-email", { recipients }),
     onSuccess: (r) => setResultadoReporte(r),
     onError: (e: any) => setResultadoReporte({ ok: false, message: e?.message ?? "Error al enviar el reporte." }),
+  });
+
+  const enviarPruebaAdmin = useMutation({
+    mutationFn: ({ key, recipients }: { key: "sag-web-version" | "whats-new"; recipients: string }) =>
+      api.post<{ ok: boolean; message: string; details?: string }>(`${RUTA}/administrative-reminders/${key}/test`, { recipients }),
+    onSuccess: (r) => setResultadoAdmin(r),
+    onError: (e: any) => setResultadoAdmin({ ok: false, message: e?.message ?? "Error al enviar la prueba." }),
   });
 
   if (isLoading || !form) return <div className="cargando">Cargando configuración...</div>;
@@ -140,10 +216,13 @@ export default function AlertasCorreosPage() {
     }
     if (form.overdueAlertsEnabled) {
       if (!form.overdueAlertTime) return setError("La hora de alertas de vencidos es obligatoria.");
-      if (form.overdueAlertRecipientsMode === "customEmails") {
-        const lista = form.customAdminAlertEmails ?? [];
-        if (lista.length === 0 || !lista.every(isEmail)) return setError("Ingrese correos válidos separados por punto y coma para las alertas personalizadas.");
-      }
+      if ((form.overdueAlertCustomEmails ?? []).some((e) => !isEmail(e))) return setError("Ingrese correos válidos separados por punto y coma para las alertas de vencidos.");
+      if (form.overdueAlertFrequency === "weekly" && (form.overdueAlertWeekdays ?? []).length === 0) return setError("Seleccione al menos un día para la frecuencia semanal.");
+    }
+    if ((form.blockedAlertCustomEmails ?? []).some((e) => !isEmail(e))) return setError("Ingrese correos válidos separados por punto y coma para las alertas de bloqueos.");
+    for (const r of Object.values(form.administrativeReminders ?? {})) {
+      if (r.dayOfMonth < 1 || r.dayOfMonth > 28) return setError("El día del mes de los recordatorios administrativos debe estar entre 1 y 28.");
+      if (r.recipients.some((e) => !isEmail(e))) return setError("Hay destinatarios inválidos en recordatorios administrativos.");
     }
     const body: any = { ...form };
     if (cambiarPwd && smtpPassword) body.smtpPassword = smtpPassword;
@@ -330,28 +409,72 @@ export default function AlertasCorreosPage() {
       <Acordeon titulo="Alertas de tareas vencidas">
         <div className="fila-formulario"><label>
           <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={form.overdueAlertsEnabled} onChange={(e) => actualizar("overdueAlertsEnabled", e.target.checked)} />
-          Activar alertas de vencidos
+          Activar alertas de vencidos <Tooltip texto="Las tareas vencidas son tareas con fecha programada anterior a hoy que aún no están completadas ni canceladas." />
         </label></div>
         {form.overdueAlertsEnabled && (
           <>
+            <h4>Frecuencia de alertas de vencidos</h4>
+            <div className="fila-formulario"><label>Frecuencia <Tooltip texto="Define si el resumen de vencidos se envía máximo una vez al día o una vez por semana configurada." /></label>
+              <select value={form.overdueAlertFrequency ?? "daily"} onChange={(e) => actualizar("overdueAlertFrequency", e.target.value as any)}>
+                <option value="daily">Diaria</option>
+                <option value="weekly">Semanal</option>
+              </select></div>
+            {(form.overdueAlertFrequency ?? "daily") === "weekly" && (
+              <div className="fila-formulario"><label>Días de semana</label>
+                {Object.entries(DIAS_SEMANA).map(([k, v]) => (
+                  <label key={k} style={{ display: "inline-flex", alignItems: "center", marginRight: 12, fontWeight: 400 }}>
+                    <input type="checkbox" style={{ width: "auto", marginRight: 4 }} checked={(form.overdueAlertWeekdays ?? []).includes(k)} onChange={() => actualizar("overdueAlertWeekdays", alternar(form.overdueAlertWeekdays, k))} />
+                    {v}
+                  </label>
+                ))}
+              </div>
+            )}
             <div className="fila-formulario"><label>Hora de envío</label>
-              <p className="texto-ayuda">Hora local en la que se intentará enviar la alerta.</p>
+              <p className="texto-ayuda">Hora local en la que se intentará enviar la alerta. <Tooltip texto="El timer puede correr varias veces, pero el sistema evita duplicados del mismo periodo." /></p>
               <input value={form.overdueAlertTime} onChange={(e) => actualizar("overdueAlertTime", e.target.value)} /></div>
             <div className="fila-formulario"><label>Zona horaria</label>
-              <p className="texto-ayuda">Zona usada para calcular las alertas de vencidos.</p>
+              <p className="texto-ayuda">Zona usada para calcular las alertas de vencidos. <Tooltip texto="Use America/Bogota para operar con hora Colombia." /></p>
               <input value={form.overdueAlertTimezone} onChange={(e) => actualizar("overdueAlertTimezone", e.target.value)} /></div>
-            <div className="fila-formulario"><label>Destinatarios</label>
-              <p className="texto-ayuda">Puedes usar administradores activos o correos específicos separados por punto y coma.</p>
-              <select value={form.overdueAlertRecipientsMode} onChange={(e) => actualizar("overdueAlertRecipientsMode", e.target.value as any)}>
-                <option value="admins">Administradores activos</option>
-                <option value="adminsAndClientManagers">Administradores + administradores de clientes</option>
-                <option value="customEmails">Correos personalizados</option>
-              </select></div>
-            {form.overdueAlertRecipientsMode === "customEmails" && (
-              <div className="fila-formulario"><label>Correos personalizados</label>
-                <input placeholder="correo1@empresa.com; correo2@empresa.com; correo3@empresa.com" value={(form.customAdminAlertEmails ?? []).join("; ")}
-                  onChange={(e) => actualizar("customAdminAlertEmails", parseCorreos(e.target.value))} /></div>
-            )}
+            <h4>Destinatarios de alertas</h4>
+            <RolesChecklist label="Roles destinatarios" valores={form.overdueAlertRecipientRoleIds ?? []} onChange={(v) => actualizar("overdueAlertRecipientRoleIds", v)} />
+            <div className="fila-formulario"><label>Correos adicionales <Tooltip texto="Separe varios correos con punto y coma. Los duplicados se eliminan al enviar." /></label>
+              <input placeholder="vencidos1@empresa.com; vencidos2@empresa.com" value={(form.overdueAlertCustomEmails ?? []).join("; ")}
+                onChange={(e) => actualizar("overdueAlertCustomEmails", parseCorreos(e.target.value))} /></div>
+          </>
+        )}
+      </Acordeon>
+
+      <Acordeon titulo="Alertas de tareas bloqueadas / errores de actualización">
+        <div className="fila-formulario"><label>
+          <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={form.blockedAlertsEnabled ?? true} onChange={(e) => actualizar("blockedAlertsEnabled", e.target.checked)} />
+          Activar alertas de bloqueos <Tooltip texto="Una tarea bloqueada representa un error de actualización o un bloqueo operativo." />
+        </label></div>
+        <RolesChecklist label="Roles destinatarios" valores={form.blockedAlertRecipientRoleIds ?? []} onChange={(v) => actualizar("blockedAlertRecipientRoleIds", v)} />
+        <div className="fila-formulario"><label>Correos adicionales</label>
+          <input placeholder="bloqueos1@empresa.com; bloqueos2@empresa.com" value={(form.blockedAlertCustomEmails ?? []).join("; ")}
+            onChange={(e) => actualizar("blockedAlertCustomEmails", parseCorreos(e.target.value))} /></div>
+        <div className="fila-formulario"><label>
+          <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={form.blockedAlertSendImmediately ?? true} onChange={(e) => actualizar("blockedAlertSendImmediately", e.target.checked)} />
+          Enviar inmediatamente al bloquear <Tooltip texto="Si está activo, bloquear una tarea puede enviar correo a los destinatarios configurados." />
+        </label></div>
+      </Acordeon>
+
+      <Acordeon titulo="Recordatorios administrativos">
+        {form.administrativeReminders && (
+          <>
+            <AdminReminderCard
+              titulo="Guardar versión mensual de SAG Web"
+              valor={form.administrativeReminders.sagWebVersionReminder}
+              onChange={(v) => actualizar("administrativeReminders", { ...form.administrativeReminders!, sagWebVersionReminder: v })}
+              onTest={(recipients) => enviarPruebaAdmin.mutate({ key: "sag-web-version", recipients })}
+            />
+            <AdminReminderCard
+              titulo={'Crear documento "¿Qué hay de nuevo en SAG Web?"'}
+              valor={form.administrativeReminders.whatsNewReminder}
+              onChange={(v) => actualizar("administrativeReminders", { ...form.administrativeReminders!, whatsNewReminder: v })}
+              onTest={(recipients) => enviarPruebaAdmin.mutate({ key: "whats-new", recipients })}
+            />
+            {resultadoAdmin && <Alerta tipo={resultadoAdmin.ok ? "exito" : "error"}>{resultadoAdmin.message}{resultadoAdmin.details && <div>{resultadoAdmin.details}</div>}</Alerta>}
           </>
         )}
       </Acordeon>
@@ -392,5 +515,42 @@ export default function AlertasCorreosPage() {
         </button>
       </div>
     </>
+  );
+}
+
+function RolesChecklist({ label, valores, onChange }: { label: string; valores: string[]; onChange: (v: string[]) => void }) {
+  return (
+    <div className="fila-formulario"><label>{label} <Tooltip texto="Se resolverán los usuarios activos con estos roles y se deduplicarán con los correos manuales." /></label>
+      {Object.entries(ETIQUETAS_ROLES).map(([k, v]) => (
+        <label key={k} style={{ display: "inline-flex", alignItems: "center", marginRight: 12, fontWeight: 400 }}>
+          <input type="checkbox" style={{ width: "auto", marginRight: 4 }} checked={valores.includes(k)} onChange={() => onChange(alternar(valores, k))} />
+          {v}
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function AdminReminderCard({ titulo, valor, onChange, onTest }: { titulo: string; valor: AdminReminder; onChange: (v: AdminReminder) => void; onTest: (recipients: string) => void }) {
+  const recipientsText = valor.recipients.join("; ");
+  return (
+    <div className="tarjeta tarjeta-compacta">
+      <h4>{titulo}</h4>
+      <div className="fila-formulario"><label>
+        <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={valor.enabled} onChange={(e) => onChange({ ...valor, enabled: e.target.checked })} />
+        Activar recordatorio
+      </label></div>
+      <div className="fila-formulario"><label>Destinatarios</label>
+        <input value={recipientsText} onChange={(e) => onChange({ ...valor, recipients: parseCorreos(e.target.value) })} placeholder="persona1@pya.com.co; persona2@pya.com.co" /></div>
+      <div className="fila-formulario"><label>Día del mes</label>
+        <input type="number" min={1} max={28} value={valor.dayOfMonth} onChange={(e) => onChange({ ...valor, dayOfMonth: Number(e.target.value) })} /></div>
+      <div className="fila-formulario"><label>Hora</label>
+        <input value={valor.time} onChange={(e) => onChange({ ...valor, time: e.target.value })} /></div>
+      <div className="fila-formulario"><label>Zona horaria</label>
+        <input value={valor.timezone} onChange={(e) => onChange({ ...valor, timezone: e.target.value })} /></div>
+      <div className="fila-formulario"><label>Asunto del correo</label>
+        <input value={valor.subject} onChange={(e) => onChange({ ...valor, subject: e.target.value })} /></div>
+      <button type="button" onClick={() => onTest(recipientsText)}>Enviar prueba</button>
+    </div>
   );
 }

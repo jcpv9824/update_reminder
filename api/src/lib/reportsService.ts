@@ -3,13 +3,13 @@ import {
   buildMastersReportEmail as buildMastersReportTemplate,
   type MasterReportClient,
 } from "./emailTemplates";
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+import { parseSemicolonEmails as parseEmailsDetailed, uniqueEmails } from "./emailRecipients";
 
 export function parseSemicolonEmails(value: string): string[] {
-  const emails = value.split(/[;,]/).map((x) => x.trim()).filter(Boolean);
+  const parsed = parseEmailsDetailed(value);
+  const emails = uniqueEmails(parsed.emails);
   if (emails.length === 0) throw new Error("Ingrese al menos un destinatario.");
-  const invalid = emails.find((email) => !EMAIL_RE.test(email));
+  const invalid = parsed.invalid[0];
   if (invalid) throw new Error(`Correo inválido: ${invalid}`);
   return emails;
 }
@@ -52,17 +52,23 @@ export function buildMastersReportEmail(args: {
     }
   }
 
-  const reportClients: MasterReportClient[] = args.clients.map((client) => ({
+  const activeClients = args.clients.filter((client) => client.status === "active");
+  const activeDomains = new Set(args.domains.filter((domain) => domain.status === "active").map((domain) => domain.id));
+
+  const reportClients: MasterReportClient[] = activeClients.map((client) => ({
     name: client.name,
     status: client.status,
     createdAt: client.createdAt,
-    domains: (domainsByClient.get(client.id) ?? []).map((domain) => ({
+    domains: (domainsByClient.get(client.id) ?? []).filter((domain) => domain.status === "active").map((domain) => ({
       name: domain.domainName,
       url: domain.domainName,
+      publishableDomain: domain.domainName,
+      environment: String(domain.environment ?? ""),
       status: domain.status,
       frequencyName: describeSchedule(activeDomainSchedule.get(domain.id)),
-      databases: (dbsByDomain.get(domain.id) ?? []).map((db) => ({
-        name: `${db.companyName} / ${db.dbAccess.initialCatalog}`,
+      databases: (dbsByDomain.get(domain.id) ?? []).filter((db) => db.status === "active" && activeDomains.has(db.domainId)).map((db) => ({
+        name: db.dbAccess.initialCatalog,
+        companyName: db.companyName,
         environment: String(db.environment ?? ""),
         status: db.status,
         createdAt: db.createdAt,

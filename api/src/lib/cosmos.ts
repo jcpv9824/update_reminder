@@ -30,7 +30,8 @@ export type ContainerName =
   | "updateSchedules"
   | "updateTasks"
   | "auditLogs"
-  | "appSettings";
+  | "appSettings"
+  | "emailNotifications";
 
 export function getContainer(name: ContainerName): Container {
   return getDatabase().container(name);

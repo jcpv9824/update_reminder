@@ -177,6 +177,47 @@ export function expandSchedulesWithDomainInheritance(
   for (const schedule of schedules) {
     if (!schedule.active) continue;
 
+    if (schedule.scopeGroups && schedule.scopeGroups.length > 0) {
+      for (const group of schedule.scopeGroups) {
+        const groupDomains = group.includeAllDomains
+          ? domains.filter((d) => d.clientId === group.clientId && d.status === "active")
+          : group.domains.map((g) => activeDomains.get(g.domainId)).filter(Boolean) as DomainRecord[];
+        for (const domain of groupDomains) {
+          const domainConfig = group.domains.find((d) => d.domainId === domain.id);
+          expanded.push({
+            ...schedule,
+            id: `${schedule.id}__domain_${domain.id}`,
+            clientId: domain.clientId,
+            clientName: domain.clientName,
+            domainId: domain.id,
+            domainName: domain.domainName,
+            targetType: "domain",
+            targetIds: [domain.id],
+            assignedRole: schedule.domainAssignedRole ?? "domain_updater",
+            assignedUserIds: schedule.assignmentMode === "users" ? (schedule.assignedUserIds ?? []) : [],
+          });
+          const dbs = (group.includeAllDomains || domainConfig?.includeAllDatabases)
+            ? (databasesByDomain.get(domain.id) ?? [])
+            : (domainConfig?.databaseIds ?? []).map((id) => activeDatabases.find((db) => db.id === id)).filter(Boolean) as DatabaseRecord[];
+          for (const db of dbs) {
+            expanded.push({
+              ...schedule,
+              id: `${schedule.id}__db_${db.id}`,
+              clientId: db.clientId,
+              clientName: db.clientName,
+              domainId: db.domainId,
+              domainName: db.domainName,
+              targetType: "database",
+              targetIds: [db.id],
+              assignedRole: schedule.databaseAssignedRole ?? "database_updater",
+              assignedUserIds: schedule.assignmentMode === "users" ? (schedule.databaseAssignedUserIds ?? []) : [],
+            });
+          }
+        }
+      }
+      continue;
+    }
+
     if (schedule.targetType === "database") {
       const targetIds = schedule.targetIds.filter((id) => activeDbIds.has(id));
       if (targetIds.length === 0) continue;

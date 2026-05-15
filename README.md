@@ -5,16 +5,19 @@ Aplicación web para gestionar las actualizaciones programadas de los clientes d
 ## Características
 
 - **Login con correo y contraseña** (JWT). Los roles se administran únicamente desde la página *Usuarios y roles*.
-- **Alertas y correos** en secciones simples: estado, configuración básica, recordatorios, alertas, reporte, SMTP avanzado y correo de prueba.
+- **Alertas y correos** en secciones simples: estado, configuración básica, recordatorios, alertas por tipo, reporte, SMTP avanzado, recordatorios administrativos y correo de prueba.
 - **Recordatorios por correo** a los actualizadores (días previos, hora y zona horaria configurables).
-- **Alertas diarias** a administradores cuando hay tareas vencidas.
-- **Reporte manual por correo** de clientes, dominios y empresas/bases de datos, sin contraseñas ni datos sensibles.
+- **Alertas globales de vencidos** con frecuencia diaria o semanal, destinatarios por roles y correos adicionales con deduplicación.
+- **Alertas de tareas bloqueadas / errores de actualización** con destinatarios propios. Los correos de error de bases incluyen servidor y puerto, base de datos y usuario, nunca contraseña.
+- **Reporte manual por correo** de clientes, dominios y empresas/bases de datos activos, con ambiente, sin contraseñas ni datos sensibles.
 - **Diseño con colores corporativos**: `#1C3664`, `#7E99B2`, `#D1D3D2`, `#D3C193`.
 - Página principal **Tareas** con dos columnas (dominios y bases de datos) divididas en *Vencidas / Hoy / Próximas / Completadas*.
-- Gestión de **clientes**, **dominios** y **bases de datos**. La frecuencia principal se configura en el **dominio**; las bases de datos heredan esa frecuencia desde el dominio seleccionado.
-- **Programaciones especiales** (semanal, intervalo, mensual, manual) para excepciones o casos avanzados. La frecuencia normal vive en cada dominio y no aparece en esa vista.
-- **Generación automática diaria** de tareas mediante Azure Functions Timer Trigger y generación manual desde la vista **Tareas** con **Generar tareas ahora**.
+- Gestión de **clientes**, **dominios** y **bases de datos** con eliminación en cascada confirmada y soft-delete de maestros. La frecuencia principal se configura en el **dominio**; las bases de datos heredan esa frecuencia desde el dominio seleccionado.
+- **Programaciones especiales** (semanal, intervalo, mensual, manual) con alcance jerárquico por cliente → dominio → base de datos y responsables por rol o usuarios específicos.
+- **Generación automática diaria** de tareas mediante Azure Functions Timer Trigger y refresco manual desde la vista **Tareas** con **Refrescar**. El refresco no envía correos.
 - Panel del actualizador con las cuatro partes del acceso (servidor, Initial Catalog, usuario y contraseña) y botones independientes para copiar; cada acción se audita.
+- Desde **Dominios** se puede abrir **Ver bases asociadas**; desde **Clientes**, **Ver dominios y bases**.
+- **Recordatorios administrativos mensuales** para guardar la versión mensual de SAG Web y crear el documento “¿Qué hay de nuevo en SAG Web?”.
 - **Roles**: administrador, administrador de clientes, actualizador de bases de datos, actualizador de dominios, visualizador.
 - **Auditoría completa** de todas las acciones (incluyendo revelar/copiar contraseñas).
 - **Contraseñas en Azure Key Vault**, nombres de secreto sanitizados automáticamente (sin guiones bajos ni caracteres inválidos).
@@ -90,7 +93,7 @@ cd api
 npm test
 ```
 
-Cubre el parser de conexión, el motor de frecuencias, la generación idempotente de tareas, las reglas de permisos por rol, la creación de bases de datos sin guardar contraseña en texto plano, y la sanitización de auditoría.
+Cubre el parser de conexión, el motor de frecuencias, la generación idempotente de tareas, reportes sin secretos, recordatorios, reglas de permisos por rol, creación de bases de datos sin guardar contraseña en texto plano, y sanitización de auditoría.
 
 ### Frontend
 
@@ -99,7 +102,7 @@ cd frontend
 npm test
 ```
 
-Cubre el parser visual y el componente de vista previa.
+Cubre vistas principales, selectores buscables, tareas, alertas y correos, programaciones especiales, login y parser visual.
 
 ## Roles y permisos
 
@@ -119,6 +122,7 @@ Cubre el parser visual y el componente de vista previa.
 - Los registros de auditoría **eliminan automáticamente** cualquier campo cuyo nombre incluya `password`, `secret`, `rawDbAccess`.
 - Cada acción de **revelar** o **copiar** la contraseña genera una entrada de auditoría con el usuario, la fecha y la base de datos asociada.
 - El reporte de clientes/dominios/empresas no incluye usuarios SQL, contraseñas, cadenas de conexión completas, secretos ni tokens.
+- Las eliminaciones en cascada no eliminan auditoría y no borran secretos de Key Vault cuando el maestro queda en soft-delete.
 
 ## Alertas y correos
 
@@ -137,7 +141,11 @@ La contraseña SMTP no se llena automáticamente. Para configurarla, abra **Conf
 
 Para probar el envío, escriba un destinatario en **Correo de prueba** y pulse **Enviar correo de prueba**.
 
-Para enviar el reporte maestro, abra **Reporte de clientes/dominios/empresas**, escriba destinatarios separados por punto y coma, por ejemplo `correo1@empresa.com; correo2@empresa.com`, y pulse **Enviar reporte**.
+En **Alertas de tareas vencidas** configure roles destinatarios, correos adicionales, frecuencia diaria/semanal, hora y zona horaria. En **Alertas de tareas bloqueadas / errores de actualización** configure destinatarios independientes y si se debe enviar inmediatamente al bloquear.
+
+En **Recordatorios administrativos** configure los dos recordatorios mensuales: versión mensual de SAG Web y documento “¿Qué hay de nuevo en SAG Web?”. El día del mes se restringe a 1–28 para evitar problemas con febrero.
+
+Para enviar el reporte maestro, abra **Reporte de clientes/dominios/empresas**, escriba destinatarios separados por punto y coma, por ejemplo `correo1@empresa.com; correo2@empresa.com`, y pulse **Enviar reporte**. El reporte incluye solo clientes, dominios y bases activos, con ambiente.
 
 ## Frecuencias heredadas
 
@@ -151,15 +159,17 @@ La base de datos usa la frecuencia activa del dominio. Si el dominio no tiene fr
 
 Regla avanzada: si existe una frecuencia específica activa de base de datos, esa frecuencia tiene prioridad sobre la herencia del dominio. La vista **Nueva base de datos** ya no muestra ni envía frecuencia individual.
 
-## Generar tareas ahora
+## Refrescar tareas
 
-En **Tareas**, administradores y administradores de clientes ven el botón **Generar tareas ahora**. El botón llama `POST /api/tasks/generate`, ejecuta la misma lógica del timer diario, devuelve cuántas tareas se crearon y cuántas se omitieron por idempotencia, y refresca la lista.
+En **Tareas**, administradores y administradores de clientes ven el botón **Refrescar**. El botón llama `POST /api/tasks/refresh` (manteniendo compatibilidad con `POST /api/tasks/generate`), ejecuta la misma lógica del timer diario, devuelve cuántas tareas se crearon/actualizaron/omitieron por idempotencia, y refresca la lista. Este flujo no envía recordatorios, alertas ni correos.
 
 La vista muestra por defecto una ventana compacta desde 7 días antes de hoy hasta 7 días después de hoy. Al generar tareas manualmente, las tareas creadas dentro de esa ventana aparecen agrupadas por fecha, responsable, tipo de tarea y estado agregado.
 
 El tablero principal no lista todos los dominios o bases individualmente. Muestra grupos resumidos como **Dominios por actualizar** o **Bases de datos por actualizar**, con total, completadas, pendientes, con problemas y estado general. El botón **Ver detalle** abre las tareas individuales, permite copiar dominios o nombres de bases y guarda inmediatamente cada cambio de estado.
 
-El detalle de tareas usa un modal amplio. Para dominios muestra solo las acciones normales **Copiar dominio para publicar** y **Completar**. Para bases de datos muestra la conexión en campos apilados: servidor, base, usuario y contraseña. La contraseña no se precarga; se revela o copia bajo demanda con el endpoint seguro y auditoría sin incluir el valor.
+El detalle de tareas usa un modal amplio. Para dominios muestra acciones como **Iniciar**, **Completar**, **Bloquear**, **Resolver bloqueo** y **Reabrir** según el estado. Para bases de datos muestra la conexión en campos apilados: servidor, base, usuario y contraseña. La contraseña no se precarga; se revela o copia bajo demanda con el endpoint seguro y auditoría sin incluir el valor.
+
+Las tareas bloqueadas se resuelven con comentario obligatorio hacia pendiente, en progreso o completada. Las completadas se pueden reabrir a pendiente con motivo.
 
 ## Flujo rápido de creación
 
@@ -171,10 +181,11 @@ El flujo principal ahora es **Cliente → Dominio con frecuencia → Base de dat
 
 Los formularios normales usan por defecto el rol responsable: **Actualizador de dominios** para tareas de dominio y **Actualizador de bases de datos** para tareas de base. En la frecuencia del dominio el administrador puede cambiar a **Asignar responsable específico**; entonces las tareas y recordatorios se asignan solo a esas personas activas. Si vuelve a **Usar rol predeterminado**, se limpian los usuarios manuales y los recordatorios vuelven a todos los usuarios activos del rol.
 
-La vista **Programaciones especiales** queda para excepciones avanzadas. Allí el objetivo puede quedar vacío si el caso especial lo requiere, y el rol también se infiere por tipo de objetivo. Las frecuencias normales creadas desde **Dominios** se guardan con `origin = "domain_default"` y no aparecen en esta página; las creadas desde **Programaciones especiales** se guardan con `origin = "special"`.
+La vista **Programaciones especiales** queda para excepciones avanzadas. El alcance se construye por grupos: agregar cliente, incluir todos los dominios o agregar dominios específicos, e incluir todas las bases o bases puntuales. Las frecuencias normales creadas desde **Dominios** se guardan con `origin = "domain_default"` y no aparecen en esta página; las creadas desde **Programaciones especiales** se guardan con `origin = "special"`.
 
 ## Cambios recientes
 
+- [CAMBIOS_V8.md](CAMBIOS_V8.md): cascada, vistas relacionadas, programaciones por grupos, estados de tareas, alertas por tipo, Refrescar, reporte activo con ambiente y recordatorios administrativos.
 - [CAMBIOS_V6.md](CAMBIOS_V6.md): Alertas y correos simplificado, reporte maestro por correo, frecuencias heredadas desde dominio y generación manual de tareas.
 - [CAMBIOS_V5.md](CAMBIOS_V5.md): fix del 404 al refrescar, listas sin eliminados, eliminación física con integridad y selectores buscables.
 - [CAMBIOS_V4.md](CAMBIOS_V4.md): vista administrativa **Alertas y correos** (SMTP, recordatorios, alertas, prueba). Contraseña SMTP en Key Vault.

@@ -3,16 +3,7 @@
     "rewrite": "/index.html",
     "exclude": [
       "/assets/*",
-      "*.{css,js,png,jpg,jpeg,gif,ico,svg,woff,woff2,ttf,otf,map,json}"
+      "/*.{css,scss,js,png,gif,ico,jpg,svg}"
     ]
-  },
-  "responseOverrides": {
-    "404": {
-      "rewrite": "/index.html",
-      "statusCode": 200
-    }
-  },
-  "mimeTypes": {
-    ".json": "application/json"
   }
 }
