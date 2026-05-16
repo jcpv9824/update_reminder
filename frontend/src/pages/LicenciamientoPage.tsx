@@ -2,8 +2,8 @@ import { FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
-import { Alerta, DialogoConfirmar, EtiquetaEstado, Modal } from "../components/Comunes";
-import type { AsignacionLicencia, BaseDeDatos, Cliente, Dominio, ModuloLicencia, NivelAsignacionLicencia } from "../types";
+import { Alerta, DialogoConfirmar, EtiquetaEstado, Modal, Paginacion } from "../components/Comunes";
+import type { AsignacionLicencia, BaseDeDatos, Cliente, Dominio, ModuloLicencia, NivelAsignacionLicencia, RespuestaPaginada } from "../types";
 import { ETIQUETAS_AMBIENTE } from "../types";
 
 type Tab = "modulos" | "asignaciones";
@@ -37,10 +37,19 @@ export default function LicenciamientoPage() {
   const [modalAsignacion, setModalAsignacion] = useState<AsignacionLicencia | "nuevo" | null>(null);
   const [eliminarModulo, setEliminarModulo] = useState<ModuloLicencia | null>(null);
   const [eliminarAsignacion, setEliminarAsignacion] = useState<AsignacionLicencia | null>(null);
+  const [busqueda, setBusqueda] = useState("");
+  const [pagina, setPagina] = useState(1);
   const [exito, setExito] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const modulos = useQuery({ queryKey: ["license-modules"], queryFn: () => api.get<ModuloLicencia[]>("/license-modules") });
+  const modulos = useQuery({
+    queryKey: ["license-modules", "pagina", pagina, busqueda],
+    queryFn: () => {
+      const params = new URLSearchParams({ page: String(pagina), pageSize: "10" });
+      if (busqueda) params.set("search", busqueda);
+      return api.get<RespuestaPaginada<ModuloLicencia>>(`/license-modules?${params.toString()}`);
+    },
+  });
   const asignaciones = useQuery({ queryKey: ["license-assignments"], queryFn: () => api.get<AsignacionLicencia[]>("/license-assignments") });
   const clientes = useQuery({ queryKey: ["clientes"], queryFn: () => api.get<Cliente[]>("/clients") });
   const dominios = useQuery({ queryKey: ["dominios"], queryFn: () => api.get<Dominio[]>("/domains") });
@@ -119,6 +128,8 @@ export default function LicenciamientoPage() {
   }
 
   const cargandoDatos = modulos.isLoading || asignaciones.isLoading || clientes.isLoading || dominios.isLoading || bases.isLoading;
+  const modulosItems = Array.isArray(modulos.data) ? modulos.data : modulos.data?.items ?? [];
+  const modulosPage = !Array.isArray(modulos.data) ? modulos.data : undefined;
 
   return (
     <>
@@ -138,6 +149,13 @@ export default function LicenciamientoPage() {
       {exito && <Alerta tipo="exito">{exito}</Alerta>}
       {error && <Alerta tipo="error">{error}</Alerta>}
 
+      <div className="barra-filtros">
+        <div className="campo">
+          <label>Buscar</label>
+          <input value={busqueda} onChange={(e) => { setBusqueda(e.target.value); setPagina(1); }} placeholder="Buscar módulo..." />
+        </div>
+      </div>
+
       {MOSTRAR_ASIGNACIONES_AVANZADAS && (
         <div className="pestanas" role="tablist" aria-label="Licenciamiento">
           <button className={tab === "modulos" ? "activo" : ""} role="tab" aria-selected={tab === "modulos"} onClick={() => setTab("modulos")}>Módulos</button>
@@ -148,7 +166,7 @@ export default function LicenciamientoPage() {
       {cargandoDatos ? <div className="cargando">Cargando licenciamiento...</div> : (
         !MOSTRAR_ASIGNACIONES_AVANZADAS || tab === "modulos" ? (
           <TablaModulos
-            modulos={modulos.data ?? []}
+            modulos={modulosItems}
             puedeAdministrar={puedeAdministrarModulos}
             onEditar={setModalModulo}
             onCambiarEstado={cambiarEstadoModulo}
@@ -183,7 +201,7 @@ export default function LicenciamientoPage() {
         {modalAsignacion && (
           <FormularioAsignacion
             inicial={modalAsignacion === "nuevo" ? undefined : modalAsignacion}
-            modulos={(modulos.data ?? []).filter((m) => m.status === "active")}
+            modulos={modulosItems.filter((m) => m.status === "active")}
             clientes={(clientes.data ?? []).filter((c) => c.status === "active")}
             dominios={(dominios.data ?? []).filter((d) => d.status === "active")}
             bases={(bases.data ?? []).filter((b) => b.status === "active")}
@@ -217,6 +235,10 @@ export default function LicenciamientoPage() {
         onConfirmar={() => eliminarAsignacion && borrarAsignacion.mutate(eliminarAsignacion.id)}
         onCancelar={() => setEliminarAsignacion(null)}
       />
+
+      {!MOSTRAR_ASIGNACIONES_AVANZADAS && modulosPage && (
+        <Paginacion page={modulosPage.page} pageSize={modulosPage.pageSize} total={modulosPage.total} onPageChange={setPagina} />
+      )}
     </>
   );
 }

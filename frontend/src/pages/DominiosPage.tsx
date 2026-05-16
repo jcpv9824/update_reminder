@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { BaseDeDatos, Cliente, Dominio, Frecuencia, Usuario } from "../types";
-import { Alerta, BotonCopiar, EtiquetaEstado, Modal, DialogoConfirmar } from "../components/Comunes";
+import type { BaseDeDatos, Cliente, Dominio, Frecuencia, RespuestaPaginada, Usuario } from "../types";
+import { Alerta, BotonCopiar, EtiquetaEstado, Modal, DialogoConfirmar, Paginacion } from "../components/Comunes";
 import { ETIQUETAS_AMBIENTE } from "../types";
 import { SeleccionFrecuencia, valoresFrecuenciaPorDefecto, depurarFrecuenciaParaEnvio, type ValoresFrecuencia } from "../components/SeleccionFrecuencia";
 import { SelectorBuscable } from "../components/SelectorBuscable";
@@ -22,12 +22,25 @@ export default function DominiosPage() {
   const [filtroCliente, setFiltroCliente] = useState("");
   const [filtroEstado, setFiltroEstado] = useState("");
   const [filtroAmbiente, setFiltroAmbiente] = useState("");
+  const [filtroRecurrente, setFiltroRecurrente] = useState("");
   const [busqueda, setBusqueda] = useState("");
+  const [pagina, setPagina] = useState(1);
   const [exito, setExito] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const { data: clientes = [] } = useQuery({ queryKey: ["clientes"], queryFn: () => api.get<Cliente[]>("/clients") });
-  const { data: dominios = [], isLoading } = useQuery({ queryKey: ["dominios"], queryFn: () => api.get<Dominio[]>("/domains") });
+  const { data: paginaDominios, isLoading } = useQuery({
+    queryKey: ["dominios", "pagina", pagina, filtroCliente, filtroEstado, filtroAmbiente, filtroRecurrente, busqueda],
+    queryFn: () => {
+      const params = new URLSearchParams({ page: String(pagina), pageSize: "10" });
+      if (filtroCliente) params.set("clientId", filtroCliente);
+      if (filtroEstado) params.set("status", filtroEstado);
+      if (filtroAmbiente) params.set("environment", filtroAmbiente);
+      if (filtroRecurrente) params.set("recurring", filtroRecurrente);
+      if (busqueda) params.set("search", busqueda);
+      return api.get<RespuestaPaginada<Dominio>>(`/domains?${params.toString()}`);
+    },
+  });
   const { data: frecuencias = [] } = useQuery({ queryKey: ["frecuencias"], queryFn: () => api.get<Frecuencia[]>("/schedules") });
   const { data: usuarios = [] } = useQuery({ queryKey: ["usuarios"], queryFn: () => api.get<Usuario[]>("/users") });
 
@@ -40,6 +53,25 @@ export default function DominiosPage() {
         return next;
       });
     }
+  }, [searchParams, setSearchParams]);
+
+  useEffect(() => {
+    const editId = searchParams.get("edit");
+    if (!editId) return;
+    let cancelado = false;
+    api.get<Dominio>(`/domains/${editId}`)
+      .then((dominio) => { if (!cancelado) setEditando(dominio); })
+      .catch((e: any) => setError(e?.message ?? "No se pudo cargar el dominio."))
+      .finally(() => {
+        if (!cancelado) {
+          setSearchParams((prev) => {
+            const next = new URLSearchParams(prev);
+            next.delete("edit");
+            return next;
+          });
+        }
+      });
+    return () => { cancelado = true; };
   }, [searchParams, setSearchParams]);
 
   const crear = useMutation({
@@ -76,13 +108,10 @@ export default function DominiosPage() {
     onError: (e: any) => setError(e?.message ?? "No se pudo eliminar el dominio."),
   });
 
-  const filtrados = dominios.filter((d) => {
-    if (filtroCliente && d.clientId !== filtroCliente) return false;
-    if (filtroEstado && d.status !== filtroEstado) return false;
-    if (filtroAmbiente && d.environment !== filtroAmbiente) return false;
-    if (busqueda && !d.domainName.toLowerCase().includes(busqueda.toLowerCase())) return false;
-    return true;
-  });
+  const filtrados = Array.isArray(paginaDominios) ? paginaDominios : paginaDominios?.items ?? [];
+  const infoPagina = !Array.isArray(paginaDominios) ? paginaDominios : undefined;
+
+  useEffect(() => { setPagina(1); }, [filtroCliente, filtroEstado, filtroAmbiente, filtroRecurrente, busqueda]);
 
   return (
     <>
@@ -121,38 +150,53 @@ export default function DominiosPage() {
             <option value="deleted">Eliminado</option>
           </select>
         </div>
+        <div className="campo"><label>Programación recurrente</label>
+          <select value={filtroRecurrente} onChange={(e) => setFiltroRecurrente(e.target.value)}>
+            <option value="">Todos</option>
+            <option value="with">Con programación</option>
+            <option value="without">Sin programación</option>
+          </select>
+        </div>
       </div>
 
       {isLoading ? <div className="cargando">Cargando...</div> : (
+        <>
         <table>
           <thead><tr>
-            <th>Cliente</th><th>Dominio</th><th>Ambiente</th><th>Versión web</th><th>Estado</th><th>Última actualización</th><th>Acciones</th>
+            <th>Cliente</th><th>Dominio</th><th>Ambiente</th><th>Recurrente</th><th>Próxima actualización</th><th>Estado</th><th>Última actualización</th><th>Acciones</th>
           </tr></thead>
           <tbody>
-            {filtrados.length === 0 ? (<tr><td colSpan={7} className="vacio">No hay dominios para mostrar.</td></tr>) :
-            filtrados.map((d) => (
-              <tr key={d.id}>
-                <td>{d.clientName}</td>
-                <td>
-                  <div>{d.domainName}</div>
-                  <div style={{ fontSize: 11, color: "#6b7280", fontFamily: "monospace" }}>
-                    Para publicar: {formatDomainForPublishing(d.domainName)}
-                  </div>
-                </td>
-                <td>{ETIQUETAS_AMBIENTE[d.environment] ?? d.environment}</td>
-                <td>{d.currentWebVersion ?? "-"}</td>
-                <td><EtiquetaEstado estado={d.status} /></td>
-                <td>{d.lastUpdatedAt ? new Date(d.lastUpdatedAt).toLocaleDateString("es-CO") : "-"}</td>
-                <td className="acciones-tabla">
-                  <button onClick={() => setEditando(d)}>Editar</button>
-                  <button onClick={() => setVerBases(d)}>Ver bases asociadas</button>
-                  {d.status === "active" && <button className="advertencia" onClick={() => setConfirmar({ tipo: "desactivar", dominio: d })}>Desactivar</button>}
-                  <button className="peligro" onClick={() => setConfirmar({ tipo: "eliminar", dominio: d })}>Eliminar</button>
-                </td>
-              </tr>
-            ))}
+            {filtrados.length === 0 ? (<tr><td colSpan={8} className="vacio">No hay dominios para mostrar.</td></tr>) :
+            filtrados.map((d) => {
+              const frecuenciaDominio = buscarFrecuenciaDominio(frecuencias, d.id);
+              return (
+                <tr key={d.id}>
+                  <td>{d.clientName}</td>
+                  <td>
+                    <div>{d.domainName}</div>
+                    <div style={{ fontSize: 11, color: "#6b7280", fontFamily: "monospace" }}>
+                      Para publicar: {formatDomainForPublishing(d.domainName)}
+                    </div>
+                  </td>
+                  <td>{ETIQUETAS_AMBIENTE[d.environment] ?? d.environment}</td>
+                  <td>{frecuenciaDominio ? "Sí" : "No"}</td>
+                  <td>{frecuenciaDominio ? calcularProximaActualizacion(frecuenciaDominio) : "-"}</td>
+                  <td><EtiquetaEstado estado={d.status} /></td>
+                  <td>{d.lastUpdatedAt ? new Date(d.lastUpdatedAt).toLocaleDateString("es-CO") : "-"}</td>
+                  <td className="acciones-tabla">
+                    <button onClick={() => setEditando(d)}>Editar</button>
+                    <button onClick={() => navigate(`/bases-de-datos?clientId=${encodeURIComponent(d.clientId)}&domainId=${encodeURIComponent(d.id)}&new=1`)}>Agregar base de datos</button>
+                    <button onClick={() => setVerBases(d)}>Ver bases asociadas</button>
+                    {d.status === "active" && <button className="advertencia" onClick={() => setConfirmar({ tipo: "desactivar", dominio: d })}>Desactivar</button>}
+                    <button className="peligro" onClick={() => setConfirmar({ tipo: "eliminar", dominio: d })}>Eliminar</button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
+        {infoPagina && <Paginacion page={infoPagina.page} pageSize={infoPagina.pageSize} total={infoPagina.total} onPageChange={setPagina} />}
+        </>
       )}
 
       <Modal titulo="Nuevo dominio" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
@@ -192,6 +236,8 @@ export default function DominiosPage() {
 }
 
 function BasesAsociadasDominio({ dominio }: { dominio: Dominio }) {
+  const navigate = useNavigate();
+  const [mensaje, setMensaje] = useState<string | null>(null);
   const { data: bases = [], isLoading, isError } = useQuery({
     queryKey: ["dominio-bases", dominio.id],
     queryFn: () => api.get<BaseDeDatos[]>(`/domains/${dominio.id}/databases`),
@@ -203,6 +249,7 @@ function BasesAsociadasDominio({ dominio }: { dominio: Dominio }) {
       <p><strong>Ambiente:</strong> {ETIQUETAS_AMBIENTE[dominio.environment] ?? dominio.environment}</p>
       {isLoading && <div className="cargando">Cargando bases asociadas...</div>}
       {isError && <Alerta tipo="error">No se pudieron cargar las bases asociadas.</Alerta>}
+      {mensaje && <Alerta tipo="info">{mensaje}</Alerta>}
       {!isLoading && bases.length === 0 && <p className="vacio">No hay bases asociadas activas para este dominio.</p>}
       {bases.map((bd) => (
         <div className="tarjeta tarjeta-compacta" key={bd.id}>
@@ -217,7 +264,16 @@ function BasesAsociadasDominio({ dominio }: { dominio: Dominio }) {
             <BotonCopiar valor={bd.dbAccess.serverHostPort} etiqueta="Copiar servidor y puerto" />
             <BotonCopiar valor={bd.dbAccess.initialCatalog} etiqueta="Copiar base de datos" />
             <BotonCopiar valor={bd.dbAccess.userId} etiqueta="Copiar usuario" />
-            <button type="button" disabled title="La contraseña se revela solo desde Ver acceso o detalle de tarea según permisos.">Contraseña oculta</button>
+            <button type="button" onClick={async () => {
+              try {
+                const r = await api.post<{ value: string }>(`/databases/${bd.id}/copy-access-part`, { part: "password" });
+                await navigator.clipboard.writeText(r.value);
+                setMensaje("Contraseña copiada al portapapeles.");
+              } catch (e: any) {
+                setMensaje(e?.message ?? "No se pudo copiar la contraseña.");
+              }
+            }}>Copiar contraseña</button>
+            <button type="button" onClick={() => navigate(`/bases-de-datos?edit=${encodeURIComponent(bd.id)}`)}>Editar base</button>
           </div>
         </div>
       ))}
@@ -248,20 +304,70 @@ function valoresDesdeFrecuencia(f?: Frecuencia): ValoresFrecuencia {
   };
 }
 
+function buscarFrecuenciaDominio(frecuencias: Frecuencia[], domainId: string): Frecuencia | undefined {
+  return frecuencias.find((f) =>
+    f.active !== false &&
+    f.origin === "domain_default" &&
+    f.targetType === "domain" &&
+    (f.domainId === domainId || f.targetIds.includes(domainId))
+  );
+}
+
+const WEEKDAY_INDEX: Record<string, number> = {
+  SUNDAY: 0,
+  MONDAY: 1,
+  TUESDAY: 2,
+  WEDNESDAY: 3,
+  THURSDAY: 4,
+  FRIDAY: 5,
+  SATURDAY: 6,
+};
+
+function formatDateInput(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function calcularProximaActualizacion(f: Frecuencia, hoy = new Date()): string {
+  const start = new Date(`${f.startDate}T00:00:00`);
+  const today = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+  const base = new Date(Math.max(start.getTime(), today.getTime()));
+  if (f.frequencyType === "weekly") {
+    const days = (f.weekdays ?? []).map((day) => WEEKDAY_INDEX[day]).filter((day) => day !== undefined);
+    if (days.length === 0) return "-";
+    for (let offset = 0; offset < 14; offset += 1) {
+      const candidate = new Date(base);
+      candidate.setDate(base.getDate() + offset);
+      if (days.includes(candidate.getDay())) return formatDateInput(candidate);
+    }
+  }
+  if (f.frequencyType === "interval" && f.intervalDays) {
+    const candidate = new Date(start);
+    while (candidate < base) candidate.setDate(candidate.getDate() + f.intervalDays);
+    return formatDateInput(candidate);
+  }
+  if (f.frequencyType === "monthly" && f.dayOfMonth) {
+    const candidate = new Date(base.getFullYear(), base.getMonth(), f.dayOfMonth);
+    if (candidate < base) candidate.setMonth(candidate.getMonth() + 1);
+    return formatDateInput(candidate);
+  }
+  return "-";
+}
+
 function FormularioDominio({ inicial, frecuenciaInicial, clienteInicialId = "", clientes, usuarios, onSubmit, cargando }: { inicial?: Dominio; frecuenciaInicial?: Frecuencia; clienteInicialId?: string; clientes: Cliente[]; usuarios: Usuario[]; onSubmit: (v: any, accion: AccionDominio) => void; cargando: boolean }) {
   const [clientId, setClientId] = useState(inicial?.clientId ?? clienteInicialId);
   const [domainName, setDomainName] = useState(inicial?.domainName ?? "");
   const [environment, setEnvironment] = useState(inicial?.environment ?? "production");
   const [currentWebVersion, setCurrentWebVersion] = useState(inicial?.currentWebVersion ?? "");
   const [notes, setNotes] = useState(inicial?.notes ?? "");
-  const [crearFrecuencia, setCrearFrecuencia] = useState(!inicial || !!frecuenciaInicial);
+  const [crearFrecuencia, setCrearFrecuencia] = useState(!!frecuenciaInicial);
   const [frecuencia, setFrecuencia] = useState<ValoresFrecuencia>(valoresDesdeFrecuencia(frecuenciaInicial));
   const [err, setErr] = useState<string | null>(null);
   function enviar(accion: AccionDominio) {
     if (!clientId) return setErr("Seleccione un cliente.");
     if (!domainName.trim()) return setErr("El dominio es obligatorio.");
+    if (!domainName.trim().toLowerCase().startsWith("https://")) return setErr("El dominio debe iniciar con https://");
     setErr(null);
-    const body: any = { clientId, domainName: domainName.trim(), environment, currentWebVersion: currentWebVersion || undefined, assignedUpdaterIds: [], notes };
+    const body: any = { clientId, domainName: domainName.trim(), environment, currentWebVersion: currentWebVersion.trim() || undefined, assignedUpdaterIds: [], notes: notes.trim() };
     if (crearFrecuencia) {
       body.frequency = { ...depurarFrecuenciaParaEnvio(frecuencia), assignedRole: "domain_updater", origin: "domain_default" };
     }
@@ -287,7 +393,7 @@ function FormularioDominio({ inicial, frecuenciaInicial, clienteInicialId = "", 
         />
       </div>
       <div className="fila-formulario"><label>Nombre del dominio *</label>
-        <input value={domainName} onChange={(e) => setDomainName(e.target.value)} placeholder="ejemplo.sagerp.co" /></div>
+        <input value={domainName} onChange={(e) => setDomainName(e.target.value)} placeholder="https://ejemplo.sagerp.co" /></div>
 
       <h4>Configuración técnica</h4>
       <div className="fila-formulario"><label>Ambiente *</label>

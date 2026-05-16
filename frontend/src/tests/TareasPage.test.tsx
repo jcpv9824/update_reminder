@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { BaseDeDatos, Tarea } from "../types";
+import { hoyEnBogotaIso } from "../utils/fechas";
 
 const apiMock = vi.hoisted(() => ({
   get: vi.fn<(path?: string) => Promise<any>>(async (_path?: string) => []),
@@ -33,7 +34,7 @@ beforeEach(() => {
 });
 
 function hoyIso() {
-  return new Date().toISOString().slice(0, 10);
+  return hoyEnBogotaIso();
 }
 
 function tarea(overrides: Partial<Tarea>): Tarea {
@@ -166,11 +167,12 @@ describe("TareasPage (vista unificada)", () => {
     await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith(expect.stringMatching(/targetType=domain/)));
   });
 
-  it("consulta tareas dentro de la ventana predeterminada de siete días", async () => {
+  it("consulta tareas hasta próximas 4 días y muestra texto de vista operativa", async () => {
     usuarioMock.roles = ["admin"];
     renderPagina();
-    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith(expect.stringMatching(/\/tasks\?targetType=domain&dateFrom=\d{4}-\d{2}-\d{2}&dateTo=\d{4}-\d{2}-\d{2}/)));
-    expect(screen.getByText(/Mostrando grupos de trabajo desde/i)).toBeInTheDocument();
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith(expect.stringMatching(/\/tasks\?targetType=domain&dateTo=\d{4}-\d{2}-\d{2}/)));
+    expect(apiMock.get).not.toHaveBeenCalledWith(expect.stringContaining("dateFrom="));
+    expect(screen.getByText(/Vista operativa: vencidas abiertas, hoy, próximas 4 días y completadas recientes/i)).toBeInTheDocument();
   });
 
   it("muestra el título 'Tareas' en el encabezado", () => {
@@ -260,7 +262,8 @@ describe("TareasPage (vista unificada)", () => {
     usuarioMock.id = "u";
     usuarioMock.roles = ["admin"];
     const promptSpy = vi.spyOn(window, "prompt").mockImplementation(() => "no usar");
-    mockTareas({ dominios: [tarea({ id: "d_done", status: "completed", completedAt: "2026-05-08T10:00:00Z", completedBy: "u" })] });
+    const hoy = hoyIso();
+    mockTareas({ dominios: [tarea({ id: "d_done", status: "completed", taskDate: hoy, taskBucket: `${hoy}_domain`, completedAt: `${hoy}T10:00:00Z`, completedBy: "u" })] });
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
     fireEvent.click(screen.getByRole("button", { name: /^Reabrir$/i }));
@@ -278,6 +281,7 @@ describe("TareasPage (vista unificada)", () => {
     mockTareas({ dominios: [tarea({ id: "d_blocked", status: "blocked", blockReason: "Error" })] });
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    expect(screen.getByRole("button", { name: /^Completar$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Resolver bloqueo/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Reabrir$/i })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Resolver bloqueo/i }));
@@ -285,6 +289,26 @@ describe("TareasPage (vista unificada)", () => {
     fireEvent.change(screen.getByLabelText(/Nuevo estado/i), { target: { value: "in_progress" } });
     fireEvent.click(screen.getByRole("button", { name: /Guardar resolución/i }));
     await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/tasks/d_blocked/resolve-block", { resolutionComment: undefined, newStatus: "in_progress" }));
+  });
+
+  it("tarea bloqueada puede completarse con modal de cierre", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    mockTareas({ dominios: [tarea({ id: "d_blocked_done", status: "blocked", blockReason: "Error corregido" })] });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Completar$/i }));
+    expect(await screen.findByRole("heading", { name: /Completar tarea bloqueada/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/Comentario de cierre/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/¿Tuviste algún problema/i)).toBeNull();
+    fireEvent.change(screen.getByLabelText(/Comentario de cierre/i), { target: { value: "Se corrigió y se actualizó correctamente." } });
+    fireEvent.click(screen.getByRole("button", { name: /Marcar como completada/i }));
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/tasks/d_blocked_done/complete", expect.objectContaining({
+      withProblems: false,
+      completionNote: "Se corrigió y se actualizó correctamente.",
+      notes: "Se corrigió y se actualizó correctamente.",
+      result: "success",
+    })));
   });
 
   it("si el guardado falla muestra error y permite reintentar", async () => {
@@ -317,6 +341,38 @@ describe("TareasPage (vista unificada)", () => {
     // Y ninguna "Hoy" debe contener (1).
     const hoyHeaders = screen.getAllByText(/^Hoy/i);
     expect(hoyHeaders.every((h) => !/\(1\)/.test(h.parentElement?.textContent ?? ""))).toBe(true);
+  });
+
+  it("aplica ventana operativa: vencidas abiertas, hoy, próximas 4 días y completadas recientes", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    const { hoyEnBogotaIso, sumarDiasIso } = await import("../utils/fechas");
+    const hoy = hoyEnBogotaIso();
+    const vieja = sumarDiasIso(hoy, -20);
+    const manana = sumarDiasIso(hoy, 1);
+    const enCuatro = sumarDiasIso(hoy, 4);
+    const enCinco = sumarDiasIso(hoy, 5);
+    const haceCuatro = sumarDiasIso(hoy, -4);
+    const haceCinco = sumarDiasIso(hoy, -5);
+    mockTareas({
+      dominios: [
+        tarea({ id: "vencida_pendiente", taskDate: vieja, taskBucket: `${vieja}_domain`, status: "pending" }),
+        tarea({ id: "vencida_bloqueada", taskDate: vieja, taskBucket: `${vieja}_domain`, status: "blocked" }),
+        tarea({ id: "vencida_completada", taskDate: vieja, taskBucket: `${vieja}_domain`, status: "completed", completedAt: `${vieja}T10:00:00.000Z`, assignedUserIds: ["cerrador"] }),
+        tarea({ id: "hoy", taskDate: hoy, taskBucket: `${hoy}_domain`, status: "pending" }),
+        tarea({ id: "manana", taskDate: manana, taskBucket: `${manana}_domain`, status: "pending" }),
+        tarea({ id: "en_cuatro", taskDate: enCuatro, taskBucket: `${enCuatro}_domain`, status: "pending" }),
+        tarea({ id: "en_cinco", taskDate: enCinco, taskBucket: `${enCinco}_domain`, status: "pending" }),
+        tarea({ id: "completada_hoy", taskDate: hoy, taskBucket: `${hoy}_domain`, status: "completed", completedAt: `${hoy}T10:00:00.000Z`, assignedUserIds: ["cerrador"] }),
+        tarea({ id: "completada_hace_cuatro", taskDate: haceCuatro, taskBucket: `${haceCuatro}_domain`, status: "completed", completedAt: `${haceCuatro}T10:00:00.000Z`, assignedUserIds: ["cerrador"] }),
+        tarea({ id: "completada_hace_cinco", taskDate: haceCinco, taskBucket: `${haceCinco}_domain`, status: "completed", completedAt: `${haceCinco}T10:00:00.000Z`, assignedUserIds: ["cerrador"] }),
+      ],
+    });
+    renderPagina();
+    expect(await screen.findByText((_content, node) => node?.textContent === "Vencidas (1)")).toBeInTheDocument();
+    expect(screen.getByText((_content, node) => node?.textContent === "Hoy (1)")).toBeInTheDocument();
+    expect(screen.getByText((_content, node) => node?.textContent === "Próximas (2)")).toBeInTheDocument();
+    expect(screen.getByText((_content, node) => node?.textContent === "Completadas (2)")).toBeInTheDocument();
   });
 
   it("resalta el grupo asignado al usuario actual con el badge 'Asignado a ti'", async () => {
@@ -577,7 +633,8 @@ describe("TareasPage (vista unificada)", () => {
   it("las tareas completadas siguen apareciendo en la sección completadas dentro de la ventana", async () => {
     usuarioMock.id = "u";
     usuarioMock.roles = ["admin"];
-    mockTareas({ dominios: [tarea({ id: "completada", status: "completed", domainName: "historico.sagerp.cloud", targetName: "historico.sagerp.cloud" })] });
+    const hoy = hoyIso();
+    mockTareas({ dominios: [tarea({ id: "completada", status: "completed", taskDate: hoy, taskBucket: `${hoy}_domain`, completedAt: `${hoy}T10:00:00Z`, domainName: "historico.sagerp.cloud", targetName: "historico.sagerp.cloud" })] });
     renderPagina();
     expect(await screen.findByText(/Completadas: 1 \/ 1/i)).toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));

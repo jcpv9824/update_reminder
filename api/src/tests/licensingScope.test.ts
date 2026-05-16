@@ -4,6 +4,7 @@ import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, U
 
 const mobile: LicenseModuleRecord = { id: "lic_mobile", name: "Mobile App", code: "MOBILE", status: "active" };
 const wms: LicenseModuleRecord = { id: "lic_wms", name: "WMS", code: "WMS", status: "active" };
+const inactiveModule: LicenseModuleRecord = { id: "lic_inactive", name: "Licencia inactiva", code: "OLD", status: "inactive" };
 
 const clientA: ClientRecord = {
   id: "client_a",
@@ -115,6 +116,34 @@ describe("licensingScope", () => {
     expect(preview.clientsCount).toBe(1);
     expect(preview.domainsCount).toBe(1);
     expect(preview.databasesCount).toBe(1);
+  });
+
+  it("usa solo registros activos aunque se reciba activeOnly en false", () => {
+    const inactiveClient: ClientRecord = { ...clientA, id: "client_inactive_scope", name: "Cliente inactivo", status: "inactive", licenseModuleIds: ["lic_mobile"] };
+    const inactiveClientDomain: DomainRecord = { ...domainA, id: "domain_inactive_client", clientId: inactiveClient.id, clientName: inactiveClient.name };
+    const preview = previewLicensingScope({
+      ...baseArgs,
+      clients: [...baseArgs.clients, inactiveClient],
+      domains: [...baseArgs.domains, inactiveClientDomain],
+      databases: [...baseArgs.databases, db("db_inactive_client", inactiveClientDomain)],
+      scope: { ...schedule.licensingScope!, activeOnly: false },
+    });
+    expect(preview.groups.some((group) => group.client.id === inactiveClient.id)).toBe(false);
+    expect(preview.clientsCount).toBe(2);
+  });
+
+  it("excluye licencias inactivas del alcance por licenciamiento", () => {
+    const licensedOnlyWithInactiveModule: ClientRecord = { ...clientA, id: "client_inactive_license", licenseModuleIds: ["lic_inactive"] };
+    const domainInactiveLicense: DomainRecord = { ...domainA, id: "domain_inactive_license", clientId: licensedOnlyWithInactiveModule.id };
+    const preview = previewLicensingScope({
+      clients: [licensedOnlyWithInactiveModule],
+      domains: [domainInactiveLicense],
+      databases: [db("db_inactive_license", domainInactiveLicense)],
+      licenseModules: [inactiveModule],
+      scope: { ...schedule.licensingScope!, licenseModuleIds: ["lic_inactive"] },
+    });
+    expect(preview.clientsCount).toBe(0);
+    expect(preview.groups).toEqual([]);
   });
 
   it("respeta targetTypes solo dominios y solo bases", () => {

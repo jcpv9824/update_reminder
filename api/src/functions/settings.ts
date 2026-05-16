@@ -15,16 +15,19 @@ async function getAdmin(req: HttpRequest) {
   return profile;
 }
 
+const EmailSchema = z.string().trim().email();
+const OptionalTrimmedString = z.string().trim().optional();
+
 const SettingsSchema = z.object({
   emailProvider: z.enum(["mock", "smtp", "sendgrid", "acs"]).optional(),
-  emailFrom: z.string().email().optional(),
-  emailFromName: z.string().optional(),
-  frontendBaseUrl: z.string().optional(),
-  smtpHost: z.string().optional(),
+  emailFrom: EmailSchema.optional(),
+  emailFromName: OptionalTrimmedString,
+  frontendBaseUrl: OptionalTrimmedString,
+  smtpHost: OptionalTrimmedString,
   smtpPort: z.number().int().min(1).max(65535).optional(),
   smtpSecure: z.boolean().optional(),
-  smtpUser: z.string().optional(),
-  smtpPassword: z.string().optional(),
+  smtpUser: EmailSchema.optional(),
+  smtpPassword: OptionalTrimmedString,
   remindersEnabled: z.boolean().optional(),
   defaultReminderDaysBefore: z.array(z.number().int().min(0)).optional(),
   defaultReminderTime: z.string().optional(),
@@ -33,14 +36,14 @@ const SettingsSchema = z.object({
   overdueAlertTime: z.string().optional(),
   overdueAlertTimezone: z.string().optional(),
   overdueAlertRecipientsMode: z.enum(["admins", "adminsAndClientManagers", "customEmails"]).optional(),
-  customAdminAlertEmails: z.array(z.string().email()).optional(),
+  customAdminAlertEmails: z.array(EmailSchema).optional(),
   overdueAlertRecipientRoleIds: z.array(z.string()).optional(),
-  overdueAlertCustomEmails: z.array(z.string().email()).optional(),
+  overdueAlertCustomEmails: z.array(EmailSchema).optional(),
   overdueAlertFrequency: z.enum(["daily", "weekly"]).optional(),
   overdueAlertWeekdays: z.array(z.enum(["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"])).optional(),
   blockedAlertsEnabled: z.boolean().optional(),
   blockedAlertRecipientRoleIds: z.array(z.string()).optional(),
-  blockedAlertCustomEmails: z.array(z.string().email()).optional(),
+  blockedAlertCustomEmails: z.array(EmailSchema).optional(),
   blockedAlertSendImmediately: z.boolean().optional(),
   blockedAlertIncludeInOverdueSummary: z.boolean().optional(),
   blockedReminderEnabled: z.boolean().optional(),
@@ -50,7 +53,7 @@ const SettingsSchema = z.object({
   administrativeReminders: z.object({
     sagWebVersionReminder: z.object({
       enabled: z.boolean(),
-      recipients: z.array(z.string().email()),
+      recipients: z.array(EmailSchema),
       sendRule: z.enum(["first_day", "last_day", "last_business_day", "fixed_day"]).optional(),
       dayOfMonth: z.number().int().min(1).max(28),
       time: z.string(),
@@ -59,7 +62,7 @@ const SettingsSchema = z.object({
     }),
     whatsNewReminder: z.object({
       enabled: z.boolean(),
-      recipients: z.array(z.string().email()),
+      recipients: z.array(EmailSchema),
       sendRule: z.enum(["first_day", "last_day", "last_business_day", "fixed_day"]).optional(),
       dayOfMonth: z.number().int().min(1).max(28),
       time: z.string(),
@@ -111,7 +114,7 @@ app.http("settingsEmailAlertsUpdate", {
   },
 });
 
-const TestSchema = z.object({ to: z.string().email("Correo destinatario no válido.") });
+const TestSchema = z.object({ to: z.string().trim().email("Correo destinatario no válido.") });
 
 app.http("settingsEmailAlertsTestEmail", {
   route: "settings/email-alerts/test-email",

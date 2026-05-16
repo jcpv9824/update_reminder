@@ -6,6 +6,7 @@ import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { hashPassword, normalizeEmail } from "../lib/password";
 import { badRequest, created, forbidden, notFound, ok, serverError } from "../lib/http";
+import { getPagination, paginateArray } from "../lib/pagination";
 import { loadEmailAlertsSettings } from "../lib/settingsService";
 import { renderUserPasswordEmail, sendEmail } from "../lib/emailService";
 import type { UserRecord } from "../types/models";
@@ -81,7 +82,10 @@ app.http("usersList", {
       const u = await getUserOrFail(req);
       if (!canManageUsers(u)) return forbidden();
       const { resources } = await getContainer("users").items.readAll<UserRecord>().fetchAll();
-      return ok(resources.map(sanitize));
+      const items = resources.map(sanitize);
+      const pagination = getPagination(req);
+      if (pagination.enabled) return ok(paginateArray(items, pagination.page, pagination.pageSize));
+      return ok(items);
     } catch (e) { return serverError(e); }
   },
 });
@@ -103,7 +107,7 @@ app.http("usersCreate", {
       const passwordHash = await hashPassword(parsed.data.password);
       const record: UserRecord = {
         id,
-        displayName: parsed.data.displayName,
+        displayName: parsed.data.displayName.trim(),
         email,
         roles: parsed.data.roles,
         active: parsed.data.active,
@@ -153,7 +157,7 @@ app.http("usersUpdate", {
       const rolesChanged = parsed.data.roles && JSON.stringify(parsed.data.roles) !== JSON.stringify(resource.roles);
       const updated: UserRecord = {
         ...resource,
-        ...(parsed.data.displayName !== undefined ? { displayName: parsed.data.displayName } : {}),
+        ...(parsed.data.displayName !== undefined ? { displayName: parsed.data.displayName.trim() } : {}),
         ...(parsed.data.roles !== undefined ? { roles: parsed.data.roles } : {}),
         ...(parsed.data.active !== undefined ? { active: parsed.data.active } : {}),
         updatedAt: new Date().toISOString(),

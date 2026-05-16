@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { BaseDeDatos, Cliente, Dominio, ModuloLicencia } from "../types";
-import { Alerta, DialogoConfirmar, EtiquetaEstado, Modal } from "../components/Comunes";
+import type { BaseDeDatos, Cliente, Dominio, ModuloLicencia, RespuestaPaginada } from "../types";
+import { Alerta, DialogoConfirmar, EtiquetaEstado, Modal, Paginacion } from "../components/Comunes";
 import { ETIQUETAS_AMBIENTE } from "../types";
 
 type AccionCliente = "guardar" | "agregarDominio" | "crearNuevo";
@@ -17,12 +17,18 @@ export default function ClientesPage() {
   const [verArbol, setVerArbol] = useState<Cliente | null>(null);
   const [filtroNombre, setFiltroNombre] = useState("");
   const [filtroEstado, setFiltroEstado] = useState("");
+  const [pagina, setPagina] = useState(1);
   const [exito, setExito] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const { data = [], isLoading } = useQuery({
-    queryKey: ["clientes"],
-    queryFn: () => api.get<Cliente[]>("/clients"),
+  const { data: paginaClientes, isLoading } = useQuery({
+    queryKey: ["clientes", "pagina", pagina, filtroNombre, filtroEstado],
+    queryFn: () => {
+      const params = new URLSearchParams({ page: String(pagina), pageSize: "10" });
+      if (filtroNombre) params.set("search", filtroNombre);
+      if (filtroEstado) params.set("status", filtroEstado);
+      return api.get<RespuestaPaginada<Cliente>>(`/clients?${params.toString()}`);
+    },
   });
   const { data: modulosLicencia = [] } = useQuery({
     queryKey: ["license-modules"],
@@ -65,11 +71,10 @@ export default function ClientesPage() {
     onError: (e: any) => setError(e?.message ?? "No se pudo eliminar el cliente."),
   });
 
-  const filtrados = data.filter((c) => {
-    if (filtroNombre && !c.name.toLowerCase().includes(filtroNombre.toLowerCase())) return false;
-    if (filtroEstado && c.status !== filtroEstado) return false;
-    return true;
-  });
+  const filtrados = Array.isArray(paginaClientes) ? paginaClientes : paginaClientes?.items ?? [];
+  const infoPagina = !Array.isArray(paginaClientes) ? paginaClientes : undefined;
+
+  useEffect(() => { setPagina(1); }, [filtroNombre, filtroEstado]);
 
   return (
     <>
@@ -97,6 +102,7 @@ export default function ClientesPage() {
       </div>
 
       {isLoading ? <div className="cargando">Cargando...</div> : (
+        <>
         <table>
           <thead>
             <tr>
@@ -117,8 +123,9 @@ export default function ClientesPage() {
                 <td>{c.notes ?? ""}</td>
                 <td>{new Date(c.createdAt).toLocaleDateString("es-CO")}</td>
                 <td className="acciones-tabla">
-                  <button onClick={() => setEditando(c)}>Editar</button>
                   <button onClick={() => setVerArbol(c)}>Ver dominios y bases</button>
+                  <button onClick={() => navigate(`/dominios?clientId=${encodeURIComponent(c.id)}&new=1`)}>Agregar dominio</button>
+                  <button onClick={() => setEditando(c)}>Editar</button>
                   {c.status === "active" && <button className="advertencia" onClick={() => setConfirmar({ tipo: "desactivar", cliente: c })}>Desactivar</button>}
                   <button className="peligro" onClick={() => setConfirmar({ tipo: "eliminar", cliente: c })}>Eliminar</button>
                 </td>
@@ -126,6 +133,8 @@ export default function ClientesPage() {
             ))}
           </tbody>
         </table>
+        {infoPagina && <Paginacion page={infoPagina.page} pageSize={infoPagina.pageSize} total={infoPagina.total} onPageChange={setPagina} />}
+        </>
       )}
 
       <Modal titulo="Nuevo cliente" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
@@ -165,6 +174,7 @@ export default function ClientesPage() {
 }
 
 function ArbolCliente({ cliente }: { cliente: Cliente }) {
+  const navigate = useNavigate();
   const { data, isLoading, isError } = useQuery({
     queryKey: ["cliente-tree", cliente.id],
     queryFn: () => api.get<{ client: Cliente; domains: Array<{ domain: Dominio; databases: BaseDeDatos[] }> }>(`/clients/${cliente.id}/tree`),
@@ -184,6 +194,10 @@ function ArbolCliente({ cliente }: { cliente: Cliente }) {
           <p><strong>Dominio para publicar:</strong> {domain.domainName}</p>
           <p><strong>Ambiente:</strong> {ETIQUETAS_AMBIENTE[domain.environment] ?? domain.environment}</p>
           <p><strong>Estado:</strong> <EtiquetaEstado estado={domain.status} /></p>
+          <div className="acciones-formulario" style={{ justifyContent: "flex-start", marginTop: 8 }}>
+            <button type="button" onClick={() => navigate(`/dominios?edit=${encodeURIComponent(domain.id)}`)}>Editar dominio</button>
+            <button type="button" onClick={() => navigate(`/bases-de-datos?clientId=${encodeURIComponent(domain.clientId)}&domainId=${encodeURIComponent(domain.id)}&new=1`)}>Agregar base</button>
+          </div>
           <div style={{ marginTop: 8 }}>
             <strong>Empresas / bases</strong>
             {databases.length === 0 ? <p className="texto-ayuda">Sin bases activas asociadas.</p> : (
@@ -191,6 +205,8 @@ function ArbolCliente({ cliente }: { cliente: Cliente }) {
                 {databases.map((db) => (
                   <li key={db.id}>
                     {db.companyName} — {db.dbAccess.initialCatalog} — {ETIQUETAS_AMBIENTE[db.environment] ?? db.environment} — {db.status}
+                    {" "}
+                    <button type="button" onClick={() => navigate(`/bases-de-datos?edit=${encodeURIComponent(db.id)}`)}>Editar base</button>
                   </li>
                 ))}
               </ul>
@@ -227,6 +243,12 @@ function FormularioCliente({
   function alternarLicencia(id: string) {
     setLicenseModuleIds((actuales) => actuales.includes(id) ? actuales.filter((x) => x !== id) : [...actuales, id]);
   }
+  function quitarLicencia(id: string) {
+    setLicenseModuleIds((actuales) => actuales.filter((x) => x !== id));
+  }
+  const modulosSeleccionados = licenseModuleIds
+    .map((id) => modulosLicencia.find((module) => module.id === id))
+    .filter(Boolean) as ModuloLicencia[];
   function enviar(accion: AccionCliente) {
     if (!name.trim()) { setErr("El nombre es obligatorio."); return; }
     setErr(null);
@@ -264,6 +286,21 @@ function FormularioCliente({
             );
           })}
           {modulosVisibles.length === 0 && <div className="vacio">No hay licencias activas para seleccionar.</div>}
+        </div>
+        <div className="seleccion-resumen">
+          <strong>Licencias seleccionadas</strong>
+          {modulosSeleccionados.length === 0 ? (
+            <p className="texto-ayuda">Sin licencias seleccionadas.</p>
+          ) : (
+            <div className="chips">
+              {modulosSeleccionados.map((module) => (
+                <span key={module.id} className={`chip ${module.status !== "active" ? "chip-inactivo" : ""}`}>
+                  {module.name}{module.status !== "active" ? " (inactiva)" : ""}
+                  <button type="button" aria-label={`Quitar ${module.name}`} onClick={() => quitarLicencia(module.id)}>×</button>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
       <div className="acciones-formulario">

@@ -25,6 +25,7 @@ const base1 = {
 };
 const base2 = { ...base1, id: "db_2", companyName: "Empresa Dos", dbAccess: { ...base1.dbAccess, initialCatalog: "EMPRESA_DOS" } };
 const modulo = { id: "module_mobile", name: "Mobile App", code: "MOBILE", status: "active" };
+const moduloInactivo = { id: "module_old", name: "Licencia vieja", code: "OLD", status: "inactive" };
 
 function renderPagina() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -73,8 +74,8 @@ beforeEach(() => {
     if (path === "/clients") return Promise.resolve([cliente]);
     if (path === "/domains") return Promise.resolve([dominio, dominio2]);
     if (path === "/databases") return Promise.resolve([base1, base2]);
-    if (path === "/license-modules") return Promise.resolve([modulo]);
-    if (path === "/schedules?origin=special") return Promise.resolve([]);
+    if (path === "/license-modules") return Promise.resolve([modulo, moduloInactivo]);
+    if (path.startsWith("/schedules?origin=special")) return Promise.resolve({ items: [], page: 1, pageSize: 10, total: 0 });
     return Promise.resolve([]);
   });
 });
@@ -86,7 +87,7 @@ describe("FrecuenciasPage", () => {
     expect(screen.getByText(/La frecuencia normal de actualización se configura desde cada dominio/i)).toBeInTheDocument();
     expect(await screen.findByText("No hay programaciones especiales configuradas.")).toBeInTheDocument();
     expect(screen.getByText(/ve a Dominios y edita la frecuencia del dominio/i)).toBeInTheDocument();
-    expect(apiMock.get).toHaveBeenCalledWith("/schedules?origin=special");
+    expect(apiMock.get).toHaveBeenCalledWith("/schedules?origin=special&page=1&pageSize=10");
   });
 
   it("muestra programaciones especiales devueltas por el API", async () => {
@@ -95,12 +96,18 @@ describe("FrecuenciasPage", () => {
       if (path === "/domains") return Promise.resolve([dominio]);
       if (path === "/databases") return Promise.resolve([]);
       if (path === "/license-modules") return Promise.resolve([modulo]);
-      if (path === "/schedules?origin=special") return Promise.resolve([frecuencia()]);
+      if (path.startsWith("/schedules?origin=special")) return Promise.resolve({ items: [frecuencia()], page: 1, pageSize: 10, total: 1 });
       return Promise.resolve([]);
     });
     renderPagina();
     expect(await screen.findByText("Cliente Uno")).toBeInTheDocument();
     expect(screen.getByText("Dominio")).toBeInTheDocument();
+  });
+
+  it("envía búsqueda al listado paginado de programaciones especiales", async () => {
+    renderPagina();
+    fireEvent.change(await screen.findByPlaceholderText("Buscar..."), { target: { value: "Mobile" } });
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith(expect.stringContaining("/schedules?origin=special&page=1&pageSize=10&search=Mobile")));
   });
 
   it("no muestra frecuencias normales de dominio aunque lleguen en la respuesta", async () => {
@@ -109,10 +116,15 @@ describe("FrecuenciasPage", () => {
       if (path === "/domains") return Promise.resolve([dominio]);
       if (path === "/databases") return Promise.resolve([]);
       if (path === "/license-modules") return Promise.resolve([modulo]);
-      if (path === "/schedules?origin=special") return Promise.resolve([
-        frecuencia({ id: "schedule_normal", clientName: "Normal Oculta", origin: "domain_default" }),
-        frecuencia({ id: "schedule_special", clientName: "Especial Visible", origin: "special" }),
-      ]);
+      if (path.startsWith("/schedules?origin=special")) return Promise.resolve({
+        items: [
+          frecuencia({ id: "schedule_normal", clientName: "Normal Oculta", origin: "domain_default" }),
+          frecuencia({ id: "schedule_special", clientName: "Especial Visible", origin: "special" }),
+        ],
+        page: 1,
+        pageSize: 10,
+        total: 2,
+      });
       return Promise.resolve([]);
     });
     renderPagina();
@@ -164,9 +176,25 @@ describe("FrecuenciasPage", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
     fireEvent.change(select("Tipo de alcance"), { target: { value: "licensing" } });
     expect(screen.getByText("Licencias a actualizar")).toBeInTheDocument();
+    expect(screen.queryByText(/Todos los clientes activos/i)).toBeNull();
     expect(screen.queryByPlaceholderText("Buscar cliente...")).toBeNull();
+    expect(screen.getByText("Sin licencias seleccionadas.")).toBeInTheDocument();
+    expect(screen.queryByText("Licencia vieja")).toBeNull();
+    expect(screen.getByLabelText(/Solo clientes, dominios y bases activos/i)).toBeChecked();
+    expect(screen.getByLabelText(/Solo clientes, dominios y bases activos/i)).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: /^Guardar$/i }));
     expect(screen.getByText("Seleccione al menos una licencia.")).toBeInTheDocument();
+  });
+
+  it("muestra licencias seleccionadas y permite quitarlas con chip", async () => {
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    fireEvent.change(select("Tipo de alcance"), { target: { value: "licensing" } });
+    fireEvent.click(await screen.findByText("Mobile App"));
+    expect(await screen.findByRole("button", { name: "Quitar Mobile App" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Quitar Mobile App" }));
+    expect(screen.getByText("Sin licencias seleccionadas.")).toBeInTheDocument();
+    expect(screen.getByLabelText(/Mobile App/i)).not.toBeChecked();
   });
 
   it("previsualiza y guarda programación por licenciamiento", async () => {
@@ -196,7 +224,7 @@ describe("FrecuenciasPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Guardar$/i }));
     await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/schedules", expect.objectContaining({
       selectionMode: "licensing",
-      licensingScope: expect.objectContaining({ licenseModuleIds: ["module_mobile"], environment: "production" }),
+      licensingScope: expect.objectContaining({ licenseModuleIds: ["module_mobile"], environment: "production", activeOnly: true }),
     })));
   });
 });

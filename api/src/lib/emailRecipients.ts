@@ -1,14 +1,14 @@
 import { getContainer } from "./cosmos";
 import type { UserRecord } from "../types/models";
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+import { isValidEmail } from "./inputValidation";
 
 export function parseSemicolonEmails(value: string): { emails: string[]; invalid: string[] } {
   const parts = String(value ?? "").split(";").map((e) => e.trim()).filter(Boolean);
   const emails: string[] = [];
   const invalid: string[] = [];
   for (const email of parts) {
-    if (EMAIL_RE.test(email)) emails.push(email);
+    if (isValidEmail(email)) emails.push(email);
     else invalid.push(email);
   }
   return { emails, invalid };
@@ -20,7 +20,7 @@ export function uniqueEmails(emails: string[]): string[] {
       emails
         .map((e) => e.trim().toLowerCase())
         .filter(Boolean)
-        .filter((e) => EMAIL_RE.test(e))
+        .filter((e) => isValidEmail(e))
     )
   );
 }

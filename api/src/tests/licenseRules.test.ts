@@ -6,7 +6,9 @@ import {
   buildUniqueLicenseCode,
   generateLicenseCodeFromName,
   hasDuplicateLicenseCode,
+  hasDuplicateLicenseName,
   normalizeLicenseCode,
+  normalizeLicenseName,
   validateLicenseAssignmentRequirements,
 } from "../lib/licenseRules";
 import type { CurrentUser, LicenseModuleRecord } from "../types/models";
@@ -26,6 +28,13 @@ describe("licenseRules", () => {
     expect(hasDuplicateLicenseCode(modules, " mobile ")).toBe(true);
     expect(hasDuplicateLicenseCode(modules, " mobile ", "module_mobile")).toBe(false);
     expect(hasDuplicateLicenseCode(modules, "old")).toBe(false);
+  });
+
+  it("normaliza y detecta nombres duplicados de módulos activos", () => {
+    expect(normalizeLicenseName("  Mobile   App  ")).toBe("mobile app");
+    expect(hasDuplicateLicenseName(modules, "mobile   app")).toBe(true);
+    expect(hasDuplicateLicenseName(modules, "mobile app", "module_mobile")).toBe(false);
+    expect(hasDuplicateLicenseName(modules, "Eliminado")).toBe(false);
   });
 
   it("genera códigos automáticos sin tildes y evita duplicados", () => {

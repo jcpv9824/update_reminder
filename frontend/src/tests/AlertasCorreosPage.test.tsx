@@ -215,7 +215,7 @@ describe("AlertasCorreosPage", () => {
       target: { value: "uno@empresa.com; correo-malo" },
     });
     fireEvent.click(screen.getByRole("button", { name: /Enviar reporte/i }));
-    expect(await screen.findByText(/Correo inválido: correo-malo/i)).toBeInTheDocument();
+    expect(await screen.findByText("El correo ‘correo-malo’ no tiene un formato válido.")).toBeInTheDocument();
     expect(apiMock.post).not.toHaveBeenCalled();
   });
 });

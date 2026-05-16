@@ -18,6 +18,13 @@ export type RespuestaMe =
   | { authenticated: true; registered: true; user: Usuario }
   | { authenticated: true; registered: false; user: Usuario; message: string };
 
+export type RespuestaPaginada<T> = {
+  items: T[];
+  page: number;
+  pageSize: number;
+  total: number;
+};
+
 export type Cliente = {
   id: string;
   name: string;

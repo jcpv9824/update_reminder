@@ -24,10 +24,20 @@ export type ClasificacionTarea = "vencidas" | "hoy" | "proximas" | "completadas"
 export function clasificarTareaPorFecha(
   taskDate: string,
   status: string,
-  hoyIso: string = hoyEnBogotaIso()
+  hoyIso: string = hoyEnBogotaIso(),
+  completedAt?: string | null
 ): ClasificacionTarea {
-  if (status === "completed") return "completadas";
+  if (status === "cancelled" || status === "deleted") return "fueraVentana";
+  const limiteProximas = sumarDiasIso(hoyIso, 4);
+  const desdeCompletadas = sumarDiasIso(hoyIso, -4);
+  if (status === "completed") {
+    const fechaCompletada = completedAt?.slice(0, 10);
+    const completadaReciente = !!fechaCompletada && fechaCompletada >= desdeCompletadas && fechaCompletada <= hoyIso;
+    const programadaReciente = taskDate >= desdeCompletadas && taskDate <= hoyIso;
+    return completadaReciente || programadaReciente ? "completadas" : "fueraVentana";
+  }
   if (taskDate < hoyIso) return "vencidas";
   if (taskDate === hoyIso) return "hoy";
-  return "proximas";
+  if (taskDate <= limiteProximas) return "proximas";
+  return "fueraVentana";
 }

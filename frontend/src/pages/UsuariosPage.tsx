@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import { Alerta, EtiquetaEstado, Modal } from "../components/Comunes";
-import { ETIQUETAS_ROLES } from "../types";
+import { Alerta, EtiquetaEstado, Modal, Paginacion } from "../components/Comunes";
+import { ETIQUETAS_ROLES, type RespuestaPaginada } from "../types";
 
 type Usuario = {
   id: string;
@@ -23,8 +23,14 @@ export default function UsuariosPage() {
   const [reset, setReset] = useState<Usuario | null>(null);
   const [exito, setExito] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pagina, setPagina] = useState(1);
 
-  const { data = [], isLoading } = useQuery({ queryKey: ["usuarios"], queryFn: () => api.get<Usuario[]>("/users") });
+  const { data: paginaUsuarios, isLoading } = useQuery({
+    queryKey: ["usuarios", "pagina", pagina],
+    queryFn: () => api.get<RespuestaPaginada<Usuario>>(`/users?page=${pagina}&pageSize=10`),
+  });
+  const usuarios: Usuario[] = Array.isArray(paginaUsuarios) ? paginaUsuarios : paginaUsuarios?.items ?? [];
+  const infoPagina = !Array.isArray(paginaUsuarios) ? paginaUsuarios : undefined;
   const crear = useMutation({
     mutationFn: (b: any) => api.post("/users", b),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["usuarios"] }); setModalAbierto(false); setExito("Usuario creado correctamente."); },
@@ -53,27 +59,37 @@ export default function UsuariosPage() {
       {error && <Alerta tipo="error">{error}</Alerta>}
 
       {isLoading ? <div className="cargando">Cargando...</div> : (
-        <table>
-          <thead><tr><th>Nombre</th><th>Correo</th><th>Roles</th><th>Estado</th><th>Acciones</th></tr></thead>
-          <tbody>
-            {data.length === 0 ? (<tr><td colSpan={5} className="vacio">No hay usuarios registrados.</td></tr>) :
-            data.map((u) => (
-              <tr key={u.id}>
-                <td>{u.displayName}</td>
-                <td>{u.email}</td>
-                <td>{u.roles.map((r) => ETIQUETAS_ROLES[r] ?? r).join(", ")}</td>
-                <td><EtiquetaEstado estado={u.active ? "active" : "inactive"} /></td>
-                <td className="acciones-tabla">
-                  <button onClick={() => setEditando(u)}>Editar</button>
-                  <button onClick={() => setReset(u)}>Restablecer contraseña</button>
-                  {u.active
-                    ? <button className="advertencia" onClick={() => desactivar.mutate(u.id)}>Desactivar</button>
-                    : <button className="exito" onClick={() => reactivar.mutate(u.id)}>Reactivar</button>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <>
+          <table>
+            <thead><tr><th>Nombre</th><th>Correo</th><th>Roles</th><th>Estado</th><th>Acciones</th></tr></thead>
+            <tbody>
+              {usuarios.length === 0 ? (<tr><td colSpan={5} className="vacio">No hay usuarios registrados.</td></tr>) :
+              usuarios.map((u) => (
+                <tr key={u.id}>
+                  <td>{u.displayName}</td>
+                  <td>{u.email}</td>
+                  <td>{u.roles.map((r) => ETIQUETAS_ROLES[r] ?? r).join(", ")}</td>
+                  <td><EtiquetaEstado estado={u.active ? "active" : "inactive"} /></td>
+                  <td className="acciones-tabla">
+                    <button onClick={() => setEditando(u)}>Editar</button>
+                    <button onClick={() => setReset(u)}>Restablecer contraseña</button>
+                    {u.active
+                      ? <button className="advertencia" onClick={() => desactivar.mutate(u.id)}>Desactivar</button>
+                      : <button className="exito" onClick={() => reactivar.mutate(u.id)}>Reactivar</button>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {infoPagina && (
+            <Paginacion
+              page={infoPagina.page}
+              pageSize={infoPagina.pageSize}
+              total={infoPagina.total}
+              onPageChange={setPagina}
+            />
+          )}
+        </>
       )}
 
       <Modal titulo="Nuevo usuario" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>

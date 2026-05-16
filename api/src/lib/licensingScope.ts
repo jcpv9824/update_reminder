@@ -42,19 +42,25 @@ export function previewLicensingScope(args: {
   databases: DatabaseRecord[];
   licenseModules: LicenseModuleRecord[];
 }): LicensingScopePreview {
-  const moduleNames = new Map(args.licenseModules.filter(isActive).map((module) => [module.id, module.name]));
-  const activeOnly = args.scope.activeOnly !== false;
-  const clients = args.clients.filter((client) => (!activeOnly || isActive(client)) && clientMatchesLicenses(client, args.scope));
-  const domains = args.domains.filter((domain) => (!activeOnly || isActive(domain)) && environmentMatches(domain.environment, args.scope.environment));
+  const activeModules = args.licenseModules.filter(isActive);
+  const activeModuleIds = new Set(activeModules.map((module) => module.id));
+  const moduleNames = new Map(activeModules.map((module) => [module.id, module.name]));
+  const effectiveScope: LicensingScope = {
+    ...args.scope,
+    activeOnly: true,
+    licenseModuleIds: args.scope.licenseModuleIds.filter((id) => activeModuleIds.has(id)),
+  };
+  const clients = args.clients.filter((client) => isActive(client) && clientMatchesLicenses(client, effectiveScope));
+  const domains = args.domains.filter((domain) => isActive(domain) && environmentMatches(domain.environment, effectiveScope.environment));
   const activeDomainIds = new Set(domains.map((domain) => domain.id));
   const databases = args.databases.filter((db) =>
-    (!activeOnly || isActive(db)) &&
+    isActive(db) &&
     activeDomainIds.has(db.domainId) &&
-    environmentMatches(db.environment, args.scope.environment)
+    environmentMatches(db.environment, effectiveScope.environment)
   );
 
-  const includeDomains = args.scope.targetTypes !== "databases_only";
-  const includeDatabases = args.scope.targetTypes !== "domains_only";
+  const includeDomains = effectiveScope.targetTypes !== "databases_only";
+  const includeDatabases = effectiveScope.targetTypes !== "domains_only";
   const groups: LicensingScopePreview["groups"] = [];
 
   for (const client of clients) {
@@ -79,7 +85,7 @@ export function previewLicensingScope(args: {
         id: client.id,
         name: client.name,
         licenses: (client.licenseModuleIds ?? [])
-          .filter((id) => args.scope.licenseModuleIds.includes(id))
+          .filter((id) => effectiveScope.licenseModuleIds.includes(id))
           .map((id) => moduleNames.get(id) ?? id),
       },
       domains: domainGroups,

@@ -7,6 +7,10 @@ import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { cancelPendingTasksForDomain } from "../lib/taskCleanup";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
+import { getPagination, paginateArray } from "../lib/pagination";
+import { matchesDomainSearch } from "../lib/listSearch";
+import { hasDuplicateDomainUrl } from "../lib/duplicateValidation";
+import { isValidHttpsDomain } from "../lib/inputValidation";
 import { buildScheduleRecord, normalizeFrequencyResponsibility, validateFrequency, type FrequencyInput } from "../lib/scheduleService";
 import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
@@ -38,8 +42,9 @@ app.http("domainsList", {
       const clientId = req.query.get("clientId");
       const status = req.query.get("status");
       const environment = req.query.get("environment");
-      const search = req.query.get("search")?.toLowerCase();
+      const search = req.query.get("search");
       const responsable = req.query.get("responsable");
+      const recurring = req.query.get("recurring");
       const querySpec = clientId
         ? { query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: clientId }] }
         : { query: "SELECT * FROM c" };
@@ -49,8 +54,21 @@ app.http("domainsList", {
       if (!includeDeleted && !status) items = items.filter((d) => d.status !== "deleted");
       if (status) items = items.filter((d) => d.status === status);
       if (environment) items = items.filter((d) => d.environment === environment);
-      if (search) items = items.filter((d) => d.domainName.toLowerCase().includes(search) || d.clientName.toLowerCase().includes(search));
+      if (search) items = items.filter((d) => matchesDomainSearch(d, search));
       if (responsable) items = items.filter((d) => d.assignedUpdaterIds.includes(responsable));
+      if (recurring === "with" || recurring === "without") {
+        const { resources: schedules } = await getContainer("updateSchedules").items
+          .query<UpdateSchedule>({ query: "SELECT * FROM c WHERE c.targetType = 'domain' AND c.active = true" })
+          .fetchAll();
+        const recurrentDomainIds = new Set(
+          schedules
+            .filter((schedule) => schedule.origin === "domain_default")
+            .flatMap((schedule) => [schedule.domainId, ...(schedule.targetIds ?? [])].filter(Boolean) as string[])
+        );
+        items = items.filter((domain) => recurring === "with" ? recurrentDomainIds.has(domain.id) : !recurrentDomainIds.has(domain.id));
+      }
+      const pagination = getPagination(req);
+      if (pagination.enabled) return ok(paginateArray(items, pagination.page, pagination.pageSize));
       return ok(items);
     } catch (e) {
       return serverError(e);
@@ -69,6 +87,9 @@ app.http("domainsCreate", {
       const body = await req.json();
       const parsed = DomainSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      if (!isValidHttpsDomain(parsed.data.domainName)) return badRequest("El dominio debe iniciar con https://");
+      const { resources: existingDomains } = await getContainer("domains").items.readAll<DomainRecord>().fetchAll();
+      if (hasDuplicateDomainUrl(existingDomains, parsed.data.domainName)) return conflict("Ya existe un dominio con esta URL.");
       const { resource: client } = await getContainer("clients").item(parsed.data.clientId, parsed.data.clientId).read<ClientRecord>();
       if (!client) return badRequest("Cliente no encontrado.");
       const now = new Date().toISOString();
@@ -78,10 +99,10 @@ app.http("domainsCreate", {
         clientName: client.name,
         domainName: parsed.data.domainName.trim(),
         environment: parsed.data.environment,
-        currentWebVersion: parsed.data.currentWebVersion,
+        currentWebVersion: parsed.data.currentWebVersion?.trim(),
         assignedUpdaterIds: parsed.data.assignedUpdaterIds,
         status: "active",
-        notes: parsed.data.notes,
+        notes: parsed.data.notes?.trim(),
         createdAt: now,
         createdBy: user.id,
         updatedAt: now,
@@ -205,6 +226,11 @@ app.http("domainsUpdate", {
       const existing = resources[0];
       if (!canEditDomainLimited(user, existing)) return forbidden();
       const body = await req.json() as any;
+      if (typeof body.domainName === "string") {
+        if (!isValidHttpsDomain(body.domainName)) return badRequest("El dominio debe iniciar con https://");
+        const { resources: existingDomains } = await container.items.readAll<DomainRecord>().fetchAll();
+        if (hasDuplicateDomainUrl(existingDomains, body.domainName, id)) return conflict("Ya existe un dominio con esta URL.");
+      }
 
       // Validar la frecuencia ANTES de tocar el dominio para no dejar
       // estado inconsistente si la frecuencia es inválida.
@@ -221,9 +247,9 @@ app.http("domainsUpdate", {
         ...existing,
         ...(typeof body.domainName === "string" ? { domainName: body.domainName.trim() } : {}),
         ...(typeof body.environment === "string" ? { environment: body.environment } : {}),
-        ...(typeof body.currentWebVersion === "string" ? { currentWebVersion: body.currentWebVersion } : {}),
+        ...(typeof body.currentWebVersion === "string" ? { currentWebVersion: body.currentWebVersion.trim() } : {}),
         ...(Array.isArray(body.assignedUpdaterIds) ? { assignedUpdaterIds: body.assignedUpdaterIds } : {}),
-        ...(typeof body.notes === "string" ? { notes: body.notes } : {}),
+        ...(typeof body.notes === "string" ? { notes: body.notes.trim() } : {}),
         updatedAt: new Date().toISOString(),
         updatedBy: user.id,
       };

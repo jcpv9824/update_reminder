@@ -100,7 +100,7 @@ function validarCorreosSeparadosPorPuntoYComa(valor: string): string | null {
   const correos = parseCorreos(valor);
   if (correos.length === 0) return "Ingrese al menos un correo.";
   const invalido = correos.find((correo) => !isEmail(correo));
-  return invalido ? `Correo inválido: ${invalido}` : null;
+  return invalido ? `El correo ‘${invalido}’ no tiene un formato válido.` : null;
 }
 
 function Acordeon({ titulo, resumen, children, abiertoInicial = true }: { titulo: string; resumen?: string; children: React.ReactNode; abiertoInicial?: boolean }) {

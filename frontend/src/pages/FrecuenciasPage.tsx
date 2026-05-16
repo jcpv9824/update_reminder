@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { BaseDeDatos, Cliente, Dominio, Frecuencia, ModuloLicencia, Usuario } from "../types";
-import { Alerta, EtiquetaEstado, Modal, DialogoConfirmar } from "../components/Comunes";
+import type { BaseDeDatos, Cliente, Dominio, Frecuencia, ModuloLicencia, RespuestaPaginada, Usuario } from "../types";
+import { Alerta, EtiquetaEstado, Modal, DialogoConfirmar, Paginacion } from "../components/Comunes";
 import { DIAS_SEMANA, ETIQUETAS_AMBIENTE, ETIQUETAS_FRECUENCIA, ETIQUETAS_ROLES } from "../types";
 import { SelectorBuscable } from "../components/SelectorBuscable";
 
@@ -12,6 +12,8 @@ export default function FrecuenciasPage() {
   const qc = useQueryClient();
   const [modalAbierto, setModalAbierto] = useState(false);
   const [editando, setEditando] = useState<Frecuencia | null>(null);
+  const [busqueda, setBusqueda] = useState("");
+  const [pagina, setPagina] = useState(1);
   const [exito, setExito] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -20,8 +22,17 @@ export default function FrecuenciasPage() {
   const { data: bds = [] } = useQuery({ queryKey: ["bases-de-datos"], queryFn: () => api.get<BaseDeDatos[]>("/databases") });
   const { data: usuarios = [] } = useQuery({ queryKey: ["usuarios"], queryFn: () => api.get<Usuario[]>("/users") });
   const { data: modulosLicencia = [] } = useQuery({ queryKey: ["license-modules"], queryFn: () => api.get<ModuloLicencia[]>("/license-modules") });
-  const { data: frecuencias = [], isLoading } = useQuery({ queryKey: ["frecuencias", "special"], queryFn: () => api.get<Frecuencia[]>("/schedules?origin=special") });
-  const programacionesEspeciales = useMemo(() => frecuencias.filter((f) => f.origin === "special"), [frecuencias]);
+  const { data: paginaFrecuencias, isLoading } = useQuery({
+    queryKey: ["frecuencias", "special", pagina, busqueda],
+    queryFn: () => {
+      const params = new URLSearchParams({ origin: "special", page: String(pagina), pageSize: "10" });
+      if (busqueda) params.set("search", busqueda);
+      return api.get<RespuestaPaginada<Frecuencia>>(`/schedules?${params.toString()}`);
+    },
+  });
+  const frecuenciasItems = Array.isArray(paginaFrecuencias) ? paginaFrecuencias : paginaFrecuencias?.items ?? [];
+  const frecuenciasPage = !Array.isArray(paginaFrecuencias) ? paginaFrecuencias : undefined;
+  const programacionesEspeciales = useMemo(() => frecuenciasItems.filter((f) => f.origin === "special"), [frecuenciasItems]);
 
   const crear = useMutation({
     mutationFn: (body: any) => api.post<Frecuencia>("/schedules", body),
@@ -41,6 +52,7 @@ export default function FrecuenciasPage() {
     onError: (e: any) => setError(e?.message ?? "No se pudo eliminar."),
   });
   const [confirmarEliminar, setConfirmarEliminar] = useState<Frecuencia | null>(null);
+  useEffect(() => { setPagina(1); }, [busqueda]);
 
   return (
     <>
@@ -53,42 +65,51 @@ export default function FrecuenciasPage() {
       <p className="texto-ayuda">
         Esta vista es para programaciones excepcionales o manuales. La frecuencia normal de actualización se configura desde cada dominio y se hereda automáticamente por sus bases de datos.
       </p>
+      <div className="barra-filtros">
+        <div className="campo">
+          <label>Buscar</label>
+          <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar..." />
+        </div>
+      </div>
 
       {isLoading ? <div className="cargando">Cargando...</div> : (
-        <table>
-          <thead><tr>
-            <th>Cliente</th><th>Tipo</th><th>Objetivos</th><th>Frecuencia</th><th>Inicio</th><th>Fin</th><th>Responsable inferido</th><th>Estado</th><th>Acciones</th>
-          </tr></thead>
-          <tbody>
-            {programacionesEspeciales.length === 0 ? (
-              <tr>
-                <td colSpan={9} className="vacio">
-                  <div>No hay programaciones especiales configuradas.</div>
-                  <div>Para configurar la frecuencia normal de un dominio, ve a Dominios y edita la frecuencia del dominio.</div>
-                </td>
-              </tr>
-            ) :
-            programacionesEspeciales.map((f) => (
-              <tr key={f.id}>
-                <td>{f.clientName}</td>
-                <td>{f.targetType === "database" ? "Base de datos" : "Dominio"}</td>
-                <td>{f.targetIds.length}</td>
-                <td>{ETIQUETAS_FRECUENCIA[f.frequencyType]}</td>
-                <td>{f.startDate}</td>
-                <td>{f.endDate ?? "-"}</td>
-                <td>{ETIQUETAS_ROLES[f.assignedRole] ?? f.assignedRole}</td>
-                <td><EtiquetaEstado estado={f.active ? "active" : "inactive"} /></td>
-                <td className="acciones-tabla">
-                  <button onClick={() => setEditando(f)}>Editar</button>
-                  {f.active
-                    ? <button className="advertencia" onClick={() => desactivar.mutate(f.id)}>Desactivar</button>
-                    : <button className="exito" onClick={() => reactivar.mutate(f.id)}>Reactivar</button>}
-                  <button className="peligro" onClick={() => setConfirmarEliminar(f)}>Eliminar</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <>
+          <table>
+            <thead><tr>
+              <th>Cliente</th><th>Tipo</th><th>Objetivos</th><th>Frecuencia</th><th>Inicio</th><th>Fin</th><th>Responsable inferido</th><th>Estado</th><th>Acciones</th>
+            </tr></thead>
+            <tbody>
+              {programacionesEspeciales.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="vacio">
+                    <div>No hay programaciones especiales configuradas.</div>
+                    <div>Para configurar la frecuencia normal de un dominio, ve a Dominios y edita la frecuencia del dominio.</div>
+                  </td>
+                </tr>
+              ) :
+              programacionesEspeciales.map((f) => (
+                <tr key={f.id}>
+                  <td>{f.clientName}</td>
+                  <td>{f.targetType === "database" ? "Base de datos" : "Dominio"}</td>
+                  <td>{f.targetIds.length}</td>
+                  <td>{ETIQUETAS_FRECUENCIA[f.frequencyType]}</td>
+                  <td>{f.startDate}</td>
+                  <td>{f.endDate ?? "-"}</td>
+                  <td>{ETIQUETAS_ROLES[f.assignedRole] ?? f.assignedRole}</td>
+                  <td><EtiquetaEstado estado={f.active ? "active" : "inactive"} /></td>
+                  <td className="acciones-tabla">
+                    <button onClick={() => setEditando(f)}>Editar</button>
+                    {f.active
+                      ? <button className="advertencia" onClick={() => desactivar.mutate(f.id)}>Desactivar</button>
+                      : <button className="exito" onClick={() => reactivar.mutate(f.id)}>Reactivar</button>}
+                    <button className="peligro" onClick={() => setConfirmarEliminar(f)}>Eliminar</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {frecuenciasPage && <Paginacion page={frecuenciasPage.page} pageSize={frecuenciasPage.pageSize} total={frecuenciasPage.total} onPageChange={setPagina} />}
+        </>
       )}
 
       <Modal titulo="Nueva programación especial" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
@@ -137,7 +158,6 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
   const [licenseMatchMode, setLicenseMatchMode] = useState<"any" | "all">(inicial?.licensingScope?.licenseMatchMode ?? "any");
   const [licenseEnvironment, setLicenseEnvironment] = useState(inicial?.licensingScope?.environment ?? "all");
   const [licenseTargetTypes, setLicenseTargetTypes] = useState<LicensingScope["targetTypes"]>(inicial?.licensingScope?.targetTypes ?? "domains_and_databases");
-  const [licenseActiveOnly, setLicenseActiveOnly] = useState(inicial?.licensingScope?.activeOnly ?? true);
   const [licenseSearch, setLicenseSearch] = useState("");
   const [preview, setPreview] = useState<LicensingPreview | null>(null);
   const [clienteAAgregar, setClienteAAgregar] = useState("");
@@ -185,13 +205,16 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
     setWeekdays((p) => (p.includes(d) ? p.filter((x) => x !== d) : [...p, d]));
   }
   function licensingScope(): LicensingScope {
-    return { licenseModuleIds, licenseMatchMode, environment: licenseEnvironment, targetTypes: licenseTargetTypes, activeOnly: licenseActiveOnly };
+    return { licenseModuleIds, licenseMatchMode, environment: licenseEnvironment, targetTypes: licenseTargetTypes, activeOnly: true };
   }
   function alternarLicencia(id: string) {
     setLicenseModuleIds((actuales) => actuales.includes(id) ? actuales.filter((x) => x !== id) : [...actuales, id]);
     setPreview(null);
   }
   const modulosActivos = modulosLicencia.filter((m) => m.status === "active" && (!licenseSearch.trim() || `${m.name} ${m.code ?? ""}`.toLowerCase().includes(licenseSearch.trim().toLowerCase())));
+  const licenciasSeleccionadas = licenseModuleIds
+    .map((id) => modulosLicencia.find((module) => module.id === id))
+    .filter(Boolean) as ModuloLicencia[];
 
   return (
     <form onSubmit={(e) => {
@@ -245,6 +268,21 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
             ))}
             {modulosActivos.length === 0 && <div className="vacio">No hay licencias activas para seleccionar.</div>}
           </div>
+          <div className="seleccion-resumen">
+            <strong>Licencias seleccionadas</strong>
+            {licenciasSeleccionadas.length === 0 ? (
+              <p className="texto-ayuda">Sin licencias seleccionadas.</p>
+            ) : (
+              <div className="chips">
+                {licenciasSeleccionadas.map((licencia) => (
+                  <span key={licencia.id} className="chip">
+                    {licencia.name}
+                    <button type="button" aria-label={`Quitar ${licencia.name}`} onClick={() => alternarLicencia(licencia.id)}>x</button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
           <div className="fila-formulario">
             <label>Coincidencia de licencias</label>
             <select value={licenseMatchMode} onChange={(e) => { setLicenseMatchMode(e.target.value as "any" | "all"); setPreview(null); }}>
@@ -270,7 +308,7 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
             </select>
           </div>
           <div className="fila-formulario"><label>
-            <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={licenseActiveOnly} onChange={(e) => { setLicenseActiveOnly(e.target.checked); setPreview(null); }} />
+            <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked readOnly disabled />
             Solo clientes, dominios y bases activos
           </label></div>
           <button type="button" className="primario" onClick={() => {

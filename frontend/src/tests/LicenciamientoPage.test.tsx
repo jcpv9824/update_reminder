@@ -23,6 +23,13 @@ vi.mock("../auth/AuthContext", () => ({
 const modules = [
   { id: "module_mobile", name: "Mobile App", code: "MOBILE", description: "App móvil", status: "active" },
 ];
+const paginatedModules = Array.from({ length: 10 }, (_, index) => ({
+  id: `module_${index + 1}`,
+  name: `Módulo ${index + 1}`,
+  code: `MOD_${index + 1}`,
+  description: `Descripción ${index + 1}`,
+  status: "active",
+}));
 const assignments = [
   {
     id: "assignment_1",
@@ -54,6 +61,7 @@ const databases = [{
 
 function mockGets() {
   apiMock.get.mockImplementation((path: string) => {
+    if (path.startsWith("/license-modules?")) return Promise.resolve({ items: modules, page: 1, pageSize: 10, total: modules.length });
     if (path === "/license-modules") return Promise.resolve(modules);
     if (path === "/license-assignments") return Promise.resolve(assignments);
     if (path === "/clients") return Promise.resolve(clients);
@@ -103,5 +111,35 @@ describe("LicenciamientoPage", () => {
     expect(screen.getByText(/Opcional. Si lo deja vacío/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
     await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/license-modules", expect.objectContaining({ name: "WMS", code: "" })));
+  });
+
+  it("busca módulos sin romper paginación", async () => {
+    renderPage();
+    fireEvent.change(await screen.findByPlaceholderText("Buscar módulo..."), { target: { value: "WMS" } });
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith(expect.stringContaining("/license-modules?page=1&pageSize=10&search=WMS")));
+  });
+
+  it("pagina módulos de licenciamiento", async () => {
+    apiMock.get.mockImplementation((path: string) => {
+      if (path.startsWith("/license-modules?")) return Promise.resolve({ items: paginatedModules, page: path.includes("page=2") ? 2 : 1, pageSize: 10, total: 25 });
+      if (path === "/license-assignments") return Promise.resolve(assignments);
+      if (path === "/clients") return Promise.resolve(clients);
+      if (path === "/domains") return Promise.resolve(domains);
+      if (path === "/databases") return Promise.resolve(databases);
+      return Promise.resolve([]);
+    });
+    renderPage();
+    expect(await screen.findByText("Mostrando 1-10 de 25")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Siguiente" }));
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith(expect.stringContaining("/license-modules?page=2&pageSize=10")));
+  });
+
+  it("muestra error cuando el backend rechaza nombre duplicado", async () => {
+    apiMock.post.mockRejectedValue(new Error("Ya existe un módulo con este nombre."));
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Nuevo módulo" }));
+    await userEvent.type(textField("Nombre *"), "Mobile App");
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+    expect(await screen.findByText("Ya existe un módulo con este nombre.")).toBeInTheDocument();
   });
 });

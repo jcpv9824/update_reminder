@@ -16,6 +16,8 @@ Aplicación web para gestionar las actualizaciones programadas de los clientes d
 - Gestión de **clientes**, **dominios** y **bases de datos** con eliminación en cascada confirmada y soft-delete de maestros. La frecuencia principal se configura en el **dominio**; las bases de datos heredan esa frecuencia desde el dominio seleccionado.
 - **Licenciamiento** visible para administradores y administradores de clientes, como maestro de módulos que luego se asignan al cliente completo desde **Clientes**.
 - **Programaciones especiales** (semanal, intervalo, mensual, manual) con alcance jerárquico manual o alcance por licenciamiento, y responsables por rol o usuarios específicos.
+- **Maestros paginados y buscables**. Clientes, dominios, bases de datos, licenciamiento, programaciones especiales, auditoría y usuarios muestran 10 registros por página por defecto. Las búsquedas y filtros vuelven a página 1.
+- **Validaciones de calidad de datos**: trim en campos de texto, dominios con `https://`, listas de correos separadas por punto y coma, y bloqueo de duplicados de clientes, dominios, bases y módulos de licencia.
 - **Generación automática diaria** de tareas mediante Azure Functions Timer Trigger y refresco manual desde la vista **Tareas** con **Refrescar**. El refresco no envía correos.
 - Panel del actualizador con las cuatro partes del acceso (servidor, Initial Catalog, usuario y contraseña) y botones independientes para copiar; cada acción se audita.
 - Desde **Dominios** se puede abrir **Ver bases asociadas**; desde **Clientes**, **Ver dominios y bases**.
@@ -201,13 +203,13 @@ Regla avanzada: si existe una frecuencia específica activa de base de datos, es
 
 En **Tareas**, administradores y administradores de clientes ven el botón **Refrescar**. El botón llama `POST /api/tasks/refresh` (manteniendo compatibilidad con `POST /api/tasks/generate`), ejecuta la misma lógica del timer diario, devuelve cuántas tareas se crearon/actualizaron/omitieron por idempotencia, y refresca la lista. Este flujo no envía recordatorios, alertas ni correos.
 
-La vista muestra por defecto una ventana compacta desde 7 días antes de hoy hasta 7 días después de hoy. Al generar tareas manualmente, las tareas creadas dentro de esa ventana aparecen agrupadas por fecha, responsable, tipo de tarea y estado agregado.
+La vista usa una **ventana operativa**: vencidas abiertas sin límite hacia atrás, tareas de hoy, próximas 4 días y completadas recientes (completadas hoy o dentro de los últimos 4 días por `completedAt` o fecha programada). No muestra completadas antiguas ni próximas más allá de 4 días.
 
 El tablero principal no lista todos los dominios o bases individualmente. Muestra grupos resumidos como **Dominios por actualizar** o **Bases de datos por actualizar**, con total, completadas, pendientes, con problemas y estado general. El botón **Ver detalle** abre las tareas individuales, permite copiar dominios o nombres de bases y guarda inmediatamente cada cambio de estado.
 
-El detalle de tareas usa un modal amplio. Para dominios muestra acciones como **Iniciar**, **Completar**, **Bloquear**, **Resolver bloqueo** y **Reabrir** según el estado. Para bases de datos muestra la conexión en campos apilados: servidor, base, usuario y contraseña. La contraseña no se precarga; se revela o copia bajo demanda con el endpoint seguro y auditoría sin incluir el valor.
+El detalle de tareas usa un modal amplio. Para dominios muestra acciones según estado: pendientes pueden iniciarse/completarse/bloquearse; bloqueadas muestran **Completar** y **Resolver bloqueo**, pero no **Reabrir**; completadas muestran **Reabrir**, pero no **Completar**. Para bases de datos muestra la conexión en campos apilados: servidor, base, usuario y contraseña. La contraseña no se precarga; se revela o copia bajo demanda con el endpoint seguro y auditoría sin incluir el valor.
 
-Las tareas bloqueadas se resuelven con modal propio hacia pendiente, en progreso o completada. El comentario de resolución es opcional. Las completadas se pueden reabrir a pendiente con modal propio y motivo opcional.
+Las tareas bloqueadas se resuelven con modal propio hacia pendiente, en progreso o completada. El comentario de resolución es opcional. Una bloqueada también puede marcarse como completada con un modal de cierre. Las completadas se pueden reabrir a pendiente con modal propio y motivo opcional. No se usan `alert`, `confirm` ni `prompt` del navegador en estos flujos.
 
 ## Flujo rápido de creación
 

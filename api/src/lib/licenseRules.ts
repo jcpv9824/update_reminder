@@ -12,6 +12,10 @@ export function normalizeLicenseCode(code: string): string {
   return code.trim().toUpperCase();
 }
 
+export function normalizeLicenseName(name: string): string {
+  return name.trim().replace(/\s+/g, " ").toLocaleLowerCase("es");
+}
+
 export function generateLicenseCodeFromName(name: string): string {
   const normalized = name
     .normalize("NFD")
@@ -28,6 +32,15 @@ export function hasDuplicateLicenseCode(modules: LicenseModuleRecord[], code: st
     if (module.id === excludeId) return false;
     if (module.status === "deleted" || module.deletedAt) return false;
     return normalizeLicenseCode(module.code ?? "") === normalized;
+  });
+}
+
+export function hasDuplicateLicenseName(modules: LicenseModuleRecord[], name: string, excludeId?: string): boolean {
+  const normalized = normalizeLicenseName(name);
+  return modules.some((module) => {
+    if (module.id === excludeId) return false;
+    if (module.status === "deleted" || module.deletedAt) return false;
+    return normalizeLicenseName(module.name ?? "") === normalized;
   });
 }
 

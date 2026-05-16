@@ -12,8 +12,7 @@ import { formatDomainForPublishing } from "../utils/dominio";
 // "hoy / próximas / vencidas" usan ese mismo `HOY` para evitar drift por UTC.
 const HOY = hoyEnBogotaIso();
 const VENTANA_TAREAS = {
-  desde: sumarDiasIso(HOY, -7),
-  hasta: sumarDiasIso(HOY, 7),
+  hasta: sumarDiasIso(HOY, 4),
 };
 
 type AccionTarea = "start" | "complete" | "block" | "reopen" | "resolve-block";
@@ -159,7 +158,7 @@ export default function TareasPage() {
       </div>
       {mensaje && <Alerta tipo="exito">{mensaje}</Alerta>}
       {errorGeneracion && <Alerta tipo="error">{errorGeneracion}</Alerta>}
-      <Alerta tipo="info">Mostrando grupos de trabajo desde {VENTANA_TAREAS.desde} hasta {VENTANA_TAREAS.hasta} (zona América/Bogotá).</Alerta>
+      <Alerta tipo="info">Vista operativa: vencidas abiertas, hoy, próximas 4 días y completadas recientes.</Alerta>
       <div className="tareas-grid">
         {verDominios && <ColumnaTareas titulo="Tareas de dominios" targetType="domain" usuario={usuario} usuariosMap={usuariosMap} />}
         {verBd && <ColumnaTareas titulo="Tareas de bases de datos" targetType="database" usuario={usuario} usuariosMap={usuariosMap} />}
@@ -178,7 +177,7 @@ function ColumnaTareas({ titulo, targetType, usuario, usuariosMap }: { titulo: s
 
   const { data: tareas = [], isLoading } = useQuery({
     queryKey: ["tareas", targetType],
-    queryFn: () => api.get<Tarea[]>(`/tasks?targetType=${targetType}&dateFrom=${VENTANA_TAREAS.desde}&dateTo=${VENTANA_TAREAS.hasta}`),
+    queryFn: () => api.get<Tarea[]>(`/tasks?targetType=${targetType}&dateTo=${VENTANA_TAREAS.hasta}`),
   });
 
   const cambiarEstado = useMutation({
@@ -218,7 +217,11 @@ function ColumnaTareas({ titulo, targetType, usuario, usuariosMap }: { titulo: s
   const seccionado = useMemo(() => {
     const out: Record<ClasificacionTarea, GrupoResumen[]> = { vencidas: [], hoy: [], proximas: [], completadas: [], fueraVentana: [] };
     for (const g of grupos) {
-      const cls = clasificarTareaPorFecha(g.fecha, g.estadoAgregado === "completed" ? "completed" : "pending", HOY);
+      const todasCompletadas = g.tareas.every((t) => t.status === "completed");
+      const completedAt = todasCompletadas
+        ? g.tareas.map((t) => t.completedAt?.slice(0, 10)).filter(Boolean).sort().at(-1) ?? null
+        : null;
+      const cls = clasificarTareaPorFecha(g.fecha, todasCompletadas ? "completed" : "pending", HOY, completedAt);
       out[cls].push(g);
     }
     return out;
@@ -465,7 +468,9 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
                     null
                   )}
                   {puedeCambiar && tarea.status === "pending" && <button type="button" onClick={() => onAccion(tarea.id, "start")}>Iniciar</button>}
-                  {puedeCambiar && tarea.status !== "completed" && tarea.status !== "cancelled" && tarea.status !== "blocked" && <button type="button" className="exito" onClick={() => onSolicitarCompletar(tarea)}>Completar</button>}
+                  {puedeCambiar && tarea.status !== "completed" && tarea.status !== "cancelled" && (
+                    <button type="button" className="exito" onClick={() => onSolicitarCompletar(tarea)}>Completar</button>
+                  )}
                   {puedeCambiar && tarea.status !== "completed" && tarea.status !== "cancelled" && tarea.status !== "blocked" && (
                     <button type="button" className="advertencia" onClick={() => setBloqueo(tarea)}>Bloquear</button>
                   )}
@@ -684,28 +689,35 @@ function ModalConfirmarCompletar({ abierto, tarea, onCerrar, onConfirmar }: {
   }, [abierto, tarea?.id]);
 
   if (!tarea) return null;
+  const esBloqueada = tarea.status === "blocked";
   return (
-    <Modal titulo="Confirmar actualización" abierto={abierto} onCerrar={onCerrar}>
-      <p>Confirma que completaste esta actualización.</p>
+    <Modal titulo={esBloqueada ? "Completar tarea bloqueada" : "Confirmar actualización"} abierto={abierto} onCerrar={onCerrar}>
+      <p>
+        {esBloqueada
+          ? "Esta tarea estaba bloqueada por un problema reportado. Si ya fue corregido y la actualización se completó correctamente, puede marcarla como completada."
+          : "Confirma que completaste esta actualización."}
+      </p>
       <p style={{ fontSize: 12, color: "#6b7280" }}>
         {tarea.targetType === "domain"
           ? `Dominio: ${tarea.domainName}`
           : `${tarea.targetName} (dominio ${tarea.domainName})`}
       </p>
 
-      <div className="fila-formulario">
-        <label>
-          <input
-            type="checkbox"
-            style={{ width: "auto", marginRight: 6 }}
-            checked={tuvoProblemas}
-            onChange={(e) => setTuvoProblemas(e.target.checked)}
-          />
-          ¿Tuviste algún problema durante la actualización?
-        </label>
-      </div>
+      {!esBloqueada && (
+        <div className="fila-formulario">
+          <label>
+            <input
+              type="checkbox"
+              style={{ width: "auto", marginRight: 6 }}
+              checked={tuvoProblemas}
+              onChange={(e) => setTuvoProblemas(e.target.checked)}
+            />
+            ¿Tuviste algún problema durante la actualización?
+          </label>
+        </div>
+      )}
 
-      {tuvoProblemas && (
+      {!esBloqueada && tuvoProblemas && (
         <div className="fila-formulario">
           <label htmlFor="problema-note">Describe el problema encontrado</label>
           <textarea
@@ -720,7 +732,7 @@ function ModalConfirmarCompletar({ abierto, tarea, onCerrar, onConfirmar }: {
       )}
 
       <div className="fila-formulario">
-        <label htmlFor="completion-note">Nota de actualización (opcional)</label>
+        <label htmlFor="completion-note">{esBloqueada ? "Comentario de cierre (opcional)" : "Nota de actualización (opcional)"}</label>
         <textarea
           id="completion-note"
           rows={2}
@@ -735,16 +747,16 @@ function ModalConfirmarCompletar({ abierto, tarea, onCerrar, onConfirmar }: {
         <button
           type="button"
           className="primario"
-          disabled={tuvoProblemas && !problema.trim()}
+          disabled={!esBloqueada && tuvoProblemas && !problema.trim()}
           onClick={() => onConfirmar({
-            withProblems: tuvoProblemas,
-            problemNote: tuvoProblemas ? problema.trim() : undefined,
+            withProblems: esBloqueada ? false : tuvoProblemas,
+            problemNote: !esBloqueada && tuvoProblemas ? problema.trim() : undefined,
             completionNote: nota.trim() || undefined,
             notes: nota.trim() || undefined,
-            result: tuvoProblemas ? "completed_with_problems" : "success",
+            result: !esBloqueada && tuvoProblemas ? "completed_with_problems" : "success",
           })}
         >
-          Confirmar actualización
+          {esBloqueada ? "Marcar como completada" : "Confirmar actualización"}
         </button>
       </div>
     </Modal>

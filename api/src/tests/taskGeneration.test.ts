@@ -495,4 +495,71 @@ describe("expandSchedulesWithDomainInheritance", () => {
     expect(summary.tasks.filter((task) => task.targetType === "domain" && task.targetId === "domain_1")).toHaveLength(1);
     expect(summary.skipped).toBeGreaterThanOrEqual(1);
   });
+
+  it("normal y licenciamiento sobre la misma base el mismo día crean una sola tarea", () => {
+    const module: LicenseModuleRecord = { id: "lic_mobile", name: "Mobile App", status: "active" };
+    const client: ClientRecord = { id: "client_1", name: "Cliente", status: "active", licenseModuleIds: ["lic_mobile"], createdAt: "", createdBy: "", updatedAt: "", updatedBy: "" };
+    const normalDbSchedule: UpdateSchedule = { ...schedule, id: "schedule_db_normal", targetIds: ["db_1"], origin: "domain_default" };
+    const licensingSchedule: UpdateSchedule = {
+      ...domainSchedule,
+      id: "schedule_licensing_db",
+      selectionMode: "licensing",
+      licensingScope: {
+        licenseModuleIds: ["lic_mobile"],
+        licenseMatchMode: "any",
+        environment: "production",
+        targetTypes: "databases_only",
+        activeOnly: true,
+      },
+      scopeGroups: undefined,
+      targetIds: [],
+      origin: "licensing",
+    };
+    const expanded = expandSchedulesWithDomainInheritance([normalDbSchedule, licensingSchedule], [domain], [db("db_1")], [client], [module]);
+    const summary = summarizeTaskGenerationForDate(expanded, "2026-05-08", [], (id) => id);
+    const dbTasks = summary.tasks.filter((task) => task.targetType === "database" && task.targetId === "db_1");
+    expect(dbTasks).toHaveLength(1);
+    expect(dbTasks[0].sources?.map((source) => source.scheduleId).sort()).toEqual(["schedule_db_normal", "schedule_licensing_db__lic_db_db_1"].sort());
+  });
+
+  it("manual especial y licenciamiento sobre el mismo dominio el mismo día crean una sola tarea", () => {
+    const module: LicenseModuleRecord = { id: "lic_mobile", name: "Mobile App", status: "active" };
+    const client: ClientRecord = { id: "client_1", name: "Cliente", status: "active", licenseModuleIds: ["lic_mobile"], createdAt: "", createdBy: "", updatedAt: "", updatedBy: "" };
+    const manualSchedule: UpdateSchedule = {
+      ...domainSchedule,
+      id: "schedule_manual",
+      origin: "special",
+      scopeGroups: [{ clientId: "client_1", includeAllDomains: false, domains: [{ domainId: "domain_1", includeAllDatabases: false, databaseIds: [] }] }],
+      targetIds: [],
+    };
+    const licensingSchedule: UpdateSchedule = {
+      ...domainSchedule,
+      id: "schedule_licensing_manual",
+      selectionMode: "licensing",
+      licensingScope: {
+        licenseModuleIds: ["lic_mobile"],
+        licenseMatchMode: "any",
+        environment: "production",
+        targetTypes: "domains_only",
+        activeOnly: true,
+      },
+      scopeGroups: undefined,
+      targetIds: [],
+      origin: "licensing",
+    };
+    const expanded = expandSchedulesWithDomainInheritance([manualSchedule, licensingSchedule], [domain], [db("db_1")], [client], [module]);
+    const summary = summarizeTaskGenerationForDate(expanded, "2026-05-08", [], (id) => id);
+    const domainTasks = summary.tasks.filter((task) => task.targetType === "domain" && task.targetId === "domain_1");
+    expect(domainTasks).toHaveLength(1);
+    expect(domainTasks[0].sources?.map((source) => source.scheduleId).sort()).toEqual(["schedule_manual__domain_domain_1", "schedule_licensing_manual__lic_domain_domain_1"].sort());
+  });
+
+  it("misma entidad en días diferentes crea tareas diferentes", () => {
+    const viernes = generateTasksForDate([domainSchedule], "2026-05-08", [], (id) => id);
+    const viernesSiguiente = generateTasksForDate([domainSchedule], "2026-05-15", viernes, (id) => id);
+    expect(viernes).toHaveLength(1);
+    expect(viernesSiguiente).toHaveLength(1);
+    expect(viernes[0].dedupeKey).toBe("domain:domain_1:2026-05-08");
+    expect(viernesSiguiente[0].dedupeKey).toBe("domain:domain_1:2026-05-15");
+  });
 });

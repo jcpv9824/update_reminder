@@ -104,3 +104,27 @@ export function DialogoConfirmar({
 export function Alerta({ tipo, children }: { tipo: "error" | "exito" | "info"; children: ReactNode }) {
   return <div className={`alerta alerta-${tipo}`}>{children}</div>;
 }
+
+export function Paginacion({
+  page,
+  pageSize,
+  total,
+  onPageChange,
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (page: number) => void;
+}) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const end = Math.min(total, page * pageSize);
+  return (
+    <div className="paginacion">
+      <span>Mostrando {start}-{end} de {total}</span>
+      <button type="button" onClick={() => onPageChange(page - 1)} disabled={page <= 1}>Anterior</button>
+      <span>Página {page} de {totalPages}</span>
+      <button type="button" onClick={() => onPageChange(page + 1)} disabled={page >= totalPages}>Siguiente</button>
+    </div>
+  );
+}

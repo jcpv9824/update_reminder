@@ -11,6 +11,9 @@ import { buildDatabaseAccessInfo } from "../lib/databaseAccessInfo";
 import { parseDbAccessString } from "../lib/dbAccessParser";
 import { buildScheduleRecord, validateFrequency, type FrequencyInput } from "../lib/scheduleService";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
+import { getPagination, paginateArray } from "../lib/pagination";
+import { matchesDatabaseSearch } from "../lib/listSearch";
+import { hasDuplicateDatabaseConnection } from "../lib/duplicateValidation";
 import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
@@ -41,19 +44,23 @@ app.http("databasesList", {
       await getUserOrFail(req);
       const container = getContainer("databases");
       const clientId = req.query.get("clientId");
+      const domainId = req.query.get("domainId");
       const querySpec = clientId
         ? { query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: clientId }] }
         : { query: "SELECT * FROM c" };
       const { resources } = await container.items.query<DatabaseRecord>(querySpec).fetchAll();
       const status = req.query.get("status");
       const env = req.query.get("environment");
-      const search = req.query.get("search")?.toLowerCase();
+      const search = req.query.get("search");
       const includeDeleted = req.query.get("includeDeleted") === "true";
       let items = resources;
       if (!includeDeleted && !status) items = items.filter((d) => d.status !== "deleted");
+      if (domainId) items = items.filter((d) => d.domainId === domainId);
       if (status) items = items.filter((d) => d.status === status);
       if (env) items = items.filter((d) => d.environment === env);
-      if (search) items = items.filter((d) => d.companyName.toLowerCase().includes(search) || d.dbAccess.initialCatalog.toLowerCase().includes(search));
+      if (search) items = items.filter((d) => matchesDatabaseSearch(d, search));
+      const pagination = getPagination(req);
+      if (pagination.enabled) return ok(paginateArray(items, pagination.page, pagination.pageSize));
       return ok(items);
     } catch (e) {
       return serverError(e);
@@ -86,17 +93,19 @@ app.http("databasesCreate", {
       } catch (e: any) {
         return badRequest(e.message ?? "Cadena de acceso inválida.");
       }
+      const { resources: existingDatabases } = await getContainer("databases").items.readAll<DatabaseRecord>().fetchAll();
+      if (hasDuplicateDatabaseConnection(existingDatabases, parsed.data.rawDbAccess)) return conflict("Ya existe una base de datos con esta cadena de conexión.");
 
       const { record, passwordToStore } = buildDatabaseRecordFromInput({
         clientId: client.id,
         clientName: client.name,
         domainId: domain.id,
         domainName: domain.domainName,
-        companyName: parsed.data.companyName,
+        companyName: parsed.data.companyName.trim(),
         environment: parsed.data.environment,
-        rawDbAccess: parsed.data.rawDbAccess,
+        rawDbAccess: parsed.data.rawDbAccess.trim(),
         assignedUpdaterIds: parsed.data.assignedUpdaterIds,
-        notes: parsed.data.notes,
+        notes: parsed.data.notes?.trim(),
         currentUser: user,
       });
       record.currentDbVersion = parsed.data.currentDbVersion;
@@ -239,14 +248,18 @@ app.http("databasesUpdate", {
       if (!db) return notFound("Base de datos no encontrada.");
       if (!canEditDatabaseLimited(user, db)) return forbidden();
       const body = await req.json() as any;
+      if (typeof body.rawDbAccess === "string" && body.rawDbAccess.trim() && canManageClients(user)) {
+        const { resources: existingDatabases } = await getContainer("databases").items.readAll<DatabaseRecord>().fetchAll();
+        if (hasDuplicateDatabaseConnection(existingDatabases, body.rawDbAccess, db.id)) return conflict("Ya existe una base de datos con esta cadena de conexión.");
+      }
       const before = { ...db };
       const updated: DatabaseRecord = {
         ...db,
-        ...(typeof body.companyName === "string" ? { companyName: body.companyName } : {}),
+        ...(typeof body.companyName === "string" ? { companyName: body.companyName.trim() } : {}),
         ...(typeof body.environment === "string" ? { environment: body.environment } : {}),
-        ...(typeof body.currentDbVersion === "string" ? { currentDbVersion: body.currentDbVersion } : {}),
+        ...(typeof body.currentDbVersion === "string" ? { currentDbVersion: body.currentDbVersion.trim() } : {}),
         ...(Array.isArray(body.assignedUpdaterIds) ? { assignedUpdaterIds: body.assignedUpdaterIds } : {}),
-        ...(typeof body.notes === "string" ? { notes: body.notes } : {}),
+        ...(typeof body.notes === "string" ? { notes: body.notes.trim() } : {}),
         updatedAt: new Date().toISOString(),
         updatedBy: user.id,
       };

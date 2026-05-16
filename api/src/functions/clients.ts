@@ -6,6 +6,8 @@ import { canManageClients } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
+import { getPagination, paginateArray } from "../lib/pagination";
+import { hasDuplicateClientName } from "../lib/duplicateValidation";
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 const ClientSchema = z.object({
@@ -57,13 +59,15 @@ app.http("clientsList", {
       await getUserOrFail(req);
       const container = getContainer("clients");
       const { resources } = await container.items.readAll<ClientRecord>().fetchAll();
-      const search = req.query.get("search")?.toLowerCase();
+      const search = req.query.get("search")?.trim().toLowerCase();
       const status = req.query.get("status");
       const includeDeleted = req.query.get("includeDeleted") === "true";
       let items = resources;
       if (!includeDeleted && !status) items = items.filter((c) => c.status !== "deleted");
-      if (search) items = items.filter((c) => c.name.toLowerCase().includes(search));
+      if (search) items = items.filter((c) => `${c.name} ${c.status} ${c.notes ?? ""}`.toLowerCase().includes(search));
       if (status) items = items.filter((c) => c.status === status);
+      const pagination = getPagination(req);
+      if (pagination.enabled) return ok(paginateArray(items, pagination.page, pagination.pageSize));
       return ok(items);
     } catch (e) {
       return serverError(e);
@@ -82,6 +86,9 @@ app.http("clientsCreate", {
       const body = await req.json();
       const parsed = ClientSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      const container = getContainer("clients");
+      const { resources: existingClients } = await container.items.readAll<ClientRecord>().fetchAll();
+      if (hasDuplicateClientName(existingClients, parsed.data.name)) return conflict("Ya existe un cliente con este nombre.");
       const licenses = await resolveClientLicenses(parsed.data.licenseModuleIds);
       if (isHttpResponse(licenses)) return licenses;
       const now = new Date().toISOString();
@@ -89,7 +96,7 @@ app.http("clientsCreate", {
         id: `client_${uuid()}`,
         name: parsed.data.name.trim(),
         status: "active",
-        notes: parsed.data.notes,
+        notes: parsed.data.notes?.trim(),
         licenseModuleIds: licenses.ids,
         licenseModuleNames: licenses.names,
         createdAt: now,
@@ -97,7 +104,6 @@ app.http("clientsCreate", {
         updatedAt: now,
         updatedBy: user.id,
       };
-      const container = getContainer("clients");
       await container.items.create(record);
       await writeAuditLog({
         entityType: "client",
@@ -181,6 +187,10 @@ app.http("clientsUpdate", {
       const container = getContainer("clients");
       const { resource } = await container.item(id, id).read<ClientRecord>();
       if (!resource) return notFound("Cliente no encontrado.");
+      if (typeof parsed.data.name === "string") {
+        const { resources: existingClients } = await container.items.readAll<ClientRecord>().fetchAll();
+        if (hasDuplicateClientName(existingClients, parsed.data.name, id)) return conflict("Ya existe un cliente con este nombre.");
+      }
       const before = { ...resource };
       const licenses = parsed.data.licenseModuleIds !== undefined
         ? await resolveClientLicenses(parsed.data.licenseModuleIds, resource.licenseModuleIds ?? [])
@@ -189,7 +199,7 @@ app.http("clientsUpdate", {
       const updated: ClientRecord = {
         ...resource,
         ...(parsed.data.name !== undefined ? { name: parsed.data.name.trim() } : {}),
-        ...(parsed.data.notes !== undefined ? { notes: parsed.data.notes } : {}),
+        ...(parsed.data.notes !== undefined ? { notes: parsed.data.notes.trim() } : {}),
         ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
         ...(licenses ? { licenseModuleIds: licenses.ids, licenseModuleNames: licenses.names } : {}),
         updatedAt: new Date().toISOString(),

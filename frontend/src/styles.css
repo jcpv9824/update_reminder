@@ -279,6 +279,16 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
 
 .fila-formulario { margin-bottom: 12px; }
 .acciones-formulario { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.paginacion {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+.paginacion button { padding: 4px 10px; }
 
 .parser-preview {
   background: rgba(209, 211, 210, 0.3);
@@ -347,6 +357,27 @@ td:last-child:has(.acciones-tabla) { text-align: right; }
 }
 .fila-seleccion input { width: auto; margin-top: 3px; }
 .fila-seleccion small { display: block; color: var(--color-text-muted); margin-top: 2px; }
+.seleccion-resumen { margin-top: 10px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #eef4f8;
+  color: var(--color-primary);
+  border: 1px solid var(--color-secondary);
+  font-size: 12px;
+}
+.chip-inactivo { opacity: 0.65; }
+.chip button {
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  line-height: 1;
+}
 
 .login-pantalla {
   display: flex; align-items: center; justify-content: center;

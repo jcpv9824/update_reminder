@@ -6,6 +6,8 @@ import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { summarizeLicenseDeleteDependencies } from "../lib/licenseDeletion";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
+import { getPagination, paginateArray } from "../lib/pagination";
+import { matchesLicenseModuleSearch } from "../lib/listSearch";
 import {
   canManageLicenseAssignments,
   canManageLicenseModules,
@@ -13,6 +15,7 @@ import {
   buildUniqueLicenseCode,
   generateLicenseCodeFromName,
   hasDuplicateLicenseCode,
+  hasDuplicateLicenseName,
   normalizeLicenseCode,
   validateLicenseAssignmentRequirements,
 } from "../lib/licenseRules";
@@ -26,9 +29,9 @@ import type {
 } from "../types/models";
 
 const ModuleSchema = z.object({
-  name: z.string().min(1, "El nombre del módulo es obligatorio.").max(200),
-  code: z.string().max(80).optional().default(""),
-  description: z.string().max(2000).optional().default(""),
+  name: z.string().trim().min(1, "El nombre del módulo es obligatorio.").max(200),
+  code: z.string().trim().max(80).optional().default(""),
+  description: z.string().trim().max(2000).optional().default(""),
   status: z.enum(["active", "inactive", "deleted"]).optional().default("active"),
 });
 
@@ -75,6 +78,12 @@ async function nextModuleCode(name: string, code?: string, excludeId?: string): 
     return normalized;
   }
   return buildUniqueLicenseCode(resources, generateLicenseCodeFromName(name), excludeId);
+}
+
+async function ensureUniqueModuleName(name: string, excludeId?: string): Promise<HttpResponseInit | null> {
+  const { resources } = await getContainer("licenseModules").items.readAll<LicenseModuleRecord>().fetchAll();
+  if (hasDuplicateLicenseName(resources, name, excludeId)) return conflict("Ya existe un módulo con este nombre.");
+  return null;
 }
 
 async function findModule(id: string): Promise<LicenseModuleRecord | null> {
@@ -158,9 +167,14 @@ app.http("licenseModulesList", {
     try {
       await getLicensingViewer(req);
       const includeDeleted = req.query.get("includeDeleted") === "true";
+      const search = req.query.get("search");
       const { resources } = await getContainer("licenseModules").items.readAll<LicenseModuleRecord>().fetchAll();
-      const items = includeDeleted ? resources : resources.filter((module) => module.status !== "deleted" && !module.deletedAt);
-      return ok(items.sort((a, b) => a.name.localeCompare(b.name, "es")));
+      let items = includeDeleted ? resources : resources.filter((module) => module.status !== "deleted" && !module.deletedAt);
+      if (search) items = items.filter((module) => matchesLicenseModuleSearch(module, search));
+      items = items.sort((a, b) => a.name.localeCompare(b.name, "es"));
+      const pagination = getPagination(req);
+      if (pagination.enabled) return ok(paginateArray(items, pagination.page, pagination.pageSize));
+      return ok(items);
     } catch (e: any) {
       if (e?.status === 403) return forbidden(e.message);
       return serverError(e);
@@ -177,14 +191,16 @@ app.http("licenseModulesCreate", {
       const user = await getModuleManager(req);
       const parsed = ModuleSchema.safeParse(await req.json().catch(() => ({})));
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      const duplicateName = await ensureUniqueModuleName(parsed.data.name);
+      if (duplicateName) return duplicateName;
       const code = await nextModuleCode(parsed.data.name, parsed.data.code);
       if (typeof code !== "string") return code;
       const now = new Date().toISOString();
       const record: LicenseModuleRecord = {
         id: `license_module_${uuid()}`,
-        name: parsed.data.name.trim(),
+        name: parsed.data.name,
         code,
-        description: parsed.data.description?.trim(),
+        description: parsed.data.description,
         status: parsed.data.status,
         active: parsed.data.status === "active",
         createdAt: now,
@@ -214,6 +230,10 @@ app.http("licenseModulesUpdate", {
       if (!current || current.status === "deleted" || current.deletedAt) return notFound("Licencia o módulo no encontrado.");
       const parsed = ModuleSchema.partial().safeParse(await req.json().catch(() => ({})));
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      if (parsed.data.name !== undefined) {
+        const duplicateName = await ensureUniqueModuleName(parsed.data.name, id);
+        if (duplicateName) return duplicateName;
+      }
       const nextCode = parsed.data.code !== undefined
         ? await nextModuleCode(parsed.data.name ?? current.name, parsed.data.code, id)
         : current.code ?? await nextModuleCode(parsed.data.name ?? current.name, undefined, id);
@@ -221,9 +241,9 @@ app.http("licenseModulesUpdate", {
       const before = { ...current };
       const updated: LicenseModuleRecord = {
         ...current,
-        ...(parsed.data.name !== undefined ? { name: parsed.data.name.trim() } : {}),
+        ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
         ...(parsed.data.code !== undefined ? { code: nextCode } : {}),
-        ...(parsed.data.description !== undefined ? { description: parsed.data.description.trim() } : {}),
+        ...(parsed.data.description !== undefined ? { description: parsed.data.description } : {}),
         ...(parsed.data.status !== undefined ? { status: parsed.data.status, active: parsed.data.status === "active" } : {}),
         updatedAt: new Date().toISOString(),
         updatedBy: user.id,
@@ -302,6 +322,8 @@ app.http("licenseAssignmentsList", {
       const includeDeleted = req.query.get("includeDeleted") === "true";
       const { resources } = await getContainer("licenseAssignments").items.readAll<LicenseAssignmentRecord>().fetchAll();
       const items = includeDeleted ? resources : resources.filter((assignment) => assignment.status !== "deleted" && !assignment.deletedAt);
+      const pagination = getPagination(req);
+      if (pagination.enabled) return ok(paginateArray(items.sort((a, b) => (a.clientName ?? "").localeCompare(b.clientName ?? "", "es")), pagination.page, pagination.pageSize));
       return ok(items.sort((a, b) => (a.clientName ?? "").localeCompare(b.clientName ?? "", "es")));
     } catch (e: any) {
       if (e?.status === 403) return forbidden(e.message);

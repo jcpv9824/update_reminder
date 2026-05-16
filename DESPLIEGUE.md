@@ -40,6 +40,16 @@ http://localhost:5173/
 
 Nota funcional de la versión actual: la frecuencia normal se configura desde **Dominios** y se guarda como `origin = "domain_default"`. La vista **Programaciones especiales** muestra solo excepciones creadas con `origin = "special"` y no mezcla las frecuencias normales de dominios.
 
+La versión actual también incluye:
+
+- Paginación de 10 registros por defecto en maestros y auditoría.
+- Búsqueda combinada con filtros en clientes, dominios, bases, licenciamiento, programaciones especiales y auditoría.
+- Validaciones backend para duplicados de cliente, dominio, base de datos y módulo de licencia.
+- Licencias asignadas al cliente completo mediante `clients.licenseModuleIds`; las asignaciones avanzadas por dominio/base quedan ocultas para fase futura.
+- Programaciones especiales con dos modos: **Selección manual** y **Por licenciamiento**. El modo por licenciamiento siempre resuelve clientes, dominios, bases y módulos activos.
+- Vista operativa de tareas: vencidas abiertas, hoy, próximas 4 días y completadas recientes.
+- Deduplicación obligatoria de tareas por entidad y día mediante `dedupeKey`.
+
 ---
 
 ## 1. Software necesario

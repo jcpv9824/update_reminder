@@ -6,6 +6,8 @@ import { canManageSchedules } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
+import { getPagination, paginateArray } from "../lib/pagination";
+import { matchesScheduleSearch } from "../lib/listSearch";
 import { inferScheduleRole, normalizeFrequencyResponsibility } from "../lib/scheduleService";
 import { filterSchedulesByOrigin } from "../lib/scheduleFilters";
 import { previewLicensingScope } from "../lib/licensingScope";
@@ -107,11 +109,20 @@ app.http("schedulesList", {
       await getUserOrFail(req);
       const clientId = req.query.get("clientId");
       const origin = req.query.get("origin");
+      const search = req.query.get("search");
       const querySpec = clientId
         ? { query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: clientId }] }
         : { query: "SELECT * FROM c" };
       const { resources } = await getContainer("updateSchedules").items.query<UpdateSchedule>(querySpec).fetchAll();
-      return ok(filterSchedulesByOrigin(resources, origin));
+      let modulesById = new Map<string, LicenseModuleRecord>();
+      if (search) {
+        const { resources: modules } = await getContainer("licenseModules").items.readAll<LicenseModuleRecord>().fetchAll().catch(() => ({ resources: [] as LicenseModuleRecord[] }));
+        modulesById = new Map(modules.map((module) => [module.id, module]));
+      }
+      const items = filterSchedulesByOrigin(resources, origin).filter((schedule) => matchesScheduleSearch(schedule, search, modulesById));
+      const pagination = getPagination(req);
+      if (pagination.enabled) return ok(paginateArray(items, pagination.page, pagination.pageSize));
+      return ok(items);
     } catch (e) {
       return serverError(e);
     }

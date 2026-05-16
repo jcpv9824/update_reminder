@@ -14,9 +14,18 @@ describe("clasificación de tareas por fecha (zona Bogotá)", () => {
     expect(clasificarTareaPorFecha("2026-05-06", "pending", "2026-05-07")).toBe("vencidas");
   });
 
-  it("tarea completada aparece en COMPLETADAS sin importar la fecha", () => {
+  it("tarea completada reciente aparece en COMPLETADAS", () => {
     expect(clasificarTareaPorFecha("2026-05-06", "completed", "2026-05-07")).toBe("completadas");
-    expect(clasificarTareaPorFecha("2026-05-08", "completed", "2026-05-07")).toBe("completadas");
+    expect(clasificarTareaPorFecha("2026-05-01", "completed", "2026-05-07", "2026-05-06T10:00:00.000Z")).toBe("completadas");
+  });
+
+  it("tarea completada antigua queda fuera de la ventana operativa", () => {
+    expect(clasificarTareaPorFecha("2026-05-01", "completed", "2026-05-07", "2026-05-01T10:00:00.000Z")).toBe("fueraVentana");
+  });
+
+  it("solo muestra próximas hasta 4 días", () => {
+    expect(clasificarTareaPorFecha("2026-05-11", "pending", "2026-05-07")).toBe("proximas");
+    expect(clasificarTareaPorFecha("2026-05-12", "pending", "2026-05-07")).toBe("fueraVentana");
   });
 
   it("hoyEnBogotaIso a las 8pm Bogotá del 7 de mayo NO devuelve 8 de mayo", () => {

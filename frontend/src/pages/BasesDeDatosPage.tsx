@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { BaseDeDatos, Cliente, Dominio, Frecuencia } from "../types";
-import { Alerta, EtiquetaEstado, Modal, DialogoConfirmar } from "../components/Comunes";
+import type { BaseDeDatos, Cliente, Dominio, Frecuencia, RespuestaPaginada } from "../types";
+import { Alerta, EtiquetaEstado, Modal, DialogoConfirmar, Paginacion } from "../components/Comunes";
 import { AccesoBdParseado } from "../components/AccesoBdParseado";
 import { PanelAccesoBd } from "../components/PanelAccesoBd";
 import { ETIQUETAS_AMBIENTE } from "../types";
@@ -23,12 +23,24 @@ export default function BasesDeDatosPage() {
   const [filtroAmbiente, setFiltroAmbiente] = useState("");
   const [filtroEstado, setFiltroEstado] = useState("");
   const [busqueda, setBusqueda] = useState("");
+  const [pagina, setPagina] = useState(1);
   const [exito, setExito] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const { data: clientes = [] } = useQuery({ queryKey: ["clientes"], queryFn: () => api.get<Cliente[]>("/clients") });
   const { data: dominios = [] } = useQuery({ queryKey: ["dominios"], queryFn: () => api.get<Dominio[]>("/domains") });
-  const { data: bds = [], isLoading } = useQuery({ queryKey: ["bases-de-datos"], queryFn: () => api.get<BaseDeDatos[]>("/databases") });
+  const { data: paginaBds, isLoading } = useQuery({
+    queryKey: ["bases-de-datos", "pagina", pagina, filtroCliente, filtroDominio, filtroAmbiente, filtroEstado, busqueda],
+    queryFn: () => {
+      const params = new URLSearchParams({ page: String(pagina), pageSize: "10" });
+      if (filtroCliente) params.set("clientId", filtroCliente);
+      if (filtroDominio) params.set("domainId", filtroDominio);
+      if (filtroAmbiente) params.set("environment", filtroAmbiente);
+      if (filtroEstado) params.set("status", filtroEstado);
+      if (busqueda) params.set("search", busqueda);
+      return api.get<RespuestaPaginada<BaseDeDatos>>(`/databases?${params.toString()}`);
+    },
+  });
   const { data: frecuencias = [] } = useQuery({ queryKey: ["frecuencias"], queryFn: () => api.get<Frecuencia[]>("/schedules") });
 
   useEffect(() => {
@@ -40,6 +52,25 @@ export default function BasesDeDatosPage() {
         return next;
       });
     }
+  }, [searchParams, setSearchParams]);
+
+  useEffect(() => {
+    const editId = searchParams.get("edit");
+    if (!editId) return;
+    let cancelado = false;
+    api.get<BaseDeDatos>(`/databases/${editId}`)
+      .then((bd) => { if (!cancelado) setEditando(bd); })
+      .catch((e: any) => setError(e?.message ?? "No se pudo cargar la base de datos."))
+      .finally(() => {
+        if (!cancelado) {
+          setSearchParams((prev) => {
+            const next = new URLSearchParams(prev);
+            next.delete("edit");
+            return next;
+          });
+        }
+      });
+    return () => { cancelado = true; };
   }, [searchParams, setSearchParams]);
 
   const crear = useMutation({
@@ -77,17 +108,10 @@ export default function BasesDeDatosPage() {
     onError: (e: any) => setError(e?.message ?? "No se pudo eliminar la base de datos."),
   });
 
-  const filtradas = bds.filter((b) => {
-    if (filtroCliente && b.clientId !== filtroCliente) return false;
-    if (filtroDominio && b.domainId !== filtroDominio) return false;
-    if (filtroAmbiente && b.environment !== filtroAmbiente) return false;
-    if (filtroEstado && b.status !== filtroEstado) return false;
-    if (busqueda) {
-      const q = busqueda.toLowerCase();
-      if (!b.companyName.toLowerCase().includes(q) && !b.dbAccess.initialCatalog.toLowerCase().includes(q) && !b.dbAccess.serverHostPort.toLowerCase().includes(q)) return false;
-    }
-    return true;
-  });
+  const filtradas = Array.isArray(paginaBds) ? paginaBds : paginaBds?.items ?? [];
+  const infoPagina = !Array.isArray(paginaBds) ? paginaBds : undefined;
+
+  useEffect(() => { setPagina(1); }, [filtroCliente, filtroDominio, filtroAmbiente, filtroEstado, busqueda]);
 
   return (
     <>
@@ -134,6 +158,7 @@ export default function BasesDeDatosPage() {
       </div>
 
       {isLoading ? <div className="cargando">Cargando...</div> : (
+        <>
         <table>
           <thead><tr>
             <th>Cliente</th><th>Dominio</th><th>Empresa</th><th>Base de datos</th><th>Ambiente</th><th>Estado</th><th>Última actualización</th><th>Acciones</th>
@@ -159,6 +184,8 @@ export default function BasesDeDatosPage() {
             ))}
           </tbody>
         </table>
+        {infoPagina && <Paginacion page={infoPagina.page} pageSize={infoPagina.pageSize} total={infoPagina.total} onPageChange={setPagina} />}
+        </>
       )}
 
       <Modal titulo="Nueva base de datos" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
