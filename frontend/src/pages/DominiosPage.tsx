@@ -210,7 +210,7 @@ export default function DominiosPage() {
         />
       </Modal>
       <Modal titulo="Editar dominio" abierto={!!editando} onCerrar={() => setEditando(null)}>
-        {editando && <FormularioDominio inicial={editando} frecuenciaInicial={frecuencias.find((f) => f.targetType === "domain" && (f.domainId === editando.id || f.targetIds.includes(editando.id)))} clientes={clientes} usuarios={usuarios} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
+        {editando && <FormularioDominio inicial={editando} frecuenciaInicial={buscarFrecuenciaDominio(frecuencias, editando.id)} clientes={clientes} usuarios={usuarios} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
       </Modal>
       <Modal titulo="Bases asociadas al dominio" abierto={!!verBases} onCerrar={() => setVerBases(null)}>
         {verBases && <BasesAsociadasDominio dominio={verBases} />}
@@ -370,6 +370,9 @@ function FormularioDominio({ inicial, frecuenciaInicial, clienteInicialId = "", 
     const body: any = { clientId, domainName: domainName.trim(), environment, currentWebVersion: currentWebVersion.trim() || undefined, assignedUpdaterIds: [], notes: notes.trim() };
     if (crearFrecuencia) {
       body.frequency = { ...depurarFrecuenciaParaEnvio(frecuencia), assignedRole: "domain_updater", origin: "domain_default" };
+    } else if (inicial) {
+      body.disableAutomaticFrequency = true;
+      body.frequency = null;
     }
     onSubmit(body, accion);
   }

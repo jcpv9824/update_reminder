@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { buildScheduleRecord, normalizeFrequencyResponsibility, validateFrequency } from "../lib/scheduleService";
+import {
+  buildScheduleRecord,
+  deactivateDomainDefaultSchedule,
+  isDomainDefaultScheduleForDomain,
+  normalizeFrequencyResponsibility,
+  validateFrequency,
+} from "../lib/scheduleService";
 import { filterSchedulesByOrigin } from "../lib/scheduleFilters";
 
 const user = { id: "u1", email: "u@x", displayName: "U", roles: ["admin"] };
@@ -143,5 +149,36 @@ describe("filterSchedulesByOrigin", () => {
   it("los registros sin origin no rompen el filtro ni aparecen como especiales", () => {
     expect(filterSchedulesByOrigin([legacy], "special")).toEqual([]);
     expect(filterSchedulesByOrigin([legacy], undefined)).toEqual([legacy]);
+  });
+});
+
+describe("desactivación de frecuencia automática de dominio", () => {
+  const base = buildScheduleRecord({
+    input: { frequencyType: "weekly", weekdays: ["FRIDAY"], startDate: "2026-05-01", origin: "domain_default" },
+    clientId: "c1",
+    clientName: "C",
+    domainId: "d1",
+    domainName: "https://cliente.sagerp.co",
+    targetType: "domain",
+    targetIds: ["d1"],
+    currentUser: user,
+  });
+
+  it("identifica solo programaciones recurrentes domain_default del dominio", () => {
+    expect(isDomainDefaultScheduleForDomain(base, "d1")).toBe(true);
+    expect(isDomainDefaultScheduleForDomain({ ...base, origin: "special" }, "d1")).toBe(false);
+    expect(isDomainDefaultScheduleForDomain({ ...base, targetType: "database" }, "d1")).toBe(false);
+    expect(isDomainDefaultScheduleForDomain({ ...base, domainId: "otro", targetIds: ["otro"] }, "d1")).toBe(false);
+  });
+
+  it("desactiva la frecuencia sin borrar el registro ni cambiar dominio/base relacionados", () => {
+    const disabled = deactivateDomainDefaultSchedule(base, "admin_1", "2026-05-16T10:00:00.000Z");
+    expect(disabled.id).toBe(base.id);
+    expect(disabled.clientId).toBe(base.clientId);
+    expect(disabled.domainId).toBe("d1");
+    expect(disabled.targetIds).toEqual(["d1"]);
+    expect(disabled.active).toBe(false);
+    expect(disabled.updatedBy).toBe("admin_1");
+    expect(disabled.updatedAt).toBe("2026-05-16T10:00:00.000Z");
   });
 });

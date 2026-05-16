@@ -184,7 +184,7 @@ export async function runTaskGeneration(
     for (const key of expectedTaskKeysForDate(expandedSchedules, d)) expectedKeys.add(key);
   }
 
-  const obsoletedTasks = obsoleteTasksOutsideExpected(existing, expectedKeys);
+  const obsoletedTasks = obsoleteTasksOutsideExpected(existing, expectedKeys, new Date().toISOString(), isoDate);
   for (const task of obsoletedTasks) {
     try {
       await getContainer("updateTasks").item(task.id, task.taskBucket).replace(task);

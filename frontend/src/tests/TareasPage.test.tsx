@@ -255,6 +255,19 @@ describe("TareasPage (vista unificada)", () => {
     mockTareas({ dominios: [tarea({ id: "d1" })] });
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    expect(screen.queryByRole("button", { name: /^Iniciar$/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Completar$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Bloquear$/i })).toBeInTheDocument();
+  });
+
+  it("tarea en progreso no muestra Iniciar y conserva Completar/Bloquear", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    mockTareas({ dominios: [tarea({ id: "d_en_progreso", status: "in_progress" })] });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    expect(screen.queryByRole("button", { name: /^Iniciar$/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Completar$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Bloquear$/i })).toBeInTheDocument();
   });
 
@@ -266,6 +279,9 @@ describe("TareasPage (vista unificada)", () => {
     mockTareas({ dominios: [tarea({ id: "d_done", status: "completed", taskDate: hoy, taskBucket: `${hoy}_domain`, completedAt: `${hoy}T10:00:00Z`, completedBy: "u" })] });
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    expect(screen.queryByRole("button", { name: /^Iniciar$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Completar$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Bloquear$/i })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /^Reabrir$/i }));
     expect(await screen.findByRole("heading", { name: /Reabrir tarea completada/i })).toBeInTheDocument();
     expect(screen.getByLabelText(/Motivo de reapertura/i)).toBeInTheDocument();
@@ -283,6 +299,7 @@ describe("TareasPage (vista unificada)", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
     expect(screen.getByRole("button", { name: /^Completar$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Resolver bloqueo/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Iniciar$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Reabrir$/i })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Resolver bloqueo/i }));
     expect(await screen.findByRole("heading", { name: /Resolver bloqueo/i })).toBeInTheDocument();
@@ -375,6 +392,24 @@ describe("TareasPage (vista unificada)", () => {
     expect(screen.getByText((_content, node) => node?.textContent === "Completadas (2)")).toBeInTheDocument();
   });
 
+  it("la ventana operativa también mantiene bases vencidas antiguas abiertas", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    const { hoyEnBogotaIso, sumarDiasIso } = await import("../utils/fechas");
+    const vieja = sumarDiasIso(hoyEnBogotaIso(), -30);
+    mockTareas({
+      bases: [
+        tarea({ id: "base_vencida", taskDate: vieja, taskBucket: `${vieja}_database`, targetType: "database", targetId: "db_old", targetName: "BD_OLD", assignedRole: "database_updater", status: "in_progress" }),
+      ],
+      basesDetalle: [bd("db_old", { dbAccess: { ...bd("db_old").dbAccess, initialCatalog: "BD_OLD" } })],
+    });
+    renderPagina();
+    expect(await screen.findByText(/U — Bases de datos por actualizar/i)).toBeInTheDocument();
+    expect(screen.getAllByText((_content, node) => node?.textContent === "Vencidas (1)").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: /Ver detalle/i }));
+    expect(await screen.findByText("BD_OLD")).toBeInTheDocument();
+  });
+
   it("resalta el grupo asignado al usuario actual con el badge 'Asignado a ti'", async () => {
     usuarioMock.id = "u";
     usuarioMock.roles = ["admin"];
@@ -402,7 +437,7 @@ describe("TareasPage (vista unificada)", () => {
     expect(screen.getAllByText(/Dominio para publicar/i).length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: /Copiar URLs completas/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Copiar URL completa$/i })).toBeNull();
-    expect(screen.getByRole("button", { name: /^Iniciar$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Iniciar$/i })).toBeNull();
     expect(screen.getByRole("button", { name: /^Bloquear$/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Reportar problema/i })).toBeNull();
     expect(screen.getByRole("button", { name: /Copiar todos los dominios pendientes \(formato publicable\)/i })).toBeInTheDocument();
@@ -410,7 +445,7 @@ describe("TareasPage (vista unificada)", () => {
     expect(accionesFila.getByRole("button", { name: /^Copiar dominio para publicar$/i })).toBeInTheDocument();
     expect(accionesFila.getByRole("button", { name: /^Completar$/i })).toBeInTheDocument();
     expect(accionesFila.queryByRole("button", { name: /^Copiar URL completa$/i })).toBeNull();
-    expect(accionesFila.getByRole("button", { name: /^Iniciar$/i })).toBeInTheDocument();
+    expect(accionesFila.queryByRole("button", { name: /^Iniciar$/i })).toBeNull();
     expect(accionesFila.getByRole("button", { name: /^Bloquear$/i })).toBeInTheDocument();
     expect(accionesFila.queryByRole("button", { name: /Reportar problema/i })).toBeNull();
     fireEvent.click(await screen.findByRole("button", { name: /^Copiar dominio para publicar$/i }));
@@ -475,7 +510,7 @@ describe("TareasPage (vista unificada)", () => {
     const accionesFila = within(screen.getByTestId("acciones-tarea-b1"));
     expect(accionesFila.getByRole("button", { name: /^Completar$/i })).toBeInTheDocument();
     expect(accionesFila.queryByRole("button", { name: /^Copiar$/i })).toBeNull();
-    expect(screen.getByRole("button", { name: /^Iniciar$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Iniciar$/i })).toBeNull();
     expect(screen.getByRole("button", { name: /^Bloquear$/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Reportar problema/i })).toBeNull();
   });

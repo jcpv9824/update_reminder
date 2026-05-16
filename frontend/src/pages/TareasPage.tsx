@@ -15,7 +15,7 @@ const VENTANA_TAREAS = {
   hasta: sumarDiasIso(HOY, 4),
 };
 
-type AccionTarea = "start" | "complete" | "block" | "reopen" | "resolve-block";
+type AccionTarea = "complete" | "block" | "reopen" | "resolve-block";
 type EstadoGuardado = "guardando" | "guardado" | "error";
 
 type GrupoResumen = {
@@ -81,7 +81,6 @@ export function puedeCambiarTarea(usuario: Usuario | null, tarea: Tarea): boolea
 
 function estadoDespuesDeAccion(accion: AccionTarea): Tarea["status"] {
   if (accion === "complete") return "completed";
-  if (accion === "start") return "in_progress";
   if (accion === "block") return "blocked";
   return "pending";
 }
@@ -467,7 +466,6 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
                   ) : (
                     null
                   )}
-                  {puedeCambiar && tarea.status === "pending" && <button type="button" onClick={() => onAccion(tarea.id, "start")}>Iniciar</button>}
                   {puedeCambiar && tarea.status !== "completed" && tarea.status !== "cancelled" && (
                     <button type="button" className="exito" onClick={() => onSolicitarCompletar(tarea)}>Completar</button>
                   )}

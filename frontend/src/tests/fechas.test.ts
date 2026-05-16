@@ -14,6 +14,13 @@ describe("clasificación de tareas por fecha (zona Bogotá)", () => {
     expect(clasificarTareaPorFecha("2026-05-06", "pending", "2026-05-07")).toBe("vencidas");
   });
 
+  it("vencidas abiertas antiguas siguen apareciendo en VENCIDAS", () => {
+    expect(clasificarTareaPorFecha("2026-04-17", "pending", "2026-05-07")).toBe("vencidas");
+    expect(clasificarTareaPorFecha("2026-04-17", "blocked", "2026-05-07")).toBe("vencidas");
+    expect(clasificarTareaPorFecha("2026-04-17", "in_progress", "2026-05-07")).toBe("vencidas");
+    expect(clasificarTareaPorFecha("2026-04-17", "failed", "2026-05-07")).toBe("vencidas");
+  });
+
   it("tarea completada reciente aparece en COMPLETADAS", () => {
     expect(clasificarTareaPorFecha("2026-05-06", "completed", "2026-05-07")).toBe("completadas");
     expect(clasificarTareaPorFecha("2026-05-01", "completed", "2026-05-07", "2026-05-06T10:00:00.000Z")).toBe("completadas");

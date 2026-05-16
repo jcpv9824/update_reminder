@@ -149,11 +149,13 @@ export function expectedTaskKeysForDate(
 export function obsoleteTasksOutsideExpected(
   existingTasks: UpdateTask[],
   expectedKeys: Set<string>,
-  nowIso = new Date().toISOString()
+  nowIso = new Date().toISOString(),
+  preserveOpenBeforeDate?: string
 ): UpdateTask[] {
   const obsoleted: UpdateTask[] = [];
   for (const task of existingTasks) {
     if (isTerminalTask(task)) continue;
+    if (preserveOpenBeforeDate && task.taskDate < preserveOpenBeforeDate) continue;
     const key = taskTargetKey(task.targetType, task.targetId, task.taskDate);
     if (expectedKeys.has(key)) continue;
     task.status = "cancelled";

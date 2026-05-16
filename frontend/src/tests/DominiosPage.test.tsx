@@ -126,6 +126,42 @@ describe("DominiosPage", () => {
     expect(screen.getByLabelText(/Activar frecuencia automática/i)).not.toBeChecked();
   });
 
+  it("editar dominio permite desactivar frecuencia automática y refresca Recurrente/Próxima actualización", async () => {
+    const dominio = { id: "domain_1", clientId: "client_1", clientName: "Cliente Uno", domainName: "https://cliente.sagerp.co", environment: "production", assignedUpdaterIds: [], status: "active", createdAt: "", updatedAt: "" };
+    let frecuencias = [{ id: "schedule_1", origin: "domain_default", active: true, targetType: "domain", domainId: "domain_1", targetIds: ["domain_1"], frequencyType: "weekly", weekdays: ["FRIDAY"], startDate: "2026-05-01", timezone: "America/Bogota", assignedRole: "domain_updater", assignedUserIds: [] }];
+    apiMock.get.mockImplementation((path: string) => {
+      if (path === "/clients") return Promise.resolve(clientes);
+      if (path.startsWith("/domains?")) return Promise.resolve({ items: [dominio], page: 1, pageSize: 10, total: 1 });
+      if (path === "/schedules") return Promise.resolve(frecuencias);
+      if (path === "/users") return Promise.resolve([]);
+      return Promise.resolve([]);
+    });
+    apiMock.put.mockImplementation(async () => {
+      frecuencias = [];
+      return dominio;
+    });
+    renderPagina();
+    expect(await screen.findByText("Sí")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Editar" }));
+    const checkbox = await screen.findByLabelText(/Activar frecuencia automática/i);
+    expect(checkbox).toBeChecked();
+    fireEvent.click(checkbox);
+    expect(checkbox).not.toBeChecked();
+    expect(screen.queryByLabelText(/Tiene fecha de fin/i)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^Guardar$/i }));
+
+    await waitFor(() => expect(apiMock.put).toHaveBeenCalledWith("/domains/domain_1", expect.objectContaining({
+      disableAutomaticFrequency: true,
+      frequency: null,
+    })));
+    await waitFor(() => expect(screen.getByText("No")).toBeInTheDocument());
+    expect(screen.getAllByText("-").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Editar" }));
+    expect(await screen.findByLabelText(/Activar frecuencia automática/i)).not.toBeChecked();
+  });
+
   it("envía búsqueda al listado paginado de dominios", async () => {
     renderPagina();
     fireEvent.change(await screen.findByPlaceholderText("ejemplo.sagerp.co"), { target: { value: "demo" } });

@@ -133,3 +133,18 @@ export function buildScheduleRecord(args: {
     updatedBy: args.currentUser.id,
   };
 }
+
+export function isDomainDefaultScheduleForDomain(schedule: UpdateSchedule, domainId: string): boolean {
+  return schedule.origin === "domain_default" &&
+    schedule.targetType === "domain" &&
+    (schedule.domainId === domainId || (schedule.targetIds ?? []).includes(domainId));
+}
+
+export function deactivateDomainDefaultSchedule(schedule: UpdateSchedule, userId: string, nowIso: string): UpdateSchedule {
+  return {
+    ...schedule,
+    active: false,
+    updatedAt: nowIso,
+    updatedBy: userId,
+  };
+}

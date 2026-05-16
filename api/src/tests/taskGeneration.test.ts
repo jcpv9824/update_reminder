@@ -256,6 +256,40 @@ describe("generateTasksForDate", () => {
     expect(existing[0].result).toBe("obsolete");
   });
 
+  it("reconciliación preserva vencidas abiertas aunque ya no estén esperadas", () => {
+    const oldPending = {
+      id: "old_pending_task",
+      taskDate: "2026-04-18",
+      taskBucket: "2026-04-18_domain",
+      clientId: "client_1",
+      clientName: "Cliente",
+      domainId: "domain_1",
+      domainName: "cliente.pya.com.co",
+      targetType: "domain",
+      targetId: "domain_1",
+      targetName: "cliente.pya.com.co",
+      scheduleId: "schedule_domain",
+      assignedRole: "domain_updater",
+      assignedUserIds: [],
+      status: "pending",
+      result: null,
+      notes: "",
+      createdAt: "",
+      createdBy: "system",
+      updatedAt: "",
+      updatedBy: "system",
+      completedAt: null,
+      completedBy: null,
+    } as UpdateTask;
+    const oldBlocked = { ...oldPending, id: "old_blocked_task", status: "blocked" as const };
+    const oldInProgress = { ...oldPending, id: "old_in_progress_task", status: "in_progress" as const };
+    const obsoleted = obsoleteTasksOutsideExpected([oldPending, oldBlocked, oldInProgress], new Set(), "2026-05-08T12:00:00Z", "2026-05-08");
+    expect(obsoleted).toHaveLength(0);
+    expect(oldPending.status).toBe("pending");
+    expect(oldBlocked.status).toBe("blocked");
+    expect(oldInProgress.status).toBe("in_progress");
+  });
+
   it("reconciliación marca obsoleta una tarea pendiente de base heredada si el dominio padre ya no está esperado", () => {
     const existing = [{
       id: "old_database_task",

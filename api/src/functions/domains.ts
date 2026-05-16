@@ -11,7 +11,14 @@ import { getPagination, paginateArray } from "../lib/pagination";
 import { matchesDomainSearch } from "../lib/listSearch";
 import { hasDuplicateDomainUrl } from "../lib/duplicateValidation";
 import { isValidHttpsDomain } from "../lib/inputValidation";
-import { buildScheduleRecord, normalizeFrequencyResponsibility, validateFrequency, type FrequencyInput } from "../lib/scheduleService";
+import {
+  buildScheduleRecord,
+  deactivateDomainDefaultSchedule,
+  isDomainDefaultScheduleForDomain,
+  normalizeFrequencyResponsibility,
+  validateFrequency,
+  type FrequencyInput,
+} from "../lib/scheduleService";
 import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
@@ -231,6 +238,9 @@ app.http("domainsUpdate", {
         const { resources: existingDomains } = await container.items.readAll<DomainRecord>().fetchAll();
         if (hasDuplicateDomainUrl(existingDomains, body.domainName, id)) return conflict("Ya existe un dominio con esta URL.");
       }
+      const disableAutomaticFrequency = body.disableAutomaticFrequency === true ||
+        body.automaticFrequencyEnabled === false ||
+        body.frequency === null;
 
       // Validar la frecuencia ANTES de tocar el dominio para no dejar
       // estado inconsistente si la frecuencia es inválida.
@@ -278,7 +288,7 @@ app.http("domainsUpdate", {
               parameters: [{ name: "@d", value: id }],
             })
             .fetchAll();
-          const existingSchedule = schedules[0];
+          const existingSchedule = schedules.find((schedule) => isDomainDefaultScheduleForDomain(schedule, id));
           if (existingSchedule) {
             const beforeSchedule = { ...existingSchedule };
             const merged: UpdateSchedule = {
@@ -345,6 +355,33 @@ app.http("domainsUpdate", {
           }
         } catch (e: any) {
           return badRequest(e?.message ?? "Frecuencia inválida.");
+        }
+      } else if (disableAutomaticFrequency) {
+        const now = new Date().toISOString();
+        const scheduleContainer = getContainer("updateSchedules");
+        const { resources: schedules } = await scheduleContainer.items
+          .query<UpdateSchedule>({
+            query: "SELECT * FROM c WHERE c.targetType = 'domain' AND c.active = true AND (c.domainId = @d OR ARRAY_CONTAINS(c.targetIds, @d))",
+            parameters: [{ name: "@d", value: id }],
+          })
+          .fetchAll();
+        for (const schedule of schedules.filter((item) => isDomainDefaultScheduleForDomain(item, id))) {
+          const beforeSchedule = { ...schedule };
+          const disabled = deactivateDomainDefaultSchedule(schedule, user.id, now);
+          await scheduleContainer.item(schedule.id, schedule.clientId).replace(disabled);
+          await writeAuditLog({
+            entityType: "schedule",
+            entityId: disabled.id,
+            clientId: existing.clientId,
+            clientName: existing.clientName,
+            domainId: id,
+            domainName: updated.domainName,
+            action: "domain_frequency_deactivated",
+            performedBy: user.id,
+            performedByEmail: user.email,
+            before: beforeSchedule,
+            after: disabled,
+          });
         }
       }
       return ok(updated);
