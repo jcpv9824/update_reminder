@@ -5,7 +5,7 @@ import type { CurrentUser, RemindersConfig, UpdateSchedule, Weekday } from "../t
 // "Nuevo dominio" o "Nueva base de datos" para crear la frecuencia
 // asociada en la misma operación.
 export type FrequencyInput = {
-  frequencyType: "weekly" | "interval" | "monthly" | "manual";
+  frequencyType: "once" | "weekly" | "interval" | "monthly" | "manual";
   everyNWeeks?: number;
   weekdays?: Weekday[];
   intervalDays?: number;
@@ -50,6 +50,9 @@ export function validateFrequency(input: FrequencyInput): void {
       throw new Error("El intervalo de semanas debe ser mayor o igual a 1.");
     }
   }
+  if (input.frequencyType === "once" && input.endDate && input.endDate !== input.startDate) {
+    throw new Error("La programación única no debe tener una fecha de fin distinta a la fecha de actualización.");
+  }
   if (input.frequencyType === "interval") {
     if (!input.intervalDays || input.intervalDays < 1) {
       throw new Error("El intervalo en días debe ser mayor o igual a 1.");
@@ -59,6 +62,14 @@ export function validateFrequency(input: FrequencyInput): void {
     const d = input.dayOfMonth ?? 0;
     if (d < 1 || d > 31) {
       throw new Error("El día del mes debe estar entre 1 y 31.");
+    }
+  }
+  if (input.reminders?.remindersEnabled) {
+    if (!input.reminders.reminderDaysBefore || input.reminders.reminderDaysBefore.length === 0) {
+      throw new Error("Seleccione al menos un recordatorio.");
+    }
+    if (!/^\d{2}:\d{2}$/.test(input.reminders.reminderTime ?? "")) {
+      throw new Error("La hora del recordatorio debe estar en formato HH:mm.");
     }
   }
 }

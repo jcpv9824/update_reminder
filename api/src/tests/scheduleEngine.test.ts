@@ -89,6 +89,18 @@ describe("scheduleEngine - frecuencia manual", () => {
   });
 });
 
+describe("scheduleEngine - frecuencia única", () => {
+  it("se ejecuta solo en la fecha de actualización", () => {
+    const s = baseSchedule({
+      frequencyType: "once",
+      startDate: "2026-05-20",
+    });
+    expect(isScheduleDueOnDate(s, "2026-05-19")).toBe(false);
+    expect(isScheduleDueOnDate(s, "2026-05-20")).toBe(true);
+    expect(isScheduleDueOnDate(s, "2026-05-21")).toBe(false);
+  });
+});
+
 describe("scheduleEngine - fecha de fin", () => {
   it("no ejecuta frecuencias después de endDate", () => {
     const s = baseSchedule({

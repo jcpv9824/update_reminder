@@ -150,7 +150,7 @@ export function SeleccionFrecuencia({ valor, onChange, rolesPermitidos, mostrarR
       <div className="fila-formulario">
         <label>Tipo de frecuencia *</label>
         <select value={v.frequencyType} onChange={(e) => set({ frequencyType: e.target.value as any })}>
-          {Object.entries(ETIQUETAS_FRECUENCIA).map(([k, val]) => <option key={k} value={k}>{val}</option>)}
+          {Object.entries(ETIQUETAS_FRECUENCIA).filter(([k]) => k !== "once").map(([k, val]) => <option key={k} value={k}>{val}</option>)}
         </select>
       </div>
 

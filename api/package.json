@@ -12,6 +12,7 @@
     "clean": "rimraf dist",
     "prestart": "npm run build",
     "start": "func start",
+    "export:cosmos": "node scripts/export-cosmos-snapshot.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },

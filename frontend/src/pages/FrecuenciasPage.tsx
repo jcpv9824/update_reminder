@@ -8,6 +8,13 @@ import { SelectorBuscable } from "../components/SelectorBuscable";
 
 const DIAS_LISTA = Object.keys(DIAS_SEMANA);
 
+type EmailAlertsResumen = {
+  remindersEnabled: boolean;
+  defaultReminderDaysBefore: number[];
+  defaultReminderTime: string;
+  defaultTimezone: string;
+};
+
 export default function FrecuenciasPage() {
   const qc = useQueryClient();
   const [modalAbierto, setModalAbierto] = useState(false);
@@ -22,6 +29,11 @@ export default function FrecuenciasPage() {
   const { data: bds = [] } = useQuery({ queryKey: ["bases-de-datos"], queryFn: () => api.get<BaseDeDatos[]>("/databases") });
   const { data: usuarios = [] } = useQuery({ queryKey: ["usuarios"], queryFn: () => api.get<Usuario[]>("/users") });
   const { data: modulosLicencia = [] } = useQuery({ queryKey: ["license-modules"], queryFn: () => api.get<ModuloLicencia[]>("/license-modules") });
+  const { data: emailSettings } = useQuery({
+    queryKey: ["email-alerts-summary"],
+    queryFn: () => api.get<EmailAlertsResumen>("/settings/email-alerts"),
+    retry: false,
+  });
   const { data: paginaFrecuencias, isLoading } = useQuery({
     queryKey: ["frecuencias", "special", pagina, busqueda],
     queryFn: () => {
@@ -113,10 +125,10 @@ export default function FrecuenciasPage() {
       )}
 
       <Modal titulo="Nueva programación especial" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
-        <FormularioFrecuencia clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} modulosLicencia={modulosLicencia} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />
+        <FormularioFrecuencia clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} modulosLicencia={modulosLicencia} emailSettings={emailSettings} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />
       </Modal>
       <Modal titulo="Editar programación especial" abierto={!!editando} onCerrar={() => setEditando(null)}>
-        {editando && <FormularioFrecuencia inicial={editando} clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} modulosLicencia={modulosLicencia} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
+        {editando && <FormularioFrecuencia inicial={editando} clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} modulosLicencia={modulosLicencia} emailSettings={emailSettings} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
       </Modal>
 
       <DialogoConfirmar
@@ -140,33 +152,41 @@ type LicensingPreview = {
   clientsCount: number;
   domainsCount: number;
   databasesCount: number;
+  excludedDomainsCount?: number;
+  excludedDatabasesCount?: number;
   groups: Array<{
     client: { id: string; name: string; licenses: string[] };
     domains: Array<{
       id: string;
       name: string;
+      url?: string;
       environment: string;
-      databases: Array<{ id: string; companyName: string; databaseName: string; environment: string }>;
+      excluded?: boolean;
+      databases: Array<{ id: string; companyName: string; databaseName: string; environment: string; excluded?: boolean }>;
     }>;
   }>;
 };
 
-function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modulosLicencia, onSubmit, cargando }: { inicial?: Frecuencia; clientes: Cliente[]; dominios: Dominio[]; bds: BaseDeDatos[]; usuarios: Usuario[]; modulosLicencia: ModuloLicencia[]; onSubmit: (v: any) => void; cargando: boolean }) {
+function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modulosLicencia, emailSettings, onSubmit, cargando }: { inicial?: Frecuencia; clientes: Cliente[]; dominios: Dominio[]; bds: BaseDeDatos[]; usuarios: Usuario[]; modulosLicencia: ModuloLicencia[]; emailSettings?: EmailAlertsResumen; onSubmit: (v: any) => void; cargando: boolean }) {
   const [selectionMode, setSelectionMode] = useState<"manual" | "licensing">(inicial?.selectionMode ?? "manual");
   const [scopeGroups, setScopeGroups] = useState<ScopeGroup[]>(inicial?.scopeGroups ?? []);
   const [licenseModuleIds, setLicenseModuleIds] = useState<string[]>(inicial?.licensingScope?.licenseModuleIds ?? []);
   const [licenseMatchMode, setLicenseMatchMode] = useState<"any" | "all">(inicial?.licensingScope?.licenseMatchMode ?? "any");
   const [licenseEnvironment, setLicenseEnvironment] = useState(inicial?.licensingScope?.environment ?? "all");
   const [licenseTargetTypes, setLicenseTargetTypes] = useState<LicensingScope["targetTypes"]>(inicial?.licensingScope?.targetTypes ?? "domains_and_databases");
+  const [excludedDomainIds, setExcludedDomainIds] = useState<string[]>(inicial?.licensingScope?.excludedDomainIds ?? []);
+  const [excludedDatabaseIds, setExcludedDatabaseIds] = useState<string[]>(inicial?.licensingScope?.excludedDatabaseIds ?? []);
   const [licenseSearch, setLicenseSearch] = useState("");
   const [preview, setPreview] = useState<LicensingPreview | null>(null);
+  const [previewDesactualizado, setPreviewDesactualizado] = useState(false);
+  const [avisoPreview, setAvisoPreview] = useState<string | null>(null);
   const [clienteAAgregar, setClienteAAgregar] = useState("");
   const [selectorDominios, setSelectorDominios] = useState<{ clientId: string } | null>(null);
   const [selectorBases, setSelectorBases] = useState<{ clientId: string; domainId: string } | null>(null);
   const [assignmentMode, setAssignmentMode] = useState<"role" | "users">(inicial?.assignmentMode ?? ((inicial?.assignedUserIds?.length || inicial?.databaseAssignedUserIds?.length) ? "users" : "role"));
   const [domainUsers, setDomainUsers] = useState<string[]>(inicial?.assignedUserIds ?? []);
   const [databaseUsers, setDatabaseUsers] = useState<string[]>(inicial?.databaseAssignedUserIds ?? []);
-  const [frequencyType, setFrequencyType] = useState<"weekly" | "interval" | "monthly" | "manual">(inicial?.frequencyType ?? "weekly");
+  const [frequencyType, setFrequencyType] = useState<Frecuencia["frequencyType"]>(inicial?.frequencyType ?? "once");
   const [everyNWeeks, setEveryNWeeks] = useState(inicial?.everyNWeeks ?? 1);
   const [weekdays, setWeekdays] = useState<string[]>(inicial?.weekdays ?? ["FRIDAY"]);
   const [intervalDays, setIntervalDays] = useState(inicial?.intervalDays ?? 15);
@@ -175,11 +195,27 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
   const [hasEndDate, setHasEndDate] = useState(!!inicial?.endDate);
   const [endDate, setEndDate] = useState(inicial?.endDate ?? "");
   const [active, setActive] = useState(inicial?.active ?? true);
+  const [useGlobalReminderSettings, setUseGlobalReminderSettings] = useState(!inicial?.reminders);
+  const [remindersEnabled, setRemindersEnabled] = useState(inicial?.reminders?.remindersEnabled ?? true);
+  const [reminderDaysText, setReminderDaysText] = useState((inicial?.reminders?.reminderDaysBefore ?? [1, 0]).join(", "));
+  const [reminderTime, setReminderTime] = useState(inicial?.reminders?.reminderTime ?? "08:00");
   const [err, setErr] = useState<string | null>(null);
 
   const previewLicencias = useMutation({
     mutationFn: (body: LicensingScope) => api.post<LicensingPreview>("/special-schedules/preview-licensing-scope", body),
-    onSuccess: (data) => { setPreview(data); setErr(null); },
+    onSuccess: (data) => {
+      const validDomainIds = new Set(data.groups.flatMap((group) => group.domains.map((domain) => domain.id)));
+      const validDatabaseIds = new Set(data.groups.flatMap((group) => group.domains.flatMap((domain) => domain.databases.map((db) => db.id))));
+      const nextExcludedDomainIds = excludedDomainIds.filter((id) => validDomainIds.has(id));
+      const nextExcludedDatabaseIds = excludedDatabaseIds.filter((id) => validDatabaseIds.has(id));
+      const removed = nextExcludedDomainIds.length !== excludedDomainIds.length || nextExcludedDatabaseIds.length !== excludedDatabaseIds.length;
+      setExcludedDomainIds(nextExcludedDomainIds);
+      setExcludedDatabaseIds(nextExcludedDatabaseIds);
+      setPreview(data);
+      setPreviewDesactualizado(false);
+      setAvisoPreview(removed ? "Algunas excepciones fueron eliminadas porque ya no pertenecen al alcance actual." : null);
+      setErr(null);
+    },
     onError: (e: any) => setErr(e?.message ?? "No se pudo previsualizar el alcance por licenciamiento."),
   });
 
@@ -204,12 +240,35 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
   function alternarDia(d: string) {
     setWeekdays((p) => (p.includes(d) ? p.filter((x) => x !== d) : [...p, d]));
   }
+  const globalReminderDays = emailSettings?.defaultReminderDaysBefore ?? [1, 0];
+  const globalReminderTime = emailSettings?.defaultReminderTime ?? "08:00";
+  const globalReminderTimezone = emailSettings?.defaultTimezone ?? "America/Bogota";
+  const globalRemindersEnabled = emailSettings?.remindersEnabled ?? true;
+
+  function parseReminderDays(value: string): number[] {
+    return Array.from(new Set(value.split(",")
+      .map((item) => parseInt(item.trim(), 10))
+      .filter((item) => Number.isFinite(item) && item >= 0)))
+      .sort((a, b) => b - a);
+  }
   function licensingScope(): LicensingScope {
-    return { licenseModuleIds, licenseMatchMode, environment: licenseEnvironment, targetTypes: licenseTargetTypes, activeOnly: true };
+    return { licenseModuleIds, licenseMatchMode, environment: licenseEnvironment, targetTypes: licenseTargetTypes, activeOnly: true, excludedDomainIds, excludedDatabaseIds };
+  }
+  function invalidarPreview() {
+    if (preview) {
+      setPreviewDesactualizado(true);
+      setAvisoPreview("El alcance cambió. Vuelva a previsualizar para confirmar las excepciones.");
+    }
   }
   function alternarLicencia(id: string) {
     setLicenseModuleIds((actuales) => actuales.includes(id) ? actuales.filter((x) => x !== id) : [...actuales, id]);
-    setPreview(null);
+    invalidarPreview();
+  }
+  function alternarDominioExcluido(id: string) {
+    setExcludedDomainIds((actuales) => actuales.includes(id) ? actuales.filter((x) => x !== id) : [...actuales, id]);
+  }
+  function alternarBaseExcluida(id: string) {
+    setExcludedDatabaseIds((actuales) => actuales.includes(id) ? actuales.filter((x) => x !== id) : [...actuales, id]);
   }
   const modulosActivos = modulosLicencia.filter((m) => m.status === "active" && (!licenseSearch.trim() || `${m.name} ${m.code ?? ""}`.toLowerCase().includes(licenseSearch.trim().toLowerCase())));
   const licenciasSeleccionadas = licenseModuleIds
@@ -222,8 +281,12 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
       if (selectionMode === "manual" && (scopeGroups.length === 0 || (resumen.dominios === 0 && resumen.bases === 0))) return setErr("Agregue al menos un cliente, dominio o base al alcance.");
       if (selectionMode === "licensing" && licenseModuleIds.length === 0) return setErr("Seleccione al menos una licencia.");
       if (selectionMode === "licensing" && !preview) return setErr("Previsualice el alcance antes de guardar.");
+      if (selectionMode === "licensing" && previewDesactualizado) return setErr("El alcance cambió. Vuelva a previsualizar para confirmar las excepciones.");
       if (selectionMode === "licensing" && preview && preview.clientsCount === 0) return setErr("No se encontraron clientes activos con las licencias y filtros seleccionados.");
       if (assignmentMode === "users" && domainUsers.length === 0 && databaseUsers.length === 0) return setErr("Seleccione responsables o cambie a asignación por rol.");
+      const customReminderDays = parseReminderDays(reminderDaysText);
+      if (!useGlobalReminderSettings && remindersEnabled && customReminderDays.length === 0) return setErr("Ingrese al menos un día previo para recordatorios.");
+      if (!useGlobalReminderSettings && remindersEnabled && !/^\d{2}:\d{2}$/.test(reminderTime)) return setErr("La hora del recordatorio debe estar en formato HH:mm.");
       onSubmit({
         clientId: selectionMode === "licensing" ? (preview?.groups[0]?.client.id ?? clientes.find((c) => c.status === "active")?.id ?? "") : scopeGroups[0].clientId,
         targetType: "domain",
@@ -239,10 +302,17 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
         weekdays: frequencyType === "weekly" ? weekdays : undefined,
         intervalDays: frequencyType === "interval" ? intervalDays : undefined,
         dayOfMonth: frequencyType === "monthly" ? dayOfMonth : undefined,
-        startDate, endDate: hasEndDate ? endDate || null : null, timezone: "America/Bogota",
+        startDate, endDate: frequencyType === "once" ? null : (hasEndDate ? endDate || null : null), timezone: "America/Bogota",
         assignedRole: "domain_updater",
         assignedUserIds: assignmentMode === "users" ? domainUsers : [],
         databaseAssignedUserIds: assignmentMode === "users" ? databaseUsers : [],
+        reminders: useGlobalReminderSettings ? undefined : {
+          remindersEnabled,
+          reminderDaysBefore: customReminderDays,
+          reminderTime,
+          reminderRecipientsMode: assignmentMode === "users" && domainUsers.length > 0 ? "assignedUsers" : "roleUsers",
+          customReminderEmails: [],
+        },
         origin: "special", active,
       });
     }}>
@@ -285,14 +355,14 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
           </div>
           <div className="fila-formulario">
             <label>Coincidencia de licencias</label>
-            <select value={licenseMatchMode} onChange={(e) => { setLicenseMatchMode(e.target.value as "any" | "all"); setPreview(null); }}>
+            <select value={licenseMatchMode} onChange={(e) => { setLicenseMatchMode(e.target.value as "any" | "all"); invalidarPreview(); }}>
               <option value="any">Cualquiera de las licencias seleccionadas</option>
               <option value="all">Todas las licencias seleccionadas</option>
             </select>
           </div>
           <div className="fila-formulario">
             <label>Ambiente</label>
-            <select value={licenseEnvironment} onChange={(e) => { setLicenseEnvironment(e.target.value); setPreview(null); }}>
+            <select value={licenseEnvironment} onChange={(e) => { setLicenseEnvironment(e.target.value); invalidarPreview(); }}>
               <option value="all">Todos</option>
               <option value="production">Producción</option>
               <option value="test">Pruebas</option>
@@ -301,7 +371,7 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
           </div>
           <div className="fila-formulario">
             <label>Objetivo de actualización</label>
-            <select value={licenseTargetTypes} onChange={(e) => { setLicenseTargetTypes(e.target.value as LicensingScope["targetTypes"]); setPreview(null); }}>
+            <select value={licenseTargetTypes} onChange={(e) => { setLicenseTargetTypes(e.target.value as LicensingScope["targetTypes"]); invalidarPreview(); }}>
               <option value="domains_and_databases">Dominios y bases de datos</option>
               <option value="domains_only">Solo dominios</option>
               <option value="databases_only">Solo bases de datos</option>
@@ -315,7 +385,15 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
             if (licenseModuleIds.length === 0) { setErr("Seleccione al menos una licencia."); return; }
             previewLicencias.mutate(licensingScope());
           }}>{previewLicencias.isPending ? "Previsualizando..." : "Previsualizar alcance"}</button>
-          {preview && <PreviewLicenciamiento preview={preview} />}
+          {avisoPreview && <Alerta tipo="info">{avisoPreview}</Alerta>}
+          {preview && <PreviewLicenciamiento
+            preview={preview}
+            targetTypes={licenseTargetTypes}
+            excludedDomainIds={excludedDomainIds}
+            excludedDatabaseIds={excludedDatabaseIds}
+            onToggleDomain={alternarDominioExcluido}
+            onToggleDatabase={alternarBaseExcluida}
+          />}
         </div>
       ) : (
       <>
@@ -463,23 +541,74 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
         <div className="fila-formulario"><label>Día del mes (1-31) *</label>
           <input type="number" min={1} max={31} value={dayOfMonth} onChange={(e) => setDayOfMonth(Number(e.target.value))} /></div>
       )}
-      <div className="fila-formulario"><label>Fecha de inicio *</label>
+      {frequencyType === "once" && <p className="texto-ayuda">Esta programación se ejecutará una sola vez en la fecha seleccionada y luego quedará inactiva.</p>}
+      <div className="fila-formulario"><label>{frequencyType === "once" ? "Fecha de actualización *" : "Fecha de inicio *"}</label>
         <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></div>
-      <div className="fila-formulario"><label>
+      {frequencyType !== "once" && <div className="fila-formulario"><label>
         <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={hasEndDate} onChange={(e) => setHasEndDate(e.target.checked)} />
         Tiene fecha de fin
-      </label></div>
-      {hasEndDate && (
+      </label></div>}
+      {frequencyType !== "once" && hasEndDate && (
         <div className="fila-formulario"><label>Fecha de fin</label>
           <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} /></div>
       )}
       <div className="fila-formulario"><label>
         <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={active} onChange={(e) => setActive(e.target.checked)} />
-        Frecuencia activa
+        Programación activa
       </label></div>
+      <p className="texto-ayuda">Si está activa, la programación puede generar tareas. Las programaciones únicas se desactivan automáticamente después de ejecutarse.</p>
+      <h4>Recordatorios de la programación</h4>
+      <div className="fila-formulario"><label>
+        <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={useGlobalReminderSettings} onChange={(e) => setUseGlobalReminderSettings(e.target.checked)} />
+        Usar configuración global de recordatorios
+      </label></div>
+      {useGlobalReminderSettings ? (
+        <div className="tarjeta tarjeta-compacta">
+          <p className="texto-ayuda">Se usará la configuración definida en Alertas y correos para los recordatorios a actualizadores.</p>
+          <div className="fila-formulario">
+            <label>Días previos separados por coma</label>
+            <input value={globalReminderDays.join(", ")} readOnly />
+            <p className="texto-ayuda">Ejemplo: 3,1,0 enviará recordatorios 3 días antes, 1 día antes y el mismo día.</p>
+          </div>
+          <div className="fila-formulario">
+            <label>Hora de envío</label>
+            <input value={globalReminderTime} readOnly />
+          </div>
+          <div className="fila-formulario">
+            <label>Zona horaria</label>
+            <input value={globalReminderTimezone} readOnly />
+          </div>
+          <p className="texto-ayuda">Estado global: {globalRemindersEnabled ? "recordatorios activos" : "recordatorios inactivos"}.</p>
+        </div>
+      ) : (
+        <>
+          <div className="fila-formulario"><label>
+            <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={remindersEnabled} onChange={(e) => setRemindersEnabled(e.target.checked)} />
+            Activar recordatorios automáticos
+          </label></div>
+          {remindersEnabled && (
+            <>
+          <div className="fila-formulario">
+            <label>Días previos separados por coma</label>
+            <input value={reminderDaysText} onChange={(e) => setReminderDaysText(e.target.value)} placeholder="1, 0" />
+            <p className="texto-ayuda">Ejemplo: 3,1,0 enviará recordatorios 3 días antes, 1 día antes y el mismo día.</p>
+          </div>
+          <div className="fila-formulario">
+            <label>Hora de envío</label>
+            <p className="texto-ayuda">Hora local en la que se intentará enviar el recordatorio.</p>
+            <input value={reminderTime} onChange={(e) => setReminderTime(e.target.value)} placeholder="08:00" />
+          </div>
+          <div className="fila-formulario">
+            <label>Zona horaria</label>
+            <input value="America/Bogota" readOnly />
+          </div>
+            </>
+          )}
+        </>
+      )}
       <p className="texto-ayuda">Las tareas usarán responsables por rol o usuarios específicos según la sección de responsables.</p>
       <div className="acciones-formulario">
-        <button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button>
+        <button type="submit" className="primario" disabled={cargando || (selectionMode === "licensing" && previewDesactualizado)}>{cargando ? "Guardando..." : "Guardar"}</button>
       </div>
     </form>
   );
@@ -522,15 +651,33 @@ function ModalSeleccionDominios({ abierto, clientId, dominios, seleccionados, on
   );
 }
 
-function PreviewLicenciamiento({ preview }: { preview: LicensingPreview }) {
+function PreviewLicenciamiento({ preview, targetTypes, excludedDomainIds, excludedDatabaseIds, onToggleDomain, onToggleDatabase }: {
+  preview: LicensingPreview;
+  targetTypes: LicensingScope["targetTypes"];
+  excludedDomainIds: string[];
+  excludedDatabaseIds: string[];
+  onToggleDomain: (id: string) => void;
+  onToggleDatabase: (id: string) => void;
+}) {
+  const includeDomains = targetTypes !== "databases_only";
+  const includeDatabases = targetTypes !== "domains_only";
+  const visibleDomainIds = preview.groups.flatMap((group) => group.domains.map((domain) => domain.id));
+  const visibleDatabaseIds = preview.groups.flatMap((group) => group.domains.flatMap((domain) => domain.databases.map((db) => db.id)));
+  const excludedDomainsCount = includeDomains ? visibleDomainIds.filter((id) => excludedDomainIds.includes(id)).length : 0;
+  const excludedDatabasesCount = includeDatabases ? visibleDatabaseIds.filter((id) => excludedDatabaseIds.includes(id)).length : 0;
+  const includedDomainsCount = includeDomains ? Math.max(0, visibleDomainIds.length - excludedDomainsCount) : 0;
+  const includedDatabasesCount = includeDatabases ? Math.max(0, visibleDatabaseIds.length - excludedDatabasesCount) : 0;
   return (
     <div className="tarjeta tarjeta-compacta" style={{ marginTop: 12 }}>
-      <strong>Se incluirán:</strong>
+      <strong>Alcance final:</strong>
       <ul>
         <li>{preview.clientsCount} cliente(s)</li>
-        <li>{preview.domainsCount} dominio(s)</li>
-        <li>{preview.databasesCount} base(s) de datos</li>
+        <li>{includedDomainsCount} dominio(s) incluido(s)</li>
+        <li>{excludedDomainsCount} dominio(s) excluido(s)</li>
+        <li>{includedDatabasesCount} base(s) incluida(s)</li>
+        <li>{excludedDatabasesCount} base(s) excluida(s)</li>
       </ul>
+      <p className="texto-ayuda">Las excepciones solo aplican a esta programación especial; no desactivan dominios ni bases globalmente.</p>
       {preview.groups.length === 0 ? (
         <Alerta tipo="info">No se encontraron clientes activos con las licencias y filtros seleccionados.</Alerta>
       ) : preview.groups.map((group) => (
@@ -540,9 +687,31 @@ function PreviewLicenciamiento({ preview }: { preview: LicensingPreview }) {
             <div key={domain.id} style={{ margin: "8px 0 8px 16px" }}>
               <div><strong>Dominio:</strong> {domain.name}</div>
               <div className="texto-ayuda">Ambiente: {ETIQUETAS_AMBIENTE[domain.environment] ?? domain.environment}</div>
+              {includeDomains && (
+                <label className="texto-ayuda" style={{ display: "inline-flex", gap: 6, alignItems: "center", marginTop: 4 }}>
+                  <input
+                    type="checkbox"
+                    checked={excludedDomainIds.includes(domain.id)}
+                    onChange={() => onToggleDomain(domain.id)}
+                    style={{ width: "auto" }}
+                  />
+                  Excluir este dominio de esta programación
+                </label>
+              )}
               {domain.databases.map((db) => (
                 <div key={db.id} style={{ marginLeft: 16 }}>
                   Base: {db.databaseName} · Empresa: {db.companyName} · Ambiente: {ETIQUETAS_AMBIENTE[db.environment] ?? db.environment}
+                  {includeDatabases && (
+                    <label className="texto-ayuda" style={{ display: "inline-flex", gap: 6, alignItems: "center", marginLeft: 8 }}>
+                      <input
+                        type="checkbox"
+                        checked={excludedDatabaseIds.includes(db.id)}
+                        onChange={() => onToggleDatabase(db.id)}
+                        style={{ width: "auto" }}
+                      />
+                      Excluir esta base de esta programación
+                    </label>
+                  )}
                 </div>
               ))}
             </div>

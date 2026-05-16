@@ -1,7 +1,7 @@
 import { app, InvocationContext, Timer } from "@azure/functions";
 import { getContainer } from "../lib/cosmos";
 import { writeAuditLog } from "../lib/audit";
-import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, obsoleteTasksOutsideExpected, summarizeTaskGenerationForDate } from "../lib/taskGenerator";
+import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, markOneTimeScheduleCompleted, obsoleteTasksOutsideExpected, oneTimeSchedulesDueInWindow, summarizeTaskGenerationForDate } from "../lib/taskGenerator";
 import { isScheduleDueOnDate } from "../lib/scheduleEngine";
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
@@ -55,6 +55,7 @@ export type GenerationResult = {
   skipped: number;
   deduplicated: number;
   updatedSources: number;
+  completedOneTimeSchedules: number;
   windowStart: string;
   windowEnd: string;
   message: string;
@@ -70,6 +71,7 @@ export type GenerationResult = {
     createdTasks: number;
     updatedTasks: number;
     obsoletedTasks: number;
+    completedOneTimeSchedules: number;
     preservedCompletedTasks: number;
     eligibleDomainTasks: number;
     eligibleDatabaseTasks: number;
@@ -217,6 +219,9 @@ export async function runTaskGeneration(
     }
   }
 
+  const oneTimeSchedulesToComplete = oneTimeSchedulesDueInWindow(activeSchedules, ventana);
+  let completedOneTimeSchedules = 0;
+
   // Iteramos día por día dentro de la ventana.
   for (const d of ventana) {
     const summary = summarizeTaskGenerationForDate(
@@ -300,6 +305,33 @@ export async function runTaskGeneration(
     }
   }
 
+  for (const schedule of oneTimeSchedulesToComplete) {
+    try {
+      const completed = markOneTimeScheduleCompleted(schedule, new Date().toISOString(), "system");
+      await getContainer("updateSchedules").item(schedule.id, schedule.clientId).replace(completed);
+      completedOneTimeSchedules++;
+      reasons.push(`Programación única ${schedule.id} marcada como inactiva después de generar tareas.`);
+      await writeAuditLog({
+        entityType: "schedule",
+        entityId: schedule.id,
+        clientId: schedule.clientId,
+        clientName: schedule.clientName,
+        action: "schedule_one_time_completed",
+        performedBy: "system",
+        performedByEmail: "system",
+        metadata: {
+          reason: "one_time_schedule_executed",
+          runDate: schedule.startDate,
+          generationWindowStart: windowStart,
+          generationWindowEnd: windowEnd,
+        },
+        after: { active: completed.active, completedAt: completed.completedAt, completedReason: completed.completedReason },
+      });
+    } catch (e: any) {
+      reasons.push(`Programación única ${schedule.id} no pudo marcarse como inactiva: ${e?.message ?? e}`);
+    }
+  }
+
   const preservedCompletedTasks = existing.filter((t) => t.status === "completed").length;
 
   log(`Generación ${windowStart}..${windowEnd}: creadas=${totalCreated}, actualizadas=${totalUpdated}, obsoletas=${obsoletedTasks.length}, omitidas=${totalSkipped}.`);
@@ -312,6 +344,7 @@ export async function runTaskGeneration(
     skipped: totalSkipped,
     deduplicated: totalSkipped,
     updatedSources: totalUpdated,
+    completedOneTimeSchedules,
     windowStart,
     windowEnd,
     message: "Tareas generadas correctamente.",
@@ -327,6 +360,7 @@ export async function runTaskGeneration(
       createdTasks: totalCreated,
       updatedTasks: totalUpdated,
       obsoletedTasks: obsoletedTasks.length,
+      completedOneTimeSchedules,
       preservedCompletedTasks,
       eligibleDomainTasks: createdDomainTasks + skippedDomainTasks,
       eligibleDatabaseTasks: createdDatabaseTasks + skippedDatabaseTasks,

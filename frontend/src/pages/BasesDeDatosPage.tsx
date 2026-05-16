@@ -239,6 +239,7 @@ export default function BasesDeDatosPage() {
 
 function describirFrecuencia(f?: Frecuencia): string {
   if (!f || !f.active) return "";
+  if (f.frequencyType === "once") return `Única: ${f.startDate}`;
   if (f.frequencyType === "weekly") return `Semanal: ${(f.weekdays ?? []).join(", ") || "sin día"} desde ${f.startDate}`;
   if (f.frequencyType === "interval") return `Cada ${f.intervalDays} día(s) desde ${f.startDate}`;
   if (f.frequencyType === "monthly") return `Mensual: día ${f.dayOfMonth} desde ${f.startDate}`;

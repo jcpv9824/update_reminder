@@ -8,7 +8,7 @@ import { getContainer } from "../lib/cosmos";
 import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
 import { getPagination, paginateArray } from "../lib/pagination";
 import { matchesScheduleSearch } from "../lib/listSearch";
-import { inferScheduleRole, normalizeFrequencyResponsibility } from "../lib/scheduleService";
+import { inferScheduleRole, normalizeFrequencyResponsibility, validateFrequency } from "../lib/scheduleService";
 import { filterSchedulesByOrigin } from "../lib/scheduleFilters";
 import { previewLicensingScope } from "../lib/licensingScope";
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, LicensingScope, UpdateSchedule } from "../types/models";
@@ -21,13 +21,32 @@ async function getUserOrFail(req: HttpRequest) {
 }
 
 const Weekdays = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"] as const;
+const FrequencyTypes = ["once", "weekly", "interval", "monthly", "manual"] as const;
+
+const LicensingScopeSchema = z.object({
+  licenseModuleIds: z.array(z.string()).default([]),
+  licenseMatchMode: z.enum(["any", "all"]).default("any"),
+  environment: z.string().default("all"),
+  targetTypes: z.enum(["domains_and_databases", "domains_only", "databases_only"]).default("domains_and_databases"),
+  activeOnly: z.boolean().default(true),
+  excludedDomainIds: z.array(z.string()).default([]).optional(),
+  excludedDatabaseIds: z.array(z.string()).default([]).optional(),
+});
+
+const RemindersSchema = z.object({
+  remindersEnabled: z.boolean().default(true),
+  reminderDaysBefore: z.array(z.number().int().min(0).max(30)).default([1, 0]),
+  reminderTime: z.string().regex(/^\d{2}:\d{2}$/, "La hora del recordatorio debe estar en formato HH:mm.").default("08:00"),
+  reminderRecipientsMode: z.enum(["assignedUsers", "roleUsers", "customEmails"]).default("roleUsers"),
+  customReminderEmails: z.array(z.string()).default([]).optional(),
+}).optional();
 
 const ScheduleSchema = z.object({
   clientId: z.string().min(1, "El cliente es obligatorio."),
   domainId: z.string().optional(),
   targetType: z.enum(["domain", "database"]),
   targetIds: z.array(z.string()).default([]),
-  frequencyType: z.enum(["weekly", "interval", "monthly", "manual"]),
+  frequencyType: z.enum(FrequencyTypes),
   everyNWeeks: z.number().int().positive().optional(),
   weekdays: z.array(z.enum(Weekdays)).optional(),
   intervalDays: z.number().int().positive().optional(),
@@ -50,28 +69,20 @@ const ScheduleSchema = z.object({
     })),
   })).optional(),
   selectionMode: z.enum(["manual", "licensing"]).optional().default("manual"),
-  licensingScope: z.object({
-    licenseModuleIds: z.array(z.string()).default([]),
-    licenseMatchMode: z.enum(["any", "all"]).default("any"),
-    environment: z.string().default("all"),
-    targetTypes: z.enum(["domains_and_databases", "domains_only", "databases_only"]).default("domains_and_databases"),
-    activeOnly: z.boolean().default(true),
-  }).optional(),
+  licensingScope: LicensingScopeSchema.optional(),
   assignmentMode: z.enum(["role", "users"]).optional(),
   domainAssignedRole: z.string().optional(),
   databaseAssignedRole: z.string().optional(),
   origin: z.string().optional(),
   active: z.boolean().default(true),
+  reminders: RemindersSchema,
   notes: z.string().optional(),
 });
 
-const LicensingPreviewSchema = z.object({
-  licenseModuleIds: z.array(z.string()).default([]),
-  licenseMatchMode: z.enum(["any", "all"]).default("any"),
-  environment: z.string().default("all"),
-  targetTypes: z.enum(["domains_and_databases", "domains_only", "databases_only"]).default("domains_and_databases"),
-  activeOnly: z.boolean().default(true),
-});
+const LicensingPreviewSchema = z.union([
+  LicensingScopeSchema,
+  z.object({ licensingScope: LicensingScopeSchema }),
+]);
 
 async function loadLicensingScopeData() {
   const [{ resources: clients }, { resources: domains }, { resources: databases }, modulesResult] = await Promise.all([
@@ -87,6 +98,28 @@ function validateLicensingScope(scope?: LicensingScope): string | null {
   if (!scope) return "Configure el alcance por licenciamiento.";
   const ids = Array.from(new Set(scope.licenseModuleIds.map((id) => id.trim()).filter(Boolean)));
   if (ids.length === 0) return "Seleccione al menos una licencia.";
+  return null;
+}
+
+function normalizeScopeIds(scope: LicensingScope): LicensingScope {
+  return {
+    ...scope,
+    licenseModuleIds: Array.from(new Set((scope.licenseModuleIds ?? []).map((id) => id.trim()).filter(Boolean))),
+    excludedDomainIds: Array.from(new Set((scope.excludedDomainIds ?? []).map((id) => id.trim()).filter(Boolean))),
+    excludedDatabaseIds: Array.from(new Set((scope.excludedDatabaseIds ?? []).map((id) => id.trim()).filter(Boolean))),
+  };
+}
+
+async function validateLicensingScopeExceptions(scope: LicensingScope): Promise<string | null> {
+  const data = await loadLicensingScopeData();
+  const baseScope = normalizeScopeIds({ ...scope, excludedDomainIds: [], excludedDatabaseIds: [] });
+  const preview = previewLicensingScope({ scope: baseScope, ...data });
+  const allowedDomainIds = new Set(preview.groups.flatMap((group) => group.domains.map((domain) => domain.id)));
+  const allowedDatabaseIds = new Set(preview.groups.flatMap((group) => group.domains.flatMap((domain) => domain.databases.map((db) => db.id))));
+  const invalidDomain = (scope.excludedDomainIds ?? []).find((id) => !allowedDomainIds.has(id));
+  if (invalidDomain) return "Una excepción de dominio no pertenece al alcance actual.";
+  const invalidDatabase = (scope.excludedDatabaseIds ?? []).find((id) => !allowedDatabaseIds.has(id));
+  if (invalidDatabase) return "Una excepción de base de datos no pertenece al alcance actual.";
   return null;
 }
 
@@ -143,10 +176,18 @@ app.http("schedulesCreate", {
       if (parsed.data.selectionMode === "licensing") {
         const missing = validateLicensingScope(parsed.data.licensingScope as LicensingScope | undefined);
         if (missing) return badRequest(missing);
-        const moduleError = await validateActiveLicenseModules(parsed.data.licensingScope!.licenseModuleIds);
+        parsed.data.licensingScope = normalizeScopeIds(parsed.data.licensingScope!);
+        const moduleError = await validateActiveLicenseModules(parsed.data.licensingScope.licenseModuleIds);
         if (moduleError) return badRequest(moduleError);
+        const exceptionError = await validateLicensingScopeExceptions(parsed.data.licensingScope);
+        if (exceptionError) return badRequest(exceptionError);
       }
       const normalized = normalizeFrequencyResponsibility(parsed.data as any);
+      try {
+        validateFrequency(normalized as any);
+      } catch (e: any) {
+        return badRequest(e?.message ?? "Frecuencia inválida.");
+      }
       const { resource: client } = await getContainer("clients").item(parsed.data.clientId, parsed.data.clientId).read<ClientRecord>();
       if (!client) return badRequest("Cliente no encontrado.");
       const now = new Date().toISOString();
@@ -239,10 +280,18 @@ app.http("schedulesUpdate", {
       if (body.selectionMode === "licensing") {
         const missing = validateLicensingScope(body.licensingScope);
         if (missing) return badRequest(missing);
+        body.licensingScope = normalizeScopeIds(body.licensingScope);
         const moduleError = await validateActiveLicenseModules(body.licensingScope.licenseModuleIds);
         if (moduleError) return badRequest(moduleError);
+        const exceptionError = await validateLicensingScopeExceptions(body.licensingScope);
+        if (exceptionError) return badRequest(exceptionError);
       }
       const normalized = normalizeFrequencyResponsibility({ ...body });
+      try {
+        validateFrequency(normalized as any);
+      } catch (e: any) {
+        return badRequest(e?.message ?? "Frecuencia inválida.");
+      }
       const before = { ...existing };
       const targetType = body.targetType === "domain" || body.targetType === "database" ? body.targetType : existing.targetType;
       const merged: UpdateSchedule = {
@@ -296,10 +345,11 @@ app.http("previewLicensingScope", {
       if (!canManageSchedules(user)) return forbidden();
       const parsed = LicensingPreviewSchema.safeParse(await req.json().catch(() => ({})));
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
-      const missing = validateLicensingScope(parsed.data);
+      const scope = normalizeScopeIds("licensingScope" in parsed.data ? parsed.data.licensingScope : parsed.data);
+      const missing = validateLicensingScope(scope);
       if (missing) return badRequest(missing);
       const data = await loadLicensingScopeData();
-      return ok(previewLicensingScope({ scope: parsed.data, ...data }));
+      return ok(previewLicensingScope({ scope, ...data }));
     } catch (e) {
       return serverError(e);
     }

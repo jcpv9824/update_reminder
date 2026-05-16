@@ -46,6 +46,7 @@ Esta ronda consolidó mejoras operativas incrementales sin cambiar la arquitectu
 - El alcance por licenciamiento siempre resuelve solo clientes, dominios, bases y módulos activos.
 - El preview muestra conteos y árbol de clientes/dominios/bases.
 - El criterio se guarda como `licensingScope`, no solo como snapshot.
+- V14 agrega excepciones por dominio/base dentro del preview y frecuencia **Única** por defecto para nuevas programaciones especiales.
 
 ## Tareas
 

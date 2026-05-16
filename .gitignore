@@ -10,3 +10,4 @@ api/dist/
 api/local.settings.json
 frontend/dist/
 .azure/
+migration/backups/

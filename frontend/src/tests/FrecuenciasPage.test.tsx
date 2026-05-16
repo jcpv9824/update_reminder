@@ -75,6 +75,7 @@ beforeEach(() => {
     if (path === "/domains") return Promise.resolve([dominio, dominio2]);
     if (path === "/databases") return Promise.resolve([base1, base2]);
     if (path === "/license-modules") return Promise.resolve([modulo, moduloInactivo]);
+    if (path === "/settings/email-alerts") return Promise.resolve({ remindersEnabled: true, defaultReminderDaysBefore: [3, 1, 0], defaultReminderTime: "08:00", defaultTimezone: "America/Bogota" });
     if (path.startsWith("/schedules?origin=special")) return Promise.resolve({ items: [], page: 1, pageSize: 10, total: 0 });
     return Promise.resolve([]);
   });
@@ -145,6 +146,46 @@ describe("FrecuenciasPage", () => {
       origin: "special",
       scopeGroups: expect.arrayContaining([expect.objectContaining({ clientId: "client_1", includeAllDomains: true })]),
     }));
+  });
+
+  it("usa frecuencia Única por defecto y solo muestra fecha de actualización", async () => {
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    expect(select("Tipo de frecuencia *")).toHaveValue("once");
+    expect(screen.getByText("Fecha de actualización *")).toBeInTheDocument();
+    expect(screen.queryByText("Cada cuántas semanas")).toBeNull();
+    expect(screen.queryByText("Tiene fecha de fin")).toBeNull();
+    expect(screen.getByText(/Esta programación se ejecutará una sola vez/i)).toBeInTheDocument();
+    expect(screen.getByText("Programación activa")).toBeInTheDocument();
+
+    fireEvent.change(select("Tipo de frecuencia *"), { target: { value: "weekly" } });
+    expect(screen.getByText("Cada cuántas semanas")).toBeInTheDocument();
+    expect(screen.getByText("Días de la semana")).toBeInTheDocument();
+  });
+
+  it("usa recordatorios globales por defecto y permite override con días por coma y hora", async () => {
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    expect(screen.getByLabelText(/Usar configuración global de recordatorios/i)).toBeChecked();
+    expect(screen.getByDisplayValue("3, 1, 0")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("08:00")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText(/Usar configuración global de recordatorios/i));
+    expect(screen.getByText("Activar recordatorios automáticos")).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("1, 0"), { target: { value: "2,1,0" } });
+    fireEvent.change(screen.getByPlaceholderText("08:00"), { target: { value: "07:30" } });
+
+    fireEvent.focus(screen.getByPlaceholderText("Buscar cliente..."));
+    fireEvent.mouseDown(await screen.findByRole("option", { name: "Cliente Uno" }));
+    fireEvent.click(screen.getByLabelText(/Incluir todos los dominios activos/i));
+    fireEvent.click(screen.getByRole("button", { name: /^Guardar$/i }));
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/schedules", expect.objectContaining({
+      reminders: expect.objectContaining({
+        remindersEnabled: true,
+        reminderDaysBefore: [2, 1, 0],
+        reminderTime: "07:30",
+      }),
+    })));
   });
 
   it("permite agregar varios dominios y varias bases con modales de selección", async () => {
@@ -226,5 +267,73 @@ describe("FrecuenciasPage", () => {
       selectionMode: "licensing",
       licensingScope: expect.objectContaining({ licenseModuleIds: ["module_mobile"], environment: "production", activeOnly: true }),
     })));
+  });
+
+  it("permite excluir dominios y bases desde el preview por licenciamiento", async () => {
+    apiMock.post.mockImplementation((path: string, body: any) => {
+      if (path === "/special-schedules/preview-licensing-scope") {
+        return Promise.resolve({
+          clientsCount: 1,
+          domainsCount: 1,
+          databasesCount: 1,
+          excludedDomainsCount: 0,
+          excludedDatabasesCount: 0,
+          groups: [{
+            client: { id: "client_1", name: "Cliente Uno", licenses: ["Mobile App"] },
+            domains: [{ id: "domain_1", name: "cliente.sagerp.co", environment: "production", databases: [{ id: "db_1", companyName: "Empresa Uno", databaseName: "EMPRESA_UNO", environment: "production" }] }],
+          }],
+        });
+      }
+      return Promise.resolve({ id: "schedule_license", ...body });
+    });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    fireEvent.change(select("Tipo de alcance"), { target: { value: "licensing" } });
+    fireEvent.click(await screen.findByText("Mobile App"));
+    fireEvent.click(screen.getByRole("button", { name: /Previsualizar alcance/i }));
+
+    const excluirDominio = await screen.findByLabelText(/Excluir este dominio de esta programación/i);
+    const excluirBase = screen.getByLabelText(/Excluir esta base de esta programación/i);
+    fireEvent.click(excluirDominio);
+    fireEvent.click(excluirBase);
+    expect(screen.getByText(/0 dominio\(s\) incluido\(s\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 dominio\(s\) excluido\(s\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/0 base\(s\) incluida\(s\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 base\(s\) excluida\(s\)/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Guardar$/i }));
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/schedules", expect.objectContaining({
+      licensingScope: expect.objectContaining({
+        excludedDomainIds: ["domain_1"],
+        excludedDatabaseIds: ["db_1"],
+      }),
+    })));
+  });
+
+  it("marca el preview como desactualizado al cambiar filtros y bloquea guardar", async () => {
+    apiMock.post.mockImplementation((path: string) => {
+      if (path === "/special-schedules/preview-licensing-scope") {
+        return Promise.resolve({
+          clientsCount: 1,
+          domainsCount: 1,
+          databasesCount: 1,
+          groups: [{
+            client: { id: "client_1", name: "Cliente Uno", licenses: ["Mobile App"] },
+            domains: [{ id: "domain_1", name: "cliente.sagerp.co", environment: "production", databases: [] }],
+          }],
+        });
+      }
+      return Promise.resolve({});
+    });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    fireEvent.change(select("Tipo de alcance"), { target: { value: "licensing" } });
+    fireEvent.click(await screen.findByText("Mobile App"));
+    fireEvent.click(screen.getByRole("button", { name: /Previsualizar alcance/i }));
+    expect(await screen.findByText(/Alcance final/i)).toBeInTheDocument();
+
+    fireEvent.change(select("Ambiente"), { target: { value: "test" } });
+    expect(screen.getByText(/El alcance cambió. Vuelva a previsualizar/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Guardar$/i })).toBeDisabled();
   });
 });

@@ -4,13 +4,17 @@ export type LicensingScopePreview = {
   clientsCount: number;
   domainsCount: number;
   databasesCount: number;
+  excludedDomainsCount: number;
+  excludedDatabasesCount: number;
   groups: Array<{
     client: { id: string; name: string; licenses: string[] };
     domains: Array<{
       id: string;
       name: string;
+      url: string;
       environment: string;
-      databases: Array<{ id: string; companyName: string; databaseName: string; environment: string }>;
+      excluded: boolean;
+      databases: Array<{ id: string; companyName: string; databaseName: string; environment: string; excluded: boolean }>;
     }>;
   }>;
 };
@@ -61,6 +65,8 @@ export function previewLicensingScope(args: {
 
   const includeDomains = effectiveScope.targetTypes !== "databases_only";
   const includeDatabases = effectiveScope.targetTypes !== "domains_only";
+  const excludedDomainIds = new Set(effectiveScope.excludedDomainIds ?? []);
+  const excludedDatabaseIds = new Set(effectiveScope.excludedDatabaseIds ?? []);
   const groups: LicensingScopePreview["groups"] = [];
 
   for (const client of clients) {
@@ -68,13 +74,16 @@ export function previewLicensingScope(args: {
     const domainGroups = clientDomains.map((domain) => ({
       id: domain.id,
       name: domain.domainName,
+      url: domain.domainName,
       environment: domain.environment,
+      excluded: excludedDomainIds.has(domain.id),
       databases: includeDatabases
         ? databases.filter((db) => db.clientId === client.id && db.domainId === domain.id).map((db) => ({
             id: db.id,
             companyName: db.companyName,
             databaseName: db.dbAccess.initialCatalog,
             environment: db.environment,
+            excluded: excludedDatabaseIds.has(db.id),
           }))
         : [],
     })).filter((domain) => includeDomains || domain.databases.length > 0);
@@ -92,10 +101,23 @@ export function previewLicensingScope(args: {
     });
   }
 
+  const allDomainsCount = includeDomains ? groups.reduce((sum, group) => sum + group.domains.length, 0) : 0;
+  const excludedDomainsCount = includeDomains
+    ? groups.reduce((sum, group) => sum + group.domains.filter((domain) => domain.excluded).length, 0)
+    : 0;
+  const allDatabasesCount = includeDatabases
+    ? groups.reduce((sum, group) => sum + group.domains.reduce((dbSum, domain) => dbSum + domain.databases.length, 0), 0)
+    : 0;
+  const excludedDatabasesCount = includeDatabases
+    ? groups.reduce((sum, group) => sum + group.domains.reduce((dbSum, domain) => dbSum + domain.databases.filter((db) => db.excluded).length, 0), 0)
+    : 0;
+
   return {
     clientsCount: groups.length,
-    domainsCount: includeDomains ? groups.reduce((sum, group) => sum + group.domains.length, 0) : 0,
-    databasesCount: includeDatabases ? groups.reduce((sum, group) => sum + group.domains.reduce((dbSum, domain) => dbSum + domain.databases.length, 0), 0) : 0,
+    domainsCount: Math.max(0, allDomainsCount - excludedDomainsCount),
+    databasesCount: Math.max(0, allDatabasesCount - excludedDatabasesCount),
+    excludedDomainsCount,
+    excludedDatabasesCount,
     groups,
   };
 }
@@ -118,10 +140,12 @@ export function expandLicensingSchedule(args: {
   const expanded: UpdateSchedule[] = [];
   const includeDomains = args.schedule.licensingScope.targetTypes !== "databases_only";
   const includeDatabases = args.schedule.licensingScope.targetTypes !== "domains_only";
+  const excludedDomainIds = new Set(args.schedule.licensingScope.excludedDomainIds ?? []);
+  const excludedDatabaseIds = new Set(args.schedule.licensingScope.excludedDatabaseIds ?? []);
 
   for (const group of preview.groups) {
     for (const domain of group.domains) {
-      if (includeDomains) {
+      if (includeDomains && !excludedDomainIds.has(domain.id)) {
         expanded.push({
           ...args.schedule,
           id: `${args.schedule.id}__lic_domain_${domain.id}`,
@@ -137,6 +161,7 @@ export function expandLicensingSchedule(args: {
       }
       if (includeDatabases) {
         for (const db of domain.databases) {
+          if (excludedDatabaseIds.has(db.id)) continue;
           expanded.push({
             ...args.schedule,
             id: `${args.schedule.id}__lic_db_${db.id}`,
@@ -146,9 +171,16 @@ export function expandLicensingSchedule(args: {
             domainName: domain.name,
             targetType: "database",
             targetIds: [db.id],
-            assignedRole: args.schedule.databaseAssignedRole ?? "database_updater",
-            assignedUserIds: args.schedule.assignmentMode === "users" ? (args.schedule.databaseAssignedUserIds ?? []) : [],
-          });
+          assignedRole: args.schedule.databaseAssignedRole ?? "database_updater",
+          assignedUserIds: args.schedule.assignmentMode === "users" ? (args.schedule.databaseAssignedUserIds ?? []) : [],
+          reminders: args.schedule.reminders
+            ? {
+                ...args.schedule.reminders,
+                reminderRecipientsMode: args.schedule.assignmentMode === "users" && (args.schedule.databaseAssignedUserIds ?? []).length > 0 ? "assignedUsers" : "roleUsers",
+                customReminderEmails: [],
+              }
+            : undefined,
+        });
         }
       }
     }

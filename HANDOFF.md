@@ -178,6 +178,30 @@ Por licenciamiento:
 - El preview muestra conteos y árbol de clientes/dominios/bases.
 - Al guardar, se guarda el criterio (`licensingScope`), no solo un snapshot.
 - La generación futura re-resuelve el criterio para incluir clientes nuevos que compren la licencia.
+- Después del preview se pueden marcar excepciones manuales por dominio o por base.
+- Excluir un dominio evita solo la tarea del dominio; no excluye automáticamente sus bases.
+- Excluir una base evita solo la tarea de esa base; no excluye el dominio.
+- Las excepciones se guardan como IDs en `licensingScope.excludedDomainIds` y `licensingScope.excludedDatabaseIds`.
+- Si cambian licencias, coincidencia, ambiente u objetivo después del preview, el preview queda desactualizado y debe repetirse antes de guardar.
+- Al reprevisualizar se conservan excepciones válidas y se descartan las que ya no pertenecen al alcance.
+
+Frecuencias especiales:
+
+- La frecuencia **Única** (`frequencyType = "once"`) es la opción por defecto para nuevas programaciones especiales.
+- Para **Única** se usa `startDate` como **Fecha de actualización**.
+- La UI oculta campos recurrentes cuando la frecuencia es única.
+- El checkbox debe llamarse **Programación activa**.
+- Después de generar tareas para una programación única, backend la marca inactiva y registra `completedReason = "one_time_schedule_executed"`.
+- Un refresco posterior no debe volver a generar tareas de esa programación única.
+
+Recordatorios en programaciones especiales:
+
+- Por defecto usan la configuración global de **Alertas y correos → Recordatorios a actualizadores**.
+- Si `reminders` queda `undefined` en la programación, el backend usa los valores globales.
+- La UI muestra los valores globales como lectura: días previos, hora y zona horaria.
+- Si el usuario desmarca **Usar configuración global de recordatorios**, se guarda un override en `schedule.reminders`.
+- El override usa `reminderDaysBefore` capturado como texto separado por coma (`2,1,0`, `1,0`, etc.) y `reminderTime` en formato `HH:mm`.
+- `0` significa el mismo día de la actualización.
 
 Deduplicación obligatoria:
 

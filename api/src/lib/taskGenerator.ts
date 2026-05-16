@@ -155,7 +155,7 @@ export function obsoleteTasksOutsideExpected(
   const obsoleted: UpdateTask[] = [];
   for (const task of existingTasks) {
     if (isTerminalTask(task)) continue;
-    if (preserveOpenBeforeDate && task.taskDate < preserveOpenBeforeDate) continue;
+    if (preserveOpenBeforeDate && task.taskDate <= preserveOpenBeforeDate) continue;
     const key = taskTargetKey(task.targetType, task.targetId, task.taskDate);
     if (expectedKeys.has(key)) continue;
     task.status = "cancelled";
@@ -168,6 +168,29 @@ export function obsoleteTasksOutsideExpected(
     obsoleted.push(task);
   }
   return obsoleted;
+}
+
+export function oneTimeSchedulesDueInWindow(schedules: UpdateSchedule[], isoDates: string[]): UpdateSchedule[] {
+  return schedules.filter((schedule) =>
+    schedule.active &&
+    schedule.frequencyType === "once" &&
+    isoDates.some((isoDate) => isScheduleDueOnDate(schedule, isoDate))
+  );
+}
+
+export function markOneTimeScheduleCompleted(
+  schedule: UpdateSchedule,
+  nowIso = new Date().toISOString(),
+  userId = "system"
+): UpdateSchedule {
+  return {
+    ...schedule,
+    active: false,
+    completedAt: nowIso,
+    completedReason: "one_time_schedule_executed",
+    updatedAt: nowIso,
+    updatedBy: userId,
+  };
 }
 
 export function expandSchedulesWithDomainInheritance(

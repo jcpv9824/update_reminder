@@ -23,6 +23,7 @@ export function parseSemicolonEmails(value: string): string[] {
 
 function describeSchedule(schedule?: UpdateSchedule): string {
   if (!schedule || !schedule.active) return "Sin frecuencia activa";
+  if (schedule.frequencyType === "once") return `Única (${schedule.startDate})`;
   if (schedule.frequencyType === "weekly") return `Semanal (${(schedule.weekdays ?? []).join(", ") || "sin día"})`;
   if (schedule.frequencyType === "interval") return `Cada ${schedule.intervalDays} día(s)`;
   if (schedule.frequencyType === "monthly") return `Mensual (día ${schedule.dayOfMonth})`;

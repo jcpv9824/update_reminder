@@ -119,7 +119,7 @@ export type Frecuencia = {
   domainName?: string;
   targetType: "domain" | "database";
   targetIds: string[];
-  frequencyType: "weekly" | "interval" | "monthly" | "manual";
+  frequencyType: "once" | "weekly" | "interval" | "monthly" | "manual";
   everyNWeeks?: number;
   weekdays?: string[];
   intervalDays?: number;
@@ -144,6 +144,8 @@ export type Frecuencia = {
     environment: "all" | string;
     targetTypes: "domains_and_databases" | "domains_only" | "databases_only";
     activeOnly: boolean;
+    excludedDomainIds?: string[];
+    excludedDatabaseIds?: string[];
   };
   assignmentMode?: "role" | "users";
   domainAssignedRole?: string;
@@ -249,6 +251,7 @@ export const ETIQUETAS_AMBIENTE: Record<string, string> = {
 };
 
 export const ETIQUETAS_FRECUENCIA: Record<string, string> = {
+  once: "Única",
   weekly: "Semanal",
   interval: "Intervalo de días",
   monthly: "Mensual",

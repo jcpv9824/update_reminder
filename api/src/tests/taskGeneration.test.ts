@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, generateTasksForDate, obsoleteTasksOutsideExpected, summarizeTaskGenerationForDate, taskTargetKey } from "../lib/taskGenerator";
+import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, generateTasksForDate, markOneTimeScheduleCompleted, obsoleteTasksOutsideExpected, oneTimeSchedulesDueInWindow, summarizeTaskGenerationForDate, taskTargetKey } from "../lib/taskGenerator";
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 const schedule: UpdateSchedule = {
@@ -288,6 +288,36 @@ describe("generateTasksForDate", () => {
     expect(oldPending.status).toBe("pending");
     expect(oldBlocked.status).toBe("blocked");
     expect(oldInProgress.status).toBe("in_progress");
+  });
+
+  it("reconciliación preserva tareas abiertas de hoy para no cancelar programaciones únicas ya ejecutadas", () => {
+    const todayPending = {
+      id: "today_pending_task",
+      taskDate: "2026-05-08",
+      taskBucket: "2026-05-08_domain",
+      clientId: "client_1",
+      clientName: "Cliente",
+      domainId: "domain_1",
+      domainName: "cliente.pya.com.co",
+      targetType: "domain",
+      targetId: "domain_1",
+      targetName: "cliente.pya.com.co",
+      scheduleId: "schedule_once",
+      assignedRole: "domain_updater",
+      assignedUserIds: [],
+      status: "pending",
+      result: null,
+      notes: "",
+      createdAt: "",
+      createdBy: "system",
+      updatedAt: "",
+      updatedBy: "system",
+      completedAt: null,
+      completedBy: null,
+    } as UpdateTask;
+    const obsoleted = obsoleteTasksOutsideExpected([todayPending], new Set(), "2026-05-08T12:00:00Z", "2026-05-08");
+    expect(obsoleted).toHaveLength(0);
+    expect(todayPending.status).toBe("pending");
   });
 
   it("reconciliación marca obsoleta una tarea pendiente de base heredada si el dominio padre ya no está esperado", () => {
@@ -595,5 +625,25 @@ describe("expandSchedulesWithDomainInheritance", () => {
     expect(viernesSiguiente).toHaveLength(1);
     expect(viernes[0].dedupeKey).toBe("domain:domain_1:2026-05-08");
     expect(viernesSiguiente[0].dedupeKey).toBe("domain:domain_1:2026-05-15");
+  });
+
+  it("programación única genera en runDate y se marca como completada/inactiva", () => {
+    const onceSchedule: UpdateSchedule = {
+      ...domainSchedule,
+      id: "schedule_once",
+      frequencyType: "once",
+      startDate: "2026-05-08",
+      endDate: null,
+    };
+    const tasks = generateTasksForDate([onceSchedule], "2026-05-08", [], (id) => id);
+    expect(tasks).toHaveLength(1);
+    expect(generateTasksForDate([onceSchedule], "2026-05-09", [], (id) => id)).toHaveLength(0);
+
+    const due = oneTimeSchedulesDueInWindow([onceSchedule], ["2026-05-07", "2026-05-08"]);
+    expect(due.map((item) => item.id)).toEqual(["schedule_once"]);
+    const completed = markOneTimeScheduleCompleted(onceSchedule, "2026-05-08T12:00:00Z", "system");
+    expect(completed.active).toBe(false);
+    expect(completed.completedReason).toBe("one_time_schedule_executed");
+    expect(completed.completedAt).toBe("2026-05-08T12:00:00Z");
   });
 });

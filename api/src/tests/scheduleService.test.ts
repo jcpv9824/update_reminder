@@ -23,6 +23,32 @@ describe("validateFrequency", () => {
     expect(() => validateFrequency({ frequencyType: "manual", startDate: "no", assignedRole: "x" })).toThrow();
   });
 
+  it("permite programación única sin campos recurrentes", () => {
+    expect(() => validateFrequency({ frequencyType: "once", startDate: "2026-05-20", assignedRole: "domain_updater" })).not.toThrow();
+    expect(() => validateFrequency({ frequencyType: "once", startDate: "2026-05-20", endDate: "2026-05-21", assignedRole: "domain_updater" })).toThrow(/única/i);
+  });
+
+  it("valida recordatorios específicos de una programación", () => {
+    expect(() => validateFrequency({
+      frequencyType: "once",
+      startDate: "2026-05-20",
+      assignedRole: "domain_updater",
+      reminders: { remindersEnabled: true, reminderDaysBefore: [2, 1, 0], reminderTime: "07:30", reminderRecipientsMode: "roleUsers" },
+    })).not.toThrow();
+    expect(() => validateFrequency({
+      frequencyType: "once",
+      startDate: "2026-05-20",
+      assignedRole: "domain_updater",
+      reminders: { remindersEnabled: true, reminderDaysBefore: [], reminderTime: "07:30", reminderRecipientsMode: "roleUsers" },
+    })).toThrow(/recordatorio/i);
+    expect(() => validateFrequency({
+      frequencyType: "once",
+      startDate: "2026-05-20",
+      assignedRole: "domain_updater",
+      reminders: { remindersEnabled: true, reminderDaysBefore: [1], reminderTime: "730", reminderRecipientsMode: "roleUsers" },
+    })).toThrow(/HH:mm/i);
+  });
+
   it("permite frecuencia sin rol manual y valida fecha de fin opcional", () => {
     expect(() => validateFrequency({ frequencyType: "weekly", weekdays: ["FRIDAY"], startDate: "2026-05-01", endDate: "2026-05-31" })).not.toThrow();
     expect(() => validateFrequency({ frequencyType: "weekly", weekdays: ["FRIDAY"], startDate: "2026-05-31", endDate: "2026-05-01" })).toThrow(/fecha de fin/i);

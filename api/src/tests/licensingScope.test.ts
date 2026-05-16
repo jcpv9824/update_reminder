@@ -155,9 +155,59 @@ describe("licensingScope", () => {
     expect(onlyDatabases.databasesCount).toBe(2);
   });
 
+  it("previsualiza IDs y aplica conteos finales con excepciones", () => {
+    const preview = previewLicensingScope({
+      ...baseArgs,
+      scope: {
+        ...schedule.licensingScope!,
+        excludedDomainIds: ["domain_a"],
+        excludedDatabaseIds: ["db_b"],
+      },
+    });
+    expect(preview.groups[0].domains[0].id).toBe("domain_a");
+    expect(preview.groups[0].domains[0].databases[0].id).toBe("db_a");
+    expect(preview.excludedDomainsCount).toBe(1);
+    expect(preview.excludedDatabasesCount).toBe(1);
+    expect(preview.domainsCount).toBe(1);
+    expect(preview.databasesCount).toBe(1);
+  });
+
   it("expande una programación por licencia dinámicamente", () => {
     const expanded = expandLicensingSchedule({ schedule, ...baseArgs });
     expect(expanded.some((item) => item.id.includes("__lic_domain_domain_a"))).toBe(true);
     expect(expanded.some((item) => item.id.includes("__lic_db_db_b"))).toBe(true);
+  });
+
+  it("no genera tarea de dominio excluido pero mantiene sus bases si no están excluidas", () => {
+    const expanded = expandLicensingSchedule({
+      schedule: {
+        ...schedule,
+        licensingScope: {
+          ...schedule.licensingScope!,
+          targetTypes: "domains_and_databases",
+          excludedDomainIds: ["domain_a"],
+          excludedDatabaseIds: [],
+        },
+      },
+      ...baseArgs,
+    });
+    expect(expanded.some((item) => item.targetType === "domain" && item.targetIds.includes("domain_a"))).toBe(false);
+    expect(expanded.some((item) => item.targetType === "database" && item.targetIds.includes("db_a"))).toBe(true);
+  });
+
+  it("no genera tarea de base excluida y no excluye el dominio", () => {
+    const expanded = expandLicensingSchedule({
+      schedule: {
+        ...schedule,
+        licensingScope: {
+          ...schedule.licensingScope!,
+          targetTypes: "domains_and_databases",
+          excludedDatabaseIds: ["db_a"],
+        },
+      },
+      ...baseArgs,
+    });
+    expect(expanded.some((item) => item.targetType === "domain" && item.targetIds.includes("domain_a"))).toBe(true);
+    expect(expanded.some((item) => item.targetType === "database" && item.targetIds.includes("db_a"))).toBe(false);
   });
 });

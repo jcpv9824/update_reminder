@@ -175,6 +175,8 @@ export type LicensingScope = {
   environment: "all" | string;
   targetTypes: LicensingTargetTypes;
   activeOnly: boolean;
+  excludedDomainIds?: string[];
+  excludedDatabaseIds?: string[];
 };
 
 export type Weekday =
@@ -186,7 +188,7 @@ export type Weekday =
   | "SATURDAY"
   | "SUNDAY";
 
-export type FrequencyType = "weekly" | "interval" | "monthly" | "manual";
+export type FrequencyType = "once" | "weekly" | "interval" | "monthly" | "manual";
 export type ScheduleOrigin = "domain_default" | "special" | "database_inherited";
 
 export type UpdateSchedule = {
@@ -218,6 +220,8 @@ export type UpdateSchedule = {
   databaseAssignedRole?: Role | string;
   origin?: ScheduleOrigin | string;
   active: boolean;
+  completedAt?: string | null;
+  completedReason?: string | null;
   notes?: string;
   reminders?: RemindersConfig;
   createdAt: string;

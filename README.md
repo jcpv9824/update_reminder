@@ -15,7 +15,7 @@ Aplicación web para gestionar las actualizaciones programadas de los clientes d
 - Página principal **Tareas** con dos columnas (dominios y bases de datos) divididas en *Vencidas / Hoy / Próximas / Completadas*.
 - Gestión de **clientes**, **dominios** y **bases de datos** con eliminación en cascada confirmada y soft-delete de maestros. La frecuencia principal se configura en el **dominio**; las bases de datos heredan esa frecuencia desde el dominio seleccionado.
 - **Licenciamiento** visible para administradores y administradores de clientes, como maestro de módulos que luego se asignan al cliente completo desde **Clientes**.
-- **Programaciones especiales** (semanal, intervalo, mensual, manual) con alcance jerárquico manual o alcance por licenciamiento, y responsables por rol o usuarios específicos.
+- **Programaciones especiales** con frecuencia **Única** por defecto, además de semanal, intervalo, mensual o manual. El alcance puede ser jerárquico manual o por licenciamiento, con responsables por rol o usuarios específicos.
 - **Maestros paginados y buscables**. Clientes, dominios, bases de datos, licenciamiento, programaciones especiales, auditoría y usuarios muestran 10 registros por página por defecto. Las búsquedas y filtros vuelven a página 1.
 - **Validaciones de calidad de datos**: trim en campos de texto, dominios con `https://`, listas de correos separadas por punto y coma, y bloqueo de duplicados de clientes, dominios, bases y módulos de licencia.
 - **Generación automática diaria** de tareas mediante Azure Functions Timer Trigger y refresco manual desde la vista **Tareas** con **Refrescar**. El refresco no envía correos.
@@ -207,7 +207,7 @@ La vista usa una **ventana operativa**: vencidas abiertas sin límite hacia atr�
 
 El tablero principal no lista todos los dominios o bases individualmente. Muestra grupos resumidos como **Dominios por actualizar** o **Bases de datos por actualizar**, con total, completadas, pendientes, con problemas y estado general. El botón **Ver detalle** abre las tareas individuales, permite copiar dominios o nombres de bases y guarda inmediatamente cada cambio de estado.
 
-El detalle de tareas usa un modal amplio. Para dominios muestra acciones según estado: pendientes pueden iniciarse/completarse/bloquearse; bloqueadas muestran **Completar** y **Resolver bloqueo**, pero no **Reabrir**; completadas muestran **Reabrir**, pero no **Completar**. Para bases de datos muestra la conexión en campos apilados: servidor, base, usuario y contraseña. La contraseña no se precarga; se revela o copia bajo demanda con el endpoint seguro y auditoría sin incluir el valor.
+El detalle de tareas usa un modal amplio. Para dominios muestra acciones según estado: pendientes pueden completarse/bloquearse; bloqueadas muestran **Completar** y **Resolver bloqueo**, pero no **Reabrir**; completadas muestran **Reabrir**, pero no **Completar**. Para bases de datos muestra la conexión en campos apilados: servidor, base, usuario y contraseña. La contraseña no se precarga; se revela o copia bajo demanda con el endpoint seguro y auditoría sin incluir el valor.
 
 Las tareas bloqueadas se resuelven con modal propio hacia pendiente, en progreso o completada. El comentario de resolución es opcional. Una bloqueada también puede marcarse como completada con un modal de cierre. Las completadas se pueden reabrir a pendiente con modal propio y motivo opcional. No se usan `alert`, `confirm` ni `prompt` del navegador en estos flujos.
 
@@ -223,10 +223,22 @@ Los formularios normales usan por defecto el rol responsable: **Actualizador de 
 
 La vista **Programaciones especiales** queda para excepciones avanzadas. El alcance se construye por grupos: agregar cliente, incluir todos los dominios o agregar dominios específicos, e incluir todas las bases o bases puntuales. Para seleccionar varios dominios o bases se usan modales con búsqueda y checkboxes. Las frecuencias normales creadas desde **Dominios** se guardan con `origin = "domain_default"` y no aparecen en esta página; las creadas desde **Programaciones especiales** se guardan con `origin = "special"`.
 
-También puede crear programaciones especiales **Por licenciamiento**. En ese modo se seleccionan una o varias licencias, coincidencia `cualquiera/todas`, ambiente, y objetivo `dominios`, `bases` o ambos. La app previsualiza clientes, dominios y bases activos afectados, y al generar tareas re-resuelve el criterio para incluir clientes que compren esa licencia en el futuro. La deduplicación de tareas por entidad/día se mantiene aunque coincidan programaciones normales, manuales o por licenciamiento.
+También puede crear programaciones especiales **Por licenciamiento**. En ese modo se seleccionan una o varias licencias, coincidencia `cualquiera/todas`, ambiente, y objetivo `dominios`, `bases` o ambos. La app previsualiza clientes, dominios y bases activos afectados, y al generar tareas re-resuelve el criterio para incluir clientes que compren esa licencia en el futuro.
+
+Después del preview por licenciamiento se pueden marcar excepciones de esta programación:
+
+- **Excluir dominio** evita crear la tarea del dominio, pero no excluye automáticamente sus bases.
+- **Excluir base** evita crear la tarea de esa base, pero no excluye el dominio.
+- Si cambian licencias, ambiente, coincidencia u objetivo después del preview, el alcance queda desactualizado y debe previsualizarse de nuevo antes de guardar.
+- Las excepciones se guardan por ID (`excludedDomainIds`, `excludedDatabaseIds`) dentro de `licensingScope`.
+
+La deduplicación de tareas por entidad/día se mantiene aunque coincidan programaciones normales, manuales o por licenciamiento. Para nuevas programaciones especiales, **Única** es la frecuencia por defecto: solo pide **Fecha de actualización**, genera tareas una vez y luego la programación queda inactiva/completada automáticamente para no volver a generar.
+
+Los recordatorios de programaciones especiales usan por defecto la configuración global de **Alertas y correos → Recordatorios a actualizadores**. Si se requiere una configuración específica, se desmarca **Usar configuración global de recordatorios** y se capturan **Días previos separados por coma** (`2,1,0`, `1,0`, etc.) y **Hora de envío**. El valor `0` significa el mismo día de la actualización.
 
 ## Cambios recientes
 
+- [CAMBIOS_V14.md](CAMBIOS_V14.md): excepciones en programación por licenciamiento y frecuencia única por defecto.
 - [CAMBIOS_V11.md](CAMBIOS_V11.md): licenciamiento a nivel cliente, código opcional, asignaciones avanzadas ocultas y programaciones especiales por licenciamiento.
 - [CAMBIOS_V10.md](CAMBIOS_V10.md): modales de tareas, selección múltiple jerárquica, recordatorios globales/overrides, bloqueos no resueltos y reglas administrativas de último día hábil.
 - [CAMBIOS_V9.md](CAMBIOS_V9.md): licencias/módulos en reporte maestro y bloqueo claro al eliminar licencias asignadas.

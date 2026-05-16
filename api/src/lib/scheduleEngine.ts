@@ -48,6 +48,9 @@ export function isScheduleDueOnDate(
   }
 
   switch (schedule.frequencyType) {
+    case "once":
+      return isoDate === schedule.startDate;
+
     case "manual":
       return false;
 
