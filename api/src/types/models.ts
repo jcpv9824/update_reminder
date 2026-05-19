@@ -9,7 +9,7 @@ export type Role =
 
 export type EntityStatus = "active" | "inactive" | "deleted";
 
-export type Environment = "production" | "staging" | "test" | "development";
+export type Environment = "production" | "test" | "demo";
 
 export type CurrentUser = {
   id: string;
@@ -49,6 +49,7 @@ export type RemindersConfig = {
 
 export type ClientRecord = {
   id: string;
+  externalId?: string;
   name: string;
   status: EntityStatus;
   notes?: string;

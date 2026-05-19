@@ -58,6 +58,7 @@ Reglas globales:
 | Source container | Source field | Target table | Target column | Transform rule | Required | Default if missing | Validation | Sensitive |
 |---|---|---|---|---|---|---|---|---|
 | clients | id | core.clients | id | copy | yes | fail | unique | no |
+| clients | externalId | core.clients | external_id | trim | no | null | unique where not deleted if present; may become required later | no |
 | clients | name | core.clients | name | trim | yes | fail | not empty | no |
 | clients | name | core.clients | name_normalized | normalize_text | yes | fail | unique where not deleted | no |
 | clients | status | core.clients | status | copy | yes | active | active/inactive/deleted | no |

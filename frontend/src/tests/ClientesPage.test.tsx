@@ -52,12 +52,27 @@ describe("ClientesPage", () => {
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Nuevo cliente/i }));
     expect(await screen.findByText("Licencias del cliente")).toBeInTheDocument();
+    fireEvent.change(within(screen.getByText(/^ID del cliente$/i).parentElement!).getByRole("textbox"), { target: { value: "PYA-001" } });
     fireEvent.change(within(screen.getByText(/Nombre del cliente/i).parentElement!).getByRole("textbox"), { target: { value: "Cliente Uno" } });
     fireEvent.click(screen.getByText("Mobile App"));
     fireEvent.click(screen.getByRole("button", { name: /^Guardar$/i }));
     await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/clients", expect.objectContaining({
       name: "Cliente Uno",
+      externalId: "PYA-001",
       licenseModuleIds: ["module_mobile"],
+    })));
+  });
+
+  it("el ID del cliente es opcional y muestra ayuda de unicidad", async () => {
+    apiMock.post.mockResolvedValue({ id: "client_1", name: "Cliente Uno" });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Nuevo cliente/i }));
+    expect(screen.getByText(/Opcional por ahora/i)).toBeInTheDocument();
+    fireEvent.change(within(screen.getByText(/Nombre del cliente/i).parentElement!).getByRole("textbox"), { target: { value: "Cliente Uno" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Guardar$/i }));
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/clients", expect.objectContaining({
+      name: "Cliente Uno",
+      externalId: undefined,
     })));
   });
 

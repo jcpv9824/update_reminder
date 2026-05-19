@@ -7,10 +7,11 @@ import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import { getPagination, paginateArray } from "../lib/pagination";
-import { hasDuplicateClientName } from "../lib/duplicateValidation";
+import { hasDuplicateClientExternalId, hasDuplicateClientName } from "../lib/duplicateValidation";
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 const ClientSchema = z.object({
+  externalId: z.string().max(100).optional(),
   name: z.string().min(1, "El nombre del cliente es obligatorio.").max(200),
   notes: z.string().max(2000).optional(),
   status: z.enum(["active", "inactive", "deleted"]).optional(),
@@ -64,7 +65,7 @@ app.http("clientsList", {
       const includeDeleted = req.query.get("includeDeleted") === "true";
       let items = resources;
       if (!includeDeleted && !status) items = items.filter((c) => c.status !== "deleted");
-      if (search) items = items.filter((c) => `${c.name} ${c.status} ${c.notes ?? ""}`.toLowerCase().includes(search));
+      if (search) items = items.filter((c) => `${c.externalId ?? ""} ${c.name} ${c.status} ${c.notes ?? ""}`.toLowerCase().includes(search));
       if (status) items = items.filter((c) => c.status === status);
       const pagination = getPagination(req);
       if (pagination.enabled) return ok(paginateArray(items, pagination.page, pagination.pageSize));
@@ -89,11 +90,13 @@ app.http("clientsCreate", {
       const container = getContainer("clients");
       const { resources: existingClients } = await container.items.readAll<ClientRecord>().fetchAll();
       if (hasDuplicateClientName(existingClients, parsed.data.name)) return conflict("Ya existe un cliente con este nombre.");
+      if (hasDuplicateClientExternalId(existingClients, parsed.data.externalId)) return conflict("Ya existe un cliente con este ID.");
       const licenses = await resolveClientLicenses(parsed.data.licenseModuleIds);
       if (isHttpResponse(licenses)) return licenses;
       const now = new Date().toISOString();
       const record: ClientRecord = {
         id: `client_${uuid()}`,
+        externalId: parsed.data.externalId?.trim() || undefined,
         name: parsed.data.name.trim(),
         status: "active",
         notes: parsed.data.notes?.trim(),
@@ -191,6 +194,10 @@ app.http("clientsUpdate", {
         const { resources: existingClients } = await container.items.readAll<ClientRecord>().fetchAll();
         if (hasDuplicateClientName(existingClients, parsed.data.name, id)) return conflict("Ya existe un cliente con este nombre.");
       }
+      if (typeof parsed.data.externalId === "string") {
+        const { resources: existingClients } = await container.items.readAll<ClientRecord>().fetchAll();
+        if (hasDuplicateClientExternalId(existingClients, parsed.data.externalId, id)) return conflict("Ya existe un cliente con este ID.");
+      }
       const before = { ...resource };
       const licenses = parsed.data.licenseModuleIds !== undefined
         ? await resolveClientLicenses(parsed.data.licenseModuleIds, resource.licenseModuleIds ?? [])
@@ -198,6 +205,7 @@ app.http("clientsUpdate", {
       if (licenses && isHttpResponse(licenses)) return licenses;
       const updated: ClientRecord = {
         ...resource,
+        ...(parsed.data.externalId !== undefined ? { externalId: parsed.data.externalId.trim() || undefined } : {}),
         ...(parsed.data.name !== undefined ? { name: parsed.data.name.trim() } : {}),
         ...(parsed.data.notes !== undefined ? { notes: parsed.data.notes.trim() } : {}),
         ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),

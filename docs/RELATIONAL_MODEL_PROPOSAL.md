@@ -180,7 +180,7 @@ Catálogo recomendado para normalizar ambiente sin perder strings existentes.
 
 | Columna | Tipo | Notas |
 |---|---:|---|
-| `id` | NVARCHAR(50) PK | `production`, `staging`, `test`, `demo`, `development`, `all`. |
+| `id` | NVARCHAR(50) PK | `production`, `test`, `demo`, `all` solo para filtros/configuración. |
 | `name_es` | NVARCHAR(100) | Producción, Pruebas, Demo, etc. |
 | `sort_order` | INT |  |
 | `active` | BIT |  |

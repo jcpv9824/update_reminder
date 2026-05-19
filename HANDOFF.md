@@ -20,6 +20,13 @@ C:\Users\jcami\Desktop\Actualizaciones automáticas\erp-update-scheduler
 
 5. Pedirle que ejecute pruebas y build antes de entregar cambios, y que no incluya secretos en logs, documentación ni respuestas.
 
+Regla operativa para Cloud Code u otro agente:
+
+- Después de cada cambio real debe ejecutar pruebas relacionadas y, al final, pruebas/build completos.
+- No debe desplegar ni reportar “listo” si las pruebas fallan.
+- Si todo pasa, debe dejar un commit con mensaje claro antes de desplegar o pedir revisión.
+- Después de desplegar, debe verificar que el cambio sea visible en producción y revisar GitHub Actions, caché de Static Web Apps y Ctrl+F5 si “todo se ve igual”.
+
 ## 1. Descripción general
 
 **Programador de Actualizaciones ERP** gestiona el trabajo operativo para actualizar dominios y bases de datos del ERP por cliente. El flujo principal es:
@@ -251,6 +258,7 @@ Licencias / módulos:
 Clientes permiten:
 
 - Crear, editar, activar/desactivar y eliminar en cascada con confirmación.
+- Capturar un **ID del cliente** de negocio en `externalId`. Es opcional por ahora, pero si se captura debe ser único entre clientes no eliminados.
 - Asignar licencias al cliente mediante checkboxes y buscador.
 - Ver chips/lista de “Licencias seleccionadas”.
 - Ver dominios y bases asociadas.
@@ -391,12 +399,14 @@ Reporte maestro:
 
 Backend debe ser la fuente principal de validación:
 
+- `externalId` de cliente es opcional, pero único si existe.
 - No duplicar cliente por nombre normalizado.
 - No duplicar dominio por URL normalizada.
 - No duplicar base por cadena de conexión normalizada.
 - En edición, no bloquear el mismo registro.
 - Aplicar trim a nombres, notas, dominios, dominio para publicar, cadenas de conexión, empresas, bases, usuarios, emails, SMTP, licencias y textos de programaciones.
 - Dominios deben iniciar con `https://`.
+- Ambientes permitidos: `production` (Producción), `test` (Pruebas) y `demo` (Demo). No usar `staging`, `development` ni otros ambientes nuevos.
 - Emails deben tener formato válido.
 - Listas de emails separadas por punto y coma:
   - Separar por `;`.

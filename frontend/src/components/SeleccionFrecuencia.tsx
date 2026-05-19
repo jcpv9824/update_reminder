@@ -12,7 +12,7 @@ export type ConfiguracionRecordatorios = {
 };
 
 export type ValoresFrecuencia = {
-  frequencyType: "weekly" | "interval" | "monthly" | "manual";
+  frequencyType: "once" | "weekly" | "interval" | "monthly" | "manual";
   everyNWeeks?: number;
   weekdays?: string[];
   intervalDays?: number;

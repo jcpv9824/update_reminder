@@ -450,9 +450,11 @@ Migración:
 ### 6.2 Duplicados y normalización
 
 - Cliente duplicado por nombre normalizado: prohibido.
+- ID de cliente de negocio (`externalId`) es opcional, pero si existe debe ser único entre clientes no eliminados.
 - Dominio duplicado por URL normalizada: prohibido.
 - Base duplicada por cadena de conexión normalizada: prohibido.
 - URL dominio debe iniciar con `https://`.
+- Ambientes permitidos para dominios/bases: `production`, `test`, `demo`.
 - Emails separados por `;` deben parsearse y validarse individualmente.
 
 ### 6.3 Frecuencia y generación de tareas

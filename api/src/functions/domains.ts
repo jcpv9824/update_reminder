@@ -10,6 +10,7 @@ import { badRequest, conflict, created, forbidden, notFound, ok, serverError } f
 import { getPagination, paginateArray } from "../lib/pagination";
 import { matchesDomainSearch } from "../lib/listSearch";
 import { hasDuplicateDomainUrl } from "../lib/duplicateValidation";
+import { isAllowedEnvironment } from "../lib/environments";
 import { isValidHttpsDomain } from "../lib/inputValidation";
 import {
   buildScheduleRecord,
@@ -31,7 +32,7 @@ async function getUserOrFail(req: HttpRequest) {
 const DomainSchema = z.object({
   clientId: z.string().min(1, "El cliente es obligatorio."),
   domainName: z.string().min(1, "El dominio es obligatorio."),
-  environment: z.string().min(1, "El ambiente es obligatorio."),
+  environment: z.string().refine(isAllowedEnvironment, "El ambiente debe ser Producción, Pruebas o Demo."),
   currentWebVersion: z.string().optional(),
   assignedUpdaterIds: z.array(z.string()).default([]),
   notes: z.string().optional(),
@@ -94,6 +95,7 @@ app.http("domainsCreate", {
       const body = await req.json();
       const parsed = DomainSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      if (!isAllowedEnvironment(parsed.data.environment)) return badRequest("El ambiente debe ser Producción, Pruebas o Demo.");
       if (!isValidHttpsDomain(parsed.data.domainName)) return badRequest("El dominio debe iniciar con https://");
       const { resources: existingDomains } = await getContainer("domains").items.readAll<DomainRecord>().fetchAll();
       if (hasDuplicateDomainUrl(existingDomains, parsed.data.domainName)) return conflict("Ya existe un dominio con esta URL.");
@@ -233,6 +235,7 @@ app.http("domainsUpdate", {
       const existing = resources[0];
       if (!canEditDomainLimited(user, existing)) return forbidden();
       const body = await req.json() as any;
+      if (typeof body.environment === "string" && !isAllowedEnvironment(body.environment)) return badRequest("El ambiente debe ser Producción, Pruebas o Demo.");
       if (typeof body.domainName === "string") {
         if (!isValidHttpsDomain(body.domainName)) return badRequest("El dominio debe iniciar con https://");
         const { resources: existingDomains } = await container.items.readAll<DomainRecord>().fetchAll();

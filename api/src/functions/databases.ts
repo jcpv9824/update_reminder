@@ -14,6 +14,7 @@ import { badRequest, conflict, created, forbidden, notFound, ok, serverError } f
 import { getPagination, paginateArray } from "../lib/pagination";
 import { matchesDatabaseSearch } from "../lib/listSearch";
 import { hasDuplicateDatabaseConnection } from "../lib/duplicateValidation";
+import { isAllowedEnvironment } from "../lib/environments";
 import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
@@ -27,7 +28,7 @@ const DbCreateSchema = z.object({
   clientId: z.string().min(1),
   domainId: z.string().min(1),
   companyName: z.string().min(1, "El nombre de la empresa es obligatorio."),
-  environment: z.string().min(1),
+  environment: z.string().refine(isAllowedEnvironment, "El ambiente debe ser Producción, Pruebas o Demo."),
   rawDbAccess: z.string().min(1, "La cadena de acceso es obligatoria."),
   assignedUpdaterIds: z.array(z.string()).default([]),
   notes: z.string().optional(),
@@ -79,6 +80,7 @@ app.http("databasesCreate", {
       const body = await req.json();
       const parsed = DbCreateSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      if (!isAllowedEnvironment(parsed.data.environment)) return badRequest("El ambiente debe ser Producción, Pruebas o Demo.");
 
       const { resource: client } = await getContainer("clients").item(parsed.data.clientId, parsed.data.clientId).read<ClientRecord>();
       if (!client) return badRequest("Cliente no encontrado.");
@@ -248,6 +250,7 @@ app.http("databasesUpdate", {
       if (!db) return notFound("Base de datos no encontrada.");
       if (!canEditDatabaseLimited(user, db)) return forbidden();
       const body = await req.json() as any;
+      if (typeof body.environment === "string" && !isAllowedEnvironment(body.environment)) return badRequest("El ambiente debe ser Producción, Pruebas o Demo.");
       if (typeof body.rawDbAccess === "string" && body.rawDbAccess.trim() && canManageClients(user)) {
         const { resources: existingDatabases } = await getContainer("databases").items.readAll<DatabaseRecord>().fetchAll();
         if (hasDuplicateDatabaseConnection(existingDatabases, body.rawDbAccess, db.id)) return conflict("Ya existe una base de datos con esta cadena de conexión.");

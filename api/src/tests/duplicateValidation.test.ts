@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   hasDuplicateClientName,
+  hasDuplicateClientExternalId,
   hasDuplicateDatabaseConnection,
   hasDuplicateDomainUrl,
   normalizeComparableText,
@@ -22,6 +23,19 @@ describe("duplicateValidation", () => {
     expect(hasDuplicateClientName(clients, " cliente   uno ")).toBe(true);
     expect(hasDuplicateClientName(clients, "CLIENTE UNO", "client_1")).toBe(false);
     expect(hasDuplicateClientName(clients, "cliente dos")).toBe(true);
+  });
+
+  it("detecta ID de cliente duplicado solo cuando se captura", () => {
+    const clients = [
+      { id: "client_1", externalId: "PYA-001", name: "Cliente Uno", status: "active" },
+      { id: "client_2", externalId: "OLD-001", name: "Eliminado", status: "deleted" },
+    ] as ClientRecord[];
+
+    expect(hasDuplicateClientExternalId(clients, " pya-001 ")).toBe(true);
+    expect(hasDuplicateClientExternalId(clients, "PYA-001", "client_1")).toBe(false);
+    expect(hasDuplicateClientExternalId(clients, "")).toBe(false);
+    expect(hasDuplicateClientExternalId(clients, undefined)).toBe(false);
+    expect(hasDuplicateClientExternalId(clients, "old-001")).toBe(false);
   });
 
   it("normaliza dominios removiendo slash final", () => {

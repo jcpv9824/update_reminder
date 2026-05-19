@@ -6,7 +6,7 @@ import type { BaseDeDatos, Cliente, Dominio, Frecuencia, RespuestaPaginada } fro
 import { Alerta, EtiquetaEstado, Modal, DialogoConfirmar, Paginacion } from "../components/Comunes";
 import { AccesoBdParseado } from "../components/AccesoBdParseado";
 import { PanelAccesoBd } from "../components/PanelAccesoBd";
-import { ETIQUETAS_AMBIENTE } from "../types";
+import { AMBIENTES_OPERATIVOS, ETIQUETAS_AMBIENTE } from "../types";
 import { SelectorBuscable } from "../components/SelectorBuscable";
 
 type AccionBd = "guardar" | "crearNueva";
@@ -144,7 +144,7 @@ export default function BasesDeDatosPage() {
         <div className="campo"><label>Ambiente</label>
           <select value={filtroAmbiente} onChange={(e) => setFiltroAmbiente(e.target.value)}>
             <option value="">Todos</option>
-            {Object.entries(ETIQUETAS_AMBIENTE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            {AMBIENTES_OPERATIVOS.map((k) => <option key={k} value={k}>{ETIQUETAS_AMBIENTE[k]}</option>)}
           </select></div>
         <div className="campo"><label>Estado</label>
           <select value={filtroEstado} onChange={(e) => setFiltroEstado(e.target.value)}>
@@ -316,7 +316,7 @@ function FormularioBd({ inicial, clientes, dominios, frecuencias, clienteInicial
         <input value={companyName} onChange={(e) => setCompanyName(e.target.value)} /></div>
       <div className="fila-formulario"><label>Ambiente *</label>
         <select value={environment} onChange={(e) => setEnvironment(e.target.value)}>
-          {Object.entries(ETIQUETAS_AMBIENTE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          {AMBIENTES_OPERATIVOS.map((k) => <option key={k} value={k}>{ETIQUETAS_AMBIENTE[k]}</option>)}
         </select></div>
       <div className="fila-formulario"><label>Versión actual de la base de datos</label>
         <input value={currentDbVersion} onChange={(e) => setCurrentDbVersion(e.target.value)} /></div>

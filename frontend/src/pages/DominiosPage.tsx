@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { BaseDeDatos, Cliente, Dominio, Frecuencia, RespuestaPaginada, Usuario } from "../types";
 import { Alerta, BotonCopiar, EtiquetaEstado, Modal, DialogoConfirmar, Paginacion } from "../components/Comunes";
-import { ETIQUETAS_AMBIENTE } from "../types";
+import { AMBIENTES_OPERATIVOS, ETIQUETAS_AMBIENTE } from "../types";
 import { SeleccionFrecuencia, valoresFrecuenciaPorDefecto, depurarFrecuenciaParaEnvio, type ValoresFrecuencia } from "../components/SeleccionFrecuencia";
 import { SelectorBuscable } from "../components/SelectorBuscable";
 import { formatDomainForPublishing } from "../utils/dominio";
@@ -139,7 +139,7 @@ export default function DominiosPage() {
         <div className="campo"><label>Ambiente</label>
           <select value={filtroAmbiente} onChange={(e) => setFiltroAmbiente(e.target.value)}>
             <option value="">Todos</option>
-            {Object.entries(ETIQUETAS_AMBIENTE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            {AMBIENTES_OPERATIVOS.map((k) => <option key={k} value={k}>{ETIQUETAS_AMBIENTE[k]}</option>)}
           </select>
         </div>
         <div className="campo"><label>Estado</label>
@@ -401,7 +401,7 @@ function FormularioDominio({ inicial, frecuenciaInicial, clienteInicialId = "", 
       <h4>Configuración técnica</h4>
       <div className="fila-formulario"><label>Ambiente *</label>
         <select value={environment} onChange={(e) => setEnvironment(e.target.value)}>
-          {Object.entries(ETIQUETAS_AMBIENTE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          {AMBIENTES_OPERATIVOS.map((k) => <option key={k} value={k}>{ETIQUETAS_AMBIENTE[k]}</option>)}
         </select></div>
       <div className="fila-formulario"><label>Versión web actual</label>
         <input value={currentWebVersion} onChange={(e) => setCurrentWebVersion(e.target.value)} /></div>

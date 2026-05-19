@@ -27,6 +27,7 @@ export type RespuestaPaginada<T> = {
 
 export type Cliente = {
   id: string;
+  externalId?: string;
   name: string;
   status: "active" | "inactive" | "deleted";
   notes?: string;
@@ -244,11 +245,11 @@ export const ETIQUETAS_ESTADO: Record<string, string> = {
 export const ETIQUETAS_AMBIENTE: Record<string, string> = {
   all: "Todos",
   production: "Producción",
-  staging: "Pre-producción",
   test: "Pruebas",
   demo: "Demo",
-  development: "Desarrollo",
 };
+
+export const AMBIENTES_OPERATIVOS = ["production", "test", "demo"] as const;
 
 export const ETIQUETAS_FRECUENCIA: Record<string, string> = {
   once: "Única",

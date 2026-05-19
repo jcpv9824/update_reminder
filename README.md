@@ -18,6 +18,7 @@ Aplicación web para gestionar las actualizaciones programadas de los clientes d
 - **Programaciones especiales** con frecuencia **Única** por defecto, además de semanal, intervalo, mensual o manual. El alcance puede ser jerárquico manual o por licenciamiento, con responsables por rol o usuarios específicos.
 - **Maestros paginados y buscables**. Clientes, dominios, bases de datos, licenciamiento, programaciones especiales, auditoría y usuarios muestran 10 registros por página por defecto. Las búsquedas y filtros vuelven a página 1.
 - **Validaciones de calidad de datos**: trim en campos de texto, dominios con `https://`, listas de correos separadas por punto y coma, y bloqueo de duplicados de clientes, dominios, bases y módulos de licencia.
+- **Ambientes cerrados** a Producción (`production`), Pruebas (`test`) y Demo (`demo`).
 - **Generación automática diaria** de tareas mediante Azure Functions Timer Trigger y refresco manual desde la vista **Tareas** con **Refrescar**. El refresco no envía correos.
 - Panel del actualizador con las cuatro partes del acceso (servidor, Initial Catalog, usuario y contraseña) y botones independientes para copiar; cada acción se audita.
 - Desde **Dominios** se puede abrir **Ver bases asociadas**; desde **Clientes**, **Ver dominios y bases**.
@@ -118,6 +119,10 @@ Cubre vistas principales, selectores buscables, tareas, alertas y correos, progr
 | Actualizador de bases de datos | Ver y completar tareas de bases de datos asignadas; revelar/copiar contraseñas autorizadas. |
 | Actualizador de dominios | Ver y completar tareas de dominios asignadas. |
 | Visualizador | Solo lectura. |
+
+## Clientes
+
+El campo **ID del cliente** (`externalId`) es opcional por ahora. Si se captura, debe ser único entre clientes no eliminados. El `id` técnico interno (`client_*`) sigue siendo generado por la aplicación y no debe editarse manualmente.
 
 ## Seguridad
 

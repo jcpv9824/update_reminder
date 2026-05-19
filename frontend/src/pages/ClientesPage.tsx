@@ -36,7 +36,7 @@ export default function ClientesPage() {
   });
 
   const crear = useMutation({
-    mutationFn: ({ body }: { body: { name: string; notes?: string; licenseModuleIds?: string[] }; accion: AccionCliente }) => api.post<Cliente>("/clients", body),
+    mutationFn: ({ body }: { body: { externalId?: string; name: string; notes?: string; licenseModuleIds?: string[] }; accion: AccionCliente }) => api.post<Cliente>("/clients", body),
     onSuccess: (cliente, variables) => {
       qc.invalidateQueries({ queryKey: ["clientes"] });
       setExito("Cliente creado correctamente.");
@@ -106,6 +106,7 @@ export default function ClientesPage() {
         <table>
           <thead>
             <tr>
+              <th>ID cliente</th>
               <th>Nombre</th>
               <th>Estado</th>
               <th>Notas</th>
@@ -115,9 +116,10 @@ export default function ClientesPage() {
           </thead>
           <tbody>
             {filtrados.length === 0 ? (
-              <tr><td colSpan={5} className="vacio">No hay clientes para mostrar.</td></tr>
+              <tr><td colSpan={6} className="vacio">No hay clientes para mostrar.</td></tr>
             ) : filtrados.map((c) => (
               <tr key={c.id}>
+                <td>{c.externalId ?? "-"}</td>
                 <td>{c.name}</td>
                 <td><EtiquetaEstado estado={c.status} /></td>
                 <td>{c.notes ?? ""}</td>
@@ -226,10 +228,11 @@ function FormularioCliente({
 }: {
   inicial?: Cliente;
   modulosLicencia: ModuloLicencia[];
-  onSubmit: (v: { name: string; notes?: string; licenseModuleIds?: string[] }, accion: AccionCliente) => void;
+  onSubmit: (v: { externalId?: string; name: string; notes?: string; licenseModuleIds?: string[] }, accion: AccionCliente) => void;
   cargando: boolean;
 }) {
   const [name, setName] = useState(inicial?.name ?? "");
+  const [externalId, setExternalId] = useState(inicial?.externalId ?? "");
   const [notes, setNotes] = useState(inicial?.notes ?? "");
   const [busquedaLicencia, setBusquedaLicencia] = useState("");
   const [licenseModuleIds, setLicenseModuleIds] = useState<string[]>(inicial?.licenseModuleIds ?? []);
@@ -252,7 +255,7 @@ function FormularioCliente({
   function enviar(accion: AccionCliente) {
     if (!name.trim()) { setErr("El nombre es obligatorio."); return; }
     setErr(null);
-    onSubmit({ name: name.trim(), notes: notes.trim() || undefined, licenseModuleIds }, accion);
+    onSubmit({ externalId: externalId.trim() || undefined, name: name.trim(), notes: notes.trim() || undefined, licenseModuleIds }, accion);
   }
   return (
     <form onSubmit={(e) => {
@@ -260,6 +263,11 @@ function FormularioCliente({
       enviar("guardar");
     }}>
       {err && <Alerta tipo="error">{err}</Alerta>}
+      <div className="fila-formulario">
+        <label>ID del cliente</label>
+        <input value={externalId} onChange={(e) => setExternalId(e.target.value)} placeholder="ID interno o comercial del cliente" />
+        <p className="texto-ayuda">Opcional por ahora. Si se captura, debe ser único y no puede repetirse entre clientes.</p>
+      </div>
       <div className="fila-formulario">
         <label>Nombre del cliente *</label>
         <input value={name} onChange={(e) => setName(e.target.value)} required />

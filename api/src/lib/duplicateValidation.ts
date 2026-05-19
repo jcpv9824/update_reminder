@@ -35,6 +35,17 @@ export function hasDuplicateClientName(clients: ClientRecord[], name: string, cu
   );
 }
 
+export function hasDuplicateClientExternalId(clients: ClientRecord[], externalId: string | undefined, currentId?: string): boolean {
+  const value = externalId?.trim();
+  if (!value) return false;
+  const normalized = normalizeComparableText(value);
+  return clients.some((client) =>
+    client.id !== currentId &&
+    client.status !== "deleted" &&
+    normalizeComparableText(client.externalId ?? "") === normalized
+  );
+}
+
 export function hasDuplicateDomainUrl(domains: DomainRecord[], domainName: string, currentId?: string): boolean {
   const normalized = normalizeDomainUrl(domainName);
   return domains.some((domain) =>
