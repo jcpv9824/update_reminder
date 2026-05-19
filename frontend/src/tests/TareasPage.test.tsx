@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { BaseDeDatos, Tarea } from "../types";
-import { hoyEnBogotaIso } from "../utils/fechas";
+import { hoyEnBogotaIso, sumarDiasIso } from "../utils/fechas";
 
 const apiMock = vi.hoisted(() => ({
   get: vi.fn<(path?: string) => Promise<any>>(async (_path?: string) => []),
@@ -165,6 +165,30 @@ describe("TareasPage (vista unificada)", () => {
     await screen.findByText(/U — Dominios por actualizar/i);
     fireEvent.click(screen.getByRole("button", { name: /Refrescar/i }));
     await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith(expect.stringMatching(/targetType=domain/)));
+  });
+
+  it("después de refrescar muestra tareas futuras generadas en Próximas", async () => {
+    usuarioMock.roles = ["admin"];
+    const mananaIso = sumarDiasIso(hoyIso(), 1);
+    let refrescado = false;
+    apiMock.post.mockImplementation(async () => {
+      refrescado = true;
+      return { created: 1, updated: 0, obsoleted: 0, skipped: 0, message: "Tareas actualizadas correctamente." };
+    });
+    apiMock.get.mockImplementation((path = "") => {
+      if (path === "/users") return Promise.resolve([]);
+      if (path.includes("targetType=domain")) return Promise.resolve(refrescado ? [tarea({ id: "d_futura", taskDate: mananaIso, taskBucket: `${mananaIso}_domain` })] : []);
+      if (path.includes("targetType=database")) return Promise.resolve([]);
+      return Promise.resolve([]);
+    });
+    renderPagina();
+    expect(await screen.findAllByText(/Sin grupos/i)).not.toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: /Refrescar/i }));
+    expect(await screen.findByText(/Tareas actualizadas correctamente/i)).toBeInTheDocument();
+    await waitFor(() => {
+      const proximasHeaders = screen.getAllByText(/^Próximas/i);
+      expect(proximasHeaders.some((h) => /\(1\)/.test(h.parentElement?.textContent ?? ""))).toBe(true);
+    });
   });
 
   it("consulta tareas hasta próximas 4 días y muestra texto de vista operativa", async () => {

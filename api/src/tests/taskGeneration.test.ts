@@ -195,6 +195,74 @@ describe("generateTasksForDate", () => {
     expect(tasks).toHaveLength(0);
   });
 
+  it("reactiva una tarea obsoleta cancelada cuando la programación activa vuelve a requerirla", () => {
+    const existing: UpdateTask[] = [{
+      id: "schedule_1_db_1_2026-05-08",
+      dedupeKey: "database:db_1:2026-05-08",
+      sources: [],
+      taskDate: "2026-05-08",
+      taskBucket: "2026-05-08_database",
+      clientId: "client_1",
+      clientName: "Cliente",
+      domainId: "domain_1",
+      domainName: "ejemplo.sagerp.co",
+      targetType: "database",
+      targetId: "db_1",
+      targetName: "Nombre anterior",
+      scheduleId: "schedule_1",
+      assignedRole: "database_updater",
+      assignedUserIds: [],
+      status: "cancelled",
+      result: "obsolete",
+      notes: "Cancelada por refresh anterior.",
+      createdAt: "",
+      createdBy: "system",
+      updatedAt: "",
+      updatedBy: "system",
+      completedAt: null,
+      completedBy: null,
+    }];
+    const summary = summarizeTaskGenerationForDate([{ ...schedule, targetIds: ["db_1"] }], "2026-05-08", existing, (id) => `Nombre de ${id}`);
+    expect(summary.tasks).toHaveLength(0);
+    expect(summary.syncedTasks).toHaveLength(1);
+    expect(summary.syncedTasks[0].status).toBe("pending");
+    expect(summary.syncedTasks[0].result).toBeNull();
+    expect(summary.syncedTasks[0].targetName).toBe("Nombre de db_1");
+  });
+
+  it("una tarea completada existente sigue bloqueando duplicados para la misma entidad y día", () => {
+    const existing: UpdateTask[] = [{
+      id: "schedule_1_db_1_2026-05-08",
+      dedupeKey: "database:db_1:2026-05-08",
+      sources: [],
+      taskDate: "2026-05-08",
+      taskBucket: "2026-05-08_database",
+      clientId: "client_1",
+      clientName: "Cliente",
+      domainId: "domain_1",
+      domainName: "ejemplo.sagerp.co",
+      targetType: "database",
+      targetId: "db_1",
+      targetName: "Nombre de db_1",
+      scheduleId: "schedule_1",
+      assignedRole: "database_updater",
+      assignedUserIds: [],
+      status: "completed",
+      result: null,
+      notes: "",
+      createdAt: "",
+      createdBy: "system",
+      updatedAt: "",
+      updatedBy: "system",
+      completedAt: "2026-05-08T10:00:00Z",
+      completedBy: "user",
+    }];
+    const summary = summarizeTaskGenerationForDate([{ ...schedule, targetIds: ["db_1"] }], "2026-05-08", existing, (id) => `Nombre de ${id}`);
+    expect(summary.tasks).toHaveLength(0);
+    expect(summary.syncedTasks).toHaveLength(0);
+    expect(summary.skipped).toBeGreaterThan(0);
+  });
+
   it("devuelve resumen con tareas creadas y omitidas por duplicado", () => {
     const existing = [{
       id: "schedule_1_db_1_2026-05-08",

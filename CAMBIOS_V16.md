@@ -21,9 +21,12 @@
   - `domains_only`: genera solo tareas de dominio.
   - `databases_only`: genera solo tareas de base.
 - Corrección crítica: una programación **Única** no se desactiva por estar dentro de la ventana futura de generación. Solo queda inactiva/completada cuando su **Fecha de actualización** es hoy o una fecha anterior.
+- Corrección adicional: si una corrida anterior dejó tareas futuras como `cancelled` con `result = "obsolete"` y la programación sigue activa, el refresh las reactiva como pendientes en vez de omitirlas silenciosamente. Las tareas completadas siguen bloqueando duplicados.
 
 ## Pruebas
 
 - Se agregaron pruebas backend para confirmar que una programación manual **Solo bases de datos** no genera tarea de dominio.
 - Se agregaron pruebas backend para confirmar que una programación manual **Solo dominios** no genera tareas de base.
 - Se agregó prueba frontend para confirmar que la UI guarda `manualTargetTypes = "databases_only"` y las bases seleccionadas.
+- Se agregaron pruebas backend para evitar que tareas obsoletas/canceladas oculten tareas futuras de programaciones activas.
+- Se agregó prueba frontend para confirmar que después de **Refrescar** las tareas futuras generadas aparecen en **Próximas**.

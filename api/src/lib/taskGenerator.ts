@@ -20,6 +20,10 @@ export function isTerminalTask(task: UpdateTask): boolean {
   return task.status === "completed" || task.status === "cancelled";
 }
 
+function blocksTaskRegeneration(task: UpdateTask): boolean {
+  return !(task.status === "cancelled" && task.result === "obsolete");
+}
+
 function canSyncExistingTask(task: UpdateTask): boolean {
   return task.status !== "completed" && task.status !== "cancelled";
 }
@@ -52,14 +56,27 @@ function syncTaskAssignmentFromSchedule(task: UpdateTask, schedule: UpdateSchedu
   return true;
 }
 
+function reactivateObsoleteTaskFromSchedule(task: UpdateTask, schedule: UpdateSchedule, targetName: string): UpdateTask {
+  syncTaskAssignmentFromSchedule(task, schedule, targetName);
+  task.status = "pending";
+  task.result = null;
+  task.notes = task.notes
+    ? `${task.notes}\nTarea reactivada automáticamente porque la programación vuelve a estar activa.`
+    : "Tarea reactivada automáticamente porque la programación vuelve a estar activa.";
+  task.updatedAt = new Date().toISOString();
+  task.updatedBy = "system";
+  return task;
+}
+
 export function summarizeTaskGenerationForDate(
   schedules: UpdateSchedule[],
   isoDate: string,
   existingTasks: UpdateTask[],
   resolveTargetName: TargetNameResolver
 ): { tasks: UpdateTask[]; skipped: number; syncedTasks: UpdateTask[] } {
-  const existingIds = new Set(existingTasks.map((t) => t.id));
-  const existingByTarget = new Map(existingTasks.map((t) => [taskTargetKey(t.targetType, t.targetId, t.taskDate), t]));
+  const blockingExistingTasks = existingTasks.filter(blocksTaskRegeneration);
+  const existingIds = new Set(blockingExistingTasks.map((t) => t.id));
+  const existingByTarget = new Map(blockingExistingTasks.map((t) => [taskTargetKey(t.targetType, t.targetId, t.taskDate), t]));
   const now = new Date().toISOString();
   const tasks: UpdateTask[] = [];
   const syncedTasks: UpdateTask[] = [];
@@ -71,8 +88,16 @@ export function summarizeTaskGenerationForDate(
 
     for (const targetId of schedule.targetIds) {
       const id = buildTaskId(schedule.id, targetId, isoDate);
-      const existing = existingIds.has(id)
-        ? existingTasks.find((t) => t.id === id)
+      const exactExisting = existingTasks.find((t) => t.id === id);
+      if (exactExisting?.status === "cancelled" && exactExisting.result === "obsolete") {
+        syncedTasks.push(reactivateObsoleteTaskFromSchedule(exactExisting, schedule, resolveTargetName(targetId)));
+        existingIds.add(exactExisting.id);
+        existingByTarget.set(taskTargetKey(exactExisting.targetType, exactExisting.targetId, exactExisting.taskDate), exactExisting);
+        skipped += 1;
+        continue;
+      }
+      const existing = exactExisting && existingIds.has(id)
+        ? exactExisting
         : existingByTarget.get(taskTargetKey(schedule.targetType, targetId, isoDate));
       if (existing) {
         if (canSyncExistingTask(existing)) {
