@@ -229,24 +229,29 @@ export function expandSchedulesWithDomainInheritance(
     }
 
     if (schedule.scopeGroups && schedule.scopeGroups.length > 0) {
+      const includeManualDomains = (schedule.manualTargetTypes ?? "domains_and_databases") !== "databases_only";
+      const includeManualDatabases = (schedule.manualTargetTypes ?? "domains_and_databases") !== "domains_only";
       for (const group of schedule.scopeGroups) {
         const groupDomains = group.includeAllDomains
           ? domains.filter((d) => d.clientId === group.clientId && d.status === "active")
           : group.domains.map((g) => activeDomains.get(g.domainId)).filter(Boolean) as DomainRecord[];
         for (const domain of groupDomains) {
           const domainConfig = group.domains.find((d) => d.domainId === domain.id);
-          expanded.push({
-            ...schedule,
-            id: `${schedule.id}__domain_${domain.id}`,
-            clientId: domain.clientId,
-            clientName: domain.clientName,
-            domainId: domain.id,
-            domainName: domain.domainName,
-            targetType: "domain",
-            targetIds: [domain.id],
-            assignedRole: schedule.domainAssignedRole ?? "domain_updater",
-            assignedUserIds: schedule.assignmentMode === "users" ? (schedule.assignedUserIds ?? []) : [],
-          });
+          if (includeManualDomains) {
+            expanded.push({
+              ...schedule,
+              id: `${schedule.id}__domain_${domain.id}`,
+              clientId: domain.clientId,
+              clientName: domain.clientName,
+              domainId: domain.id,
+              domainName: domain.domainName,
+              targetType: "domain",
+              targetIds: [domain.id],
+              assignedRole: schedule.domainAssignedRole ?? "domain_updater",
+              assignedUserIds: schedule.assignmentMode === "users" ? (schedule.assignedUserIds ?? []) : [],
+            });
+          }
+          if (!includeManualDatabases) continue;
           const dbs = (group.includeAllDomains || domainConfig?.includeAllDatabases)
             ? (databasesByDomain.get(domain.id) ?? [])
             : (domainConfig?.databaseIds ?? []).map((id) => activeDatabases.find((db) => db.id === id)).filter(Boolean) as DatabaseRecord[];

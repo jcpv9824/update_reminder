@@ -69,6 +69,7 @@ const ScheduleSchema = z.object({
     })),
   })).optional(),
   selectionMode: z.enum(["manual", "licensing"]).optional().default("manual"),
+  manualTargetTypes: z.enum(["domains_and_databases", "domains_only", "databases_only"]).optional().default("domains_and_databases"),
   licensingScope: LicensingScopeSchema.optional(),
   assignmentMode: z.enum(["role", "users"]).optional(),
   domainAssignedRole: z.string().optional(),

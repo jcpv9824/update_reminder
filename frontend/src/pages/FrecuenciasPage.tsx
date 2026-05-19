@@ -147,6 +147,7 @@ export default function FrecuenciasPage() {
 }
 
 type ScopeGroup = NonNullable<Frecuencia["scopeGroups"]>[number];
+type TargetTypes = "domains_and_databases" | "domains_only" | "databases_only";
 type LicensingScope = NonNullable<Frecuencia["licensingScope"]>;
 type LicensingPreview = {
   clientsCount: number;
@@ -170,6 +171,7 @@ type LicensingPreview = {
 function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modulosLicencia, emailSettings, onSubmit, cargando }: { inicial?: Frecuencia; clientes: Cliente[]; dominios: Dominio[]; bds: BaseDeDatos[]; usuarios: Usuario[]; modulosLicencia: ModuloLicencia[]; emailSettings?: EmailAlertsResumen; onSubmit: (v: any) => void; cargando: boolean }) {
   const [selectionMode, setSelectionMode] = useState<"manual" | "licensing">(inicial?.selectionMode ?? "manual");
   const [scopeGroups, setScopeGroups] = useState<ScopeGroup[]>(inicial?.scopeGroups ?? []);
+  const [manualTargetTypes, setManualTargetTypes] = useState<TargetTypes>(inicial?.manualTargetTypes ?? "domains_and_databases");
   const [licenseModuleIds, setLicenseModuleIds] = useState<string[]>(inicial?.licensingScope?.licenseModuleIds ?? []);
   const [licenseMatchMode, setLicenseMatchMode] = useState<"any" | "all">(inicial?.licensingScope?.licenseMatchMode ?? "any");
   const [licenseEnvironment, setLicenseEnvironment] = useState(inicial?.licensingScope?.environment ?? "all");
@@ -183,6 +185,7 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
   const [clienteAAgregar, setClienteAAgregar] = useState("");
   const [selectorDominios, setSelectorDominios] = useState<{ clientId: string } | null>(null);
   const [selectorBases, setSelectorBases] = useState<{ clientId: string; domainId: string } | null>(null);
+  const [selectorBasesCliente, setSelectorBasesCliente] = useState<{ clientId: string } | null>(null);
   const [assignmentMode, setAssignmentMode] = useState<"role" | "users">(inicial?.assignmentMode ?? ((inicial?.assignedUserIds?.length || inicial?.databaseAssignedUserIds?.length) ? "users" : "role"));
   const [domainUsers, setDomainUsers] = useState<string[]>(inicial?.assignedUserIds ?? []);
   const [databaseUsers, setDatabaseUsers] = useState<string[]>(inicial?.databaseAssignedUserIds ?? []);
@@ -222,11 +225,14 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
   const resumen = useMemo(() => {
     let domainsCount = 0;
     let dbsCount = 0;
+    const includeDomains = manualTargetTypes !== "databases_only";
+    const includeDatabases = manualTargetTypes !== "domains_only";
     for (const group of scopeGroups) {
       const groupDomains = group.includeAllDomains
         ? dominios.filter((d) => d.clientId === group.clientId && d.status === "active")
         : group.domains.map((d) => dominios.find((x) => x.id === d.domainId)).filter(Boolean) as Dominio[];
-      domainsCount += groupDomains.length;
+      if (includeDomains) domainsCount += groupDomains.length;
+      if (!includeDatabases) continue;
       for (const domain of groupDomains) {
         const config = group.domains.find((d) => d.domainId === domain.id);
         dbsCount += (group.includeAllDomains || config?.includeAllDatabases)
@@ -235,7 +241,7 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
       }
     }
     return { clientes: scopeGroups.length, dominios: domainsCount, bases: dbsCount };
-  }, [scopeGroups, dominios, bds]);
+  }, [scopeGroups, dominios, bds, manualTargetTypes]);
 
   function alternarDia(d: string) {
     setWeekdays((p) => (p.includes(d) ? p.filter((x) => x !== d) : [...p, d]));
@@ -278,7 +284,10 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
   return (
     <form onSubmit={(e) => {
       e.preventDefault();
-      if (selectionMode === "manual" && (scopeGroups.length === 0 || (resumen.dominios === 0 && resumen.bases === 0))) return setErr("Agregue al menos un cliente, dominio o base al alcance.");
+      if (selectionMode === "manual" && scopeGroups.length === 0) return setErr("Agregue al menos un cliente al alcance.");
+      if (selectionMode === "manual" && manualTargetTypes === "domains_only" && resumen.dominios === 0) return setErr("Agregue al menos un dominio al alcance.");
+      if (selectionMode === "manual" && manualTargetTypes === "databases_only" && resumen.bases === 0) return setErr("Agregue al menos una base de datos al alcance.");
+      if (selectionMode === "manual" && manualTargetTypes === "domains_and_databases" && resumen.dominios === 0 && resumen.bases === 0) return setErr("Agregue al menos un dominio o base al alcance.");
       if (selectionMode === "licensing" && licenseModuleIds.length === 0) return setErr("Seleccione al menos una licencia.");
       if (selectionMode === "licensing" && !preview) return setErr("Previsualice el alcance antes de guardar.");
       if (selectionMode === "licensing" && previewDesactualizado) return setErr("El alcance cambió. Vuelva a previsualizar para confirmar las excepciones.");
@@ -293,6 +302,7 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
         targetIds: [],
         scopeGroups: selectionMode === "manual" ? scopeGroups : [],
         selectionMode,
+        manualTargetTypes: selectionMode === "manual" ? manualTargetTypes : undefined,
         licensingScope: selectionMode === "licensing" ? licensingScope() : undefined,
         assignmentMode,
         domainAssignedRole: "domain_updater",
@@ -325,6 +335,16 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
           <option value="licensing">Por licenciamiento</option>
         </select>
       </div>
+      {selectionMode === "manual" && (
+        <div className="fila-formulario">
+          <label>Objetivo de la actualización</label>
+          <select value={manualTargetTypes} onChange={(e) => setManualTargetTypes(e.target.value as TargetTypes)}>
+            <option value="domains_and_databases">Dominios y bases de datos</option>
+            <option value="domains_only">Solo dominios</option>
+            <option value="databases_only">Solo bases de datos</option>
+          </select>
+        </div>
+      )}
       {selectionMode === "licensing" ? (
         <div className="tarjeta tarjeta-compacta">
           <h4>Licencias a actualizar</h4>
@@ -422,9 +442,18 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
             {!group.includeAllDomains && (
               <>
                 <div className="acciones-formulario" style={{ justifyContent: "flex-start" }}>
-                  <button type="button" className="primario" onClick={() => setSelectorDominios({ clientId: group.clientId })}>+ Agregar dominios</button>
+                  {manualTargetTypes !== "databases_only" && (
+                    <button type="button" className="primario" onClick={() => setSelectorDominios({ clientId: group.clientId })}>+ Agregar dominios</button>
+                  )}
+                  {manualTargetTypes !== "domains_only" && (
+                    <button type="button" className="primario" onClick={() => setSelectorBasesCliente({ clientId: group.clientId })}>+ Agregar bases de datos</button>
+                  )}
                 </div>
-                <p className="texto-ayuda">Dominios seleccionados: {group.domains.length || "ninguno"}</p>
+                <p className="texto-ayuda">
+                  {manualTargetTypes === "databases_only"
+                    ? "Seleccione bases directamente. No se crearán tareas de dominio."
+                    : `Dominios seleccionados: ${group.domains.length || "ninguno"}`}
+                </p>
                 {group.domains.map((domainScope) => {
                   const domain = dominios.find((d) => d.id === domainScope.domainId);
                   const basesDominio = bds.filter((bd) => bd.domainId === domainScope.domainId && bd.status === "active");
@@ -433,11 +462,11 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
                       <strong>Dominio: {domain?.domainName ?? domainScope.domainId}</strong>
                       <p className="texto-ayuda">Ambiente: {domain?.environment ?? "-"}</p>
                       <button type="button" onClick={() => setScopeGroups((prev) => prev.map((g) => g.clientId === group.clientId ? { ...g, domains: g.domains.filter((d) => d.domainId !== domainScope.domainId) } : g))}>Eliminar dominio</button>
-                      <div className="fila-formulario"><label>
+                      {manualTargetTypes !== "domains_only" && <div className="fila-formulario"><label>
                         <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={domainScope.includeAllDatabases} onChange={(e) => setScopeGroups((prev) => prev.map((g) => g.clientId === group.clientId ? { ...g, domains: g.domains.map((d) => d.domainId === domainScope.domainId ? { ...d, includeAllDatabases: e.target.checked, databaseIds: e.target.checked ? [] : d.databaseIds } : d) } : g))} />
                         Incluir todas las bases activas de este dominio
-                      </label></div>
-                      {!domainScope.includeAllDatabases && (
+                      </label></div>}
+                      {manualTargetTypes !== "domains_only" && !domainScope.includeAllDatabases && (
                         <>
                           <button type="button" className="primario" onClick={() => setSelectorBases({ clientId: group.clientId, domainId: domainScope.domainId })}>+ Agregar bases</button>
                           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
@@ -494,6 +523,40 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
             }),
           } : g));
           setSelectorBases(null);
+        }}
+      />
+      <ModalSeleccionBasesCliente
+        abierto={!!selectorBasesCliente}
+        clientId={selectorBasesCliente?.clientId ?? ""}
+        bds={bds}
+        seleccionadas={scopeGroups.find((g) => g.clientId === selectorBasesCliente?.clientId)?.domains.flatMap((d) => d.databaseIds) ?? []}
+        onCerrar={() => setSelectorBasesCliente(null)}
+        onAgregar={(ids) => {
+          const clientId = selectorBasesCliente?.clientId;
+          if (!clientId) return;
+          const selectedByDomain = new Map<string, string[]>();
+          for (const id of ids) {
+            const db = bds.find((item) => item.id === id);
+            if (!db || db.clientId !== clientId || db.status !== "active") continue;
+            selectedByDomain.set(db.domainId, [...(selectedByDomain.get(db.domainId) ?? []), id]);
+          }
+          setScopeGroups((prev) => prev.map((group) => {
+            if (group.clientId !== clientId) return group;
+            const existingByDomain = new Map(group.domains.map((domain) => [domain.domainId, domain]));
+            for (const [domainId, databaseIds] of selectedByDomain) {
+              const existing = existingByDomain.get(domainId);
+              existingByDomain.set(domainId, {
+                domainId,
+                includeAllDatabases: existing?.includeAllDatabases ?? false,
+                databaseIds: Array.from(new Set(databaseIds)),
+              });
+            }
+            const nextDomains = Array.from(existingByDomain.values())
+              .map((domain) => selectedByDomain.has(domain.domainId) ? domain : { ...domain, databaseIds: [] })
+              .filter((domain) => domain.includeAllDatabases || domain.databaseIds.length > 0 || manualTargetTypes !== "databases_only");
+            return { ...group, domains: nextDomains };
+          }));
+          setSelectorBasesCliente(null);
         }}
       />
       <h4>Responsables de la programación</h4>
@@ -747,6 +810,44 @@ function ModalSeleccionBases({ abierto, domainId, bds, seleccionadas, onCerrar, 
           <label key={bd.id} className="fila-seleccion">
             <input type="checkbox" checked={marcadas.includes(bd.id)} onChange={() => setMarcadas((prev) => prev.includes(bd.id) ? prev.filter((x) => x !== bd.id) : [...prev, bd.id])} />
             <span><strong>{bd.companyName}</strong><small>Base: {bd.dbAccess.initialCatalog} · Ambiente: {bd.environment} · Estado: {bd.status}</small></span>
+          </label>
+        ))}
+        {opciones.length === 0 && <div className="vacio">No hay bases activas para seleccionar.</div>}
+      </div>
+      <div className="acciones-formulario">
+        <button type="button" onClick={onCerrar}>Cancelar</button>
+        <button type="button" className="primario" onClick={() => onAgregar(marcadas)}>Agregar seleccionadas</button>
+      </div>
+    </Modal>
+  );
+}
+
+function ModalSeleccionBasesCliente({ abierto, clientId, bds, seleccionadas, onCerrar, onAgregar }: {
+  abierto: boolean;
+  clientId: string;
+  bds: BaseDeDatos[];
+  seleccionadas: string[];
+  onCerrar: () => void;
+  onAgregar: (ids: string[]) => void;
+}) {
+  const [busqueda, setBusqueda] = useState("");
+  const [marcadas, setMarcadas] = useState<string[]>([]);
+  const opciones = bds.filter((bd) => bd.clientId === clientId && bd.status === "active" && (
+    !busqueda.trim() || `${bd.companyName} ${bd.dbAccess.initialCatalog} ${bd.domainName ?? ""} ${bd.environment} ${bd.status}`.toLowerCase().includes(busqueda.trim().toLowerCase())
+  ));
+  useEffect(() => { if (abierto) { setMarcadas(seleccionadas); setBusqueda(""); } }, [abierto, seleccionadas.join("|")]);
+  return (
+    <Modal titulo="Seleccionar bases de datos" abierto={abierto} onCerrar={onCerrar}>
+      <p className="texto-ayuda">Seleccione una o varias bases activas del cliente. No se crearán tareas de dominio si el objetivo es solo bases de datos.</p>
+      <div className="fila-formulario">
+        <label htmlFor="buscar-bases-cliente">Buscar base</label>
+        <input id="buscar-bases-cliente" value={busqueda} onChange={(e) => setBusqueda(e.target.value)} />
+      </div>
+      <div className="lista-seleccion">
+        {opciones.map((bd) => (
+          <label key={bd.id} className="fila-seleccion">
+            <input type="checkbox" checked={marcadas.includes(bd.id)} onChange={() => setMarcadas((prev) => prev.includes(bd.id) ? prev.filter((x) => x !== bd.id) : [...prev, bd.id])} />
+            <span><strong>{bd.companyName}</strong><small>Base: {bd.dbAccess.initialCatalog} · Dominio: {bd.domainName ?? bd.domainId} · Ambiente: {bd.environment}</small></span>
           </label>
         ))}
         {opciones.length === 0 && <div className="vacio">No hay bases activas para seleccionar.</div>}

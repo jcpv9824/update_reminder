@@ -198,6 +198,7 @@ Note:
 | updateSchedules | assignedRole | scheduling.update_schedules | assigned_role | copy | yes | infer from targetType | role exists/string | no |
 | updateSchedules | databaseReminderRecipientsMode | scheduling.update_schedules | database_reminder_recipients_mode | copy | no | roleUsers | allowed values | no |
 | updateSchedules | selectionMode | scheduling.update_schedules | selection_mode | copy | no | manual if scopeGroups, licensing if licensingScope else null | manual/licensing | no |
+| updateSchedules | manualTargetTypes | scheduling.update_schedules | manual_target_types | copy | no | domains_and_databases | domains_and_databases/domains_only/databases_only | no |
 | updateSchedules | assignmentMode | scheduling.update_schedules | assignment_mode | copy | no | role | role/users | no |
 | updateSchedules | domainAssignedRole | scheduling.update_schedules | domain_assigned_role | copy | no | domain_updater | role/string | no |
 | updateSchedules | databaseAssignedRole | scheduling.update_schedules | database_assigned_role | copy | no | database_updater | role/string | no |

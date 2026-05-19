@@ -279,6 +279,7 @@ Nota: `reportsService` solo usa asignaciones avanzadas si `ENABLE_ADVANCED_LICEN
 | `databaseAssignedUserIds`, `databaseReminderRecipientsMode` | string[]/enum | no | herencia bases | UI | no | child table/columns | Preservar. |
 | `scopeGroups` | array jerárquico | no | especiales manuales | constructor UI | no | `special_schedule_scope_groups/domains/databases` | No dejar solo JSON en SQL final. |
 | `selectionMode` | manual/licensing | no | especiales | UI | no | `selection_mode` | Enum. |
+| `manualTargetTypes` | domains_and_databases/domains_only/databases_only | no | especiales manuales | UI objetivo manual | no | `manual_target_types` | Define si se generan tareas de dominio, base o ambas. |
 | `licensingScope` | object | no | preview/generator licencias | UI | no | `schedule_licensing_scope` | Normalizar license ids. |
 | `assignmentMode`, `domainAssignedRole`, `databaseAssignedRole` | varios | no | especiales | UI | no | columns | Preservar. |
 | `origin` | domain_default/special/database_inherited/licensing | no | generator/filter/report | UI | no | `origin` | Enum extensible. |
@@ -461,7 +462,7 @@ Migración:
 
 - `origin="domain_default"` genera tareas de dominio y hereda a bases activas del dominio.
 - Bases con schedule específico evitan duplicidad con heredadas.
-- Programaciones especiales manuales usan `scopeGroups`.
+- Programaciones especiales manuales usan `scopeGroups` y `manualTargetTypes` para generar dominio/base/ambas.
 - Programaciones por licenciamiento usan `licensingScope` y clientes activos con `licenseModuleIds`.
 - `licensingScope` soporta excepciones por ID: `excludedDomainIds` y `excludedDatabaseIds`.
 - Excluir dominio evita solo tarea de dominio; no excluye automáticamente bases.

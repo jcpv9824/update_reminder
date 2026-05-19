@@ -170,6 +170,8 @@ El modo **“Todos los clientes activos” está cancelado** y no debe implement
 Selección manual:
 
 - Constructor jerárquico por cliente → dominio → base.
+- Tiene **Objetivo de la actualización** con tres opciones: dominios y bases, solo dominios o solo bases.
+- Si el objetivo es **Solo bases de datos**, se pueden seleccionar bases directamente desde el cliente; internamente se agrupan por dominio, pero no se crean tareas de dominio.
 - Permite incluir todos los dominios activos de un cliente.
 - Permite incluir todas las bases activas de un dominio.
 - Permite seleccionar múltiples dominios/bases mediante paneles con checkboxes.

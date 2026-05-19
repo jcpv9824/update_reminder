@@ -139,6 +139,7 @@ export type Frecuencia = {
     domains: Array<{ domainId: string; includeAllDatabases: boolean; databaseIds: string[] }>;
   }>;
   selectionMode?: "manual" | "licensing";
+  manualTargetTypes?: "domains_and_databases" | "domains_only" | "databases_only";
   licensingScope?: {
     licenseModuleIds: string[];
     licenseMatchMode: "any" | "all";

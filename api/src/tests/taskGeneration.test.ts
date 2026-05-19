@@ -618,6 +618,39 @@ describe("expandSchedulesWithDomainInheritance", () => {
     expect(domainTasks[0].sources?.map((source) => source.scheduleId).sort()).toEqual(["schedule_manual__domain_domain_1", "schedule_licensing_manual__lic_domain_domain_1"].sort());
   });
 
+  it("programación manual solo bases crea tareas de base sin tarea de dominio", () => {
+    const manualSchedule: UpdateSchedule = {
+      ...domainSchedule,
+      id: "schedule_manual_db_only",
+      origin: "special",
+      selectionMode: "manual",
+      manualTargetTypes: "databases_only",
+      scopeGroups: [{ clientId: "client_1", includeAllDomains: false, domains: [{ domainId: "domain_1", includeAllDatabases: false, databaseIds: ["db_1"] }] }],
+      targetIds: [],
+    };
+    const expanded = expandSchedulesWithDomainInheritance([manualSchedule], [domain], [db("db_1")]);
+    const summary = summarizeTaskGenerationForDate(expanded, "2026-05-08", [], (id) => id);
+    expect(summary.tasks.map((task) => task.targetType)).toEqual(["database"]);
+    expect(summary.tasks[0].targetId).toBe("db_1");
+    expect(summary.tasks[0].scheduleId).toBe("schedule_manual_db_only__db_db_1");
+  });
+
+  it("programación manual solo dominios no crea tareas de base aunque haya bases seleccionadas", () => {
+    const manualSchedule: UpdateSchedule = {
+      ...domainSchedule,
+      id: "schedule_manual_domain_only",
+      origin: "special",
+      selectionMode: "manual",
+      manualTargetTypes: "domains_only",
+      scopeGroups: [{ clientId: "client_1", includeAllDomains: false, domains: [{ domainId: "domain_1", includeAllDatabases: false, databaseIds: ["db_1"] }] }],
+      targetIds: [],
+    };
+    const expanded = expandSchedulesWithDomainInheritance([manualSchedule], [domain], [db("db_1")]);
+    const summary = summarizeTaskGenerationForDate(expanded, "2026-05-08", [], (id) => id);
+    expect(summary.tasks.map((task) => task.targetType)).toEqual(["domain"]);
+    expect(summary.tasks[0].targetId).toBe("domain_1");
+  });
+
   it("misma entidad en días diferentes crea tareas diferentes", () => {
     const viernes = generateTasksForDate([domainSchedule], "2026-05-08", [], (id) => id);
     const viernesSiguiente = generateTasksForDate([domainSchedule], "2026-05-15", viernes, (id) => id);

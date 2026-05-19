@@ -148,6 +148,33 @@ describe("FrecuenciasPage", () => {
     }));
   });
 
+  it("permite objetivo manual solo bases y guarda bases sin crear selección obligatoria de dominio", async () => {
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    expect(select("Objetivo de la actualización")).toHaveValue("domains_and_databases");
+    fireEvent.change(select("Objetivo de la actualización"), { target: { value: "databases_only" } });
+
+    fireEvent.focus(screen.getByPlaceholderText("Buscar cliente..."));
+    fireEvent.mouseDown(await screen.findByRole("option", { name: "Cliente Uno" }));
+    fireEvent.click(screen.getByRole("button", { name: /\+ Agregar bases de datos/i }));
+    fireEvent.click(await screen.findByLabelText(/Empresa Uno/i));
+    fireEvent.click(screen.getByRole("button", { name: /Agregar seleccionadas/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Guardar$/i }));
+
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/schedules", expect.objectContaining({
+      selectionMode: "manual",
+      manualTargetTypes: "databases_only",
+      scopeGroups: expect.arrayContaining([
+        expect.objectContaining({
+          clientId: "client_1",
+          domains: expect.arrayContaining([
+            expect.objectContaining({ domainId: "domain_1", databaseIds: ["db_1"] }),
+          ]),
+        }),
+      ]),
+    })));
+  });
+
   it("usa frecuencia Única por defecto y solo muestra fecha de actualización", async () => {
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));

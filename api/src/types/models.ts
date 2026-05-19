@@ -169,6 +169,7 @@ export type ScheduleAssignmentMode = "role" | "users";
 export type ScheduleSelectionMode = "manual" | "licensing";
 export type LicenseMatchMode = "any" | "all";
 export type LicensingTargetTypes = "domains_and_databases" | "domains_only" | "databases_only";
+export type ManualTargetTypes = "domains_and_databases" | "domains_only" | "databases_only";
 
 export type LicensingScope = {
   licenseModuleIds: string[];
@@ -215,6 +216,7 @@ export type UpdateSchedule = {
   databaseReminderRecipientsMode?: "assignedUsers" | "roleUsers";
   scopeGroups?: ScheduleScopeGroup[];
   selectionMode?: ScheduleSelectionMode;
+  manualTargetTypes?: ManualTargetTypes;
   licensingScope?: LicensingScope;
   assignmentMode?: ScheduleAssignmentMode;
   domainAssignedRole?: Role | string;
