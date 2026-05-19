@@ -1,7 +1,7 @@
 import { app, InvocationContext, Timer } from "@azure/functions";
 import { getContainer } from "../lib/cosmos";
 import { writeAuditLog } from "../lib/audit";
-import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, markOneTimeScheduleCompleted, obsoleteTasksOutsideExpected, oneTimeSchedulesDueInWindow, summarizeTaskGenerationForDate } from "../lib/taskGenerator";
+import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, markOneTimeScheduleCompleted, obsoleteTasksOutsideExpected, oneTimeSchedulesDueOnOrBefore, summarizeTaskGenerationForDate } from "../lib/taskGenerator";
 import { isScheduleDueOnDate } from "../lib/scheduleEngine";
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
@@ -219,7 +219,7 @@ export async function runTaskGeneration(
     }
   }
 
-  const oneTimeSchedulesToComplete = oneTimeSchedulesDueInWindow(activeSchedules, ventana);
+  const oneTimeSchedulesToComplete = oneTimeSchedulesDueOnOrBefore(activeSchedules, isoDate);
   let completedOneTimeSchedules = 0;
 
   // Iteramos día por día dentro de la ventana.

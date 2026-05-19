@@ -20,6 +20,7 @@
   - `domains_and_databases`: genera tareas de dominio y base.
   - `domains_only`: genera solo tareas de dominio.
   - `databases_only`: genera solo tareas de base.
+- Corrección crítica: una programación **Única** no se desactiva por estar dentro de la ventana futura de generación. Solo queda inactiva/completada cuando su **Fecha de actualización** es hoy o una fecha anterior.
 
 ## Pruebas
 

@@ -200,7 +200,8 @@ Frecuencias especiales:
 - Para **Única** se usa `startDate` como **Fecha de actualización**.
 - La UI oculta campos recurrentes cuando la frecuencia es única.
 - El checkbox debe llamarse **Programación activa**.
-- Después de generar tareas para una programación única, backend la marca inactiva y registra `completedReason = "one_time_schedule_executed"`.
+- Después de llegar a la fecha de actualización y generar/procesar tareas, backend la marca inactiva y registra `completedReason = "one_time_schedule_executed"`.
+- Si un refresh crea tareas futuras antes de la fecha de actualización, la programación única debe permanecer activa hasta que `startDate <= hoy`.
 - Un refresco posterior no debe volver a generar tareas de esa programación única.
 
 Recordatorios en programaciones especiales:

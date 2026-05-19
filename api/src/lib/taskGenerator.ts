@@ -170,11 +170,11 @@ export function obsoleteTasksOutsideExpected(
   return obsoleted;
 }
 
-export function oneTimeSchedulesDueInWindow(schedules: UpdateSchedule[], isoDates: string[]): UpdateSchedule[] {
+export function oneTimeSchedulesDueOnOrBefore(schedules: UpdateSchedule[], todayIso: string): UpdateSchedule[] {
   return schedules.filter((schedule) =>
     schedule.active &&
     schedule.frequencyType === "once" &&
-    isoDates.some((isoDate) => isScheduleDueOnDate(schedule, isoDate))
+    schedule.startDate <= todayIso
   );
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, generateTasksForDate, markOneTimeScheduleCompleted, obsoleteTasksOutsideExpected, oneTimeSchedulesDueInWindow, summarizeTaskGenerationForDate, taskTargetKey } from "../lib/taskGenerator";
+import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, generateTasksForDate, markOneTimeScheduleCompleted, obsoleteTasksOutsideExpected, oneTimeSchedulesDueOnOrBefore, summarizeTaskGenerationForDate, taskTargetKey } from "../lib/taskGenerator";
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 const schedule: UpdateSchedule = {
@@ -672,8 +672,9 @@ describe("expandSchedulesWithDomainInheritance", () => {
     expect(tasks).toHaveLength(1);
     expect(generateTasksForDate([onceSchedule], "2026-05-09", [], (id) => id)).toHaveLength(0);
 
-    const due = oneTimeSchedulesDueInWindow([onceSchedule], ["2026-05-07", "2026-05-08"]);
+    const due = oneTimeSchedulesDueOnOrBefore([onceSchedule], "2026-05-08");
     expect(due.map((item) => item.id)).toEqual(["schedule_once"]);
+    expect(oneTimeSchedulesDueOnOrBefore([onceSchedule], "2026-05-07")).toEqual([]);
     const completed = markOneTimeScheduleCompleted(onceSchedule, "2026-05-08T12:00:00Z", "system");
     expect(completed.active).toBe(false);
     expect(completed.completedReason).toBe("one_time_schedule_executed");

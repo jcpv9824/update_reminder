@@ -237,7 +237,7 @@ Después del preview por licenciamiento se pueden marcar excepciones de esta pro
 - Si cambian licencias, ambiente, coincidencia u objetivo después del preview, el alcance queda desactualizado y debe previsualizarse de nuevo antes de guardar.
 - Las excepciones se guardan por ID (`excludedDomainIds`, `excludedDatabaseIds`) dentro de `licensingScope`.
 
-La deduplicación de tareas por entidad/día se mantiene aunque coincidan programaciones normales, manuales o por licenciamiento. Para nuevas programaciones especiales, **Única** es la frecuencia por defecto: solo pide **Fecha de actualización**, genera tareas una vez y luego la programación queda inactiva/completada automáticamente para no volver a generar.
+La deduplicación de tareas por entidad/día se mantiene aunque coincidan programaciones normales, manuales o por licenciamiento. Para nuevas programaciones especiales, **Única** es la frecuencia por defecto: solo pide **Fecha de actualización**, genera tareas una vez y luego la programación queda inactiva/completada automáticamente para no volver a generar. Si la fecha está en el futuro y el refresh crea tareas anticipadas dentro de la ventana operativa, la programación única permanece activa hasta que llegue su fecha de actualización.
 
 Los recordatorios de programaciones especiales usan por defecto la configuración global de **Alertas y correos → Recordatorios a actualizadores**. Si se requiere una configuración específica, se desmarca **Usar configuración global de recordatorios** y se capturan **Días previos separados por coma** (`2,1,0`, `1,0`, etc.) y **Hora de envío**. El valor `0` significa el mismo día de la actualización.
 
