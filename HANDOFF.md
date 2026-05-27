@@ -556,7 +556,25 @@ Tests críticos actuales cubren:
 
 Regla para futuros cambios: toda lógica de negocio nueva debe tener prueba automatizada o una justificación explícita de por qué no aplica.
 
-## 18. Pendientes y riesgos
+## 18. Migración SQL Server
+
+Documentos vigentes para continuar la migración relacional:
+
+- `SOLICITUD_BASE_SQL_SERVER.md`: especificación para solicitar la base SQL Server/Azure SQL al proveedor de infraestructura.
+- `docs/DATA_ARCHITECTURE_DISCOVERY.md`: descubrimiento de contenedores/modelos/campos y riesgos.
+- `docs/RELATIONAL_MODEL_PROPOSAL.md`: modelo relacional objetivo.
+- `docs/COSMOS_TO_SQL_MIGRATION_MATRIX.md`: matriz campo a campo Cosmos → SQL.
+
+Puntos críticos ya incorporados:
+
+- `externalId` de cliente es opcional, pero único si existe y será candidato a obligatorio.
+- Ambientes operativos cerrados: `production`, `test`, `demo`.
+- `manualTargetTypes` en programaciones especiales manuales.
+- Frecuencia única (`once`) no se desactiva por generar tareas futuras; solo cuando `startDate <= hoy`.
+- Tareas `cancelled` con `result = "obsolete"` pueden reactivarse si una programación activa las vuelve a requerir.
+- SQL mínimo aceptable: SQL Server 2016 con compatibilidad 130; recomendado Azure SQL o SQL Server 2022.
+
+## 19. Pendientes y riesgos
 
 - Migración futura a base relacional: el modelo de licencias por cliente migra limpiamente a tablas `clients`, `license_modules`, `client_license_modules`.
 - Asignaciones avanzadas de licencias por dominio/base están ocultas; no usarlas sin nueva decisión de producto.

@@ -243,6 +243,9 @@ Los recordatorios de programaciones especiales usan por defecto la configuració
 
 ## Cambios recientes
 
+- [SOLICITUD_BASE_SQL_SERVER.md](SOLICITUD_BASE_SQL_SERVER.md): especificación para solicitar al proveedor la base SQL Server/Azure SQL de migración.
+- [docs/RELATIONAL_MODEL_PROPOSAL.md](docs/RELATIONAL_MODEL_PROPOSAL.md): modelo relacional objetivo para migración desde Cosmos DB.
+- [docs/COSMOS_TO_SQL_MIGRATION_MATRIX.md](docs/COSMOS_TO_SQL_MIGRATION_MATRIX.md): matriz de transformación Cosmos → SQL.
 - [CAMBIOS_V14.md](CAMBIOS_V14.md): excepciones en programación por licenciamiento y frecuencia única por defecto.
 - [CAMBIOS_V11.md](CAMBIOS_V11.md): licenciamiento a nivel cliente, código opcional, asignaciones avanzadas ocultas y programaciones especiales por licenciamiento.
 - [CAMBIOS_V10.md](CAMBIOS_V10.md): modales de tareas, selección múltiple jerárquica, recordatorios globales/overrides, bloqueos no resueltos y reglas administrativas de último día hábil.

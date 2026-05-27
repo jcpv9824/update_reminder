@@ -176,22 +176,23 @@ PK compuesta:
 
 ### 4.1 `core.environments`
 
-Catálogo recomendado para normalizar ambiente sin perder strings existentes.
+Catálogo cerrado para normalizar ambiente. Desde V15 la aplicación solo permite tres ambientes operativos: `production`, `test` y `demo`. El valor `all` puede existir únicamente para filtros/configuración, no para dominios ni bases de datos.
 
 | Columna | Tipo | Notas |
 |---|---:|---|
-| `id` | NVARCHAR(50) PK | `production`, `test`, `demo`, `all` solo para filtros/configuración. |
-| `name_es` | NVARCHAR(100) | Producción, Pruebas, Demo, etc. |
+| `id` | NVARCHAR(50) PK | `production`, `test`, `demo`; opcionalmente `all` solo para filtros/configuración. |
+| `name_es` | NVARCHAR(100) | Producción, Pruebas, Demo. |
 | `sort_order` | INT |  |
 | `active` | BIT |  |
 
-Si aparecen ambientes no catalogados en Cosmos, crear fila con `id` normalizado y `name_es` igual al valor original.
+Si aparecen ambientes no catalogados en Cosmos durante el export, no crear nuevos ambientes operativos automáticamente. Registrarlos como anomalía de migración para revisión manual y mapearlos explícitamente a `production`, `test` o `demo` antes del cutover.
 
 ### 4.2 `core.clients`
 
 | Columna | Tipo | Null | Notas |
 |---|---:|---|---|
 | `id` | NVARCHAR(100) | no | ID Cosmos. |
+| `external_id` | NVARCHAR(100) | sí | ID de negocio del cliente. Opcional ahora; será obligatorio en una fase futura. |
 | `name` | NVARCHAR(200) | no |  |
 | `name_normalized` | NVARCHAR(200) | no | Para duplicados. |
 | `status` | NVARCHAR(30) | no | `active`, `inactive`, `deleted`. |
@@ -204,6 +205,7 @@ Constraints:
 - `PK_core_clients(id)`
 - `CK_core_clients_status`
 - Unique filtrado recomendado: `name_normalized` donde `status <> 'deleted'`.
+- Unique filtrado requerido: `external_id` donde `external_id IS NOT NULL AND status <> 'deleted'`.
 
 ### 4.3 `core.domains`
 
@@ -356,6 +358,7 @@ Nota: No usar esta tabla en la lógica principal hasta que se reactive explícit
 | `assigned_role` | NVARCHAR(50) | no |  |
 | `database_reminder_recipients_mode` | NVARCHAR(30) | sí |  |
 | `selection_mode` | NVARCHAR(30) | sí | `manual`, `licensing`. |
+| `manual_target_types` | NVARCHAR(40) | sí | `domains_and_databases`, `domains_only`, `databases_only`; default `domains_and_databases`. |
 | `assignment_mode` | NVARCHAR(30) | sí | `role`, `users`. |
 | `domain_assigned_role` | NVARCHAR(50) | sí |  |
 | `database_assigned_role` | NVARCHAR(50) | sí |  |
@@ -506,7 +509,8 @@ Reglas importantes:
 - Excluir un dominio no excluye automáticamente sus bases.
 - Excluir una base no excluye el dominio.
 - Las excepciones se revalidan contra el preview vigente antes de guardar.
-- El modo manual no incorpora filtro de ambiente en esta ronda.
+- El modo manual no incorpora filtro de ambiente.
+- El modo manual sí incorpora `manual_target_types`: puede generar dominios y bases, solo dominios o solo bases. En `databases_only` las bases se seleccionan directamente desde el cliente, pero se almacenan agrupadas por dominio para preservar integridad.
 - El modo **Todos los clientes activos** está cancelado y no debe modelarse por ahora.
 
 ## 7. Workflow schema
@@ -545,6 +549,13 @@ Reglas importantes:
 - `(client_id, task_date)`
 - `(domain_id, task_date)`
 - `dedupe_key` unique donde no null.
+
+Reglas operativas críticas:
+
+- La deduplicación principal es `target_type + target_id + task_date`.
+- Una tarea `completed` para la misma entidad y fecha bloquea duplicados.
+- Una tarea `cancelled` con `result = 'obsolete'` no debe bloquear la recuperación si una programación activa vuelve a requerirla; el generador actual la reactiva como `pending`.
+- Una programación `once` puede generar tareas futuras dentro de la ventana operativa, pero solo se marca inactiva/completada cuando `start_date <= hoy` en la zona de la aplicación.
 
 ### 7.2 `workflow.task_assignees`
 

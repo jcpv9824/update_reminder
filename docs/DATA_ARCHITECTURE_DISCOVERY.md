@@ -467,7 +467,8 @@ Migración:
 - `licensingScope` soporta excepciones por ID: `excludedDomainIds` y `excludedDatabaseIds`.
 - Excluir dominio evita solo tarea de dominio; no excluye automáticamente bases.
 - Excluir base evita solo tarea de base; no excluye dominio.
-- La frecuencia especial `once` usa `startDate` como fecha de actualización y se desactiva después de generar tareas.
+- La frecuencia especial `once` usa `startDate` como fecha de actualización. Puede generar tareas futuras dentro de la ventana operativa, pero solo se desactiva cuando `startDate <= hoy`.
+- Tareas `cancelled` con `result = "obsolete"` pueden reactivarse si una programación activa las vuelve a requerir; no deben bloquear silenciosamente la visibilidad de tareas futuras.
 - Programaciones especiales usan configuración global de recordatorios si `reminders` no está definido; si hay override, `reminderDaysBefore` viene de una lista separada por coma en UI y `reminderTime` en `HH:mm`.
 - Máximo una tarea por `targetType + targetId + taskDate`.
 - `sources` puede registrar múltiples orígenes.

@@ -16,4 +16,9 @@ Ver instrucciones:
 docs/COSMOS_EXPORT_SNAPSHOT.md
 ```
 
-Antes de diseñar Fase 4, considerar los campos V14 de `updateSchedules`: frecuencia única (`once`), `completedAt`, `completedReason` y excepciones por licenciamiento (`excludedDomainIds`, `excludedDatabaseIds`).
+Antes de diseñar Fase 4, considerar:
+
+- V14/V16 de `updateSchedules`: frecuencia única (`once`), `completedAt`, `completedReason`, `manualTargetTypes` y excepciones por licenciamiento (`excludedDomainIds`, `excludedDatabaseIds`).
+- V15 de clientes: `externalId` opcional, único si existe, y futuro candidato a obligatorio.
+- Catálogo cerrado de ambientes operativos: `production`, `test`, `demo`.
+- Regla crítica de tareas: `cancelled` + `result = "obsolete"` puede ser reactivada por una programación activa; `completed` sí bloquea duplicados.

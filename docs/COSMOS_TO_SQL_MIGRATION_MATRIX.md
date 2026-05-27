@@ -84,7 +84,7 @@ Reglas globales:
 | domains | domainName | core.domains | domain_name | trim | yes | fail | starts https:// | no |
 | domains | domainName | core.domains | domain_name_normalized | normalize_domain | yes | fail | unique where not deleted | no |
 | domains | domainName | core.domains | publishable_domain | derive formatDomainForPublishing | no | null | deterministic | no |
-| domains | environment | core.domains | environment_id | normalize or copy to catalog | yes | production? warning | FK environments | no |
+| domains | environment | core.domains | environment_id | normalize to closed catalog | yes | fail/warning | must be production/test/demo | no |
 | domains | currentWebVersion | core.domains | current_web_version | trim | no | null | preserve | no |
 | domains | status | core.domains | status | copy | yes | active | active/inactive/deleted | no |
 | domains | notes | core.domains | notes | trim | no | null | preserve | no |
@@ -110,7 +110,7 @@ Reglas globales:
 | databases | domainId | core.databases | domain_id | copy | yes | fail | FK domains | no |
 | databases | domainName | core.databases | domain_name_snapshot | copy | no | lookup domain.name | compare warning | no |
 | databases | companyName | core.databases | company_name | trim | yes | fail | not empty | no |
-| databases | environment | core.databases | environment_id | normalize/catalog | yes | domain environment? warning | FK environments | no |
+| databases | environment | core.databases | environment_id | normalize to closed catalog | yes | domain environment? warning | must be production/test/demo | no |
 | databases | dbAccess.serverHostPort | core.databases | server_host_port | trim | yes | fail | not empty | sensitive technical |
 | databases | dbAccess.initialCatalog | core.databases | initial_catalog | trim | yes | fail | not empty | no |
 | databases | dbAccess.userId | core.databases | user_id_sql | trim | yes | fail | not empty | sensitive technical |
@@ -166,7 +166,7 @@ Status derivation:
 | licenseAssignments | clientId | licensing.license_assignments | client_id | copy | no | derive from target | FK clients nullable | no |
 | licenseAssignments | domainId | licensing.license_assignments | domain_id | copy | no | null | FK domains nullable | no |
 | licenseAssignments | databaseId | licensing.license_assignments | database_id | copy | no | null | FK databases nullable | no |
-| licenseAssignments | environment | licensing.license_assignments | environment_id | normalize/catalog | no | all/null | FK nullable | no |
+| licenseAssignments | environment | licensing.license_assignments | environment_id | normalize to production/test/demo/all | no | all/null | FK nullable | no |
 | licenseAssignments | status | licensing.license_assignments | status | copy/derive | no | active | active/inactive/deleted | no |
 | licenseAssignments | active | licensing.license_assignments | active_legacy | boolean | no | null | preserve | no |
 | licenseAssignments | timestamps/delete | licensing.license_assignments | timestamps/delete columns | datetime/copy | no | null/import warnings | valid | no |
@@ -245,7 +245,8 @@ Note:
 One-time schedule rule:
 
 - `frequencyType = once` uses `startDate` as the run date / fecha de actualización.
-- After generation, `active` becomes false and `completedReason` should be `one_time_schedule_executed`.
+- Refresh can create future tasks inside the operational window, but the schedule must remain active until `startDate <= today` in the app timezone.
+- After its update date is reached and processed, `active` becomes false and `completedReason` should be `one_time_schedule_executed`.
 - Migration must preserve executed one-time schedules as inactive history, not convert them to recurring schedules.
 
 ## 9. `updateTasks` → `workflow`
@@ -268,7 +269,7 @@ One-time schedule rule:
 | updateTasks | scheduleId | workflow.update_tasks | schedule_id | copy | yes | null with warning only if missing schedule | FK nullable | no |
 | updateTasks | assignedRole | workflow.update_tasks | assigned_role | copy | yes | infer targetType | role/string | no |
 | updateTasks | status | workflow.update_tasks | status | copy | yes | pending | allowed status | no |
-| updateTasks | result | workflow.update_tasks | result | trim | no | null | preserve | no |
+| updateTasks | result | workflow.update_tasks | result | trim/copy | no | null | preserve; `obsolete` has special recovery semantics for cancelled tasks | no |
 | updateTasks | notes | workflow.update_tasks | notes | trim | no | empty/null | preserve | no |
 | updateTasks | completedAt | workflow.update_tasks | completed_at | datetime | no | null | required if completed? warning | no |
 | updateTasks | completedBy | workflow.update_tasks | completed_by | copy | no | null | FK nullable | no |
@@ -312,6 +313,12 @@ Because Cosmos stores current task state plus timestamps, generate initial histo
 | reopenedAt exists | `task_reopened` | completed | pending/current | reopenedAt | reopenReason |
 
 Do not invent exact previous transitions beyond what data supports; use `unknown` or null when uncertain.
+
+Task regeneration rule to preserve:
+
+- `status = completed` blocks duplicate task generation for the same `target_type + target_id + task_date`.
+- `status = cancelled` with `result = obsolete` must not permanently hide a task required by an active schedule; the application can reactivate it to `pending`.
+- Generic user-cancelled tasks should be reviewed before deciding whether they block regeneration in SQL runtime.
 
 ## 10. `appSettings` → `settings.app_settings`
 
