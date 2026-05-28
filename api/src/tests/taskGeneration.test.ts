@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, generateTasksForDate, markOneTimeScheduleCompleted, obsoleteTasksOutsideExpected, oneTimeSchedulesDueOnOrBefore, summarizeTaskGenerationForDate, taskTargetKey } from "../lib/taskGenerator";
+import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, generateTasksForDate, markOneTimeScheduleCompleted, obsoleteTasksOutsideExpected, oneTimeSchedulesReadyToComplete, summarizeTaskGenerationForDate, taskBelongsToSchedule, taskTargetKey } from "../lib/taskGenerator";
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 const schedule: UpdateSchedule = {
@@ -728,7 +728,7 @@ describe("expandSchedulesWithDomainInheritance", () => {
     expect(viernesSiguiente[0].dedupeKey).toBe("domain:domain_1:2026-05-15");
   });
 
-  it("programación única genera en runDate y se marca como completada/inactiva", () => {
+  it("programación única genera en runDate pero no se cierra hasta que sus tareas estén cerradas", () => {
     const onceSchedule: UpdateSchedule = {
       ...domainSchedule,
       id: "schedule_once",
@@ -740,12 +740,44 @@ describe("expandSchedulesWithDomainInheritance", () => {
     expect(tasks).toHaveLength(1);
     expect(generateTasksForDate([onceSchedule], "2026-05-09", [], (id) => id)).toHaveLength(0);
 
-    const due = oneTimeSchedulesDueOnOrBefore([onceSchedule], "2026-05-08");
-    expect(due.map((item) => item.id)).toEqual(["schedule_once"]);
-    expect(oneTimeSchedulesDueOnOrBefore([onceSchedule], "2026-05-07")).toEqual([]);
+    expect(oneTimeSchedulesReadyToComplete([onceSchedule], tasks, "2026-05-08")).toEqual([]);
+    const closedTasks = tasks.map((task) => ({ ...task, status: "completed" as const, completedAt: "2026-05-08T12:00:00Z" }));
+    const ready = oneTimeSchedulesReadyToComplete([onceSchedule], closedTasks, "2026-05-08");
+    expect(ready.map((item) => item.id)).toEqual(["schedule_once"]);
+    expect(oneTimeSchedulesReadyToComplete([onceSchedule], closedTasks, "2026-05-07")).toEqual([]);
     const completed = markOneTimeScheduleCompleted(onceSchedule, "2026-05-08T12:00:00Z", "system");
     expect(completed.active).toBe(false);
     expect(completed.completedReason).toBe("one_time_schedule_executed");
     expect(completed.completedAt).toBe("2026-05-08T12:00:00Z");
+  });
+
+  it("reconoce tareas expandidas como pertenecientes a la programación base", () => {
+    const task = {
+      id: "schedule_once__db_db_1_db_1_2026-05-08",
+      taskDate: "2026-05-08",
+      taskBucket: "2026-05-08_database",
+      clientId: "client_1",
+      clientName: "Cliente",
+      domainId: "domain_1",
+      domainName: "cliente.pya.com.co",
+      targetType: "database",
+      targetId: "db_1",
+      targetName: "Empresa db_1",
+      scheduleId: "schedule_once__db_db_1",
+      sources: [{ scheduleId: "schedule_once__db_db_1", scheduleType: "special", createdAt: "2026-05-08T08:00:00Z" }],
+      assignedRole: "database_updater",
+      assignedUserIds: [],
+      status: "pending",
+      result: null,
+      notes: "",
+      createdAt: "",
+      createdBy: "system",
+      updatedAt: "",
+      updatedBy: "system",
+      completedAt: null,
+      completedBy: null,
+    } as UpdateTask;
+    expect(taskBelongsToSchedule(task, "schedule_once")).toBe(true);
+    expect(taskBelongsToSchedule(task, "schedule_other")).toBe(false);
   });
 });

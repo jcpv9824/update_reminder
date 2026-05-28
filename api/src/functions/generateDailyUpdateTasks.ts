@@ -1,7 +1,7 @@
 import { app, InvocationContext, Timer } from "@azure/functions";
 import { getContainer } from "../lib/cosmos";
 import { writeAuditLog } from "../lib/audit";
-import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, markOneTimeScheduleCompleted, obsoleteTasksOutsideExpected, oneTimeSchedulesDueOnOrBefore, summarizeTaskGenerationForDate } from "../lib/taskGenerator";
+import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, markOneTimeScheduleCompleted, obsoleteTasksOutsideExpected, oneTimeSchedulesReadyToComplete, summarizeTaskGenerationForDate } from "../lib/taskGenerator";
 import { isScheduleDueOnDate } from "../lib/scheduleEngine";
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
@@ -219,7 +219,6 @@ export async function runTaskGeneration(
     }
   }
 
-  const oneTimeSchedulesToComplete = oneTimeSchedulesDueOnOrBefore(activeSchedules, isoDate);
   let completedOneTimeSchedules = 0;
 
   // Iteramos día por día dentro de la ventana.
@@ -305,12 +304,13 @@ export async function runTaskGeneration(
     }
   }
 
+  const oneTimeSchedulesToComplete = oneTimeSchedulesReadyToComplete(activeSchedules, existing, isoDate);
   for (const schedule of oneTimeSchedulesToComplete) {
     try {
       const completed = markOneTimeScheduleCompleted(schedule, new Date().toISOString(), "system");
       await getContainer("updateSchedules").item(schedule.id, schedule.clientId).replace(completed);
       completedOneTimeSchedules++;
-      reasons.push(`Programación única ${schedule.id} marcada como inactiva después de generar tareas.`);
+      reasons.push(`Programación única ${schedule.id} marcada como inactiva porque sus tareas ya están cerradas.`);
       await writeAuditLog({
         entityType: "schedule",
         entityId: schedule.id,

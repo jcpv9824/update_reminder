@@ -11,7 +11,8 @@ import { matchesScheduleSearch } from "../lib/listSearch";
 import { inferScheduleRole, normalizeFrequencyResponsibility, validateFrequency } from "../lib/scheduleService";
 import { filterSchedulesByOrigin } from "../lib/scheduleFilters";
 import { previewLicensingScope } from "../lib/licensingScope";
-import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, LicensingScope, UpdateSchedule } from "../types/models";
+import { markTaskCancelledForOneTimeReschedule, shouldCancelTaskForOneTimeReschedule } from "../lib/scheduleReschedule";
+import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, LicensingScope, UpdateSchedule, UpdateTask } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -132,6 +133,50 @@ async function validateActiveLicenseModules(ids: string[]): Promise<string | nul
     if (!module || module.status !== "active" || module.active === false || module.deletedAt) return "Seleccione solo licencias activas.";
   }
   return null;
+}
+
+async function cancelOpenTasksForOneTimeReschedule(args: {
+  before: UpdateSchedule;
+  after: UpdateSchedule;
+  user: { id: string; email: string };
+}): Promise<number> {
+  if (args.before.frequencyType !== "once" || args.after.frequencyType !== "once") return 0;
+  if (args.before.startDate === args.after.startDate) return 0;
+  if (!args.before.active || args.before.completedAt || args.before.completedReason) return 0;
+  const { resources } = await getContainer("updateTasks")
+    .items.query<UpdateTask>({
+      query: "SELECT * FROM c WHERE c.taskDate = @date",
+      parameters: [{ name: "@date", value: args.before.startDate }],
+    })
+    .fetchAll();
+  const now = new Date().toISOString();
+  let cancelled = 0;
+  for (const task of resources.filter((task) => shouldCancelTaskForOneTimeReschedule(task, args.before, args.after))) {
+    const beforeTask = { ...task };
+    const cancelledTask = markTaskCancelledForOneTimeReschedule(task, args.before, args.after, args.user.id, now);
+    await getContainer("updateTasks").item(cancelledTask.id, cancelledTask.taskBucket).replace(cancelledTask);
+    cancelled++;
+    await writeAuditLog({
+      entityType: "task",
+      entityId: cancelledTask.id,
+      clientId: cancelledTask.clientId,
+      clientName: cancelledTask.clientName,
+      domainId: cancelledTask.domainId,
+      domainName: cancelledTask.domainName,
+      action: "task_obsoleted",
+      performedBy: args.user.id,
+      performedByEmail: args.user.email,
+      metadata: {
+        reason: "one_time_schedule_rescheduled",
+        scheduleId: args.before.id,
+        oldDate: args.before.startDate,
+        newDate: args.after.startDate,
+      },
+      before: beforeTask,
+      after: { status: cancelledTask.status, result: cancelledTask.result, taskDate: cancelledTask.taskDate },
+    });
+  }
+  return cancelled;
 }
 
 app.http("schedulesList", {
@@ -320,6 +365,7 @@ app.http("schedulesUpdate", {
         updatedBy: user.id,
       };
       await getContainer("updateSchedules").item(existing.id, existing.clientId).replace(merged);
+      const cancelledTasks = await cancelOpenTasksForOneTimeReschedule({ before: existing, after: merged, user });
       await writeAuditLog({
         entityType: "schedule",
         entityId: existing.id,
@@ -330,6 +376,12 @@ app.http("schedulesUpdate", {
         performedByEmail: user.email,
         before,
         after: merged,
+        metadata: cancelledTasks > 0 ? {
+          oneTimeScheduleRescheduled: true,
+          oldDate: existing.startDate,
+          newDate: merged.startDate,
+          cancelledOpenTasks: cancelledTasks,
+        } : undefined,
       });
       return ok(merged);
     } catch (e) { return serverError(e); }

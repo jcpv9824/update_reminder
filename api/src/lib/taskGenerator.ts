@@ -20,6 +20,12 @@ export function isTerminalTask(task: UpdateTask): boolean {
   return task.status === "completed" || task.status === "cancelled";
 }
 
+export function taskBelongsToSchedule(task: UpdateTask, scheduleId: string): boolean {
+  return task.scheduleId === scheduleId ||
+    task.scheduleId.startsWith(`${scheduleId}__`) ||
+    (task.sources ?? []).some((source) => source.scheduleId === scheduleId || source.scheduleId.startsWith(`${scheduleId}__`));
+}
+
 function blocksTaskRegeneration(task: UpdateTask): boolean {
   return !(task.status === "cancelled" && task.result === "obsolete");
 }
@@ -201,6 +207,17 @@ export function oneTimeSchedulesDueOnOrBefore(schedules: UpdateSchedule[], today
     schedule.frequencyType === "once" &&
     schedule.startDate <= todayIso
   );
+}
+
+export function oneTimeSchedulesReadyToComplete(
+  schedules: UpdateSchedule[],
+  tasks: UpdateTask[],
+  todayIso: string
+): UpdateSchedule[] {
+  return oneTimeSchedulesDueOnOrBefore(schedules, todayIso).filter((schedule) => {
+    const related = tasks.filter((task) => task.taskDate === schedule.startDate && taskBelongsToSchedule(task, schedule.id));
+    return related.length > 0 && related.every(isTerminalTask);
+  });
 }
 
 export function markOneTimeScheduleCompleted(

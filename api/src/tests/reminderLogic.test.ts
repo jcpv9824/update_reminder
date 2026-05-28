@@ -131,4 +131,16 @@ describe("valoresRecordatoriosPorDefecto", () => {
     });
     expect(r).toHaveLength(0);
   });
+
+  it("las tareas pendientes pueden enviar recordatorio aunque la programación ya esté inactiva", () => {
+    const sch2 = { ...sch, active: false };
+    const r = decidirRecordatorios({
+      ahoraIsoDate: "2026-05-10",
+      ahoraHoraLocal: "08:00",
+      tareas: [tarea()],
+      frecuenciasPorId: new Map([[sch2.id, sch2]]),
+    });
+    expect(r).toHaveLength(1);
+    expect(r[0].task.id).toBe("t1");
+  });
 });
