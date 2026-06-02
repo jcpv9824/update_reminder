@@ -18,7 +18,7 @@ function listDates(start: string, end: string): string[] {
   return out;
 }
 
-describe("Escenario SAMPEDRO — generación por ventana con herencia", () => {
+describe("Escenario SAMPEDRO — generación por ventana con alcance explícito", () => {
   const cliente = "client_sampedro";
   const dominio: DomainRecord = {
     id: "domain_sampedro",
@@ -69,18 +69,15 @@ describe("Escenario SAMPEDRO — generación por ventana con herencia", () => {
     expect(isScheduleDueOnDate(schedule, "2026-05-07")).toBe(false);
   });
 
-  it("expandSchedulesWithDomainInheritance crea el schedule heredado para la base", () => {
+  it("una programación plana de dominio no crea schedule heredado para la base", () => {
     const expanded = expandSchedulesWithDomainInheritance([schedule], [dominio], [baseDeDatos]);
-    // Debe haber 2 schedules: el original (dominio) y el heredado (base).
-    expect(expanded).toHaveLength(2);
+    expect(expanded).toHaveLength(1);
     const dominioSch = expanded.find((s) => s.targetType === "domain")!;
-    const dbSch = expanded.find((s) => s.targetType === "database")!;
     expect(dominioSch.targetIds).toEqual([dominio.id]);
-    expect(dbSch.targetIds).toEqual([baseDeDatos.id]);
-    expect(dbSch.assignedRole).toBe("database_updater");
+    expect(expanded.find((s) => s.targetType === "database")).toBeUndefined();
   });
 
-  it("recorriendo la ventana 2026-04-30..2026-05-14 se generan 2 tareas (dominio + base) el 2026-05-08", () => {
+  it("recorriendo la ventana genera solo dominio si la base no está en el alcance", () => {
     const ventana = listDates("2026-04-30", "2026-05-14");
     const expanded = expandSchedulesWithDomainInheritance([schedule], [dominio], [baseDeDatos]);
     const existing: UpdateTask[] = [];
@@ -96,11 +93,30 @@ describe("Escenario SAMPEDRO — generación por ventana con herencia", () => {
         if (t.targetType === "database") dbCount++;
       }
     }
-    expect(creadas).toBe(2);
+    expect(creadas).toBe(1);
     expect(dominioCount).toBe(1);
-    expect(dbCount).toBe(1);
+    expect(dbCount).toBe(0);
     const fechas = existing.map((t) => t.taskDate);
     expect(fechas).toContain("2026-05-08");
+  });
+
+  it("incluye dominio y base cuando el alcance manual marca incluir todas las bases", () => {
+    const manualSchedule: UpdateSchedule = {
+      ...schedule,
+      origin: "special",
+      selectionMode: "manual",
+      manualTargetTypes: "domains_and_databases",
+      scopeGroups: [{
+        clientId: cliente,
+        includeAllDomains: false,
+        domains: [{ domainId: dominio.id, includeAllDatabases: true, databaseIds: [] }],
+      }],
+      targetIds: [],
+    };
+    const expanded = expandSchedulesWithDomainInheritance([manualSchedule], [dominio], [baseDeDatos]);
+    const result = summarizeTaskGenerationForDate(expanded, "2026-05-08", [], (id) => id);
+    expect(result.tasks.map((task) => task.targetType).sort()).toEqual(["database", "domain"]);
+    expect(result.tasks.every((task) => task.rootScheduleId === schedule.id)).toBe(true);
   });
 
   it("idempotencia: ejecutar dos veces no duplica las tareas", () => {
@@ -118,9 +134,9 @@ describe("Escenario SAMPEDRO — generación por ventana con herencia", () => {
     }
     const r1 = corrida();
     const r2 = corrida();
-    expect(r1.c).toBe(2);
+    expect(r1.c).toBe(1);
     expect(r2.c).toBe(0);
-    expect(r2.s).toBeGreaterThanOrEqual(2);
+    expect(r2.s).toBeGreaterThanOrEqual(1);
   });
 
   it("dominio inactivo no genera tareas", () => {

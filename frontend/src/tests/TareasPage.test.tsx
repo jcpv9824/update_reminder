@@ -89,6 +89,7 @@ function bd(id: string, overrides: Partial<BaseDeDatos> = {}): BaseDeDatos {
 function mockTareas({ dominios = [], bases = [], basesDetalle = [], usuarios = [] }: { dominios?: Tarea[]; bases?: Tarea[]; basesDetalle?: BaseDeDatos[]; usuarios?: any[] }) {
   apiMock.get.mockImplementation((path = "") => {
     if (path === "/users") return Promise.resolve(usuarios);
+    if (path === "/schedules") return Promise.resolve([{ id: "schedule_1", name: "Actualización mensual" }]);
     if (path.includes("targetType=domain")) return Promise.resolve(dominios);
     if (path.includes("targetType=database")) return Promise.resolve(bases);
     if (path.includes("/access-info")) {
@@ -110,18 +111,18 @@ function mockTareas({ dominios = [], bases = [], basesDetalle = [], usuarios = [
 }
 
 describe("TareasPage (vista unificada)", () => {
-  it("admin ve ambas columnas y el botón Refrescar", () => {
+  it("admin ve ambas columnas sin botón Refrescar", () => {
     usuarioMock.roles = ["admin"];
     renderPagina();
     expect(screen.getByText(/Tareas de dominios/i)).toBeInTheDocument();
     expect(screen.getByText(/Tareas de bases de datos/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Refrescar/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Refrescar/i })).toBeNull();
   });
 
-  it("client_manager ve el botón Refrescar", () => {
+  it("client_manager no ve botón Refrescar porque las tareas se generan al guardar actualizaciones programadas", () => {
     usuarioMock.roles = ["client_manager"];
     renderPagina();
-    expect(screen.getByRole("button", { name: /Refrescar/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Refrescar/i })).toBeNull();
   });
 
   it("actualizador de dominios no ve el botón de generación manual", () => {
@@ -146,49 +147,22 @@ describe("TareasPage (vista unificada)", () => {
     expect(screen.queryByRole("button", { name: /Refrescar/i })).toBeNull();
   });
 
-  it("el botón Refrescar llama /tasks/refresh y muestra mensaje", async () => {
-    usuarioMock.roles = ["admin"];
-    apiMock.post.mockResolvedValueOnce({ created: 2, updated: 1, obsoleted: 3, skipped: 1, message: "Tareas actualizadas correctamente." });
-    renderPagina();
-    fireEvent.click(screen.getByRole("button", { name: /Refrescar/i }));
-    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/tasks/refresh", {}));
-    expect(await screen.findByText(/Tareas actualizadas correctamente/i)).toBeInTheDocument();
-    expect(screen.getByText(/Actualizadas: 1/i)).toBeInTheDocument();
-    expect(screen.getByText(/Obsoletas: 3/i)).toBeInTheDocument();
-  });
-
-  it("después de generar refresca el tablero", async () => {
-    usuarioMock.roles = ["admin"];
-    apiMock.post.mockResolvedValueOnce({ created: 0, updated: 0, obsoleted: 1, skipped: 0, message: "Tareas actualizadas correctamente." });
-    mockTareas({ dominios: [tarea({ id: "d1" })] });
-    renderPagina();
-    await screen.findByText(/U — Dominios por actualizar/i);
-    fireEvent.click(screen.getByRole("button", { name: /Refrescar/i }));
-    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith(expect.stringMatching(/targetType=domain/)));
-  });
-
-  it("después de refrescar muestra tareas futuras generadas en Próximas", async () => {
+  it("muestra tareas futuras ya generadas en Próximas", async () => {
     usuarioMock.roles = ["admin"];
     const mananaIso = sumarDiasIso(hoyIso(), 1);
-    let refrescado = false;
-    apiMock.post.mockImplementation(async () => {
-      refrescado = true;
-      return { created: 1, updated: 0, obsoleted: 0, skipped: 0, message: "Tareas actualizadas correctamente." };
-    });
     apiMock.get.mockImplementation((path = "") => {
       if (path === "/users") return Promise.resolve([]);
-      if (path.includes("targetType=domain")) return Promise.resolve(refrescado ? [tarea({ id: "d_futura", taskDate: mananaIso, taskBucket: `${mananaIso}_domain` })] : []);
+      if (path === "/schedules") return Promise.resolve([{ id: "schedule_1", name: "Actualización puntual" }]);
+      if (path.includes("targetType=domain")) return Promise.resolve([tarea({ id: "d_futura", taskDate: mananaIso, taskBucket: `${mananaIso}_domain` })]);
       if (path.includes("targetType=database")) return Promise.resolve([]);
       return Promise.resolve([]);
     });
     renderPagina();
-    expect(await screen.findAllByText(/Sin grupos/i)).not.toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: /Refrescar/i }));
-    expect(await screen.findByText(/Tareas actualizadas correctamente/i)).toBeInTheDocument();
     await waitFor(() => {
       const proximasHeaders = screen.getAllByText(/^Próximas/i);
       expect(proximasHeaders.some((h) => /\(1\)/.test(h.parentElement?.textContent ?? ""))).toBe(true);
     });
+    expect(screen.getByText(/Actualización: Actualización puntual/i)).toBeInTheDocument();
   });
 
   it("consulta tareas hasta próximas 4 días y muestra texto de vista operativa", async () => {

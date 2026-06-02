@@ -2,10 +2,9 @@ import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { BaseDeDatos, Cliente, Dominio, Frecuencia, RespuestaPaginada, Usuario } from "../types";
+import type { BaseDeDatos, Cliente, Dominio, RespuestaPaginada } from "../types";
 import { Alerta, BotonCopiar, EtiquetaEstado, Modal, DialogoConfirmar, Paginacion } from "../components/Comunes";
 import { AMBIENTES_OPERATIVOS, ETIQUETAS_AMBIENTE } from "../types";
-import { SeleccionFrecuencia, valoresFrecuenciaPorDefecto, depurarFrecuenciaParaEnvio, type ValoresFrecuencia } from "../components/SeleccionFrecuencia";
 import { SelectorBuscable } from "../components/SelectorBuscable";
 import { formatDomainForPublishing } from "../utils/dominio";
 
@@ -22,7 +21,6 @@ export default function DominiosPage() {
   const [filtroCliente, setFiltroCliente] = useState("");
   const [filtroEstado, setFiltroEstado] = useState("");
   const [filtroAmbiente, setFiltroAmbiente] = useState("");
-  const [filtroRecurrente, setFiltroRecurrente] = useState("");
   const [busqueda, setBusqueda] = useState("");
   const [pagina, setPagina] = useState(1);
   const [exito, setExito] = useState<string | null>(null);
@@ -30,19 +28,16 @@ export default function DominiosPage() {
 
   const { data: clientes = [] } = useQuery({ queryKey: ["clientes"], queryFn: () => api.get<Cliente[]>("/clients") });
   const { data: paginaDominios, isLoading } = useQuery({
-    queryKey: ["dominios", "pagina", pagina, filtroCliente, filtroEstado, filtroAmbiente, filtroRecurrente, busqueda],
+    queryKey: ["dominios", "pagina", pagina, filtroCliente, filtroEstado, filtroAmbiente, busqueda],
     queryFn: () => {
       const params = new URLSearchParams({ page: String(pagina), pageSize: "10" });
       if (filtroCliente) params.set("clientId", filtroCliente);
       if (filtroEstado) params.set("status", filtroEstado);
       if (filtroAmbiente) params.set("environment", filtroAmbiente);
-      if (filtroRecurrente) params.set("recurring", filtroRecurrente);
       if (busqueda) params.set("search", busqueda);
       return api.get<RespuestaPaginada<Dominio>>(`/domains?${params.toString()}`);
     },
   });
-  const { data: frecuencias = [] } = useQuery({ queryKey: ["frecuencias"], queryFn: () => api.get<Frecuencia[]>("/schedules") });
-  const { data: usuarios = [] } = useQuery({ queryKey: ["usuarios"], queryFn: () => api.get<Usuario[]>("/users") });
 
   useEffect(() => {
     if (searchParams.get("new") === "1") {
@@ -78,7 +73,6 @@ export default function DominiosPage() {
     mutationFn: ({ body }: { body: any; accion: AccionDominio }) => api.post<Dominio>("/domains", body),
     onSuccess: (dominio, variables) => {
       qc.invalidateQueries({ queryKey: ["dominios"] });
-      qc.invalidateQueries({ queryKey: ["frecuencias"] });
       setExito("Dominio creado correctamente.");
       if (variables.accion === "agregarBase") {
         setModalAbierto(false);
@@ -93,7 +87,7 @@ export default function DominiosPage() {
   });
   const actualizar = useMutation({
     mutationFn: ({ id, body }: { id: string; body: any }) => api.put<Dominio>(`/domains/${id}`, body),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["dominios"] }); qc.invalidateQueries({ queryKey: ["frecuencias"] }); setEditando(null); setExito("Dominio actualizado."); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["dominios"] }); setEditando(null); setExito("Dominio actualizado."); },
     onError: (e: any) => setError(e?.message ?? "Error al actualizar."),
   });
   const desactivar = useMutation({ mutationFn: (id: string) => api.post(`/domains/${id}/deactivate`), onSuccess: () => { qc.invalidateQueries({ queryKey: ["dominios"] }); setConfirmar(null); setExito("Dominio desactivado."); } });
@@ -111,7 +105,7 @@ export default function DominiosPage() {
   const filtrados = Array.isArray(paginaDominios) ? paginaDominios : paginaDominios?.items ?? [];
   const infoPagina = !Array.isArray(paginaDominios) ? paginaDominios : undefined;
 
-  useEffect(() => { setPagina(1); }, [filtroCliente, filtroEstado, filtroAmbiente, filtroRecurrente, busqueda]);
+  useEffect(() => { setPagina(1); }, [filtroCliente, filtroEstado, filtroAmbiente, busqueda]);
 
   return (
     <>
@@ -150,26 +144,17 @@ export default function DominiosPage() {
             <option value="deleted">Eliminado</option>
           </select>
         </div>
-        <div className="campo"><label>Programación recurrente</label>
-          <select value={filtroRecurrente} onChange={(e) => setFiltroRecurrente(e.target.value)}>
-            <option value="">Todos</option>
-            <option value="with">Con programación</option>
-            <option value="without">Sin programación</option>
-          </select>
-        </div>
       </div>
 
       {isLoading ? <div className="cargando">Cargando...</div> : (
         <>
         <table>
           <thead><tr>
-            <th>Cliente</th><th>Dominio</th><th>Ambiente</th><th>Recurrente</th><th>Próxima actualización</th><th>Estado</th><th>Última actualización</th><th>Acciones</th>
+            <th>Cliente</th><th>Dominio</th><th>Ambiente</th><th>Estado</th><th>Última actualización</th><th>Acciones</th>
           </tr></thead>
           <tbody>
-            {filtrados.length === 0 ? (<tr><td colSpan={8} className="vacio">No hay dominios para mostrar.</td></tr>) :
-            filtrados.map((d) => {
-              const frecuenciaDominio = buscarFrecuenciaDominio(frecuencias, d.id);
-              return (
+            {filtrados.length === 0 ? (<tr><td colSpan={6} className="vacio">No hay dominios para mostrar.</td></tr>) :
+            filtrados.map((d) => (
                 <tr key={d.id}>
                   <td>{d.clientName}</td>
                   <td>
@@ -179,8 +164,6 @@ export default function DominiosPage() {
                     </div>
                   </td>
                   <td>{ETIQUETAS_AMBIENTE[d.environment] ?? d.environment}</td>
-                  <td>{frecuenciaDominio ? "Sí" : "No"}</td>
-                  <td>{frecuenciaDominio ? calcularProximaActualizacion(frecuenciaDominio) : "-"}</td>
                   <td><EtiquetaEstado estado={d.status} /></td>
                   <td>{d.lastUpdatedAt ? new Date(d.lastUpdatedAt).toLocaleDateString("es-CO") : "-"}</td>
                   <td className="acciones-tabla">
@@ -191,8 +174,7 @@ export default function DominiosPage() {
                     <button className="peligro" onClick={() => setConfirmar({ tipo: "eliminar", dominio: d })}>Eliminar</button>
                   </td>
                 </tr>
-              );
-            })}
+              ))}
           </tbody>
         </table>
         {infoPagina && <Paginacion page={infoPagina.page} pageSize={infoPagina.pageSize} total={infoPagina.total} onPageChange={setPagina} />}
@@ -203,14 +185,13 @@ export default function DominiosPage() {
         <FormularioDominio
           key={crear.submittedAt || searchParams.get("clientId") || "nuevo"}
           clientes={clientes}
-          usuarios={usuarios}
           clienteInicialId={searchParams.get("clientId") ?? ""}
           cargando={crear.isPending}
           onSubmit={(v, accion) => crear.mutate({ body: v, accion })}
         />
       </Modal>
       <Modal titulo="Editar dominio" abierto={!!editando} onCerrar={() => setEditando(null)}>
-        {editando && <FormularioDominio inicial={editando} frecuenciaInicial={buscarFrecuenciaDominio(frecuencias, editando.id)} clientes={clientes} usuarios={usuarios} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
+        {editando && <FormularioDominio inicial={editando} clientes={clientes} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
       </Modal>
       <Modal titulo="Bases asociadas al dominio" abierto={!!verBases} onCerrar={() => setVerBases(null)}>
         {verBases && <BasesAsociadasDominio dominio={verBases} />}
@@ -281,86 +262,12 @@ function BasesAsociadasDominio({ dominio }: { dominio: Dominio }) {
   );
 }
 
-function valoresDesdeFrecuencia(f?: Frecuencia): ValoresFrecuencia {
-  const base = valoresFrecuenciaPorDefecto("domain_updater");
-  if (!f) return base;
-  return {
-    ...base,
-    frequencyType: f.frequencyType,
-    everyNWeeks: f.everyNWeeks ?? base.everyNWeeks,
-    weekdays: f.weekdays ?? base.weekdays,
-    intervalDays: f.intervalDays ?? base.intervalDays,
-    dayOfMonth: f.dayOfMonth ?? base.dayOfMonth,
-    startDate: f.startDate,
-    hasEndDate: !!f.endDate,
-    endDate: f.endDate ?? null,
-    timezone: f.timezone,
-    assignedRole: "domain_updater",
-    assignedUserIds: f.assignedUserIds ?? [],
-    databaseAssignedUserIds: f.databaseAssignedUserIds ?? [],
-    databaseReminderRecipientsMode: f.databaseReminderRecipientsMode ?? ((f.databaseAssignedUserIds ?? []).length > 0 ? "assignedUsers" : "roleUsers"),
-    active: f.active,
-    reminders: f.reminders ?? base.reminders,
-  };
-}
-
-function buscarFrecuenciaDominio(frecuencias: Frecuencia[], domainId: string): Frecuencia | undefined {
-  return frecuencias.find((f) =>
-    f.active !== false &&
-    f.origin === "domain_default" &&
-    f.targetType === "domain" &&
-    (f.domainId === domainId || f.targetIds.includes(domainId))
-  );
-}
-
-const WEEKDAY_INDEX: Record<string, number> = {
-  SUNDAY: 0,
-  MONDAY: 1,
-  TUESDAY: 2,
-  WEDNESDAY: 3,
-  THURSDAY: 4,
-  FRIDAY: 5,
-  SATURDAY: 6,
-};
-
-function formatDateInput(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
-
-function calcularProximaActualizacion(f: Frecuencia, hoy = new Date()): string {
-  const start = new Date(`${f.startDate}T00:00:00`);
-  const today = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
-  const base = new Date(Math.max(start.getTime(), today.getTime()));
-  if (f.frequencyType === "weekly") {
-    const days = (f.weekdays ?? []).map((day) => WEEKDAY_INDEX[day]).filter((day) => day !== undefined);
-    if (days.length === 0) return "-";
-    for (let offset = 0; offset < 14; offset += 1) {
-      const candidate = new Date(base);
-      candidate.setDate(base.getDate() + offset);
-      if (days.includes(candidate.getDay())) return formatDateInput(candidate);
-    }
-  }
-  if (f.frequencyType === "interval" && f.intervalDays) {
-    const candidate = new Date(start);
-    while (candidate < base) candidate.setDate(candidate.getDate() + f.intervalDays);
-    return formatDateInput(candidate);
-  }
-  if (f.frequencyType === "monthly" && f.dayOfMonth) {
-    const candidate = new Date(base.getFullYear(), base.getMonth(), f.dayOfMonth);
-    if (candidate < base) candidate.setMonth(candidate.getMonth() + 1);
-    return formatDateInput(candidate);
-  }
-  return "-";
-}
-
-function FormularioDominio({ inicial, frecuenciaInicial, clienteInicialId = "", clientes, usuarios, onSubmit, cargando }: { inicial?: Dominio; frecuenciaInicial?: Frecuencia; clienteInicialId?: string; clientes: Cliente[]; usuarios: Usuario[]; onSubmit: (v: any, accion: AccionDominio) => void; cargando: boolean }) {
+function FormularioDominio({ inicial, clienteInicialId = "", clientes, onSubmit, cargando }: { inicial?: Dominio; clienteInicialId?: string; clientes: Cliente[]; onSubmit: (v: any, accion: AccionDominio) => void; cargando: boolean }) {
   const [clientId, setClientId] = useState(inicial?.clientId ?? clienteInicialId);
   const [domainName, setDomainName] = useState(inicial?.domainName ?? "");
   const [environment, setEnvironment] = useState(inicial?.environment ?? "production");
   const [currentWebVersion, setCurrentWebVersion] = useState(inicial?.currentWebVersion ?? "");
   const [notes, setNotes] = useState(inicial?.notes ?? "");
-  const [crearFrecuencia, setCrearFrecuencia] = useState(!!frecuenciaInicial);
-  const [frecuencia, setFrecuencia] = useState<ValoresFrecuencia>(valoresDesdeFrecuencia(frecuenciaInicial));
   const [err, setErr] = useState<string | null>(null);
   function enviar(accion: AccionDominio) {
     if (!clientId) return setErr("Seleccione un cliente.");
@@ -368,12 +275,6 @@ function FormularioDominio({ inicial, frecuenciaInicial, clienteInicialId = "", 
     if (!domainName.trim().toLowerCase().startsWith("https://")) return setErr("El dominio debe iniciar con https://");
     setErr(null);
     const body: any = { clientId, domainName: domainName.trim(), environment, currentWebVersion: currentWebVersion.trim() || undefined, assignedUpdaterIds: [], notes: notes.trim() };
-    if (crearFrecuencia) {
-      body.frequency = { ...depurarFrecuenciaParaEnvio(frecuencia), assignedRole: "domain_updater", origin: "domain_default" };
-    } else if (inicial) {
-      body.disableAutomaticFrequency = true;
-      body.frequency = null;
-    }
     onSubmit(body, accion);
   }
 
@@ -408,17 +309,10 @@ function FormularioDominio({ inicial, frecuenciaInicial, clienteInicialId = "", 
       <div className="fila-formulario"><label>Notas</label>
         <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
 
-      <h4>Frecuencia de actualización del dominio</h4>
-      <div className="fila-formulario">
-        <label>
-          <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={crearFrecuencia} onChange={(e) => setCrearFrecuencia(e.target.checked)} />
-          Activar frecuencia automática para este dominio
-        </label>
-      </div>
-      {crearFrecuencia && (
-        <SeleccionFrecuencia valor={frecuencia} onChange={setFrecuencia} rolesPermitidos={["domain_updater"]} usuarios={usuarios} tipoObjetivo="domain" />
-      )}
-      <p className="texto-ayuda">Las bases de datos asociadas heredarán esta frecuencia. Puedes dejar responsables por rol o asignar personas específicas.</p>
+      <h4>Programación de actualizaciones</h4>
+      <Alerta tipo="info">
+        Las actualizaciones de este dominio y sus bases se configuran desde <strong>Actualizaciones programadas</strong>. Allí puede elegir este dominio, incluir todas sus bases activas o seleccionar bases puntuales.
+      </Alerta>
 
       <div className="acciones-formulario">
         <button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button>

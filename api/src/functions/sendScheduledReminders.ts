@@ -4,32 +4,20 @@ import { writeAuditLog } from "../lib/audit";
 import { buildDatabaseReminderEmail, buildDomainReminderEmail, sendEmail } from "../lib/emailService";
 import { decidirRecordatorios, type ReminderDecision } from "../lib/reminderLogic";
 import { loadEmailAlertsSettings } from "../lib/settingsService";
+import { rootScheduleId } from "../lib/taskGenerator";
 import type { RemindersConfig, UpdateSchedule, UpdateTask, UserRecord, SentReminder } from "../types/models";
 
 type Recipient = { email: string; name?: string };
 
-function schedulePersistedId(scheduleId: string): string {
-  return scheduleId.split("__db_inherited_")[0];
-}
-
 export function adaptarFrecuenciaParaTarea(schedule: UpdateSchedule | undefined, task: UpdateTask): UpdateSchedule | undefined {
   if (!schedule) return undefined;
-  if (task.targetType !== "database" || !task.scheduleId.includes("__db_inherited_")) return schedule;
-  const databaseAssignedUserIds = schedule.databaseAssignedUserIds ?? [];
   return {
     ...schedule,
     id: task.scheduleId,
-    targetType: "database",
+    targetType: task.targetType,
     targetIds: [task.targetId],
-    assignedRole: "database_updater",
-    assignedUserIds: databaseAssignedUserIds,
-    reminders: schedule.reminders
-      ? {
-          ...schedule.reminders,
-          reminderRecipientsMode: databaseAssignedUserIds.length > 0 ? "assignedUsers" : "roleUsers",
-          customReminderEmails: [],
-        }
-      : undefined,
+    assignedRole: task.assignedRole,
+    assignedUserIds: task.assignedUserIds ?? [],
   };
 }
 
@@ -147,7 +135,7 @@ export async function ejecutarRecordatorios(log: (m: string) => void): Promise<{
     .fetchAll();
   if (tareas.length === 0) return { enviados: 0, fallidos: 0 };
 
-  const ids = Array.from(new Set(tareas.map((t) => schedulePersistedId(t.scheduleId))));
+  const ids = Array.from(new Set(tareas.map((t) => rootScheduleId(t))));
   const frecuencias = new Map<string, UpdateSchedule>();
   for (const id of ids) {
     const { resources } = await getContainer("updateSchedules")
@@ -156,7 +144,7 @@ export async function ejecutarRecordatorios(log: (m: string) => void): Promise<{
     if (resources[0]) frecuencias.set(id, resources[0]);
   }
   for (const tarea of tareas) {
-    const original = frecuencias.get(schedulePersistedId(tarea.scheduleId));
+    const original = frecuencias.get(rootScheduleId(tarea));
     const ajustada = adaptarFrecuenciaParaTarea(original, tarea);
     if (ajustada) frecuencias.set(tarea.scheduleId, ajustada);
   }

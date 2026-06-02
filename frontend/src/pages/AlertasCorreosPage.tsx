@@ -391,7 +391,7 @@ export default function AlertasCorreosPage() {
       </Acordeon>
 
       <Acordeon titulo="Recordatorios a actualizadores" resumen={`${form.remindersEnabled ? "Activo" : "Inactivo"} · ${form.defaultReminderDaysBefore.join(",")} días · ${form.defaultReminderTime} · ${form.defaultTimezone}`}>
-        <p className="texto-ayuda">Esta configuración se usará como valor por defecto para los recordatorios de dominios y programaciones especiales, salvo que se defina una configuración específica.</p>
+        <p className="texto-ayuda">Esta configuración se usará como valor por defecto para los recordatorios de actualizaciones programadas, salvo que se defina una configuración específica.</p>
         <div className="fila-formulario"><label>
           <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={form.remindersEnabled} onChange={(e) => actualizar("remindersEnabled", e.target.checked)} />
           Activar recordatorios automáticos

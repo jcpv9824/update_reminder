@@ -529,20 +529,28 @@ const domainSchedule: UpdateSchedule = {
 };
 
 describe("expandSchedulesWithDomainInheritance", () => {
-  it("base de datos hereda frecuencia activa del dominio y genera tarea de dominio y de base", () => {
+  it("una programación plana de dominio no genera bases implícitas", () => {
     const expanded = expandSchedulesWithDomainInheritance([domainSchedule], [domain], [db("db_1")]);
     const tasks = generateTasksForDate(expanded, "2026-05-08", [], (id) => id);
-    expect(tasks).toHaveLength(2);
-    expect(tasks.map((t) => t.targetType).sort()).toEqual(["database", "domain"]);
-    const databaseTask = tasks.find((t) => t.targetType === "database");
-    expect(databaseTask?.scheduleId).toBe("schedule_domain__db_inherited_db_1");
-    expect(databaseTask?.assignedRole).toBe("database_updater");
-    expect(databaseTask?.assignedUserIds).toEqual([]);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].targetType).toBe("domain");
+    expect(tasks[0].rootScheduleId).toBe("schedule_domain");
   });
 
-  it("base heredada usa responsables especificos de base configurados en la frecuencia del dominio", () => {
+  it("el alcance explícito puede incluir todas las bases activas del dominio", () => {
     const scheduleWithDbUsers: UpdateSchedule = {
       ...domainSchedule,
+      id: "schedule_manual_all_dbs",
+      origin: "special",
+      selectionMode: "manual",
+      manualTargetTypes: "domains_and_databases",
+      scopeGroups: [{
+        clientId: "client_1",
+        includeAllDomains: false,
+        domains: [{ domainId: "domain_1", includeAllDatabases: true, databaseIds: [] }],
+      }],
+      assignmentMode: "users",
+      targetIds: [],
       databaseAssignedUserIds: ["db_user_1", "db_user_2"],
       databaseReminderRecipientsMode: "assignedUsers",
       reminders: {
@@ -554,9 +562,11 @@ describe("expandSchedulesWithDomainInheritance", () => {
     };
     const expanded = expandSchedulesWithDomainInheritance([scheduleWithDbUsers], [domain], [db("db_1")]);
     const databaseSchedule = expanded.find((s) => s.targetType === "database");
+    const tasks = generateTasksForDate(expanded, "2026-05-08", [], (id) => id);
+    expect(tasks.map((t) => t.targetType).sort()).toEqual(["database", "domain"]);
     expect(databaseSchedule?.assignedRole).toBe("database_updater");
     expect(databaseSchedule?.assignedUserIds).toEqual(["db_user_1", "db_user_2"]);
-    expect(databaseSchedule?.reminders?.reminderRecipientsMode).toBe("assignedUsers");
+    expect(tasks.find((task) => task.targetType === "database")?.rootScheduleId).toBe("schedule_manual_all_dbs");
   });
 
   it("no genera tareas heredadas para bases inactivas o eliminadas", () => {
@@ -572,7 +582,7 @@ describe("expandSchedulesWithDomainInheritance", () => {
     expect(expanded).toHaveLength(0);
   });
 
-  it("la frecuencia específica activa de base de datos tiene prioridad sobre la herencia del dominio", () => {
+  it("programaciones de dominio y base explícitas pueden coexistir sin herencia oculta", () => {
     const dbSpecific: UpdateSchedule = { ...schedule, id: "schedule_db_specific", targetIds: ["db_1"], active: true };
     const expanded = expandSchedulesWithDomainInheritance([domainSchedule, dbSpecific], [domain], [db("db_1")]);
     const tasks = generateTasksForDate(expanded, "2026-05-08", [], (id) => id);

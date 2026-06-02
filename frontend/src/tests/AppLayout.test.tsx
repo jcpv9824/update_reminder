@@ -26,9 +26,9 @@ describe("AppLayout", () => {
     authState.roles = ["admin"];
   });
 
-  it("muestra Programaciones especiales en el menu lateral", () => {
+  it("muestra Actualizaciones programadas en el menu lateral", () => {
     renderLayout();
-    expect(screen.getByRole("link", { name: "Programaciones especiales" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Actualizaciones programadas" })).toBeInTheDocument();
     expect(screen.queryByText("Frecuencias especiales")).toBeNull();
   });
 

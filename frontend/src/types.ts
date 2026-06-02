@@ -114,6 +114,7 @@ export type AsignacionLicencia = {
 
 export type Frecuencia = {
   id: string;
+  name?: string;
   clientId: string;
   clientName: string;
   domainId?: string;
@@ -154,6 +155,13 @@ export type Frecuencia = {
   databaseAssignedRole?: string;
   origin?: "domain_default" | "special" | "database_inherited" | string;
   active: boolean;
+  summary?: {
+    proximas: number;
+    vencidas: number;
+    conError: number;
+    completadas: number;
+    requiereAtencion: boolean;
+  };
   reminders?: {
     remindersEnabled: boolean;
     reminderDaysBefore: number[];
@@ -187,6 +195,7 @@ export type Tarea = {
   targetId: string;
   targetName: string;
   scheduleId: string;
+  rootScheduleId?: string;
   assignedRole: string;
   assignedUserIds: string[];
   status: EstadoTarea;
@@ -293,11 +302,11 @@ export const ETIQUETAS_ACCION_AUDITORIA: Record<string, string> = {
   database_access_part_copied: "Parte de acceso copiada",
   database_password_revealed: "Contraseña revelada",
   database_password_copied: "Contraseña copiada",
-  schedule_created: "Frecuencia creada",
-  schedule_updated: "Frecuencia actualizada",
-  schedule_deactivated: "Frecuencia desactivada",
-  schedule_reactivated: "Frecuencia reactivada",
-  schedule_deleted: "Frecuencia eliminada",
+  schedule_created: "Actualización programada creada",
+  schedule_updated: "Actualización programada actualizada",
+  schedule_deactivated: "Actualización programada desactivada",
+  schedule_reactivated: "Actualización programada reactivada",
+  schedule_deleted: "Actualización programada eliminada",
   task_generated: "Tarea generada",
   task_started: "Tarea iniciada",
   task_completed: "Tarea completada",

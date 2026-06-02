@@ -1,5 +1,5 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 
@@ -42,31 +42,28 @@ beforeEach(() => {
 });
 
 describe("DominiosPage", () => {
-  it("configura frecuencia del dominio sin pedir rol responsable y muestra acciones rápidas", async () => {
+  it("muestra aviso de programación explícita y acciones rápidas al crear dominio", async () => {
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Nuevo dominio/i }));
-    expect(screen.getByText(/Frecuencia de actualización del dominio/i)).toBeInTheDocument();
+    expect(screen.getByText(/Programación de actualizaciones/i)).toBeInTheDocument();
+    expect(screen.getByText(/Actualizaciones programadas/i)).toBeInTheDocument();
     expect(screen.queryByText(/Rol responsable/i)).toBeNull();
+    expect(screen.queryByLabelText(/Activar frecuencia automática/i)).toBeNull();
     expect(screen.getByRole("button", { name: /^Guardar$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Guardar y agregar base de datos/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Guardar y crear nuevo dominio/i })).toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText(/Activar frecuencia automática/i));
-    expect(screen.getByLabelText(/Tiene fecha de fin/i)).toBeInTheDocument();
   });
 
-  it("al guardar frecuencia normal del dominio envia origin domain_default", async () => {
+  it("al guardar dominio no envia frecuencia embebida", async () => {
     apiMock.post.mockResolvedValue({ id: "domain_1", clientId: "client_1" });
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Nuevo dominio/i }));
     fireEvent.focus(screen.getAllByPlaceholderText("Buscar cliente...").at(-1)!);
     fireEvent.mouseDown(await screen.findByRole("option", { name: "Cliente Uno" }));
     fireEvent.change(screen.getAllByPlaceholderText("https://ejemplo.sagerp.co").at(-1)!, { target: { value: "https://cliente.sagerp.co" } });
-    fireEvent.click(screen.getByLabelText(/Activar frecuencia automática/i));
     fireEvent.click(screen.getByRole("button", { name: /^Guardar$/i }));
     await waitFor(() => expect(apiMock.post).toHaveBeenCalled());
-    expect(apiMock.post).toHaveBeenCalledWith("/domains", expect.objectContaining({
-      frequency: expect.objectContaining({ origin: "domain_default" }),
-    }));
+    expect(apiMock.post).toHaveBeenCalledWith("/domains", expect.not.objectContaining({ frequency: expect.anything() }));
   });
 
   it("muestra error claro cuando el backend rechaza dominio duplicado", async () => {
@@ -82,19 +79,18 @@ describe("DominiosPage", () => {
     expect(screen.getByRole("button", { name: /^Guardar$/i })).toBeInTheDocument();
   });
 
-  it("tabla muestra Agregar base, Recurrente y Próxima actualización sin columna Versión", async () => {
+  it("tabla muestra Agregar base y no muestra columnas Versión/Recurrente/Próxima actualización", async () => {
     apiMock.get.mockImplementation((path: string) => {
       if (path === "/clients") return Promise.resolve(clientes);
       if (path.startsWith("/domains?")) return Promise.resolve({ items: [{ id: "domain_1", clientId: "client_1", clientName: "Cliente Uno", domainName: "https://cliente.sagerp.co", environment: "production", assignedUpdaterIds: [], status: "active", createdAt: "", updatedAt: "" }], page: 1, pageSize: 10, total: 1 });
-      if (path === "/schedules") return Promise.resolve([{ id: "schedule_1", origin: "domain_default", active: true, targetType: "domain", domainId: "domain_1", targetIds: ["domain_1"], frequencyType: "weekly", weekdays: ["FRIDAY"], startDate: "2026-05-01", timezone: "America/Bogota", assignedRole: "domain_updater", assignedUserIds: [] }]);
       if (path === "/users") return Promise.resolve([]);
       return Promise.resolve([]);
     });
     renderPagina();
-    expect(await screen.findByText("Recurrente")).toBeInTheDocument();
-    expect(screen.getByText("Próxima actualización")).toBeInTheDocument();
+    expect(await screen.findByText("https://cliente.sagerp.co")).toBeInTheDocument();
     expect(screen.queryByText("Versión web")).toBeNull();
-    expect(screen.getByText("Sí")).toBeInTheDocument();
+    expect(screen.queryByText("Recurrente")).toBeNull();
+    expect(screen.queryByText("Próxima actualización")).toBeNull();
     expect(screen.getByRole("button", { name: "Agregar base de datos" })).toBeInTheDocument();
   });
 
@@ -117,49 +113,34 @@ describe("DominiosPage", () => {
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("secreto"));
   });
 
-  it("envía filtro de programación recurrente y nuevo dominio inicia sin frecuencia automática", async () => {
+  it("no muestra filtro de programación recurrente ni frecuencia automática en nuevo dominio", async () => {
     renderPagina();
-    const filtro = within((await screen.findByText("Programación recurrente")).parentElement!).getByRole("combobox");
-    fireEvent.change(filtro, { target: { value: "with" } });
-    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith(expect.stringContaining("recurring=with")));
+    expect(screen.queryByText("Programación recurrente")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Nuevo dominio/i }));
-    expect(screen.getByLabelText(/Activar frecuencia automática/i)).not.toBeChecked();
+    expect(screen.queryByLabelText(/Activar frecuencia automática/i)).toBeNull();
   });
 
-  it("editar dominio permite desactivar frecuencia automática y refresca Recurrente/Próxima actualización", async () => {
+  it("editar dominio mantiene programación fuera del formulario de dominio", async () => {
     const dominio = { id: "domain_1", clientId: "client_1", clientName: "Cliente Uno", domainName: "https://cliente.sagerp.co", environment: "production", assignedUpdaterIds: [], status: "active", createdAt: "", updatedAt: "" };
-    let frecuencias = [{ id: "schedule_1", origin: "domain_default", active: true, targetType: "domain", domainId: "domain_1", targetIds: ["domain_1"], frequencyType: "weekly", weekdays: ["FRIDAY"], startDate: "2026-05-01", timezone: "America/Bogota", assignedRole: "domain_updater", assignedUserIds: [] }];
     apiMock.get.mockImplementation((path: string) => {
       if (path === "/clients") return Promise.resolve(clientes);
       if (path.startsWith("/domains?")) return Promise.resolve({ items: [dominio], page: 1, pageSize: 10, total: 1 });
-      if (path === "/schedules") return Promise.resolve(frecuencias);
       if (path === "/users") return Promise.resolve([]);
       return Promise.resolve([]);
     });
-    apiMock.put.mockImplementation(async () => {
-      frecuencias = [];
-      return dominio;
-    });
+    apiMock.put.mockResolvedValue(dominio);
     renderPagina();
-    expect(await screen.findByText("Sí")).toBeInTheDocument();
+    expect(await screen.findByText("https://cliente.sagerp.co")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Editar" }));
-    const checkbox = await screen.findByLabelText(/Activar frecuencia automática/i);
-    expect(checkbox).toBeChecked();
-    fireEvent.click(checkbox);
-    expect(checkbox).not.toBeChecked();
-    expect(screen.queryByLabelText(/Tiene fecha de fin/i)).toBeNull();
+    expect(await screen.findByText(/Programación de actualizaciones/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Activar frecuencia automática/i)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /^Guardar$/i }));
 
-    await waitFor(() => expect(apiMock.put).toHaveBeenCalledWith("/domains/domain_1", expect.objectContaining({
-      disableAutomaticFrequency: true,
-      frequency: null,
+    await waitFor(() => expect(apiMock.put).toHaveBeenCalledWith("/domains/domain_1", expect.not.objectContaining({
+      disableAutomaticFrequency: expect.anything(),
+      frequency: expect.anything(),
     })));
-    await waitFor(() => expect(screen.getByText("No")).toBeInTheDocument());
-    expect(screen.getAllByText("-").length).toBeGreaterThan(0);
-
-    fireEvent.click(screen.getByRole("button", { name: "Editar" }));
-    expect(await screen.findByLabelText(/Activar frecuencia automática/i)).not.toBeChecked();
   });
 
   it("envía búsqueda al listado paginado de dominios", async () => {

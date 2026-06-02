@@ -13,13 +13,13 @@ Aplicación web para gestionar las actualizaciones programadas de los clientes d
 - **Reporte manual por correo** de clientes, licencias/módulos, dominios y empresas/bases de datos activos, con ambiente, sin contraseñas ni datos sensibles.
 - **Diseño con colores corporativos**: `#1C3664`, `#7E99B2`, `#D1D3D2`, `#D3C193`.
 - Página principal **Tareas** con dos columnas (dominios y bases de datos) divididas en *Vencidas / Hoy / Próximas / Completadas*.
-- Gestión de **clientes**, **dominios** y **bases de datos** con eliminación en cascada confirmada y soft-delete de maestros. La frecuencia principal se configura en el **dominio**; las bases de datos heredan esa frecuencia desde el dominio seleccionado.
+- Gestión de **clientes**, **dominios** y **bases de datos** con eliminación en cascada confirmada y soft-delete de maestros. Las actualizaciones de dominios y bases se configuran desde **Actualizaciones programadas** con alcance explícito.
 - **Licenciamiento** visible para administradores y administradores de clientes, como maestro de módulos que luego se asignan al cliente completo desde **Clientes**.
-- **Programaciones especiales** con frecuencia **Única** por defecto, además de semanal, intervalo, mensual o manual. El alcance puede ser jerárquico manual o por licenciamiento, con responsables por rol o usuarios específicos.
-- **Maestros paginados y buscables**. Clientes, dominios, bases de datos, licenciamiento, programaciones especiales, auditoría y usuarios muestran 10 registros por página por defecto. Las búsquedas y filtros vuelven a página 1.
+- **Actualizaciones programadas** con frecuencia **Única** por defecto, además de semanal, intervalo, mensual o manual. El alcance puede ser jerárquico manual o por licenciamiento, con responsables por rol o usuarios específicos.
+- **Maestros paginados y buscables**. Clientes, dominios, bases de datos, licenciamiento, actualizaciones programadas, auditoría y usuarios muestran 10 registros por página por defecto. Las búsquedas y filtros vuelven a página 1.
 - **Validaciones de calidad de datos**: trim en campos de texto, dominios con `https://`, listas de correos separadas por punto y coma, y bloqueo de duplicados de clientes, dominios, bases y módulos de licencia.
 - **Ambientes cerrados** a Producción (`production`), Pruebas (`test`) y Demo (`demo`).
-- **Generación automática diaria** de tareas mediante Azure Functions Timer Trigger y refresco manual desde la vista **Tareas** con **Refrescar**. El refresco no envía correos.
+- **Generación automática de tareas** al crear/editar/reactivar actualizaciones programadas, además del Azure Functions Timer Trigger diario. La vista **Tareas** ya no usa el botón **Refrescar** como flujo operativo.
 - Panel del actualizador con las cuatro partes del acceso (servidor, Initial Catalog, usuario y contraseña) y botones independientes para copiar; cada acción se audita.
 - Desde **Dominios** se puede abrir **Ver bases asociadas**; desde **Clientes**, **Ver dominios y bases**.
 - **Recordatorios administrativos mensuales** para guardar la versión mensual de SAG Web y crear el documento “¿Qué hay de nuevo en SAG Web?”.
@@ -108,7 +108,7 @@ cd frontend
 npm test
 ```
 
-Cubre vistas principales, selectores buscables, tareas, alertas y correos, programaciones especiales, login y parser visual.
+Cubre vistas principales, selectores buscables, tareas, alertas y correos, actualizaciones programadas, login y parser visual.
 
 ## Roles y permisos
 
@@ -159,7 +159,7 @@ Para enviar el reporte maestro, abra **Reporte de clientes/dominios/empresas**, 
 
 ## Licenciamiento
 
-La vista **Licenciamiento** está disponible en `/licenciamiento` para administradores y administradores de clientes, entre **Bases de datos** y **Programaciones especiales** en el menú lateral.
+La vista **Licenciamiento** está disponible en `/licenciamiento` para administradores y administradores de clientes, entre **Bases de datos** y **Actualizaciones programadas** en el menú lateral.
 
 La vista queda como maestro de módulos. Permite crear, editar, activar/desactivar y eliminar módulos. El campo **Código** es opcional; si se deja vacío, el backend genera un código a partir del nombre, sin tildes, en mayúsculas y con sufijo si ya existe.
 
@@ -192,25 +192,29 @@ Endpoints disponibles:
 - `DELETE /api/license-modules/{id}`
 - `GET/POST/PUT/DELETE /api/license-assignments` existe como soporte avanzado oculto para fase futura.
 
-## Frecuencias heredadas
+## Actualizaciones programadas
 
 El flujo principal es:
 
 1. Crear cliente.
-2. Crear dominio y configurar su frecuencia.
+2. Crear dominio.
 3. Crear base de datos seleccionando el dominio.
+4. Crear una **Actualización programada** para dominios, bases o ambos.
 
-La base de datos usa la frecuencia activa del dominio. Si el dominio no tiene frecuencia activa, la vista muestra una advertencia y no se generarán tareas automáticas para esa base hasta configurar la frecuencia del dominio.
+La frecuencia embebida en el dominio/base fue retirada de la UI. Para programar las bases de un dominio se usa el alcance de **Actualizaciones programadas**:
 
-Regla avanzada: si existe una frecuencia específica activa de base de datos, esa frecuencia tiene prioridad sobre la herencia del dominio. La vista **Nueva base de datos** ya no muestra ni envía frecuencia individual.
+- Agregue el cliente.
+- Agregue el dominio o marque todos los dominios activos del cliente.
+- Para bases, marque **Incluir todas las bases activas de este dominio** o seleccione bases puntuales.
+- Si solo necesita bases, use **Objetivo de la actualización → Solo bases de datos**.
 
-## Refrescar tareas
+Cada tarea guarda `rootScheduleId` para enlazarse a la actualización programada original. En recurrentes, la actualización mantiene su vida (`active/inactive/cancelled`) y la salud operativa se ve en los resúmenes de tareas por fecha, no en un único estado engañoso.
 
-En **Tareas**, administradores y administradores de clientes ven el botón **Refrescar**. El botón llama `POST /api/tasks/refresh` (manteniendo compatibilidad con `POST /api/tasks/generate`), ejecuta la misma lógica del timer diario, devuelve cuántas tareas se crearon/actualizaron/omitieron por idempotencia, y refresca la lista. Este flujo no envía recordatorios, alertas ni correos.
+## Tareas
 
 La vista usa una **ventana operativa**: vencidas abiertas sin límite hacia atrás, tareas de hoy, próximas 4 días y completadas recientes (completadas hoy o dentro de los últimos 4 días por `completedAt` o fecha programada). No muestra completadas antiguas ni próximas más allá de 4 días.
 
-El tablero principal no lista todos los dominios o bases individualmente. Muestra grupos resumidos como **Dominios por actualizar** o **Bases de datos por actualizar**, con total, completadas, pendientes, con problemas y estado general. El botón **Ver detalle** abre las tareas individuales, permite copiar dominios o nombres de bases y guarda inmediatamente cada cambio de estado.
+El tablero principal no lista todos los dominios o bases individualmente. Muestra grupos resumidos como **Dominios por actualizar** o **Bases de datos por actualizar**, con total, completadas, pendientes, con problemas, estado general y nombre de la actualización programada cuando está disponible. El botón **Ver detalle** abre las tareas individuales, permite copiar dominios o nombres de bases y guarda inmediatamente cada cambio de estado.
 
 El detalle de tareas usa un modal amplio. Para dominios muestra acciones según estado: pendientes pueden completarse/bloquearse; bloqueadas muestran **Completar** y **Resolver bloqueo**, pero no **Reabrir**; completadas muestran **Reabrir**, pero no **Completar**. Para bases de datos muestra la conexión en campos apilados: servidor, base, usuario y contraseña. La contraseña no se precarga; se revela o copia bajo demanda con el endpoint seguro y auditoría sin incluir el valor.
 
@@ -218,32 +222,33 @@ Las tareas bloqueadas se resuelven con modal propio hacia pendiente, en progreso
 
 ## Flujo rápido de creación
 
-El flujo principal ahora es **Cliente → Dominio con frecuencia → Base de datos heredada → Tareas**:
+El flujo principal ahora es **Cliente → Dominio → Base de datos → Actualización programada → Tareas**:
 
 - **Clientes**: `Guardar`, `Guardar y agregar dominio`, `Guardar y crear nuevo cliente`.
 - **Dominios**: `Guardar`, `Guardar y agregar base de datos`, `Guardar y crear nuevo dominio`.
 - **Bases de datos**: `Guardar`, `Guardar y crear nueva base de datos`.
 
-Los formularios normales usan por defecto el rol responsable: **Actualizador de dominios** para tareas de dominio y **Actualizador de bases de datos** para tareas de base. En la frecuencia del dominio el administrador puede cambiar a **Asignar responsable específico**; entonces las tareas y recordatorios se asignan solo a esas personas activas. Si vuelve a **Usar rol predeterminado**, se limpian los usuarios manuales y los recordatorios vuelven a todos los usuarios activos del rol.
+Los formularios normales ya no capturan frecuencia. Los responsables se definen desde **Actualizaciones programadas**: por rol predeterminado (**Actualizador de dominios** o **Actualizador de bases de datos**) o por usuarios específicos.
 
-La vista **Programaciones especiales** queda para excepciones avanzadas. El alcance se construye por grupos: agregar cliente, incluir todos los dominios o agregar dominios específicos, e incluir todas las bases o bases puntuales. En **Selección manual** se puede elegir el **Objetivo de la actualización**: dominios y bases, solo dominios o solo bases. Si se elige **Solo bases de datos**, la UI permite seleccionar bases directamente desde el cliente y el generador no crea tareas de dominio. Para seleccionar varios dominios o bases se usan modales con búsqueda y checkboxes. Las frecuencias normales creadas desde **Dominios** se guardan con `origin = "domain_default"` y no aparecen en esta página; las creadas desde **Programaciones especiales** se guardan con `origin = "special"`.
+La vista **Actualizaciones programadas** define las actualizaciones operativas recurrentes o únicas. El alcance se construye por grupos: agregar cliente, incluir todos los dominios o agregar dominios específicos, e incluir todas las bases o bases puntuales. En **Selección manual** se puede elegir el **Objetivo de la actualización**: dominios y bases, solo dominios o solo bases. Si se elige **Solo bases de datos**, la UI permite seleccionar bases directamente desde el cliente y el generador no crea tareas de dominio. Para seleccionar varios dominios o bases se usan modales con búsqueda y checkboxes. Las actualizaciones se guardan con `origin = "special"`.
 
-También puede crear programaciones especiales **Por licenciamiento**. En ese modo se seleccionan una o varias licencias, coincidencia `cualquiera/todas`, ambiente, y objetivo `dominios`, `bases` o ambos. La app previsualiza clientes, dominios y bases activos afectados, y al generar tareas re-resuelve el criterio para incluir clientes que compren esa licencia en el futuro.
+También puede crear actualizaciones **Por licenciamiento**. En ese modo se seleccionan una o varias licencias, coincidencia `cualquiera/todas`, ambiente, y objetivo `dominios`, `bases` o ambos. La app previsualiza clientes, dominios y bases activos afectados, y al generar tareas re-resuelve el criterio para incluir clientes que compren esa licencia en el futuro.
 
-Después del preview por licenciamiento se pueden marcar excepciones de esta programación:
+Después del preview por licenciamiento se pueden marcar excepciones de esta actualización:
 
 - **Excluir dominio** evita crear la tarea del dominio, pero no excluye automáticamente sus bases.
 - **Excluir base** evita crear la tarea de esa base, pero no excluye el dominio.
 - Si cambian licencias, ambiente, coincidencia u objetivo después del preview, el alcance queda desactualizado y debe previsualizarse de nuevo antes de guardar.
 - Las excepciones se guardan por ID (`excludedDomainIds`, `excludedDatabaseIds`) dentro de `licensingScope`.
 
-La deduplicación de tareas por entidad/día se mantiene aunque coincidan programaciones normales, manuales o por licenciamiento. Para nuevas programaciones especiales, **Única** es la frecuencia por defecto: solo pide **Fecha de actualización** y genera tareas para esa fecha sin duplicarlas. Generar tareas no cierra la programación por sí solo; una programación única queda inactiva/completada solo cuando sus tareas asociadas ya están cerradas (`completed` o `cancelled`). Si se reprograma una única antes de cerrarla, las tareas abiertas de la fecha anterior asociadas a esa programación se cancelan como obsoletas para que no queden vencidas artificialmente ni disparen alertas incorrectas.
+La deduplicación de tareas por entidad/día se mantiene aunque coincidan actualizaciones manuales o por licenciamiento. Para nuevas actualizaciones programadas, **Única** es la frecuencia por defecto: solo pide **Fecha de actualización** y genera tareas para esa fecha sin duplicarlas. Generar tareas no cierra la actualización por sí solo; una actualización única queda inactiva/completada solo cuando sus tareas asociadas ya están cerradas (`completed` o `cancelled`). Si se reprograma una única antes de cerrarla, las tareas abiertas de la fecha anterior asociadas a esa actualización se cancelan como obsoletas para que no queden vencidas artificialmente ni disparen alertas incorrectas.
 
-Los recordatorios de programaciones especiales usan por defecto la configuración global de **Alertas y correos → Recordatorios a actualizadores**. Si se requiere una configuración específica, se desmarca **Usar configuración global de recordatorios** y se capturan **Días previos separados por coma** (`2,1,0`, `1,0`, etc.) y **Hora de envío**. El valor `0` significa el mismo día de la actualización.
+Los recordatorios de actualizaciones programadas usan por defecto la configuración global de **Alertas y correos → Recordatorios a actualizadores**. Si se requiere una configuración específica, se desmarca **Usar configuración global de recordatorios** y se capturan **Días previos separados por coma** (`2,1,0`, `1,0`, etc.) y **Hora de envío**. El valor `0` significa el mismo día de la actualización.
 
 ## Cambios recientes
 
 - [SOLICITUD_BASE_SQL_SERVER.md](SOLICITUD_BASE_SQL_SERVER.md): especificación para solicitar al proveedor la base SQL Server/Azure SQL de migración.
+- [CAMBIOS_V17.md](CAMBIOS_V17.md): Actualizaciones programadas, tareas vinculadas por `rootScheduleId` y retiro de frecuencia embebida.
 - [docs/RELATIONAL_MODEL_PROPOSAL.md](docs/RELATIONAL_MODEL_PROPOSAL.md): modelo relacional objetivo para migración desde Cosmos DB.
 - [docs/COSMOS_TO_SQL_MIGRATION_MATRIX.md](docs/COSMOS_TO_SQL_MIGRATION_MATRIX.md): matriz de transformación Cosmos → SQL.
 - [CAMBIOS_V14.md](CAMBIOS_V14.md): excepciones en programación por licenciamiento y frecuencia única por defecto.

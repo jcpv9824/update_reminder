@@ -237,15 +237,6 @@ export default function BasesDeDatosPage() {
   );
 }
 
-function describirFrecuencia(f?: Frecuencia): string {
-  if (!f || !f.active) return "";
-  if (f.frequencyType === "once") return `Única: ${f.startDate}`;
-  if (f.frequencyType === "weekly") return `Semanal: ${(f.weekdays ?? []).join(", ") || "sin día"} desde ${f.startDate}`;
-  if (f.frequencyType === "interval") return `Cada ${f.intervalDays} día(s) desde ${f.startDate}`;
-  if (f.frequencyType === "monthly") return `Mensual: día ${f.dayOfMonth} desde ${f.startDate}`;
-  return `Manual desde ${f.startDate}`;
-}
-
 function FormularioBd({ inicial, clientes, dominios, frecuencias, clienteInicialId = "", dominioInicialId = "", onSubmit, cargando }: { inicial?: BaseDeDatos; clientes: Cliente[]; dominios: Dominio[]; frecuencias: Frecuencia[]; clienteInicialId?: string; dominioInicialId?: string; onSubmit: (v: any, accion: AccionBd) => void; cargando: boolean }) {
   const editando = !!inicial;
   const [clientId, setClientId] = useState(inicial?.clientId ?? clienteInicialId);
@@ -259,10 +250,6 @@ function FormularioBd({ inicial, clientes, dominios, frecuencias, clienteInicial
   const [err, setErr] = useState<string | null>(null);
 
   const dominiosFiltrados = useMemo(() => dominios.filter((d) => d.clientId === clientId && d.status === "active"), [dominios, clientId]);
-  const frecuenciaDominio = useMemo(
-    () => frecuencias.find((f) => f.active && f.targetType === "domain" && (f.domainId === domainId || f.targetIds.includes(domainId))),
-    [frecuencias, domainId]
-  );
   function enviar(accion: AccionBd) {
     if (!clientId) return setErr("Seleccione el cliente.");
     if (!domainId) return setErr("Seleccione el dominio.");
@@ -366,13 +353,9 @@ function FormularioBd({ inicial, clientes, dominios, frecuencias, clienteInicial
       <div className="fila-formulario"><label>Notas</label>
         <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
 
-      <h4>Frecuencia de actualización</h4>
-      <Alerta tipo={frecuenciaDominio ? "info" : "error"}>
-        {domainId
-          ? frecuenciaDominio
-            ? `Esta base de datos usará la frecuencia configurada en el dominio seleccionado: ${describirFrecuencia(frecuenciaDominio)}.`
-            : "El dominio seleccionado no tiene frecuencia configurada. Configure una frecuencia en el dominio para generar tareas automáticamente."
-          : "Esta base de datos usará la frecuencia configurada en el dominio seleccionado."}
+      <h4>Programación de actualizaciones</h4>
+      <Alerta tipo="info">
+        Las tareas de esta base de datos se generan desde <strong>Actualizaciones programadas</strong>. Allí puede seleccionarla de forma puntual o incluir todas las bases activas de su dominio.
       </Alerta>
 
       <div className="acciones-formulario">

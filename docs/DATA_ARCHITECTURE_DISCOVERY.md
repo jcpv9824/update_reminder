@@ -54,7 +54,7 @@ Definidos en `api/src/lib/cosmos.ts`.
 |---|---|---|---|---|---|
 | `users` | `UserRecord` | `.item(id, id)` y queries por roles/email | Autenticación, roles, destinatarios por rol, auditoría | `security.users`, `security.user_roles` | No exponer `passwordHash` ni reset token hashes. |
 | `clients` | `ClientRecord` | `.item(id, id)` | Maestro clientes, licencias por cliente, cascada | `core.clients`, `licensing.client_license_modules` | Mantener `licenseModuleIds` al inicio; normalizar luego. |
-| `domains` | `DomainRecord` | `.item(id, clientId)` en escrituras; queries por `id/clientId` | Maestro dominios, frecuencia heredada, tareas, reporte | `core.domains` | FK a clients. Validar URL `https://`. |
+| `domains` | `DomainRecord` | `.item(id, clientId)` en escrituras; queries por `id/clientId` | Maestro dominios, tareas, reporte | `core.domains` | FK a clients. Validar URL `https://`. |
 | `databases` | `DatabaseRecord` | `.item(id, clientId)` en escrituras; queries por `id/clientId/domainId` | Maestro empresas/bases, acceso SQL, tareas base | `core.databases`, `security.database_secrets` opcional | No guardar contraseña real, solo `password_secret_name`. |
 | `updateSchedules` | `UpdateSchedule` | `.item(id, clientId)` | Frecuencias dominio/default, especiales, licenciamiento | `scheduling.update_schedules` + tablas scope | Normalizar `scopeGroups` y `licensingScope`. |
 | `updateTasks` | `UpdateTask` | `.item(id, taskBucket)` | Tareas operativas, estados, alertas, recordatorios | `workflow.update_tasks`, `workflow.task_status_history`, `workflow.task_sources` | Preservar `taskBucket`, `dedupeKey`, `sources`, estados. |
@@ -159,7 +159,7 @@ Dependencias:
 
 Endpoints:
 
-- `GET /api/domains?page&pageSize&clientId&status&environment&recurring&search`
+- `GET /api/domains?page&pageSize&clientId&status&environment&search`
 - `POST /api/domains`
 - `GET /api/domains/{id}`
 - `GET /api/domains/{id}/databases`
@@ -170,12 +170,11 @@ Endpoints:
 
 Dependencias:
 
-- `domain_default` schedules apuntan a dominios por `domainId`/`targetIds`.
+- Nuevas actualizaciones se configuran desde `updateSchedules` con `origin="special"` y alcance explícito.
 - Bases cuelgan de `domainId`.
 - Tareas de dominio usan `domainId`, `domainName`, `targetId`.
 - Tareas de base también usan `domainId` y `domainName`.
-- Frontend `DominiosPage` calcula Recurrente/Próxima actualización desde `/schedules`.
-- Desactivar frecuencia edita `updateSchedules.active=false` para `origin="domain_default"`.
+- Frontend `DominiosPage` ya no calcula Recurrente/Próxima actualización ni crea frecuencia embebida.
 
 ### 4.4 `DatabaseRecord` → `core.databases`
 
@@ -269,7 +268,7 @@ Nota: `reportsService` solo usa asignaciones avanzadas si `ENABLE_ADVANCED_LICEN
 |---|---:|---|---|---|---|---|---|
 | `id` | string | sí | task generation/tasks source | UI | no | `update_schedules.id` | Preservar. |
 | `clientId`, `clientName` | string | sí | filtros/generación | UI | no | `client_id`, snapshot opcional | FK client. |
-| `domainId`, `domainName` | string | no | domain_default/inheritance | UI | no | `domain_id`, snapshot opcional | FK domain nullable. |
+| `domainId`, `domainName` | string | no | alcance explícito/tareas | UI | no | `domain_id`, snapshot opcional | FK domain nullable. |
 | `targetType` | domain/database | sí | generator/preview | UI | no | `target_type` | Enum. |
 | `targetIds` | string[] | sí | generator | no directo | no | `schedule_targets` | Normalizar. |
 | `frequencyType` | weekly/interval/monthly/manual | sí | scheduleEngine | UI | no | `frequency_type` | Enum. |
@@ -282,7 +281,7 @@ Nota: `reportsService` solo usa asignaciones avanzadas si `ENABLE_ADVANCED_LICEN
 | `manualTargetTypes` | domains_and_databases/domains_only/databases_only | no | especiales manuales | UI objetivo manual | no | `manual_target_types` | Define si se generan tareas de dominio, base o ambas. |
 | `licensingScope` | object | no | preview/generator licencias | UI | no | `schedule_licensing_scope` | Normalizar license ids. |
 | `assignmentMode`, `domainAssignedRole`, `databaseAssignedRole` | varios | no | especiales | UI | no | columns | Preservar. |
-| `origin` | domain_default/special/database_inherited/licensing | no | generator/filter/report | UI | no | `origin` | Enum extensible. |
+| `origin` | special/domain_default/database_inherited/licensing | no | generator/filter/report | UI | no | `origin` | `special` es el patrón nuevo; otros valores se preservan por historia/compatibilidad. |
 | `active` | boolean | sí | generator/listados | UI | no | `active` | No confundir con status. |
 | `reminders` | object | no | sendScheduledReminders | UI | emails | `schedule_reminder_settings` | Contiene custom emails, no secretos. |
 | `notes`, timestamps | varios | no/sí | auditoría/UI | UI | no | columns | Preservar. |
@@ -303,12 +302,11 @@ Dependencias:
 - `scheduleEngine.ts` calcula fechas.
 - `taskGenerator.ts` expande:
   - schedules directos.
-  - herencia dominio → bases.
-  - especiales manuales `scopeGroups`.
-  - especiales por licenciamiento `licensingScope`.
+  - alcance manual explícito `scopeGroups`.
+  - alcance por licenciamiento `licensingScope`.
 - `sendScheduledReminders.ts` usa `reminders` de schedule o global.
 - `reportsService` describe frecuencia activa por dominio.
-- `DominiosPage` usa `origin="domain_default"` para Recurrente/Próxima actualización.
+- `TareasPage` usa `rootScheduleId` para mostrar el nombre de la actualización programada de origen.
 
 ### 4.8 `UpdateTask` → `workflow.update_tasks` + history/sources
 
@@ -323,6 +321,7 @@ Dependencias:
 | `clientName`, `domainName`, `targetName` | string | sí | snapshots UI/emails | UI | no | snapshot columns | Preservar para historia. |
 | `targetType` | domain/database | sí | permisos/UI/emails | UI | no | `target_type` | Enum. |
 | `scheduleId` | string | sí | source/audit | no directo | no | `schedule_id` | FK schedule nullable si borrado. |
+| `rootScheduleId` | string | no | vínculo estable a actualización programada | UI nombre de origen | no | `root_schedule_id` | Requerido para migración SQL; fallback desde `scheduleId` legado. |
 | `assignedRole`, `assignedUserIds` | string/string[] | sí | permisos/destinatarios | UI | no | `assigned_role`, `task_assignees` | Normalizar users. |
 | `status` | TaskStatus | sí | todo flujo | UI | no | `status` | Enum. |
 | `result`, `notes` | string/null | sí | cambios estado | UI | no | columns | Trim/limitar. |
@@ -346,7 +345,7 @@ Endpoints:
 - `POST /api/tasks/{id}/cancel`
 - `POST /api/tasks/{id}/resolve-block`
 - `POST /api/tasks/generate`
-- `POST /api/tasks/refresh`
+- `POST /api/tasks/refresh` existe por compatibilidad operativa/API, pero no es el flujo principal de la UI.
 
 Dependencias críticas:
 
@@ -430,7 +429,7 @@ Migración:
 | Dominios | `/domains`, `/domains/{id}`, `/domains/{id}/databases` | `domains`, `databases`, `updateSchedules`, `updateTasks` | `DominiosPage` |
 | Bases | `/databases`, access/copy/reveal | `databases`, `updateTasks`, Key Vault, `auditLogs` | `BasesDeDatosPage`, `TareasPage` |
 | Schedules | `/schedules`, preview licensing | `updateSchedules`, `clients`, `domains`, `databases`, `licenseModules` | `FrecuenciasPage` |
-| Tareas | `/tasks`, status endpoints, refresh/generate | `updateTasks`, `updateSchedules`, `domains`, `databases`, `clients` | `TareasPage`, `DashboardPage` |
+| Tareas | `/tasks`, status endpoints, refresh/generate compatibilidad | `updateTasks`, `updateSchedules`, `domains`, `databases`, `clients` | `TareasPage`, `DashboardPage` |
 | Licencias | `/license-modules`, `/license-assignments` | `licenseModules`, `licenseAssignments`, `clients/domains/databases` | `LicenciamientoPage`, `ClientesPage`, `FrecuenciasPage` |
 | Settings/correos | `/settings/email-alerts`, test, admin reminders test | `appSettings`, Key Vault, `auditLogs` | `AlertasCorreosPage` |
 | Reportes | `/reports/masters/send-email` | `clients`, `domains`, `databases`, `updateSchedules`, `licenseModules`, `licenseAssignments` | `AlertasCorreosPage` |
@@ -460,19 +459,20 @@ Migración:
 
 ### 6.3 Frecuencia y generación de tareas
 
-- `origin="domain_default"` genera tareas de dominio y hereda a bases activas del dominio.
-- Bases con schedule específico evitan duplicidad con heredadas.
-- Programaciones especiales manuales usan `scopeGroups` y `manualTargetTypes` para generar dominio/base/ambas.
+- Nuevas actualizaciones se crean como `origin="special"` y usan alcance explícito.
+- Una programación plana de dominio no hereda bases automáticamente.
+- Actualizaciones manuales usan `scopeGroups` y `manualTargetTypes` para generar dominio/base/ambas.
+- Para bases de un dominio se marca `includeAllDatabases` o se enumeran `databaseIds`.
 - Programaciones por licenciamiento usan `licensingScope` y clientes activos con `licenseModuleIds`.
 - `licensingScope` soporta excepciones por ID: `excludedDomainIds` y `excludedDatabaseIds`.
 - Excluir dominio evita solo tarea de dominio; no excluye automáticamente bases.
 - Excluir base evita solo tarea de base; no excluye dominio.
 - La frecuencia especial `once` usa `startDate` como fecha de actualización. Puede generar tareas futuras dentro de la ventana operativa, pero solo se desactiva cuando `startDate <= hoy`.
 - Tareas `cancelled` con `result = "obsolete"` pueden reactivarse si una programación activa las vuelve a requerir; no deben bloquear silenciosamente la visibilidad de tareas futuras.
-- Programaciones especiales usan configuración global de recordatorios si `reminders` no está definido; si hay override, `reminderDaysBefore` viene de una lista separada por coma en UI y `reminderTime` en `HH:mm`.
+- Actualizaciones programadas usan configuración global de recordatorios si `reminders` no está definido; si hay override, `reminderDaysBefore` viene de una lista separada por coma en UI y `reminderTime` en `HH:mm`.
 - Máximo una tarea por `targetType + targetId + taskDate`.
 - `sources` puede registrar múltiples orígenes.
-- Refresh no debe enviar correos.
+- La vista Tareas no usa botón Refrescar como flujo operativo; la generación ocurre al guardar/reactivar actualizaciones y por timer.
 - Refresh no debe cancelar vencidas abiertas antiguas.
 
 ### 6.4 Vista operativa de tareas
@@ -504,10 +504,10 @@ Migración:
 | Página | Entidades leídas | Entidades escritas | Observaciones |
 |---|---|---|---|
 | `ClientesPage` | clients, licenseModules, client tree | clients | Licencias por cliente, cascade delete, tree dominios/bases. |
-| `DominiosPage` | clients, domains paginados, schedules, users, domain databases | domains, database password copy endpoint | Recurrente/proxima desde schedules; desactiva frecuencia con `frequency:null`. |
-| `BasesDeDatosPage` | clients, domains, databases paginadas, schedules | databases | Raw connection string en formulario; no mostrar password real. |
-| `FrecuenciasPage` | clients, domains, databases, users, licenseModules, schedules | schedules, preview licensing | Constructor manual y por licenciamiento. |
-| `TareasPage` | tasks, users, database access-info | task status endpoints, reveal-password, refresh | Vista operativa, acceso DB con permisos. |
+| `DominiosPage` | clients, domains paginados, domain databases | domains, database password copy endpoint | Sin frecuencia embebida; enlaza a bases y a Actualizaciones programadas. |
+| `BasesDeDatosPage` | clients, domains, databases paginadas | databases | Raw connection string en formulario; no mostrar password real; sin frecuencia embebida. |
+| `FrecuenciasPage` | clients, domains, databases, users, licenseModules, schedules | schedules, preview licensing | Actualizaciones programadas manuales y por licenciamiento. |
+| `TareasPage` | tasks, users, schedules, database access-info | task status endpoints, reveal-password | Vista operativa, nombre de actualización por `rootScheduleId`, acceso DB con permisos. |
 | `AlertasCorreosPage` | settings/email-alerts | settings, test email, master report, admin reminder test | SMTP password siempre vacío al cargar. |
 | `AuditoriaPage` | auditLogs paginados, clients | ninguno | Filtros; append-only. |
 | `UsuariosPage` | users paginados | users | Roles, reset password, active/inactive. |
@@ -536,7 +536,7 @@ Migración:
 2. **Snapshots vs joins**: muchos documentos guardan `clientName`, `domainName`, `targetName`. SQL puede recalcular, pero para historia conviene preservar snapshots en tareas/auditoría.
 3. **Arrays embebidos**: `roles`, `assignedUpdaterIds`, `assignedUserIds`, `targetIds`, `licenseModuleIds`, `remindersSent`, `overdueAlertSentDates` deben normalizarse o conservarse como JSON temporalmente con plan claro.
 4. **Objetivos polimórficos**: `targetType` + `targetId` puede apuntar a dominio o base. SQL debe modelar esto con constraints, tablas separadas o validación de servicio.
-5. **Programaciones especiales**: `scopeGroups` es jerárquico; si se deja en JSON se pierde integridad.
+5. **Actualizaciones programadas**: `scopeGroups` es jerárquico; si se deja en JSON se pierde integridad.
 6. **Licenciamiento**: `licenseAssignments` existe pero está oculto. No dejar que su presencia cambie el modelo principal sin feature flag.
 7. **Secretos**: `passwordSecretName` contiene referencia sensible; no debe aparecer en reportes ni auditoría. No resolver secretos durante export/migración.
 8. **Idempotencia de correos**: `emailNotifications`, `remindersSent`, `overdueAlertSentDates`, `overdueAlertLastSentPeriod` evitan duplicados. Si se pierden, se puede enviar spam.
@@ -623,7 +623,7 @@ Business equivalence:
 - Listado bases.
 - Ver dominios y bases.
 - Ver bases asociadas.
-- Programaciones especiales manual/licensing.
+- Actualizaciones programadas manual/licensing.
 - Preview por licenciamiento.
 - Refresh tareas.
 - Vista operativa tareas.

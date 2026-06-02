@@ -82,16 +82,16 @@ beforeEach(() => {
 });
 
 describe("FrecuenciasPage", () => {
-  it("muestra titulo, explicacion y estado vacio de Programaciones especiales", async () => {
+  it("muestra titulo, explicacion y estado vacio de Actualizaciones programadas", async () => {
     renderPagina();
-    expect(await screen.findByRole("heading", { name: "Programaciones especiales" })).toBeInTheDocument();
-    expect(screen.getByText(/La frecuencia normal de actualización se configura desde cada dominio/i)).toBeInTheDocument();
-    expect(await screen.findByText("No hay programaciones especiales configuradas.")).toBeInTheDocument();
-    expect(screen.getByText(/ve a Dominios y edita la frecuencia del dominio/i)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Actualizaciones programadas" })).toBeInTheDocument();
+    expect(screen.getByText(/Defina actualizaciones recurrentes o únicas/i)).toBeInTheDocument();
+    expect(await screen.findByText("No hay actualizaciones programadas configuradas.")).toBeInTheDocument();
+    expect(screen.getByText(/programar dominios, bases o ambos con alcance explícito/i)).toBeInTheDocument();
     expect(apiMock.get).toHaveBeenCalledWith("/schedules?origin=special&page=1&pageSize=10");
   });
 
-  it("muestra programaciones especiales devueltas por el API", async () => {
+  it("muestra actualizaciones programadas devueltas por el API", async () => {
     apiMock.get.mockImplementation((path: string) => {
       if (path === "/clients") return Promise.resolve([cliente]);
       if (path === "/domains") return Promise.resolve([dominio]);
@@ -105,7 +105,7 @@ describe("FrecuenciasPage", () => {
     expect(screen.getByText("Dominio")).toBeInTheDocument();
   });
 
-  it("envía búsqueda al listado paginado de programaciones especiales", async () => {
+  it("envía búsqueda al listado paginado de actualizaciones programadas", async () => {
     renderPagina();
     fireEvent.change(await screen.findByPlaceholderText("Buscar..."), { target: { value: "Mobile" } });
     await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith(expect.stringContaining("/schedules?origin=special&page=1&pageSize=10&search=Mobile")));
@@ -136,7 +136,7 @@ describe("FrecuenciasPage", () => {
 
   it("al crear envia origin special", async () => {
     renderPagina();
-    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva actualización programada/i }));
     fireEvent.focus(screen.getByPlaceholderText("Buscar cliente..."));
     fireEvent.mouseDown(await screen.findByRole("option", { name: "Cliente Uno" }));
     fireEvent.click(screen.getByLabelText(/Incluir todos los dominios activos/i));
@@ -150,7 +150,7 @@ describe("FrecuenciasPage", () => {
 
   it("permite objetivo manual solo bases y guarda bases sin crear selección obligatoria de dominio", async () => {
     renderPagina();
-    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva actualización programada/i }));
     expect(select("Objetivo de la actualización")).toHaveValue("domains_and_databases");
     fireEvent.change(select("Objetivo de la actualización"), { target: { value: "databases_only" } });
 
@@ -177,7 +177,7 @@ describe("FrecuenciasPage", () => {
 
   it("usa frecuencia Única por defecto y solo muestra fecha de actualización", async () => {
     renderPagina();
-    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva actualización programada/i }));
     expect(select("Tipo de frecuencia *")).toHaveValue("once");
     expect(screen.getByText("Fecha de actualización *")).toBeInTheDocument();
     expect(screen.queryByText("Cada cuántas semanas")).toBeNull();
@@ -192,7 +192,7 @@ describe("FrecuenciasPage", () => {
 
   it("usa recordatorios globales por defecto y permite override con días por coma y hora", async () => {
     renderPagina();
-    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva actualización programada/i }));
     expect(screen.getByLabelText(/Usar configuración global de recordatorios/i)).toBeChecked();
     expect(screen.getByDisplayValue("3, 1, 0")).toBeInTheDocument();
     expect(screen.getByDisplayValue("08:00")).toBeInTheDocument();
@@ -217,7 +217,7 @@ describe("FrecuenciasPage", () => {
 
   it("permite agregar varios dominios y varias bases con modales de selección", async () => {
     renderPagina();
-    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva actualización programada/i }));
     fireEvent.focus(screen.getByPlaceholderText("Buscar cliente..."));
     fireEvent.mouseDown(await screen.findByRole("option", { name: "Cliente Uno" }));
 
@@ -241,7 +241,7 @@ describe("FrecuenciasPage", () => {
 
   it("modo Por licenciamiento oculta selección manual y exige licencias", async () => {
     renderPagina();
-    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva actualización programada/i }));
     fireEvent.change(select("Tipo de alcance"), { target: { value: "licensing" } });
     expect(screen.getByText("Licencias a actualizar")).toBeInTheDocument();
     expect(screen.queryByText(/Todos los clientes activos/i)).toBeNull();
@@ -256,7 +256,7 @@ describe("FrecuenciasPage", () => {
 
   it("muestra licencias seleccionadas y permite quitarlas con chip", async () => {
     renderPagina();
-    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva actualización programada/i }));
     fireEvent.change(select("Tipo de alcance"), { target: { value: "licensing" } });
     fireEvent.click(await screen.findByText("Mobile App"));
     expect(await screen.findByRole("button", { name: "Quitar Mobile App" })).toBeInTheDocument();
@@ -281,7 +281,7 @@ describe("FrecuenciasPage", () => {
       return Promise.resolve({ id: "schedule_license", ...body });
     });
     renderPagina();
-    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva actualización programada/i }));
     fireEvent.change(select("Tipo de alcance"), { target: { value: "licensing" } });
     fireEvent.click(await screen.findByText("Mobile App"));
     fireEvent.change(select("Ambiente"), { target: { value: "production" } });
@@ -314,7 +314,7 @@ describe("FrecuenciasPage", () => {
       return Promise.resolve({ id: "schedule_license", ...body });
     });
     renderPagina();
-    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva actualización programada/i }));
     fireEvent.change(select("Tipo de alcance"), { target: { value: "licensing" } });
     fireEvent.click(await screen.findByText("Mobile App"));
     fireEvent.click(screen.getByRole("button", { name: /Previsualizar alcance/i }));
@@ -337,7 +337,7 @@ describe("FrecuenciasPage", () => {
     })));
   });
 
-  it("marca el preview como desactualizado al cambiar filtros y bloquea guardar", async () => {
+  it("actualiza automáticamente el preview al cambiar filtros y permite guardar", async () => {
     apiMock.post.mockImplementation((path: string) => {
       if (path === "/special-schedules/preview-licensing-scope") {
         return Promise.resolve({
@@ -353,14 +353,14 @@ describe("FrecuenciasPage", () => {
       return Promise.resolve({});
     });
     renderPagina();
-    fireEvent.click(await screen.findByRole("button", { name: /Nueva programación especial/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva actualización programada/i }));
     fireEvent.change(select("Tipo de alcance"), { target: { value: "licensing" } });
     fireEvent.click(await screen.findByText("Mobile App"));
     fireEvent.click(screen.getByRole("button", { name: /Previsualizar alcance/i }));
     expect(await screen.findByText(/Alcance final/i)).toBeInTheDocument();
 
     fireEvent.change(select("Ambiente"), { target: { value: "test" } });
-    expect(screen.getByText(/El alcance cambió. Vuelva a previsualizar/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Guardar$/i })).toBeDisabled();
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/special-schedules/preview-licensing-scope", expect.objectContaining({ environment: "test" })));
+    expect(screen.getByRole("button", { name: /^Guardar$/i })).not.toBeDisabled();
   });
 });

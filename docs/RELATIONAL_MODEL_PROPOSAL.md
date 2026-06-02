@@ -192,6 +192,7 @@ Si aparecen ambientes no catalogados en Cosmos durante el export, no crear nuevo
 | Columna | Tipo | Null | Notas |
 |---|---:|---|---|
 | `id` | NVARCHAR(100) | no | ID Cosmos. |
+| `name` | NVARCHAR(200) | sí | Nombre visible; puede ser autogenerado. |
 | `external_id` | NVARCHAR(100) | sí | ID de negocio del cliente. Opcional ahora; será obligatorio en una fase futura. |
 | `name` | NVARCHAR(200) | no |  |
 | `name_normalized` | NVARCHAR(200) | no | Para duplicados. |
@@ -362,7 +363,7 @@ Nota: No usar esta tabla en la lógica principal hasta que se reactive explícit
 | `assignment_mode` | NVARCHAR(30) | sí | `role`, `users`. |
 | `domain_assigned_role` | NVARCHAR(50) | sí |  |
 | `database_assigned_role` | NVARCHAR(50) | sí |  |
-| `origin` | NVARCHAR(50) | sí | `domain_default`, `special`, `database_inherited`, `licensing`. |
+| `origin` | NVARCHAR(50) | sí | `special` como patrón nuevo; preservar `domain_default`, `database_inherited` y `licensing` por historia/compatibilidad. |
 | `active` | BIT | no |  |
 | `completed_at` | DATETIME2 | sí | Para programaciones únicas ejecutadas. |
 | `completed_reason` | NVARCHAR(100) | sí | Ej. `one_time_schedule_executed`. |
@@ -370,6 +371,8 @@ Nota: No usar esta tabla en la lógica principal hasta que se reactive explícit
 | `client_name_snapshot` | NVARCHAR(200) | sí | Historia. |
 | `domain_name_snapshot` | NVARCHAR(500) | sí | Historia. |
 | timestamps | varios | sí/no |  |
+
+Nota: la frecuencia embebida de dominios/bases fue retirada de la UI. Las nuevas actualizaciones operativas se modelan como `origin = 'special'` con alcance explícito manual o por licenciamiento.
 
 ### 6.2 `scheduling.schedule_weekdays`
 
@@ -528,6 +531,7 @@ Reglas importantes:
 | `target_type` | NVARCHAR(30) | no | domain/database. |
 | `target_id` | NVARCHAR(100) | no | FK lógica según target. |
 | `schedule_id` | NVARCHAR(100) | no | FK schedules, nullable si schedule fue hard-deleted; preferir migrar raw. |
+| `root_schedule_id` | NVARCHAR(100) | sí | FK a la actualización programada original. Si falta en Cosmos legado, derivar desde `schedule_id`. |
 | `assigned_role` | NVARCHAR(50) | no |  |
 | `status` | NVARCHAR(30) | no | pending/in_progress/completed/failed/blocked/cancelled/reopened. |
 | `result` | NVARCHAR(200) | sí |  |

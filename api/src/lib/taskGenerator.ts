@@ -23,7 +23,19 @@ export function isTerminalTask(task: UpdateTask): boolean {
 export function taskBelongsToSchedule(task: UpdateTask, scheduleId: string): boolean {
   return task.scheduleId === scheduleId ||
     task.scheduleId.startsWith(`${scheduleId}__`) ||
+    rootScheduleId(task) === scheduleId ||
     (task.sources ?? []).some((source) => source.scheduleId === scheduleId || source.scheduleId.startsWith(`${scheduleId}__`));
+}
+
+// Devuelve el ID real de la programación de origen, eliminando los sufijos
+// sintéticos de expansión (`__domain_`, `__db_`, `__db_inherited_`, etc.).
+// Los IDs de programación son `schedule_<uuid>` y nunca contienen `__`, por
+// lo que cortar en el primer `__` es seguro. Acepta un string o una tarea.
+export function rootScheduleId(value: string | UpdateTask): string {
+  const raw = typeof value === "string"
+    ? value
+    : (value.rootScheduleId || value.scheduleId || (value.sources?.[0]?.scheduleId ?? ""));
+  return String(raw).split("__")[0];
 }
 
 function blocksTaskRegeneration(task: UpdateTask): boolean {
@@ -49,8 +61,14 @@ function syncTaskAssignmentFromSchedule(task: UpdateTask, schedule: UpdateSchedu
     task.clientName !== schedule.clientName ||
     task.domainName !== (schedule.domainName ?? "");
 
-  if (!changed) return false;
+  // Backfill del root id estable (FK lista para SQL) en tareas existentes.
+  const nextRootId = rootScheduleId(schedule.id);
+  const rootChanged = task.rootScheduleId !== nextRootId;
+  if (rootChanged) task.rootScheduleId = nextRootId;
+
+  if (!changed && !rootChanged) return false;
   task.scheduleId = schedule.id;
+  task.rootScheduleId = nextRootId;
   task.assignedRole = schedule.assignedRole;
   task.assignedUserIds = nextAssignedUserIds;
   task.clientName = schedule.clientName;
@@ -132,6 +150,7 @@ export function summarizeTaskGenerationForDate(
         targetId,
         targetName: resolveTargetName(targetId),
         scheduleId: schedule.id,
+        rootScheduleId: rootScheduleId(schedule.id),
         assignedRole: schedule.assignedRole,
         assignedUserIds: schedule.assignedUserIds,
         status: "pending",
@@ -252,14 +271,6 @@ export function expandSchedulesWithDomainInheritance(
     databasesByDomain.set(db.domainId, list);
   }
 
-  const dbsWithSpecificSchedule = new Set<string>();
-  for (const schedule of schedules) {
-    if (!schedule.active || schedule.targetType !== "database") continue;
-    for (const targetId of schedule.targetIds) {
-      if (activeDbIds.has(targetId)) dbsWithSpecificSchedule.add(targetId);
-    }
-  }
-
   const expanded: UpdateSchedule[] = [];
 
   for (const schedule of schedules) {
@@ -323,38 +334,13 @@ export function expandSchedulesWithDomainInheritance(
       continue;
     }
 
+    // Programación de dominio "plana" (sin scopeGroups ni licensing): genera
+    // solo tareas de dominio. Las bases de datos YA NO se heredan de forma
+    // implícita; para incluirlas, la programación debe marcarlas en el alcance
+    // (scopeGroups con "incluir todas las bases del dominio" o bases concretas).
     const domainIds = schedule.targetIds.filter((id) => activeDomains.has(id));
     if (domainIds.length === 0) continue;
     expanded.push({ ...schedule, targetIds: domainIds });
-
-    for (const domainId of domainIds) {
-      const domain = activeDomains.get(domainId);
-      const inheritedDbs = (databasesByDomain.get(domainId) ?? []).filter((db) => !dbsWithSpecificSchedule.has(db.id));
-      if (!domain || inheritedDbs.length === 0) continue;
-      const databaseAssignedUserIds = schedule.databaseAssignedUserIds ?? [];
-      for (const db of inheritedDbs) {
-        expanded.push({
-          ...schedule,
-          id: `${schedule.id}__db_inherited_${db.id}`,
-          domainId,
-          domainName: domain.domainName,
-          targetType: "database",
-          targetIds: [db.id],
-          assignedRole: "database_updater",
-          assignedUserIds: databaseAssignedUserIds,
-          reminders: schedule.reminders
-            ? {
-                ...schedule.reminders,
-                reminderRecipientsMode: databaseAssignedUserIds.length > 0 ? "assignedUsers" : "roleUsers",
-                customReminderEmails: [],
-              }
-            : undefined,
-          notes: [schedule.notes, "Frecuencia heredada del dominio. Una frecuencia especifica activa de base de datos tiene prioridad sobre esta herencia."]
-            .filter(Boolean)
-            .join("\n"),
-        });
-      }
-    }
   }
 
   return expanded;

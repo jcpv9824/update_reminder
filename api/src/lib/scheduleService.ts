@@ -5,6 +5,7 @@ import type { CurrentUser, RemindersConfig, UpdateSchedule, Weekday } from "../t
 // "Nuevo dominio" o "Nueva base de datos" para crear la frecuencia
 // asociada en la misma operación.
 export type FrequencyInput = {
+  name?: string;
   frequencyType: "once" | "weekly" | "interval" | "monthly" | "manual";
   everyNWeeks?: number;
   weekdays?: Weekday[];
@@ -79,6 +80,36 @@ export function inferScheduleRole(targetType: "domain" | "database"): string {
   return targetType === "domain" ? "domain_updater" : "database_updater";
 }
 
+const ETIQUETA_FRECUENCIA: Record<string, string> = {
+  once: "única",
+  weekly: "semanal",
+  interval: "por intervalo",
+  monthly: "mensual",
+  manual: "manual",
+};
+
+// Genera un nombre genérico descriptivo cuando el usuario no escribe uno.
+// Ej.: "Actualización semanal — Cliente ABC — 2026-05-07" o, para alcance
+// por licenciamiento multi-cliente, "Actualización por licenciamiento — 2026-05-07".
+export function generateGenericScheduleName(args: {
+  name?: string;
+  selectionMode?: string;
+  frequencyType: string;
+  clientName?: string;
+  startDate: string;
+}): string {
+  const provided = (args.name ?? "").trim();
+  if (provided) return provided.slice(0, 200);
+  const etiqueta = ETIQUETA_FRECUENCIA[args.frequencyType] ?? args.frequencyType;
+  if (args.selectionMode === "licensing") {
+    return `Actualización por licenciamiento — ${etiqueta} — ${args.startDate}`.slice(0, 200);
+  }
+  const cliente = (args.clientName ?? "").trim();
+  return (cliente
+    ? `Actualización ${etiqueta} — ${cliente} — ${args.startDate}`
+    : `Actualización ${etiqueta} — ${args.startDate}`).slice(0, 200);
+}
+
 export function normalizeFrequencyResponsibility(input: FrequencyInput): FrequencyInput {
   const assignedUserIds = input.assignedUserIds ?? [];
   const databaseAssignedUserIds = input.databaseAssignedUserIds ?? [];
@@ -111,6 +142,13 @@ export function buildScheduleRecord(args: {
   const normalized = normalizeFrequencyResponsibility(args.input);
   return {
     id: `schedule_${uuid()}`,
+    name: generateGenericScheduleName({
+      name: normalized.name,
+      selectionMode: normalized.selectionMode,
+      frequencyType: normalized.frequencyType,
+      clientName: args.clientName,
+      startDate: normalized.startDate,
+    }),
     clientId: args.clientId,
     clientName: args.clientName,
     domainId: args.domainId,

@@ -288,7 +288,7 @@ valores de Key Vault
 
 ## 14. Reglas funcionales que SQL debe soportar
 
-### Programaciones especiales
+### Actualizaciones programadas
 
 Modos vigentes:
 
@@ -484,7 +484,7 @@ Antes de usar SQL como fuente de verdad:
 4. Validar relaciones.
 5. Validar reportes y tareas.
 6. Probar login y roles.
-7. Probar Programaciones especiales manual/licenciamiento.
+7. Probar Actualizaciones programadas manual/licenciamiento.
 8. Probar dedupe y recuperación de tareas `cancelled/obsolete`.
 9. Ejecutar pruebas backend/frontend.
 10. Aprobar cutover con rollback documentado.

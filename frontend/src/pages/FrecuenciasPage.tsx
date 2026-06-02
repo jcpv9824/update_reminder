@@ -48,19 +48,19 @@ export default function FrecuenciasPage() {
 
   const crear = useMutation({
     mutationFn: (body: any) => api.post<Frecuencia>("/schedules", body),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["frecuencias"] }); setModalAbierto(false); setExito("Programación especial creada correctamente."); },
-    onError: (e: any) => setError(e?.message ?? "Error al crear la programación especial."),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["frecuencias"] }); qc.invalidateQueries({ queryKey: ["tareas"] }); setModalAbierto(false); setExito("Actualización programada creada correctamente."); },
+    onError: (e: any) => setError(e?.message ?? "Error al crear la actualización programada."),
   });
   const actualizar = useMutation({
     mutationFn: ({ id, body }: { id: string; body: any }) => api.put<Frecuencia>(`/schedules/${id}`, body),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["frecuencias"] }); setEditando(null); setExito("Programación especial actualizada correctamente."); },
-    onError: (e: any) => setError(e?.message ?? "Error al actualizar la programación especial."),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["frecuencias"] }); qc.invalidateQueries({ queryKey: ["tareas"] }); setEditando(null); setExito("Actualización programada actualizada correctamente."); },
+    onError: (e: any) => setError(e?.message ?? "Error al actualizar la actualización programada."),
   });
   const desactivar = useMutation({ mutationFn: (id: string) => api.post(`/schedules/${id}/deactivate`), onSuccess: () => qc.invalidateQueries({ queryKey: ["frecuencias"] }) });
   const reactivar = useMutation({ mutationFn: (id: string) => api.post(`/schedules/${id}/reactivate`), onSuccess: () => qc.invalidateQueries({ queryKey: ["frecuencias"] }) });
   const eliminar = useMutation({
     mutationFn: (id: string) => api.del(`/schedules/${id}`),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["frecuencias"] }); setExito("Programación especial eliminada."); setConfirmarEliminar(null); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["frecuencias"] }); qc.invalidateQueries({ queryKey: ["tareas"] }); setExito("Actualización programada eliminada."); setConfirmarEliminar(null); },
     onError: (e: any) => setError(e?.message ?? "No se pudo eliminar."),
   });
   const [confirmarEliminar, setConfirmarEliminar] = useState<Frecuencia | null>(null);
@@ -69,13 +69,13 @@ export default function FrecuenciasPage() {
   return (
     <>
       <div className="encabezado-pagina">
-        <h2>Programaciones especiales</h2>
-        <button className="primario" onClick={() => setModalAbierto(true)}>Nueva programación especial</button>
+        <h2>Actualizaciones programadas</h2>
+        <button className="primario" onClick={() => setModalAbierto(true)}>Nueva actualización programada</button>
       </div>
       {exito && <Alerta tipo="exito">{exito}</Alerta>}
       {error && <Alerta tipo="error">{error}</Alerta>}
       <p className="texto-ayuda">
-        Esta vista es para programaciones excepcionales o manuales. La frecuencia normal de actualización se configura desde cada dominio y se hereda automáticamente por sus bases de datos.
+        Defina actualizaciones recurrentes o únicas, manuales o por licenciamiento. Para incluir bases de un dominio, use el alcance y marque "Incluir todas las bases activas de este dominio" o seleccione bases puntuales.
       </p>
       <div className="barra-filtros">
         <div className="campo">
@@ -88,26 +88,26 @@ export default function FrecuenciasPage() {
         <>
           <table>
             <thead><tr>
-              <th>Cliente</th><th>Tipo</th><th>Objetivos</th><th>Frecuencia</th><th>Inicio</th><th>Fin</th><th>Responsable inferido</th><th>Estado</th><th>Acciones</th>
+              <th>Nombre</th><th>Cliente</th><th>Tipo</th><th>Objetivos</th><th>Frecuencia</th><th>Inicio</th><th>Salud</th><th>Estado</th><th>Acciones</th>
             </tr></thead>
             <tbody>
               {programacionesEspeciales.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="vacio">
-                    <div>No hay programaciones especiales configuradas.</div>
-                    <div>Para configurar la frecuencia normal de un dominio, ve a Dominios y edita la frecuencia del dominio.</div>
+                    <div>No hay actualizaciones programadas configuradas.</div>
+                    <div>Use esta vista para programar dominios, bases o ambos con alcance explícito.</div>
                   </td>
                 </tr>
               ) :
               programacionesEspeciales.map((f) => (
                 <tr key={f.id}>
+                  <td>{f.name ?? "Actualización programada"}</td>
                   <td>{f.clientName}</td>
                   <td>{f.targetType === "database" ? "Base de datos" : "Dominio"}</td>
                   <td>{f.targetIds.length}</td>
                   <td>{ETIQUETAS_FRECUENCIA[f.frequencyType]}</td>
                   <td>{f.startDate}</td>
-                  <td>{f.endDate ?? "-"}</td>
-                  <td>{ETIQUETAS_ROLES[f.assignedRole] ?? f.assignedRole}</td>
+                  <td>{resumenSalud(f)}</td>
                   <td><EtiquetaEstado estado={f.active ? "active" : "inactive"} /></td>
                   <td className="acciones-tabla">
                     <button onClick={() => setEditando(f)}>Editar</button>
@@ -124,18 +124,18 @@ export default function FrecuenciasPage() {
         </>
       )}
 
-      <Modal titulo="Nueva programación especial" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
+      <Modal titulo="Nueva actualización programada" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
         <FormularioFrecuencia clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} modulosLicencia={modulosLicencia} emailSettings={emailSettings} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />
       </Modal>
-      <Modal titulo="Editar programación especial" abierto={!!editando} onCerrar={() => setEditando(null)}>
+      <Modal titulo="Editar actualización programada" abierto={!!editando} onCerrar={() => setEditando(null)}>
         {editando && <FormularioFrecuencia inicial={editando} clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} modulosLicencia={modulosLicencia} emailSettings={emailSettings} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
       </Modal>
 
       <DialogoConfirmar
         abierto={!!confirmarEliminar}
-        titulo="Eliminar programación especial"
+        titulo="Eliminar actualización programada"
         mensaje={confirmarEliminar
-          ? `¿Eliminar la programación especial para ${confirmarEliminar.clientName}? Esta acción no se puede deshacer.`
+          ? `¿Eliminar la actualización programada "${confirmarEliminar.name ?? confirmarEliminar.clientName}"? Las tareas futuras o pendientes asociadas se cancelarán.`
           : ""}
         textoConfirmar="Eliminar"
         variante="peligro"
@@ -168,7 +168,20 @@ type LicensingPreview = {
   }>;
 };
 
+function resumenSalud(f: Frecuencia): string {
+  const s = f.summary;
+  if (!s) return "-";
+  const partes = [
+    s.vencidas > 0 ? `${s.vencidas} vencida(s)` : "",
+    s.conError > 0 ? `${s.conError} con atención` : "",
+    s.proximas > 0 ? `${s.proximas} próxima(s)` : "",
+    s.completadas > 0 ? `${s.completadas} completada(s)` : "",
+  ].filter(Boolean);
+  return partes.join(" · ") || "Sin tareas en ventana";
+}
+
 function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modulosLicencia, emailSettings, onSubmit, cargando }: { inicial?: Frecuencia; clientes: Cliente[]; dominios: Dominio[]; bds: BaseDeDatos[]; usuarios: Usuario[]; modulosLicencia: ModuloLicencia[]; emailSettings?: EmailAlertsResumen; onSubmit: (v: any) => void; cargando: boolean }) {
+  const [name, setName] = useState(inicial?.name ?? "");
   const [selectionMode, setSelectionMode] = useState<"manual" | "licensing">(inicial?.selectionMode ?? "manual");
   const [scopeGroups, setScopeGroups] = useState<ScopeGroup[]>(inicial?.scopeGroups ?? []);
   const [manualTargetTypes, setManualTargetTypes] = useState<TargetTypes>(inicial?.manualTargetTypes ?? "domains_and_databases");
@@ -221,6 +234,26 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
     },
     onError: (e: any) => setErr(e?.message ?? "No se pudo previsualizar el alcance por licenciamiento."),
   });
+
+  useEffect(() => {
+    if (selectionMode !== "licensing" || licenseModuleIds.length === 0) {
+      setPreview(null);
+      setPreviewDesactualizado(false);
+      return;
+    }
+    const handle = window.setTimeout(() => {
+      previewLicencias.mutate({
+        licenseModuleIds,
+        licenseMatchMode,
+        environment: licenseEnvironment,
+        targetTypes: licenseTargetTypes,
+        activeOnly: true,
+        excludedDomainIds,
+        excludedDatabaseIds,
+      });
+    }, 400);
+    return () => window.clearTimeout(handle);
+  }, [selectionMode, licenseModuleIds.join("|"), licenseMatchMode, licenseEnvironment, licenseTargetTypes]);
 
   const resumen = useMemo(() => {
     let domainsCount = 0;
@@ -289,14 +322,13 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
       if (selectionMode === "manual" && manualTargetTypes === "databases_only" && resumen.bases === 0) return setErr("Agregue al menos una base de datos al alcance.");
       if (selectionMode === "manual" && manualTargetTypes === "domains_and_databases" && resumen.dominios === 0 && resumen.bases === 0) return setErr("Agregue al menos un dominio o base al alcance.");
       if (selectionMode === "licensing" && licenseModuleIds.length === 0) return setErr("Seleccione al menos una licencia.");
-      if (selectionMode === "licensing" && !preview) return setErr("Previsualice el alcance antes de guardar.");
-      if (selectionMode === "licensing" && previewDesactualizado) return setErr("El alcance cambió. Vuelva a previsualizar para confirmar las excepciones.");
       if (selectionMode === "licensing" && preview && preview.clientsCount === 0) return setErr("No se encontraron clientes activos con las licencias y filtros seleccionados.");
       if (assignmentMode === "users" && domainUsers.length === 0 && databaseUsers.length === 0) return setErr("Seleccione responsables o cambie a asignación por rol.");
       const customReminderDays = parseReminderDays(reminderDaysText);
       if (!useGlobalReminderSettings && remindersEnabled && customReminderDays.length === 0) return setErr("Ingrese al menos un día previo para recordatorios.");
       if (!useGlobalReminderSettings && remindersEnabled && !/^\d{2}:\d{2}$/.test(reminderTime)) return setErr("La hora del recordatorio debe estar en formato HH:mm.");
       onSubmit({
+        name: name.trim() || undefined,
         clientId: selectionMode === "licensing" ? (preview?.groups[0]?.client.id ?? clientes.find((c) => c.status === "active")?.id ?? "") : scopeGroups[0].clientId,
         targetType: "domain",
         targetIds: [],
@@ -327,7 +359,11 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
       });
     }}>
       {err && <Alerta tipo="error">{err}</Alerta>}
-      <h4>Alcance de la programación especial</h4>
+      <div className="fila-formulario">
+        <label>Nombre (opcional)</label>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Si lo deja vacío, se generará automáticamente." />
+      </div>
+      <h4>Alcance de la actualización programada</h4>
       <div className="fila-formulario">
         <label>Tipo de alcance</label>
         <select value={selectionMode} onChange={(e) => { setSelectionMode(e.target.value as "manual" | "licensing"); setErr(null); }}>
@@ -671,7 +707,7 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
       )}
       <p className="texto-ayuda">Las tareas usarán responsables por rol o usuarios específicos según la sección de responsables.</p>
       <div className="acciones-formulario">
-        <button type="submit" className="primario" disabled={cargando || (selectionMode === "licensing" && previewDesactualizado)}>{cargando ? "Guardando..." : "Guardar"}</button>
+        <button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button>
       </div>
     </form>
   );
@@ -740,7 +776,7 @@ function PreviewLicenciamiento({ preview, targetTypes, excludedDomainIds, exclud
         <li>{includedDatabasesCount} base(s) incluida(s)</li>
         <li>{excludedDatabasesCount} base(s) excluida(s)</li>
       </ul>
-      <p className="texto-ayuda">Las excepciones solo aplican a esta programación especial; no desactivan dominios ni bases globalmente.</p>
+      <p className="texto-ayuda">Las excepciones solo aplican a esta actualización programada; no desactivan dominios ni bases globalmente.</p>
       {preview.groups.length === 0 ? (
         <Alerta tipo="info">No se encontraron clientes activos con las licencias y filtros seleccionados.</Alerta>
       ) : preview.groups.map((group) => (

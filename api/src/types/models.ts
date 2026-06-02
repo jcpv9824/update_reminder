@@ -195,6 +195,9 @@ export type ScheduleOrigin = "domain_default" | "special" | "database_inherited"
 
 export type UpdateSchedule = {
   id: string;
+  // Nombre opcional de la actualización programada. Si se deja vacío al crear,
+  // el backend genera un nombre genérico descriptivo (ver scheduleService).
+  name?: string;
   clientId: string;
   clientName: string;
   domainId?: string;
@@ -261,6 +264,10 @@ export type UpdateTask = {
   targetId: string;
   targetName: string;
   scheduleId: string;
+  // ID real de la actualización programada de origen (sin sufijos sintéticos
+  // de expansión como `__domain_`/`__db_`/`__db_inherited_`). Es la "FK"
+  // estable hacia updateSchedules.id; lista para migración a SQL (índice).
+  rootScheduleId?: string;
   assignedRole: string;
   assignedUserIds: string[];
   status: TaskStatus;

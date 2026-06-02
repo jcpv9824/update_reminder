@@ -8,11 +8,109 @@ import { getContainer } from "../lib/cosmos";
 import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
 import { getPagination, paginateArray } from "../lib/pagination";
 import { matchesScheduleSearch } from "../lib/listSearch";
-import { inferScheduleRole, normalizeFrequencyResponsibility, validateFrequency } from "../lib/scheduleService";
+import { generateGenericScheduleName, inferScheduleRole, normalizeFrequencyResponsibility, validateFrequency } from "../lib/scheduleService";
 import { filterSchedulesByOrigin } from "../lib/scheduleFilters";
 import { previewLicensingScope } from "../lib/licensingScope";
 import { markTaskCancelledForOneTimeReschedule, shouldCancelTaskForOneTimeReschedule } from "../lib/scheduleReschedule";
+import { rootScheduleId } from "../lib/taskGenerator";
+import { runTaskGeneration } from "./generateDailyUpdateTasks";
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, LicensingScope, UpdateSchedule, UpdateTask } from "../types/models";
+
+function bogotaTodayIso(): string {
+  const now = new Date();
+  const utcMs = now.getTime() + now.getTimezoneOffset() * 60_000;
+  return new Date(utcMs - 5 * 3600_000).toISOString().slice(0, 10);
+}
+
+function addDaysIso(isoDate: string, days: number): string {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+// Genera/actualiza tareas inmediatamente tras guardar una actualización
+// programada, reutilizando la misma lógica del timer diario (idempotente).
+// Una falla aquí NO debe romper el guardado de la programación.
+async function regenerarTareasTrasGuardar(): Promise<void> {
+  try {
+    await runTaskGeneration(bogotaTodayIso(), () => {});
+  } catch {/* la generación no debe interrumpir el guardado */}
+}
+
+// Cancela (marca obsoletas) las tareas futuras/pendientes de una programación
+// al desactivarla o eliminarla. Considera el rootScheduleId nuevo y los
+// scheduleId sintéticos heredados de versiones anteriores.
+async function cancelarTareasFuturasDeProgramacion(
+  schedule: UpdateSchedule,
+  user: { id: string; email: string }
+): Promise<number> {
+  const today = bogotaTodayIso();
+  const { resources } = await getContainer("updateTasks").items.query<UpdateTask>({
+    query: "SELECT * FROM c WHERE (c.rootScheduleId = @rid OR c.scheduleId = @rid OR STARTSWITH(c.scheduleId, @pref)) AND c.taskDate >= @today AND c.status IN ('pending','in_progress','blocked','reopened','failed')",
+    parameters: [
+      { name: "@rid", value: schedule.id },
+      { name: "@pref", value: `${schedule.id}__` },
+      { name: "@today", value: today },
+    ],
+  }).fetchAll();
+  const now = new Date().toISOString();
+  let cancelled = 0;
+  for (const task of resources) {
+    const beforeTask = { ...task };
+    task.status = "cancelled";
+    task.result = "obsolete";
+    task.notes = task.notes
+      ? `${task.notes}\nTarea cancelada porque su actualización programada fue desactivada o eliminada.`
+      : "Tarea cancelada porque su actualización programada fue desactivada o eliminada.";
+    task.updatedAt = now;
+    task.updatedBy = user.id;
+    await getContainer("updateTasks").item(task.id, task.taskBucket).replace(task);
+    cancelled++;
+    await writeAuditLog({
+      entityType: "task", entityId: task.id, clientId: task.clientId, clientName: task.clientName,
+      domainId: task.domainId, domainName: task.domainName, action: "task_obsoleted",
+      performedBy: user.id, performedByEmail: user.email,
+      metadata: { reason: "schedule_deactivated_or_deleted", scheduleId: schedule.id },
+      before: beforeTask, after: { status: task.status, result: task.result },
+    });
+  }
+  return cancelled;
+}
+
+export type ScheduleSummary = {
+  proximas: number;
+  vencidas: number;
+  conError: number;
+  completadas: number;
+  requiereAtencion: boolean;
+};
+
+// Construye, con UNA sola consulta windowed, el resumen de tareas por
+// programación (agrupado por rootScheduleId). El estado de vida de la
+// programación (Activa/Inactiva/Completada) NO se deriva de aquí.
+async function buildScheduleSummaries(today: string): Promise<Map<string, ScheduleSummary>> {
+  const windowStart = addDaysIso(today, -30);
+  const windowEnd = addDaysIso(today, 30);
+  const { resources } = await getContainer("updateTasks").items.query<UpdateTask>({
+    query: "SELECT * FROM c WHERE c.taskDate >= @s AND c.taskDate <= @e",
+    parameters: [{ name: "@s", value: windowStart }, { name: "@e", value: windowEnd }],
+  }).fetchAll().catch(() => ({ resources: [] as UpdateTask[] }));
+  const map = new Map<string, ScheduleSummary>();
+  for (const t of resources) {
+    const rid = rootScheduleId(t);
+    if (!rid) continue;
+    const s = map.get(rid) ?? { proximas: 0, vencidas: 0, conError: 0, completadas: 0, requiereAtencion: false };
+    if (t.status === "completed") s.completadas++;
+    else if (t.status === "cancelled") { /* fuera del resumen operativo */ }
+    else if (t.status === "failed" || t.status === "blocked") s.conError++;
+    else if (t.taskDate < today) s.vencidas++;
+    else s.proximas++;
+    map.set(rid, s);
+  }
+  for (const s of map.values()) s.requiereAtencion = s.vencidas > 0 || s.conError > 0;
+  return map;
+}
 
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -43,6 +141,7 @@ const RemindersSchema = z.object({
 }).optional();
 
 const ScheduleSchema = z.object({
+  name: z.string().trim().max(200).optional(),
   clientId: z.string().min(1, "El cliente es obligatorio."),
   domainId: z.string().optional(),
   targetType: z.enum(["domain", "database"]),
@@ -198,7 +297,11 @@ app.http("schedulesList", {
         const { resources: modules } = await getContainer("licenseModules").items.readAll<LicenseModuleRecord>().fetchAll().catch(() => ({ resources: [] as LicenseModuleRecord[] }));
         modulesById = new Map(modules.map((module) => [module.id, module]));
       }
-      const items = filterSchedulesByOrigin(resources, origin).filter((schedule) => matchesScheduleSearch(schedule, search, modulesById));
+      const filtered = filterSchedulesByOrigin(resources, origin).filter((schedule) => matchesScheduleSearch(schedule, search, modulesById));
+      // Adjuntar resumen derivado de tareas (1 sola consulta windowed).
+      const summaries = await buildScheduleSummaries(bogotaTodayIso());
+      const vacio: ScheduleSummary = { proximas: 0, vencidas: 0, conError: 0, completadas: 0, requiereAtencion: false };
+      const items = filtered.map((s) => ({ ...s, summary: summaries.get(s.id) ?? vacio }));
       const pagination = getPagination(req);
       if (pagination.enabled) return ok(paginateArray(items, pagination.page, pagination.pageSize));
       return ok(items);
@@ -239,6 +342,13 @@ app.http("schedulesCreate", {
       const now = new Date().toISOString();
       const record: UpdateSchedule = {
         id: `schedule_${uuid()}`,
+        name: generateGenericScheduleName({
+          name: parsed.data.name,
+          selectionMode: normalized.selectionMode ?? parsed.data.selectionMode ?? "manual",
+          frequencyType: normalized.frequencyType,
+          clientName: client.name,
+          startDate: normalized.startDate,
+        }),
         clientId: client.id,
         clientName: client.name,
         domainId: parsed.data.domainId,
@@ -284,6 +394,8 @@ app.http("schedulesCreate", {
         performedByEmail: user.email,
         after: record,
       });
+      // Generar tareas inmediatamente sin esperar al timer diario.
+      await regenerarTareasTrasGuardar();
       return created(record);
     } catch (e) {
       return serverError(e);
@@ -340,9 +452,21 @@ app.http("schedulesUpdate", {
       }
       const before = { ...existing };
       const targetType = body.targetType === "domain" || body.targetType === "database" ? body.targetType : existing.targetType;
+      // Nombre: si el usuario envía uno, se respeta; si lo vacía, se regenera
+      // un genérico; si no toca el campo, se conserva el actual.
+      const nextName = typeof body.name === "string"
+        ? generateGenericScheduleName({
+            name: body.name,
+            selectionMode: normalized.selectionMode ?? body.selectionMode ?? existing.selectionMode ?? "manual",
+            frequencyType: normalized.frequencyType,
+            clientName: existing.clientName,
+            startDate: normalized.startDate,
+          })
+        : existing.name;
       const merged: UpdateSchedule = {
         ...existing,
         ...normalized,
+        name: nextName,
         targetType,
         assignedRole: normalized.assignedRole ?? inferScheduleRole(targetType),
         assignedUserIds: normalized.assignedUserIds ?? [],
@@ -383,6 +507,9 @@ app.http("schedulesUpdate", {
           cancelledOpenTasks: cancelledTasks,
         } : undefined,
       });
+      // Regenerar tareas: crea las nuevas que correspondan y marca obsoletas
+      // las futuras que ya no apliquen al nuevo alcance/frecuencia.
+      await regenerarTareasTrasGuardar();
       return ok(merged);
     } catch (e) { return serverError(e); }
   },
@@ -415,10 +542,19 @@ async function setScheduleStatus(req: HttpRequest, action: string, active: boole
   const s = await findSchedule(req.params.id);
   if (!s) return notFound();
   s.active = active;
+  // Al reactivar, limpiar la marca de completada (caso 'once' o desactivada).
+  if (active) { s.completedAt = null; s.completedReason = null; }
   s.updatedAt = new Date().toISOString();
   s.updatedBy = user.id;
   await getContainer("updateSchedules").item(s.id, s.clientId).replace(s);
   await writeAuditLog({ entityType: "schedule", entityId: s.id, clientId: s.clientId, clientName: s.clientName, action, performedBy: user.id, performedByEmail: user.email, after: { active } });
+  if (active) {
+    // Reactivar → regenerar tareas (las obsoletas se reactivan en la generación).
+    await regenerarTareasTrasGuardar();
+  } else {
+    // Desactivar → cancelar tareas futuras/pendientes de esta programación.
+    await cancelarTareasFuturasDeProgramacion(s, user);
+  }
   return ok(s);
 }
 
@@ -435,8 +571,10 @@ app.http("schedulesDelete", {
       if (!canManageSchedules(user)) return forbidden();
       const s = await findSchedule(req.params.id);
       if (!s) return notFound();
+      // Cancelar tareas futuras/pendientes antes de eliminar la programación.
+      const cancelled = await cancelarTareasFuturasDeProgramacion(s, user);
       await getContainer("updateSchedules").item(s.id, s.clientId).delete();
-      await writeAuditLog({ entityType: "schedule", entityId: s.id, clientId: s.clientId, clientName: s.clientName, action: "schedule_deleted", performedBy: user.id, performedByEmail: user.email });
+      await writeAuditLog({ entityType: "schedule", entityId: s.id, clientId: s.clientId, clientName: s.clientName, action: "schedule_deleted", performedBy: user.id, performedByEmail: user.email, metadata: { cancelledOpenTasks: cancelled } });
       return noContent();
     } catch (e) { return serverError(e); }
   },

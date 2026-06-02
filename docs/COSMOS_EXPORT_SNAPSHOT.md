@@ -25,7 +25,7 @@ Esta fase **no cambia runtime**, **no modifica Cosmos**, **no consulta Key Vault
 - `appSettings`
 - `emailNotifications`
 
-Nota V14: `updateSchedules` puede contener programaciones especiales con `frequencyType = "once"`, `completedAt`, `completedReason` y excepciones en `licensingScope.excludedDomainIds` / `licensingScope.excludedDatabaseIds`. El export debe preservar esos campos sin transformarlos.
+Nota V17: `updateSchedules` puede contener actualizaciones programadas con `frequencyType = "once"`, `completedAt`, `completedReason`, `name`, `manualTargetTypes`, `scopeGroups` y excepciones en `licensingScope.excludedDomainIds` / `licensingScope.excludedDatabaseIds`. `updateTasks` puede contener `rootScheduleId`. El export debe preservar esos campos sin transformarlos.
 
 ## 3. Seguridad
 

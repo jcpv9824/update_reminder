@@ -73,26 +73,27 @@ beforeEach(() => {
 });
 
 describe("BasesDeDatosPage", () => {
-  it("Nueva base de datos muestra la frecuencia heredada del dominio seleccionado", async () => {
+  it("Nueva base de datos indica que se programa desde Actualizaciones programadas", async () => {
     mockGets();
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Nueva base de datos/i }));
     seleccionar(/Cliente \*/i, /Cliente Uno/i);
     seleccionar(/Dominio \*/i, /cliente.pya.com.co/i);
-    expect(await screen.findByText(/Esta base de datos usará la frecuencia configurada en el dominio seleccionado/i)).toBeInTheDocument();
-    expect(screen.getByText(/Semanal: FRIDAY desde 2026-05-01/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Las tareas de esta base de datos se generan desde/i)).toBeInTheDocument();
+    expect(screen.getByText(/Actualizaciones programadas/i)).toBeInTheDocument();
     expect(screen.queryByText(/Frecuencia individual avanzada/i)).toBeNull();
     expect(screen.queryByText(/Crear frecuencia automática específica/i)).toBeNull();
     expect(screen.getByRole("button", { name: /Guardar y crear nueva base de datos/i })).toBeInTheDocument();
   });
 
-  it("Nueva base de datos advierte si el dominio no tiene frecuencia", async () => {
+  it("Nueva base de datos no advierte por falta de frecuencia embebida", async () => {
     mockGets([]);
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Nueva base de datos/i }));
     seleccionar(/Cliente \*/i, /Cliente Uno/i);
     seleccionar(/Dominio \*/i, /sinfrecuencia.pya.com.co/i);
-    expect(await screen.findByText(/El dominio seleccionado no tiene frecuencia configurada/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Las tareas de esta base de datos se generan desde/i)).toBeInTheDocument();
+    expect(screen.queryByText(/El dominio seleccionado no tiene frecuencia configurada/i)).toBeNull();
   });
 
   it("envía búsqueda al listado paginado de bases de datos", async () => {

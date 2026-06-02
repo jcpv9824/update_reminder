@@ -38,15 +38,16 @@ DEV_AUTH_ENABLED=true
 http://localhost:5173/
 ```
 
-Nota funcional de la versión actual: la frecuencia normal se configura desde **Dominios** y se guarda como `origin = "domain_default"`. La vista **Programaciones especiales** muestra solo excepciones creadas con `origin = "special"` y no mezcla las frecuencias normales de dominios.
+Nota funcional de la versión actual: las actualizaciones de dominios y bases se configuran desde **Actualizaciones programadas**. La frecuencia embebida en dominios/bases fue retirada de la UI; para bases se usa alcance explícito, marcando **Incluir todas las bases activas de este dominio** o seleccionando bases puntuales.
 
 La versión actual también incluye:
 
 - Paginación de 10 registros por defecto en maestros y auditoría.
-- Búsqueda combinada con filtros en clientes, dominios, bases, licenciamiento, programaciones especiales y auditoría.
+- Búsqueda combinada con filtros en clientes, dominios, bases, licenciamiento, actualizaciones programadas y auditoría.
 - Validaciones backend para duplicados de cliente, dominio, base de datos y módulo de licencia.
 - Licencias asignadas al cliente completo mediante `clients.licenseModuleIds`; las asignaciones avanzadas por dominio/base quedan ocultas para fase futura.
-- Programaciones especiales con dos modos: **Selección manual** y **Por licenciamiento**. El modo por licenciamiento siempre resuelve clientes, dominios, bases y módulos activos.
+- Actualizaciones programadas con dos modos: **Selección manual** y **Por licenciamiento**. El modo por licenciamiento siempre resuelve clientes, dominios, bases y módulos activos.
+- Al crear, editar o reactivar una actualización programada, el backend reconcilia/genera tareas sin depender de un botón manual en la vista Tareas.
 - Vista operativa de tareas: vencidas abiertas, hoy, próximas 4 días y completadas recientes.
 - Deduplicación obligatoria de tareas por entidad y día mediante `dedupeKey`.
 
@@ -771,7 +772,7 @@ La ronda V10 mantiene el despliegue existente:
 Cambios funcionales incluidos:
 
 - Reabrir tareas completadas y resolver bloqueos usan modales propios, sin `alert`, `confirm` ni `prompt` del navegador.
-- Programaciones especiales permiten seleccionar múltiples dominios y bases mediante modales con checkboxes.
+- Actualizaciones programadas permiten seleccionar múltiples dominios y bases mediante modales con checkboxes.
 - Recordatorios a actualizadores usan configuración global por defecto cuando una frecuencia no tiene override.
 - Alertas de bloqueo envían inmediato por defecto y pueden enviar recordatorios de bloqueos no resueltos.
 - Recordatorios administrativos soportan reglas de envío, incluyendo último día hábil con viernes + lunes si el mes termina en fin de semana.
@@ -890,8 +891,9 @@ La contraseña se guarda en Key Vault. No se muestra, no vuelve al frontend y no
 1. **Configuración P&A**: en **Alertas y correos**, pulse **Usar configuración recomendada de P&A** y confirme servidor `smtp.office365.com`, puerto `587`, remitente `info@pya.com.co`.
 2. **Correo de prueba**: escriba un correo en **Correo de prueba** y pulse **Enviar correo de prueba**.
 3. **Reporte manual**: en **Reporte de clientes/dominios/empresas**, escriba `correo1@empresa.com; correo2@empresa.com` y pulse **Enviar reporte**. El reporte no debe contener contraseñas, usuarios SQL, cadenas de conexión completas, secretos ni tokens.
-4. **Generar tareas ahora**: en **Tareas**, como admin o administrador de clientes, pulse **Generar tareas ahora**. Debe aparecer el mensaje `Tareas generadas correctamente.` y refrescarse la lista.
-5. **Frecuencia heredada**: cree un dominio con frecuencia activa. Cree una base de datos bajo ese dominio. El formulario debe mostrar que usará la frecuencia del dominio y no debe pedir frecuencia propia.
+4. **Actualización programada única**: cree una actualización programada con frecuencia **Única**, alcance manual y objetivo **Dominios y bases de datos**. Al guardar, las tareas de la fecha deben quedar visibles en **Tareas** si están dentro de la ventana operativa.
+5. **Bases de un dominio**: cree una actualización programada manual, agregue cliente/dominio y marque **Incluir todas las bases activas de este dominio**. Si solo desea bases, use **Objetivo de la actualización → Solo bases de datos** y confirme que no se creen tareas de dominio.
+6. **Sin frecuencia embebida**: en **Dominios** y **Bases de datos**, confirme que no exista el checkbox **Activar frecuencia automática** ni formulario de frecuencia; ambos deben indicar que la programación se hace desde **Actualizaciones programadas**.
 
 ---
 

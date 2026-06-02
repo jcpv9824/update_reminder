@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
-import type { Tarea, Usuario } from "../types";
+import type { Frecuencia, Tarea, Usuario } from "../types";
 import { ETIQUETAS_ROLES } from "../types";
 import { Alerta, EtiquetaEstado, Modal } from "../components/Comunes";
 import { hoyEnBogotaIso, sumarDiasIso, clasificarTareaPorFecha, type ClasificacionTarea } from "../utils/fechas";
@@ -27,6 +27,8 @@ type GrupoResumen = {
   asignadoAlActual: boolean;
   rolHabilitaActual: boolean;
   targetType: "domain" | "database";
+  rootScheduleId?: string;
+  scheduleName?: string;
   tareas: Tarea[];
   total: number;
   completadasOk: number;
@@ -109,16 +111,12 @@ function etiquetaResponsableDeGrupo(items: Tarea[], usuariosMap: Map<string, str
 }
 
 export default function TareasPage() {
-  const qc = useQueryClient();
   const auth = useAuth();
   const usuario = auth.cargando || !auth.usuario ? null : auth.usuario;
   const roles = usuario?.roles ?? [];
   const puedeGenerar = roles.includes("admin") || roles.includes("client_manager");
   const verDominios = puedeGenerar || roles.includes("domain_updater") || roles.includes("viewer");
   const verBd = puedeGenerar || roles.includes("database_updater") || roles.includes("viewer");
-
-  const [mensaje, setMensaje] = useState<string | null>(null);
-  const [errorGeneracion, setErrorGeneracion] = useState<string | null>(null);
 
   // Cargar nombres de los usuarios cuando el actual puede gestionar (admin / client_manager).
   const { data: usuarios = [] } = useQuery({
@@ -132,31 +130,11 @@ export default function TareasPage() {
     return m;
   }, [usuarios]);
 
-  const generarTareas = useMutation({
-    mutationFn: () => api.post<{ created: number; updated?: number; obsoleted?: number; skipped: number; windowStart?: string; windowEnd?: string; message: string }>("/tasks/refresh", {}),
-    onSuccess: (r) => {
-      setMensaje(`${r.message ?? "Tareas actualizadas correctamente."} Creadas: ${r.created ?? 0}. Actualizadas: ${r.updated ?? 0}. Obsoletas: ${r.obsoleted ?? 0}. Omitidas: ${r.skipped ?? 0}.`);
-      setErrorGeneracion(null);
-      qc.invalidateQueries({ queryKey: ["tareas"] });
-    },
-    onError: (e: any) => {
-      setMensaje(null);
-      setErrorGeneracion(e?.message ?? "No se pudieron actualizar las tareas.");
-    },
-  });
-
   return (
     <>
       <div className="encabezado-pagina">
         <h2>Tareas</h2>
-        {puedeGenerar && (
-          <button className="primario" onClick={() => generarTareas.mutate()} disabled={generarTareas.isPending}>
-            {generarTareas.isPending ? "Actualizando tareas..." : "↻ Refrescar"}
-          </button>
-        )}
       </div>
-      {mensaje && <Alerta tipo="exito">{mensaje}</Alerta>}
-      {errorGeneracion && <Alerta tipo="error">{errorGeneracion}</Alerta>}
       <Alerta tipo="info">Vista operativa: vencidas abiertas, hoy, próximas 4 días y completadas recientes.</Alerta>
       <div className="tareas-grid">
         {verDominios && <ColumnaTareas titulo="Tareas de dominios" targetType="domain" usuario={usuario} usuariosMap={usuariosMap} />}
@@ -178,6 +156,16 @@ function ColumnaTareas({ titulo, targetType, usuario, usuariosMap }: { titulo: s
     queryKey: ["tareas", targetType],
     queryFn: () => api.get<Tarea[]>(`/tasks?targetType=${targetType}&dateTo=${VENTANA_TAREAS.hasta}`),
   });
+
+  const { data: actualizaciones = [] } = useQuery({
+    queryKey: ["frecuencias-tareas"],
+    queryFn: () => api.get<Frecuencia[]>("/schedules"),
+  });
+  const nombresProgramacion = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const f of actualizaciones) m.set(f.id, f.name || f.clientName || "Actualización programada");
+    return m;
+  }, [actualizaciones]);
 
   const cambiarEstado = useMutation({
     mutationFn: ({ id, accion, body }: { id: string; accion: AccionTarea; body?: any }) => api.post(`/tasks/${id}/${accion}`, body ?? {}),
@@ -210,7 +198,7 @@ function ColumnaTareas({ titulo, targetType, usuario, usuariosMap }: { titulo: s
   });
 
   const tareasVisibles = useMemo(() => tareas.filter((t) => t.status !== "cancelled"), [tareas]);
-  const grupos = useMemo(() => agruparTareas(tareasVisibles, targetType, usuario, usuariosMap), [tareasVisibles, targetType, usuario, usuariosMap]);
+  const grupos = useMemo(() => agruparTareas(tareasVisibles, targetType, usuario, usuariosMap, nombresProgramacion), [tareasVisibles, targetType, usuario, usuariosMap, nombresProgramacion]);
 
   // Clasificación por zona Bogotá: hoy / próximas / vencidas / completadas.
   const seccionado = useMemo(() => {
@@ -275,16 +263,23 @@ function ColumnaTareas({ titulo, targetType, usuario, usuariosMap }: { titulo: s
   );
 }
 
-function agruparTareas(tareas: Tarea[], targetType: "domain" | "database", usuario: Usuario | null, usuariosMap: Map<string, string>): GrupoResumen[] {
+function rootScheduleIdTarea(tarea: Tarea): string {
+  if (tarea.rootScheduleId) return tarea.rootScheduleId;
+  return tarea.scheduleId.split("__")[0] || tarea.scheduleId;
+}
+
+function agruparTareas(tareas: Tarea[], targetType: "domain" | "database", usuario: Usuario | null, usuariosMap: Map<string, string>, nombresProgramacion: Map<string, string>): GrupoResumen[] {
+  const sep = "\u001f";
   const mapa = new Map<string, Tarea[]>();
   for (const tarea of tareas) {
     const responsable = claveResponsable(tarea);
-    const key = `${tarea.taskDate}|${responsable}|${targetType}`;
+    const rootId = rootScheduleIdTarea(tarea);
+    const key = [tarea.taskDate, responsable, targetType, rootId].join(sep);
     mapa.set(key, [...(mapa.get(key) ?? []), tarea]);
   }
 
   return Array.from(mapa.entries()).map(([key, items]) => {
-    const [fecha, responsableClave] = key.split("|");
+    const [fecha, responsableClave, , rootScheduleId] = key.split(sep);
     const completadasOk = items.filter((t) => t.status === "completed" && !t.completedWithProblems).length;
     const completadasConProblemas = items.filter((t) => (t.status === "completed" && t.completedWithProblems) || t.status === "failed").length;
     const pendientes = items.filter((t) => t.status !== "completed" && t.status !== "cancelled").length;
@@ -302,6 +297,8 @@ function agruparTareas(tareas: Tarea[], targetType: "domain" | "database", usuar
       asignadoAlActual,
       rolHabilitaActual,
       targetType,
+      rootScheduleId,
+      scheduleName: nombresProgramacion.get(rootScheduleId),
       tareas: items.sort((a, b) => a.clientName.localeCompare(b.clientName) || a.targetName.localeCompare(b.targetName)),
       total: items.length,
       completadasOk,
@@ -309,7 +306,7 @@ function agruparTareas(tareas: Tarea[], targetType: "domain" | "database", usuar
       pendientes,
       estadoAgregado: calcularEstadoGrupo(items, fecha),
     };
-  }).sort((a, b) => a.fecha.localeCompare(b.fecha) || a.responsableEtiqueta.localeCompare(b.responsableEtiqueta));
+  }).sort((a, b) => a.fecha.localeCompare(b.fecha) || (a.scheduleName ?? "").localeCompare(b.scheduleName ?? "") || a.responsableEtiqueta.localeCompare(b.responsableEtiqueta));
 }
 
 function GrupoResumenSeccion({ titulo, grupos, onAbrir }: { titulo: string; grupos: GrupoResumen[]; onAbrir: (g: GrupoResumen) => void }) {
@@ -335,6 +332,11 @@ function GrupoResumenSeccion({ titulo, grupos, onAbrir }: { titulo: string; grup
                     <span>Fecha: {g.fecha}</span>
                     <span>Total: {g.total} {etiquetaTipo(g.targetType, true)}</span>
                   </div>
+                  {g.scheduleName && (
+                    <div className="item-tarea-fila item-tarea-detalle">
+                      <span>Actualización: {g.scheduleName}</span>
+                    </div>
+                  )}
                   <div className="item-tarea-fila item-tarea-detalle">
                     <span>Completadas: {g.completadasOk} / {g.total}</span>
                     <span>Pendientes: {g.pendientes}</span>
@@ -377,6 +379,7 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
       <p>
         <strong>Total:</strong> {grupo.total} · <strong>Completadas:</strong> {grupo.completadasOk} / {grupo.total} · <strong>Con problemas:</strong> {grupo.completadasConProblemas}
       </p>
+      {grupo.scheduleName && <p><strong>Actualización programada:</strong> {grupo.scheduleName}</p>}
       {grupo.targetType === "domain" ? (
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           <button

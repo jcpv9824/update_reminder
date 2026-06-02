@@ -34,7 +34,7 @@ Regla operativa para Cloud Code u otro agente:
 - Registrar clientes.
 - Registrar dominios de clientes.
 - Registrar empresas/bases de datos asociadas a dominios.
-- Configurar frecuencias recurrentes o programaciones especiales.
+- Configurar actualizaciones programadas recurrentes o únicas.
 - Generar tareas para actualizadores de dominios y bases.
 - Hacer seguimiento de tareas vencidas, de hoy, próximas y completadas.
 - Notificar por correo recordatorios, vencidos, bloqueos y reportes.
@@ -101,7 +101,7 @@ Licenciamiento en menú solo debe verse para `admin` y `client_manager`. Updater
 - Dominios.
 - Bases de datos.
 - Licenciamiento.
-- Programaciones especiales.
+- Actualizaciones programadas.
 - Alertas y correos.
 - Auditoría.
 - Usuarios y roles.
@@ -158,7 +158,7 @@ Completadas:
 
 No usar `alert`, `confirm` ni `prompt` del navegador para flujos de negocio.
 
-## 7. Programaciones especiales
+## 7. Actualizaciones programadas
 
 Modos vigentes:
 
@@ -181,7 +181,7 @@ Por licenciamiento:
 - Selecciona una o varias licencias activas.
 - Resuelve clientes activos con esas licencias.
 - Aplica coincidencia `any` o `all`.
-- Filtra por ambiente: Todos, Producción, Pruebas, Demo u otros ambientes existentes.
+- Filtra por ambiente: Todos, Producción, Pruebas o Demo.
 - Objetivo: dominios y bases, solo dominios o solo bases.
 - Solo activos por defecto.
 - El preview muestra conteos y árbol de clientes/dominios/bases.
@@ -191,22 +191,26 @@ Por licenciamiento:
 - Excluir un dominio evita solo la tarea del dominio; no excluye automáticamente sus bases.
 - Excluir una base evita solo la tarea de esa base; no excluye el dominio.
 - Las excepciones se guardan como IDs en `licensingScope.excludedDomainIds` y `licensingScope.excludedDatabaseIds`.
-- Si cambian licencias, coincidencia, ambiente u objetivo después del preview, el preview queda desactualizado y debe repetirse antes de guardar.
+- Si cambian licencias, coincidencia, ambiente u objetivo, el preview se actualiza para mantener una guía viva del alcance.
 - Al reprevisualizar se conservan excepciones válidas y se descartan las que ya no pertenecen al alcance.
 
-Frecuencias especiales:
+Reglas de vida y salud:
 
-- La frecuencia **Única** (`frequencyType = "once"`) es la opción por defecto para nuevas programaciones especiales.
+- Una actualización programada puede ser única o recurrente.
+- En recurrentes, no usar un único estado operativo para representar todas las ocurrencias. El lunes anterior puede estar fallido y el próximo lunes estar pendiente.
+- La actualización conserva su vida administrativa (`active`, `inactive`, `cancelled`, `completed` si aplica), y la salud operativa se deriva de sus tareas agrupadas por fecha.
+- Cada tarea debe conservar `rootScheduleId` para vincularla con la actualización programada original.
+- La frecuencia **Única** (`frequencyType = "once"`) es la opción por defecto para nuevas actualizaciones programadas.
 - Para **Única** se usa `startDate` como **Fecha de actualización**.
 - La UI oculta campos recurrentes cuando la frecuencia es única.
 - El checkbox debe llamarse **Programación activa**.
-- Generar tareas no debe cerrar ni inactivar automáticamente una programación única.
-- El backend solo debe marcarla inactiva/completada (`completedReason = "one_time_schedule_executed"`) cuando la fecha ya llegó y todas las tareas asociadas a esa programación y fecha están cerradas (`completed` o `cancelled`).
-- Si un refresh crea tareas futuras antes de la fecha de actualización, la programación única permanece activa.
-- Si el usuario reprograma una única antes de completarla, las tareas abiertas de la fecha anterior asociadas a esa programación se cancelan como `cancelled/obsolete`; las tareas completadas o ya canceladas se conservan como historial.
+- Generar tareas no debe cerrar ni inactivar automáticamente una actualización única.
+- El backend solo debe marcarla inactiva/completada (`completedReason = "one_time_schedule_executed"`) cuando la fecha ya llegó y todas las tareas asociadas a esa actualización y fecha están cerradas (`completed` o `cancelled`).
+- Si la generación crea tareas futuras antes de la fecha de actualización, la actualización única permanece activa.
+- Si el usuario reprograma una única antes de completarla, las tareas abiertas de la fecha anterior asociadas a esa actualización se cancelan como `cancelled/obsolete`; las tareas completadas o ya canceladas se conservan como historial.
 - Los recordatorios y alertas deben basarse en tareas abiertas, no en asumir que `schedule.active = false` bloquea correos.
 
-Recordatorios en programaciones especiales:
+Recordatorios en actualizaciones programadas:
 
 - Por defecto usan la configuración global de **Alertas y correos → Recordatorios a actualizadores**.
 - Si `reminders` queda `undefined` en la programación, el backend usa los valores globales.
@@ -214,6 +218,13 @@ Recordatorios en programaciones especiales:
 - Si el usuario desmarca **Usar configuración global de recordatorios**, se guarda un override en `schedule.reminders`.
 - El override usa `reminderDaysBefore` capturado como texto separado por coma (`2,1,0`, `1,0`, etc.) y `reminderTime` en formato `HH:mm`.
 - `0` significa el mismo día de la actualización.
+
+Retiro de frecuencia embebida:
+
+- Los formularios de **Dominios** y **Bases de datos** ya no deben crear ni actualizar frecuencias embebidas.
+- Para programar bases de un dominio, usar **Actualizaciones programadas**: seleccionar el cliente, el dominio y marcar **Incluir todas las bases activas de este dominio**, o seleccionar bases puntuales.
+- Si se necesita solo base de datos sin tarea de dominio, usar **Objetivo de la actualización → Solo bases de datos**.
+- Los endpoints pueden tolerar campos antiguos por compatibilidad, pero la UI normal no debe enviarlos ni depender de `domain_default` para nuevas configuraciones.
 
 Deduplicación obligatoria:
 
@@ -293,18 +304,15 @@ Dominios permiten:
 - Ver dominio para publicar.
 - Agregar base de datos desde la fila.
 - Ver bases asociadas.
-- Filtrar por programación recurrente.
-- Ver columnas Recurrente y Próxima actualización.
+- Informar que la programación se configura desde **Actualizaciones programadas**.
 
-Reglas de frecuencia:
+Reglas de programación:
 
-- Nuevo dominio inicia con “Activar frecuencia automática para este dominio” desactivado.
-- Si se activa, se crea o actualiza una programación `domain_default`.
-- Al editar un dominio con frecuencia activa, el checkbox debe aparecer marcado.
-- Al desmarcar y guardar, frontend debe enviar `disableAutomaticFrequency: true` y `frequency: null`.
-- Backend debe desactivar realmente schedules activos `domain_default` del dominio.
-- Después de desactivar: Recurrente = No, Próxima actualización = `-`, no se generan nuevas tareas por esa frecuencia.
-- No se elimina el dominio, no se eliminan bases, no se borra historial.
+- El formulario de dominio no debe mostrar “Activar frecuencia automática”.
+- El formulario de dominio no debe enviar `frequency`, `disableAutomaticFrequency` ni crear `domain_default`.
+- Las bases de un dominio se programan desde **Actualizaciones programadas**, con **Incluir todas las bases activas de este dominio** o selección puntual.
+- Si solo se desean bases, usar **Objetivo de la actualización → Solo bases de datos**.
+- Las columnas **Recurrente** y **Próxima actualización** ya no pertenecen al maestro Dominios; la salud se consulta en Actualizaciones programadas/Tareas.
 
 El modal “Bases asociadas al dominio” muestra:
 
@@ -513,8 +521,8 @@ https://github.com/jcpv9824/update_reminder/actions
 - **Static Web App cache**: usar Ctrl+F5 o probar ventana privada; confirmar GitHub Actions exitoso.
 - **Rutas SPA dan 404 al refrescar**: conservar `frontend/public/staticwebapp.config.json` con `navigationFallback`.
 - **Errores backend**: ver logs de Function App y Application Insights si está configurado.
-- **Tareas vencidas antiguas desaparecen**: revisar que el refresh no cancele tareas abiertas anteriores a hoy.
-- **Frecuencia de dominio no se desactiva**: verificar que el frontend envíe `disableAutomaticFrequency: true` y `frequency: null`, y que backend desactive `domain_default`.
+- **Tareas vencidas antiguas desaparecen**: revisar que la generación/timer no cancele tareas abiertas anteriores a hoy.
+- **No se generan tareas nuevas**: verificar que la actualización programada esté activa, tenga alcance explícito correcto, fecha dentro de la ventana operativa/timer, y que no existan tareas completadas/canceladas no recuperables con el mismo `dedupeKey`.
 
 ## 17. Testing
 
@@ -571,8 +579,8 @@ Puntos críticos ya incorporados:
 
 - `externalId` de cliente es opcional, pero único si existe y será candidato a obligatorio.
 - Ambientes operativos cerrados: `production`, `test`, `demo`.
-- `manualTargetTypes` en programaciones especiales manuales.
-- Frecuencia única (`once`) no se desactiva por generar tareas futuras; solo cuando `startDate <= hoy`.
+- `manualTargetTypes` en actualizaciones programadas manuales.
+- Frecuencia única (`once`) no se desactiva por generar tareas futuras; solo puede cerrarse cuando `startDate <= hoy` y sus tareas asociadas están cerradas.
 - Tareas `cancelled` con `result = "obsolete"` pueden reactivarse si una programación activa las vuelve a requerir.
 - SQL mínimo aceptable: SQL Server 2016 con compatibilidad 130; recomendado Azure SQL o SQL Server 2022.
 

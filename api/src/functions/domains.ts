@@ -12,14 +12,7 @@ import { matchesDomainSearch } from "../lib/listSearch";
 import { hasDuplicateDomainUrl } from "../lib/duplicateValidation";
 import { isAllowedEnvironment } from "../lib/environments";
 import { isValidHttpsDomain } from "../lib/inputValidation";
-import {
-  buildScheduleRecord,
-  deactivateDomainDefaultSchedule,
-  isDomainDefaultScheduleForDomain,
-  normalizeFrequencyResponsibility,
-  validateFrequency,
-  type FrequencyInput,
-} from "../lib/scheduleService";
+import { isDomainDefaultScheduleForDomain } from "../lib/scheduleService";
 import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
@@ -132,39 +125,8 @@ app.http("domainsCreate", {
         performedByEmail: user.email,
         after: record,
       });
-
-      // Crear la frecuencia asociada en la misma operación, si vino en el cuerpo.
-      if (parsed.data.frequency) {
-        try {
-          const freq = normalizeFrequencyResponsibility({ ...(parsed.data.frequency as FrequencyInput), origin: "domain_default" });
-          validateFrequency(freq);
-          const schedule = buildScheduleRecord({
-            input: freq,
-            clientId: client.id,
-            clientName: client.name,
-            domainId: record.id,
-            domainName: record.domainName,
-            targetType: "domain",
-            targetIds: [record.id],
-            currentUser: user,
-          });
-          await getContainer("updateSchedules").items.create(schedule);
-          await writeAuditLog({
-            entityType: "schedule",
-            entityId: schedule.id,
-            clientId: client.id,
-            clientName: client.name,
-            domainId: record.id,
-            domainName: record.domainName,
-            action: "schedule_created",
-            performedBy: user.id,
-            performedByEmail: user.email,
-            after: schedule,
-          });
-        } catch (e: any) {
-          return badRequest(e?.message ?? "Frecuencia inválida.");
-        }
-      }
+      // Nota: las actualizaciones programadas ya NO se crean desde el dominio.
+      // Se configuran únicamente en la sección "Actualizaciones programadas".
       return created(record);
     } catch (e) {
       return serverError(e);
@@ -241,20 +203,6 @@ app.http("domainsUpdate", {
         const { resources: existingDomains } = await container.items.readAll<DomainRecord>().fetchAll();
         if (hasDuplicateDomainUrl(existingDomains, body.domainName, id)) return conflict("Ya existe un dominio con esta URL.");
       }
-      const disableAutomaticFrequency = body.disableAutomaticFrequency === true ||
-        body.automaticFrequencyEnabled === false ||
-        body.frequency === null;
-
-      // Validar la frecuencia ANTES de tocar el dominio para no dejar
-      // estado inconsistente si la frecuencia es inválida.
-      if (body.frequency) {
-        try {
-          validateFrequency(body.frequency as FrequencyInput);
-        } catch (e: any) {
-          return badRequest(e?.message ?? "Frecuencia inválida.");
-        }
-      }
-
       const before = { ...existing };
       const updated: DomainRecord = {
         ...existing,
@@ -280,113 +228,9 @@ app.http("domainsUpdate", {
         before,
         after: updated,
       });
-      if (body.frequency) {
-        try {
-          const freq = normalizeFrequencyResponsibility(body.frequency as FrequencyInput);
-          validateFrequency(freq);
-          const scheduleContainer = getContainer("updateSchedules");
-          const { resources: schedules } = await scheduleContainer.items
-            .query<UpdateSchedule>({
-              query: "SELECT * FROM c WHERE c.targetType = 'domain' AND (c.domainId = @d OR ARRAY_CONTAINS(c.targetIds, @d))",
-              parameters: [{ name: "@d", value: id }],
-            })
-            .fetchAll();
-          const existingSchedule = schedules.find((schedule) => isDomainDefaultScheduleForDomain(schedule, id));
-          if (existingSchedule) {
-            const beforeSchedule = { ...existingSchedule };
-            const merged: UpdateSchedule = {
-              ...existingSchedule,
-              frequencyType: freq.frequencyType,
-              everyNWeeks: freq.everyNWeeks,
-              weekdays: freq.weekdays,
-              intervalDays: freq.intervalDays,
-              preferredWeekdays: freq.preferredWeekdays,
-              dayOfMonth: freq.dayOfMonth,
-              startDate: freq.startDate,
-              endDate: freq.endDate ?? null,
-              timezone: freq.timezone ?? "America/Bogota",
-              assignedRole: "domain_updater",
-              assignedUserIds: freq.assignedUserIds ?? [],
-              databaseAssignedUserIds: freq.databaseAssignedUserIds ?? [],
-              databaseReminderRecipientsMode: freq.databaseReminderRecipientsMode ?? "roleUsers",
-              origin: "domain_default",
-              active: freq.active ?? true,
-              reminders: freq.reminders,
-              domainName: updated.domainName,
-              targetIds: [id],
-              updatedAt: new Date().toISOString(),
-              updatedBy: user.id,
-            };
-            await scheduleContainer.item(existingSchedule.id, existingSchedule.clientId).replace(merged);
-            await writeAuditLog({
-              entityType: "schedule",
-              entityId: merged.id,
-              clientId: existing.clientId,
-              clientName: existing.clientName,
-              domainId: id,
-              domainName: updated.domainName,
-              action: "schedule_updated",
-              performedBy: user.id,
-              performedByEmail: user.email,
-              before: beforeSchedule,
-              after: merged,
-            });
-          } else {
-            const schedule = buildScheduleRecord({
-              input: { ...freq, origin: "domain_default" },
-              clientId: existing.clientId,
-              clientName: existing.clientName,
-              domainId: id,
-              domainName: updated.domainName,
-              targetType: "domain",
-              targetIds: [id],
-              currentUser: user,
-            });
-            await scheduleContainer.items.create(schedule);
-            await writeAuditLog({
-              entityType: "schedule",
-              entityId: schedule.id,
-              clientId: existing.clientId,
-              clientName: existing.clientName,
-              domainId: id,
-              domainName: updated.domainName,
-              action: "schedule_created",
-              performedBy: user.id,
-              performedByEmail: user.email,
-              after: schedule,
-            });
-          }
-        } catch (e: any) {
-          return badRequest(e?.message ?? "Frecuencia inválida.");
-        }
-      } else if (disableAutomaticFrequency) {
-        const now = new Date().toISOString();
-        const scheduleContainer = getContainer("updateSchedules");
-        const { resources: schedules } = await scheduleContainer.items
-          .query<UpdateSchedule>({
-            query: "SELECT * FROM c WHERE c.targetType = 'domain' AND c.active = true AND (c.domainId = @d OR ARRAY_CONTAINS(c.targetIds, @d))",
-            parameters: [{ name: "@d", value: id }],
-          })
-          .fetchAll();
-        for (const schedule of schedules.filter((item) => isDomainDefaultScheduleForDomain(item, id))) {
-          const beforeSchedule = { ...schedule };
-          const disabled = deactivateDomainDefaultSchedule(schedule, user.id, now);
-          await scheduleContainer.item(schedule.id, schedule.clientId).replace(disabled);
-          await writeAuditLog({
-            entityType: "schedule",
-            entityId: disabled.id,
-            clientId: existing.clientId,
-            clientName: existing.clientName,
-            domainId: id,
-            domainName: updated.domainName,
-            action: "domain_frequency_deactivated",
-            performedBy: user.id,
-            performedByEmail: user.email,
-            before: beforeSchedule,
-            after: disabled,
-          });
-        }
-      }
+      // La frecuencia embebida del dominio fue retirada. Las actualizaciones
+      // de dominios y bases se programan desde "Actualizaciones programadas",
+      // usando alcance manual o por licenciamiento.
       return ok(updated);
     } catch (e) {
       return serverError(e);

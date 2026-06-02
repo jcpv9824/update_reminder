@@ -9,7 +9,6 @@ import * as keyVault from "../lib/keyVault";
 import { buildDatabaseRecordFromInput } from "../lib/databaseService";
 import { buildDatabaseAccessInfo } from "../lib/databaseAccessInfo";
 import { parseDbAccessString } from "../lib/dbAccessParser";
-import { buildScheduleRecord, validateFrequency, type FrequencyInput } from "../lib/scheduleService";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import { getPagination, paginateArray } from "../lib/pagination";
 import { matchesDatabaseSearch } from "../lib/listSearch";
@@ -134,39 +133,8 @@ app.http("databasesCreate", {
         },
       });
 
-      // Crear la frecuencia asociada en la misma operación, si vino en el cuerpo.
-      if (parsed.data.frequency) {
-        try {
-          const freq = parsed.data.frequency as FrequencyInput;
-          validateFrequency(freq);
-          const schedule = buildScheduleRecord({
-            input: freq,
-            clientId: client.id,
-            clientName: client.name,
-            domainId: domain.id,
-            domainName: domain.domainName,
-            targetType: "database",
-            targetIds: [record.id],
-            currentUser: user,
-          });
-          await getContainer("updateSchedules").items.create(schedule);
-          await writeAuditLog({
-            entityType: "schedule",
-            entityId: schedule.id,
-            clientId: client.id,
-            clientName: client.name,
-            domainId: domain.id,
-            domainName: domain.domainName,
-            companyName: record.companyName,
-            action: "schedule_created",
-            performedBy: user.id,
-            performedByEmail: user.email,
-            after: schedule,
-          });
-        } catch (e: any) {
-          return badRequest(e?.message ?? "Frecuencia inválida.");
-        }
-      }
+      // Las bases ya no crean frecuencias embebidas. Las tareas de bases se
+      // programan desde "Actualizaciones programadas" con alcance explícito.
       return created(record);
     } catch (e) {
       return serverError(e);

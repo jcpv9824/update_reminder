@@ -71,7 +71,7 @@ describe("AlertasCorreosPage", () => {
     apiMock.get.mockResolvedValueOnce(settings);
     render_();
     await screen.findByRole("heading", { name: /Alertas y correos/i });
-    expect(screen.getByText(/valor por defecto para los recordatorios de dominios/i)).toBeInTheDocument();
+    expect(screen.getByText(/valor por defecto para los recordatorios de actualizaciones programadas/i)).toBeInTheDocument();
     expect(screen.getByText(/Cuando una tarea se bloquee, se enviará una alerta inmediata/i)).toBeInTheDocument();
     expect(screen.getByText(/Recordatorios si el bloqueo sigue sin resolverse/i)).toBeInTheDocument();
     expect(screen.queryByText(/Enviar inmediatamente al bloquear/i)).toBeNull();
