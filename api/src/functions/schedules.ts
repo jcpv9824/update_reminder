@@ -38,20 +38,20 @@ async function regenerarTareasTrasGuardar(): Promise<void> {
   } catch {/* la generación no debe interrumpir el guardado */}
 }
 
-// Cancela (marca obsoletas) las tareas futuras/pendientes de una programación
-// al desactivarla o eliminarla. Considera el rootScheduleId nuevo y los
-// scheduleId sintéticos heredados de versiones anteriores.
-async function cancelarTareasFuturasDeProgramacion(
+// Cancela (marca obsoletas) todas las tareas abiertas de una programación al
+// desactivarla o eliminarla. Incluye vencidas antiguas para que no queden
+// tareas huérfanas visibles cuando ya no existe actualización programada.
+// Considera el rootScheduleId nuevo y los scheduleId sintéticos heredados de
+// versiones anteriores.
+async function cancelarTareasAbiertasDeProgramacion(
   schedule: UpdateSchedule,
   user: { id: string; email: string }
 ): Promise<number> {
-  const today = bogotaTodayIso();
   const { resources } = await getContainer("updateTasks").items.query<UpdateTask>({
-    query: "SELECT * FROM c WHERE (c.rootScheduleId = @rid OR c.scheduleId = @rid OR STARTSWITH(c.scheduleId, @pref)) AND c.taskDate >= @today AND c.status IN ('pending','in_progress','blocked','reopened','failed')",
+    query: "SELECT * FROM c WHERE (c.rootScheduleId = @rid OR c.scheduleId = @rid OR STARTSWITH(c.scheduleId, @pref)) AND c.status IN ('pending','in_progress','blocked','reopened','failed')",
     parameters: [
       { name: "@rid", value: schedule.id },
       { name: "@pref", value: `${schedule.id}__` },
-      { name: "@today", value: today },
     ],
   }).fetchAll();
   const now = new Date().toISOString();
@@ -553,7 +553,7 @@ async function setScheduleStatus(req: HttpRequest, action: string, active: boole
     await regenerarTareasTrasGuardar();
   } else {
     // Desactivar → cancelar tareas futuras/pendientes de esta programación.
-    await cancelarTareasFuturasDeProgramacion(s, user);
+    await cancelarTareasAbiertasDeProgramacion(s, user);
   }
   return ok(s);
 }
@@ -572,7 +572,7 @@ app.http("schedulesDelete", {
       const s = await findSchedule(req.params.id);
       if (!s) return notFound();
       // Cancelar tareas futuras/pendientes antes de eliminar la programación.
-      const cancelled = await cancelarTareasFuturasDeProgramacion(s, user);
+      const cancelled = await cancelarTareasAbiertasDeProgramacion(s, user);
       await getContainer("updateSchedules").item(s.id, s.clientId).delete();
       await writeAuditLog({ entityType: "schedule", entityId: s.id, clientId: s.clientId, clientName: s.clientName, action: "schedule_deleted", performedBy: user.id, performedByEmail: user.email, metadata: { cancelledOpenTasks: cancelled } });
       return noContent();

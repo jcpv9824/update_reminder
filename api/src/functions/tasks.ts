@@ -4,6 +4,7 @@ import { canCompleteDatabaseTask, canCompleteDomainTask, hasRole } from "../lib/
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { badRequest, forbidden, notFound, ok, serverError } from "../lib/http";
+import { filterTasksForOperationalView } from "../lib/taskVisibility";
 import type { DatabaseRecord, DomainRecord, UpdateTask } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
@@ -85,6 +86,13 @@ app.http("tasksList", {
       const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
       const { resources } = await getContainer("updateTasks").items.query<UpdateTask>({ query: `SELECT * FROM c ${where}`, parameters }).fetchAll();
       let items = resources;
+      const { resources: schedules } = await getContainer("updateSchedules").items
+        .query<{ id: string }>({
+          query: "SELECT c.id, c.active, c.deletedAt FROM c WHERE c.active = true AND (NOT IS_DEFINED(c.deletedAt) OR IS_NULL(c.deletedAt))",
+        })
+        .fetchAll();
+      const activeScheduleIds = new Set(schedules.map((schedule) => schedule.id));
+      items = filterTasksForOperationalView(items, activeScheduleIds);
       if (assignedToMe) items = items.filter((t) => t.assignedUserIds.includes(user.id));
       return ok(items);
     } catch (e) {

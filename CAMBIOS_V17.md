@@ -62,3 +62,12 @@ Tras revisar en detalle, se completaron tres piezas que faltaban respecto al pla
 - **Agrupacion por estado**: la lista se separa en **Requiere atencion / Al dia / Completadas / Inactivas** (estado de vida + salud derivada), sin fusionar la programacion en un unico estado; cada ocurrencia sigue visible en la vista de Tareas.
 
 Pruebas agregadas: `api/src/tests/taskNotifications.test.ts` (6) y dos casos en `frontend/src/tests/FrecuenciasPage.test.tsx` (agrupacion por estado y duplicar).
+
+## Correccion de tareas huerfanas sin actualizaciones programadas
+
+Se corrigio un caso en el que seguian apareciendo tareas viejas vencidas o fallidas aunque ya no existieran actualizaciones programadas:
+
+- Al desactivar o eliminar una actualizacion programada ahora se cancelan **todas** sus tareas abiertas asociadas, incluyendo vencidas antiguas, no solo tareas futuras.
+- El listado `/tasks` filtra tareas abiertas cuyo `rootScheduleId` ya no pertenece a una actualizacion programada activa.
+- Las tareas completadas se preservan como historial reciente.
+- Prueba agregada: `api/src/tests/taskVisibility.test.ts`.
