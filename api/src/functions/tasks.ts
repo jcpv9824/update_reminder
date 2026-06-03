@@ -87,12 +87,15 @@ app.http("tasksList", {
       const { resources } = await getContainer("updateTasks").items.query<UpdateTask>({ query: `SELECT * FROM c ${where}`, parameters }).fetchAll();
       let items = resources;
       const { resources: schedules } = await getContainer("updateSchedules").items
-        .query<{ id: string }>({
-          query: "SELECT c.id, c.active, c.deletedAt FROM c WHERE c.active = true AND (NOT IS_DEFINED(c.deletedAt) OR IS_NULL(c.deletedAt))",
+        .query<{ id: string; active?: boolean }>({
+          query: "SELECT c.id, c.active FROM c WHERE (NOT IS_DEFINED(c.deletedAt) OR IS_NULL(c.deletedAt))",
         })
         .fetchAll();
-      const activeScheduleIds = new Set(schedules.map((schedule) => schedule.id));
-      items = filterTasksForOperationalView(items, activeScheduleIds);
+      const existingScheduleIds = new Set(schedules.map((schedule) => schedule.id));
+      const activeScheduleIds = new Set(
+        schedules.filter((schedule) => schedule.active !== false).map((schedule) => schedule.id)
+      );
+      items = filterTasksForOperationalView(items, { activeScheduleIds, existingScheduleIds });
       if (assignedToMe) items = items.filter((t) => t.assignedUserIds.includes(user.id));
       return ok(items);
     } catch (e) {

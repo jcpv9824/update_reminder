@@ -32,21 +32,40 @@ function task(overrides: Partial<UpdateTask>): UpdateTask {
 }
 
 describe("taskVisibility", () => {
-  it("oculta tareas abiertas cuya actualización programada raíz ya no está activa", () => {
-    const active = new Set<string>();
-    expect(isTaskVisibleForOperationalView(task({ status: "failed" }), active)).toBe(false);
-    expect(isTaskVisibleForOperationalView(task({ status: "blocked" }), active)).toBe(false);
-    expect(isTaskVisibleForOperationalView(task({ status: "pending" }), active)).toBe(false);
+  const noSchedules = {
+    activeScheduleIds: new Set<string>(),
+    existingScheduleIds: new Set<string>(),
+  };
+  const inactiveSchedule = {
+    activeScheduleIds: new Set<string>(),
+    existingScheduleIds: new Set(["schedule_1"]),
+  };
+  const activeSchedule = {
+    activeScheduleIds: new Set(["schedule_1"]),
+    existingScheduleIds: new Set(["schedule_1"]),
+  };
+
+  it("oculta tareas abiertas cuya actualización programada raíz ya no existe", () => {
+    expect(isTaskVisibleForOperationalView(task({ status: "failed" }), noSchedules)).toBe(false);
+    expect(isTaskVisibleForOperationalView(task({ status: "blocked" }), noSchedules)).toBe(false);
+    expect(isTaskVisibleForOperationalView(task({ status: "pending" }), noSchedules)).toBe(false);
+  });
+
+  it("oculta tareas abiertas cuando la actualización programada raíz existe pero está inactiva", () => {
+    expect(isTaskVisibleForOperationalView(task({ status: "failed" }), inactiveSchedule)).toBe(false);
+    expect(isTaskVisibleForOperationalView(task({ status: "pending" }), inactiveSchedule)).toBe(false);
   });
 
   it("mantiene tareas abiertas cuando la actualización programada raíz está activa", () => {
-    const active = new Set(["schedule_1"]);
-    expect(isTaskVisibleForOperationalView(task({ status: "failed" }), active)).toBe(true);
+    expect(isTaskVisibleForOperationalView(task({ status: "failed" }), activeSchedule)).toBe(true);
   });
 
-  it("preserva completadas como historial aunque la actualización programada ya no exista", () => {
-    const active = new Set<string>();
-    expect(isTaskVisibleForOperationalView(task({ status: "completed" }), active)).toBe(true);
+  it("oculta completadas si la actualización programada raíz ya no existe", () => {
+    expect(isTaskVisibleForOperationalView(task({ status: "completed" }), noSchedules)).toBe(false);
+  });
+
+  it("preserva completadas como historial si la actualización programada todavía existe", () => {
+    expect(isTaskVisibleForOperationalView(task({ status: "completed" }), inactiveSchedule)).toBe(true);
   });
 
   it("filtra mezcla de tareas huérfanas y activas", () => {
@@ -54,7 +73,8 @@ describe("taskVisibility", () => {
       task({ id: "orphan", status: "failed", rootScheduleId: "missing_schedule" }),
       task({ id: "active", status: "pending", rootScheduleId: "schedule_1" }),
       task({ id: "done", status: "completed", rootScheduleId: "missing_schedule" }),
-    ], new Set(["schedule_1"]));
-    expect(visible.map((item) => item.id)).toEqual(["active", "done"]);
+      task({ id: "done_with_schedule", status: "completed", rootScheduleId: "schedule_1" }),
+    ], activeSchedule);
+    expect(visible.map((item) => item.id)).toEqual(["active", "done_with_schedule"]);
   });
 });
