@@ -64,6 +64,11 @@ describe("taskVisibility", () => {
     expect(isTaskVisibleForOperationalView(task({ status: "completed" }), noSchedules)).toBe(false);
   });
 
+  it("oculta tareas sin referencia a actualización programada raíz", () => {
+    expect(isTaskVisibleForOperationalView(task({ rootScheduleId: "", scheduleId: "", status: "completed" }), activeSchedule)).toBe(false);
+    expect(isTaskVisibleForOperationalView(task({ rootScheduleId: "", scheduleId: "", status: "pending" }), activeSchedule)).toBe(false);
+  });
+
   it("preserva completadas como historial si la actualización programada todavía existe", () => {
     expect(isTaskVisibleForOperationalView(task({ status: "completed" }), inactiveSchedule)).toBe(true);
   });

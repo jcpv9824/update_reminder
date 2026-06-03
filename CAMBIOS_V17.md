@@ -69,6 +69,7 @@ Se corrigio un caso en el que seguian apareciendo tareas viejas vencidas o falli
 
 - Al desactivar o eliminar una actualizacion programada ahora se cancelan **todas** sus tareas abiertas asociadas, incluyendo vencidas antiguas, no solo tareas futuras.
 - El listado `/tasks` filtra cualquier tarea cuyo `rootScheduleId` ya no pertenezca a una actualizacion programada existente.
+- Las tareas sin referencia comprobable a una actualizacion programada raiz tambien se ocultan de la vista operativa.
 - Las tareas abiertas solo se muestran si su actualizacion programada existe y esta activa.
 - Las tareas completadas se preservan como historial reciente solo si su actualizacion programada todavia existe.
 - Prueba agregada: `api/src/tests/taskVisibility.test.ts`.

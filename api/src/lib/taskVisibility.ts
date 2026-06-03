@@ -17,7 +17,7 @@ export function isTaskVisibleForOperationalView(
   context: TaskVisibilityScheduleContext
 ): boolean {
   const rid = rootScheduleId(task);
-  if (!rid) return true;
+  if (!rid) return false;
   if (!context.existingScheduleIds.has(rid)) return false;
   if (isOpenTask(task)) return context.activeScheduleIds.has(rid);
   return true;
