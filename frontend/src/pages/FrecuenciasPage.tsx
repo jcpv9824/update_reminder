@@ -19,6 +19,7 @@ export default function FrecuenciasPage() {
   const qc = useQueryClient();
   const [modalAbierto, setModalAbierto] = useState(false);
   const [editando, setEditando] = useState<Frecuencia | null>(null);
+  const [duplicando, setDuplicando] = useState<Frecuencia | null>(null);
   const [busqueda, setBusqueda] = useState("");
   const [pagina, setPagina] = useState(1);
   const [exito, setExito] = useState<string | null>(null);
@@ -48,7 +49,7 @@ export default function FrecuenciasPage() {
 
   const crear = useMutation({
     mutationFn: (body: any) => api.post<Frecuencia>("/schedules", body),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["frecuencias"] }); qc.invalidateQueries({ queryKey: ["tareas"] }); setModalAbierto(false); setExito("Actualización programada creada correctamente."); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["frecuencias"] }); qc.invalidateQueries({ queryKey: ["tareas"] }); setModalAbierto(false); setDuplicando(null); setExito("Actualización programada creada correctamente."); },
     onError: (e: any) => setError(e?.message ?? "Error al crear la actualización programada."),
   });
   const actualizar = useMutation({
@@ -86,46 +87,70 @@ export default function FrecuenciasPage() {
 
       {isLoading ? <div className="cargando">Cargando...</div> : (
         <>
-          <table>
-            <thead><tr>
-              <th>Nombre</th><th>Cliente</th><th>Tipo</th><th>Objetivos</th><th>Frecuencia</th><th>Inicio</th><th>Salud</th><th>Estado</th><th>Acciones</th>
-            </tr></thead>
-            <tbody>
-              {programacionesEspeciales.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="vacio">
-                    <div>No hay actualizaciones programadas configuradas.</div>
-                    <div>Use esta vista para programar dominios, bases o ambos con alcance explícito.</div>
-                  </td>
-                </tr>
-              ) :
-              programacionesEspeciales.map((f) => (
-                <tr key={f.id}>
-                  <td>{f.name ?? "Actualización programada"}</td>
-                  <td>{f.clientName}</td>
-                  <td>{f.targetType === "database" ? "Base de datos" : "Dominio"}</td>
-                  <td>{f.targetIds.length}</td>
-                  <td>{ETIQUETAS_FRECUENCIA[f.frequencyType]}</td>
-                  <td>{f.startDate}</td>
-                  <td>{resumenSalud(f)}</td>
-                  <td><EtiquetaEstado estado={f.active ? "active" : "inactive"} /></td>
-                  <td className="acciones-tabla">
-                    <button onClick={() => setEditando(f)}>Editar</button>
-                    {f.active
-                      ? <button className="advertencia" onClick={() => desactivar.mutate(f.id)}>Desactivar</button>
-                      : <button className="exito" onClick={() => reactivar.mutate(f.id)}>Reactivar</button>}
-                    <button className="peligro" onClick={() => setConfirmarEliminar(f)}>Eliminar</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {programacionesEspeciales.length === 0 ? (
+            <div className="vacio">
+              <div>No hay actualizaciones programadas configuradas.</div>
+              <div>Use esta vista para programar dominios, bases o ambos con alcance explícito.</div>
+            </div>
+          ) : (
+            GRUPOS_ESTADO.map((grupo) => {
+              const items = programacionesEspeciales.filter((f) => estadoProgramacion(f) === grupo.clave);
+              if (items.length === 0) return null;
+              return (
+                <div key={grupo.clave} className="grupo-tareas" style={{ marginBottom: 18 }}>
+                  <div className="grupo-tareas-titulo">{grupo.titulo} <span style={{ color: "#9ca3af", fontWeight: 400 }}>({items.length})</span></div>
+                  <table>
+                    <thead><tr>
+                      <th>Nombre</th><th>Cliente</th><th>Tipo</th><th>Objetivos</th><th>Frecuencia</th><th>Inicio</th><th>Salud</th><th>Estado</th><th>Acciones</th>
+                    </tr></thead>
+                    <tbody>
+                      {items.map((f) => (
+                        <tr key={f.id}>
+                          <td>{f.name ?? "Actualización programada"}</td>
+                          <td>{f.clientName}</td>
+                          <td>{f.targetType === "database" ? "Base de datos" : "Dominio"}</td>
+                          <td>{f.targetIds.length}</td>
+                          <td>{ETIQUETAS_FRECUENCIA[f.frequencyType]}</td>
+                          <td>{f.startDate}</td>
+                          <td>{resumenSalud(f)}</td>
+                          <td><EtiquetaEstado estado={f.active ? "active" : "inactive"} /></td>
+                          <td className="acciones-tabla">
+                            <button onClick={() => setEditando(f)}>Editar</button>
+                            <button onClick={() => setDuplicando(f)}>Duplicar</button>
+                            {f.active
+                              ? <button className="advertencia" onClick={() => desactivar.mutate(f.id)}>Desactivar</button>
+                              : <button className="exito" onClick={() => reactivar.mutate(f.id)}>Reactivar</button>}
+                            <button className="peligro" onClick={() => setConfirmarEliminar(f)}>Eliminar</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })
+          )}
           {frecuenciasPage && <Paginacion page={frecuenciasPage.page} pageSize={frecuenciasPage.pageSize} total={frecuenciasPage.total} onPageChange={setPagina} />}
         </>
       )}
 
       <Modal titulo="Nueva actualización programada" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
         <FormularioFrecuencia clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} modulosLicencia={modulosLicencia} emailSettings={emailSettings} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />
+      </Modal>
+      <Modal titulo="Duplicar actualización programada" abierto={!!duplicando} onCerrar={() => setDuplicando(null)}>
+        {duplicando && (
+          <FormularioFrecuencia
+            inicial={{ ...duplicando, name: duplicando.name ? `${duplicando.name} (copia)` : undefined }}
+            clientes={clientes}
+            dominios={dominios}
+            bds={bds}
+            usuarios={usuarios}
+            modulosLicencia={modulosLicencia}
+            emailSettings={emailSettings}
+            cargando={crear.isPending}
+            onSubmit={(v) => crear.mutate(v)}
+          />
+        )}
       </Modal>
       <Modal titulo="Editar actualización programada" abierto={!!editando} onCerrar={() => setEditando(null)}>
         {editando && <FormularioFrecuencia inicial={editando} clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} modulosLicencia={modulosLicencia} emailSettings={emailSettings} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
@@ -167,6 +192,26 @@ type LicensingPreview = {
     }>;
   }>;
 };
+
+type EstadoProgramacion = "atencion" | "aldia" | "completadas" | "inactivas";
+
+const GRUPOS_ESTADO: Array<{ clave: EstadoProgramacion; titulo: string }> = [
+  { clave: "atencion", titulo: "Requiere atención" },
+  { clave: "aldia", titulo: "Al día" },
+  { clave: "completadas", titulo: "Completadas" },
+  { clave: "inactivas", titulo: "Inactivas" },
+];
+
+// Estado de vida de la programación + salud derivada de sus tareas.
+// NO fusiona programación y tareas en un único estado: una recurrente con una
+// ocurrencia pasada fallida y una futura sana cae en "Requiere atención" y a la
+// vez sigue generando; cada ocurrencia se ve aparte en la vista de Tareas.
+function estadoProgramacion(f: Frecuencia): EstadoProgramacion {
+  if (!f.active && f.completedReason) return "completadas";
+  if (!f.active) return "inactivas";
+  if (f.summary?.requiereAtencion) return "atencion";
+  return "aldia";
+}
 
 function resumenSalud(f: Frecuencia): string {
   const s = f.summary;

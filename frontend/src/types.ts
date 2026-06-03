@@ -155,6 +155,8 @@ export type Frecuencia = {
   databaseAssignedRole?: string;
   origin?: "domain_default" | "special" | "database_inherited" | string;
   active: boolean;
+  completedAt?: string | null;
+  completedReason?: string | null;
   summary?: {
     proximas: number;
     vencidas: number;

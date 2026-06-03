@@ -363,4 +363,50 @@ describe("FrecuenciasPage", () => {
     await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/special-schedules/preview-licensing-scope", expect.objectContaining({ environment: "test" })));
     expect(screen.getByRole("button", { name: /^Guardar$/i })).not.toBeDisabled();
   });
+
+  it("agrupa las actualizaciones programadas por estado (Requiere atención / Al día / Inactivas)", async () => {
+    apiMock.get.mockImplementation((path: string) => {
+      if (path === "/clients") return Promise.resolve([cliente]);
+      if (path === "/domains") return Promise.resolve([dominio]);
+      if (path === "/databases") return Promise.resolve([]);
+      if (path === "/license-modules") return Promise.resolve([modulo]);
+      if (path.startsWith("/schedules?origin=special")) return Promise.resolve({
+        items: [
+          frecuencia({ id: "s_atencion", name: "Con vencidas", summary: { proximas: 0, vencidas: 2, conError: 0, completadas: 0, requiereAtencion: true } }),
+          frecuencia({ id: "s_aldia", name: "Sana", summary: { proximas: 1, vencidas: 0, conError: 0, completadas: 0, requiereAtencion: false } }),
+          frecuencia({ id: "s_inactiva", name: "Apagada", active: false }),
+        ],
+        page: 1, pageSize: 10, total: 3,
+      });
+      return Promise.resolve([]);
+    });
+    renderPagina();
+    expect(await screen.findByText("Requiere atención", { exact: false })).toBeInTheDocument();
+    expect(screen.getByText("Al día", { exact: false })).toBeInTheDocument();
+    expect(screen.getByText("Inactivas", { exact: false })).toBeInTheDocument();
+    expect(screen.getByText("Con vencidas")).toBeInTheDocument();
+    expect(screen.getByText("Sana")).toBeInTheDocument();
+    expect(screen.getByText("Apagada")).toBeInTheDocument();
+  });
+
+  it("Duplicar abre el formulario precargado y crea una copia al guardar", async () => {
+    apiMock.get.mockImplementation((path: string) => {
+      if (path === "/clients") return Promise.resolve([cliente]);
+      if (path === "/domains") return Promise.resolve([dominio]);
+      if (path === "/databases") return Promise.resolve([]);
+      if (path === "/license-modules") return Promise.resolve([modulo]);
+      if (path.startsWith("/schedules?origin=special")) return Promise.resolve({
+        items: [frecuencia({ id: "s_orig", name: "Programación base", scopeGroups: [{ clientId: "client_1", includeAllDomains: false, domains: [{ domainId: "domain_1", includeAllDatabases: false, databaseIds: [] }] }], selectionMode: "manual", manualTargetTypes: "domains_only" })],
+        page: 1, pageSize: 10, total: 1,
+      });
+      return Promise.resolve([]);
+    });
+    apiMock.post.mockResolvedValue({ id: "s_copy" });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Duplicar/i }));
+    // El modal de duplicación precarga el nombre con sufijo "(copia)".
+    expect(await screen.findByDisplayValue("Programación base (copia)")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Guardar$/i }));
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/schedules", expect.objectContaining({ name: "Programación base (copia)" })));
+  });
 });

@@ -48,3 +48,17 @@ Excluir o no crear tarea de dominio no impide crear tareas de bases si las bases
   - Dominios no muestra frecuencia embebida ni columnas Recurrente/Proxima actualizacion.
   - Actualizaciones programadas muestra el nuevo titulo y el alcance explicito.
   - Tareas no muestra boton Refrescar y muestra el nombre de la actualizacion programada.
+
+## Complemento de verificacion (notificaciones, duplicar y agrupacion)
+
+Tras revisar en detalle, se completaron tres piezas que faltaban respecto al plan acordado:
+
+- **Notificaciones por estado (matriz "Atencion + fallida + exito")**:
+  - Tarea **fallida** ahora envia correo inmediato de problema a los destinatarios configurados (gobernado por `blockedAlertsEnabled`).
+  - Tarea **completada con exito** (sin problemas) envia un correo de confirmacion a los encargados (destinatarios de alertas de vencidos).
+  - Se mantiene: completada-con-problemas y bloqueada -> correo de problema. En progreso / cancelada / reabierta -> sin correo.
+  - La decision se extrajo a `api/src/lib/taskNotifications.ts` (`decidirNotificacionPorEstado`) con pruebas unitarias.
+- **Duplicar actualizacion programada**: accion "Duplicar" en cada fila que abre el formulario de creacion precargado con toda la configuracion (alcance, frecuencia, responsables, recordatorios) y nombre sugerido `"<nombre> (copia)"`. Reusa `POST /schedules`.
+- **Agrupacion por estado**: la lista se separa en **Requiere atencion / Al dia / Completadas / Inactivas** (estado de vida + salud derivada), sin fusionar la programacion en un unico estado; cada ocurrencia sigue visible en la vista de Tareas.
+
+Pruebas agregadas: `api/src/tests/taskNotifications.test.ts` (6) y dos casos en `frontend/src/tests/FrecuenciasPage.test.tsx` (agrupacion por estado y duplicar).

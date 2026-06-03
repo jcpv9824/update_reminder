@@ -122,9 +122,11 @@ async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string):
       return;
     }
     const tipo = t.targetType === "domain" ? "Dominio" : "Base de datos";
-    const subject = t.targetType === "domain"
-      ? "Error reportado en actualización de dominio"
-      : "Error reportado en actualización de base de datos";
+    const esFallida = t.status === "failed";
+    const subject = esFallida
+      ? (t.targetType === "domain" ? "Actualización de dominio fallida" : "Actualización de base de datos fallida")
+      : (t.targetType === "domain" ? "Error reportado en actualización de dominio" : "Error reportado en actualización de base de datos");
+    const detalleProblema = t.problemNote || t.notes || "(sin detalle)";
     const linkApp = settings.frontendBaseUrl
       ? `<p><a href="${settings.frontendBaseUrl.replace(/\/$/, "")}/tareas">Abrir tareas</a></p>`
       : "";
@@ -154,12 +156,56 @@ async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string):
         <li><strong>Responsable:</strong> ${escapeHtml(performedByEmail)}</li>
         <li><strong>Fecha de reporte:</strong> ${escapeHtml(new Date().toISOString())}</li>
       </ul>
-      <p><strong>Problema reportado:</strong></p>
-      <blockquote>${escapeHtml(t.problemNote ?? "(sin detalle)")}</blockquote>
+      <p><strong>${esFallida ? "Motivo de la falla:" : "Problema reportado:"}</strong></p>
+      <blockquote>${escapeHtml(detalleProblema)}</blockquote>
       ${linkApp}
     `;
     const dbText = dbInfo ? ` Empresa: ${dbInfo.companyName}. Servidor y puerto: ${dbInfo.dbAccess.serverHostPort}. Base de datos: ${dbInfo.dbAccess.initialCatalog}. Usuario: ${dbInfo.dbAccess.userId}.` : "";
-    const text = `${subject}. Tipo: ${tipo}. Cliente: ${t.clientName}. Dominio registrado: ${t.domainName}. Dominio para publicar: ${dominioPublicable}.${dbText} Fecha programada: ${t.taskDate}. Responsable: ${performedByEmail}. Problema: ${t.problemNote ?? "(sin detalle)"}`;
+    const text = `${subject}. Tipo: ${tipo}. Cliente: ${t.clientName}. Dominio registrado: ${t.domainName}. Dominio para publicar: ${dominioPublicable}.${dbText} Fecha programada: ${t.taskDate}. Responsable: ${performedByEmail}. ${esFallida ? "Motivo" : "Problema"}: ${detalleProblema}`;
+    await sendEmail({ to: destinatarios, subject, html, text }, settings);
+  } catch {/* no bloquear flujo de tarea */}
+}
+
+// Notificación de confirmación cuando una tarea se completa CON ÉXITO (sin
+// problemas). Se envía a los mismos destinatarios de las alertas de vencidos
+// (administradores/encargados configurados). No expone datos sensibles.
+async function notificarCompletadaConExito(t: UpdateTask, performedByEmail: string): Promise<void> {
+  try {
+    const { loadEmailAlertsSettings } = await import("../lib/settingsService");
+    const { sendEmail, escapeHtml, formatDomainForPublishing } = await import("../lib/emailService");
+    const { resolveConfiguredRecipients } = await import("../lib/emailRecipients");
+    const settings = await loadEmailAlertsSettings();
+    const destinatarios = await resolveConfiguredRecipients(
+      settings.overdueAlertRecipientRoleIds?.length ? settings.overdueAlertRecipientRoleIds : ["admin"],
+      settings.overdueAlertCustomEmails ?? []
+    );
+    if (destinatarios.length === 0) return;
+    const tipo = t.targetType === "domain" ? "Dominio" : "Base de datos";
+    const subject = t.targetType === "domain"
+      ? "Actualización de dominio completada"
+      : "Actualización de base de datos completada";
+    const dominioPublicable = formatDomainForPublishing(t.domainName);
+    const linkApp = settings.frontendBaseUrl
+      ? `<p><a href="${settings.frontendBaseUrl.replace(/\/$/, "")}/tareas">Abrir tareas</a></p>`
+      : "";
+    const nota = t.completionNote || t.notes || "";
+    const html = `
+      <h3>${escapeHtml(subject)}</h3>
+      <p>Una actualización se completó correctamente.</p>
+      <ul>
+        <li><strong>Tipo:</strong> ${escapeHtml(tipo)}</li>
+        <li><strong>Cliente:</strong> ${escapeHtml(t.clientName)}</li>
+        <li><strong>Dominio registrado:</strong> ${escapeHtml(t.domainName)}</li>
+        <li><strong>Dominio para publicar:</strong> <code>${escapeHtml(dominioPublicable)}</code></li>
+        ${t.targetType === "database" ? `<li><strong>Empresa / Base:</strong> ${escapeHtml(t.targetName)}</li>` : ""}
+        <li><strong>Fecha programada:</strong> ${escapeHtml(t.taskDate)}</li>
+        <li><strong>Completada por:</strong> ${escapeHtml(performedByEmail)}</li>
+        <li><strong>Fecha de finalización:</strong> ${escapeHtml(t.completedAt ?? new Date().toISOString())}</li>
+      </ul>
+      ${nota ? `<p><strong>Nota:</strong></p><blockquote>${escapeHtml(nota)}</blockquote>` : ""}
+      ${linkApp}
+    `;
+    const text = `${subject}. Tipo: ${tipo}. Cliente: ${t.clientName}. Dominio para publicar: ${dominioPublicable}. Fecha programada: ${t.taskDate}. Completada por: ${performedByEmail}.${nota ? ` Nota: ${nota}` : ""}`;
     await sendEmail({ to: destinatarios, subject, html, text }, settings);
   } catch {/* no bloquear flujo de tarea */}
 }
@@ -277,12 +323,17 @@ async function changeTaskStatus(
       metadata: { previousStatus: before.status, newStatus },
     });
 
-    if ((newStatus === "completed" && t.completedWithProblems) || newStatus === "blocked") {
-      // Notificación a admins activos. No bloquea la respuesta.
+    // Matriz de notificaciones por estado (decisión "Atención + fallida + éxito").
+    if (newStatus === "completed" || newStatus === "blocked" || newStatus === "failed") {
       const settings = await (await import("../lib/settingsService")).loadEmailAlertsSettings();
-      if (newStatus !== "blocked" || settings.blockedAlertsEnabled !== false) {
-        void notificarProblemaAdmins(t, user.email);
-      }
+      const { decidirNotificacionPorEstado } = await import("../lib/taskNotifications");
+      const decision = decidirNotificacionPorEstado({
+        newStatus,
+        completedWithProblems: !!t.completedWithProblems,
+        blockedAlertsEnabled: settings.blockedAlertsEnabled !== false,
+      });
+      if (decision === "problema") void notificarProblemaAdmins(t, user.email);
+      else if (decision === "exito") void notificarCompletadaConExito(t, user.email);
     }
 
     return ok(t);
