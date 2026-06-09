@@ -164,7 +164,7 @@ export default function FrecuenciasPage() {
           : ""}
         textoConfirmar="Eliminar"
         variante="peligro"
-        onConfirmar={() => confirmarEliminar && eliminar.mutate(confirmarEliminar.id)}
+        onConfirmar={() => { if (confirmarEliminar && !eliminar.isPending) eliminar.mutate(confirmarEliminar.id); }}
         onCancelar={() => setConfirmarEliminar(null)}
       />
     </>

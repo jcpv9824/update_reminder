@@ -65,7 +65,14 @@ async function cancelarTareasAbiertasDeProgramacion(
       : "Tarea cancelada porque su actualización programada fue desactivada o eliminada.";
     task.updatedAt = now;
     task.updatedBy = user.id;
-    await getContainer("updateTasks").item(task.id, task.taskBucket).replace(task);
+    try {
+      await getContainer("updateTasks").item(task.id, task.taskBucket).replace(task);
+    } catch (e: any) {
+      // La tarea pudo ser eliminada/movida por otra operación concurrente.
+      // No es un fallo: simplemente se omite.
+      if (e?.code === 404) continue;
+      throw e;
+    }
     cancelled++;
     await writeAuditLog({
       entityType: "task", entityId: task.id, clientId: task.clientId, clientName: task.clientName,
@@ -571,10 +578,22 @@ app.http("schedulesDelete", {
       if (!canManageSchedules(user)) return forbidden();
       const s = await findSchedule(req.params.id);
       if (!s) return notFound();
-      // Cancelar tareas futuras/pendientes antes de eliminar la programación.
+      // Cancelar tareas abiertas antes de eliminar la programación.
       const cancelled = await cancelarTareasAbiertasDeProgramacion(s, user);
-      await getContainer("updateSchedules").item(s.id, s.clientId).delete();
+      try {
+        await getContainer("updateSchedules").item(s.id, s.clientId).delete();
+      } catch (e: any) {
+        // Eliminación idempotente: si el documento ya no existe (p. ej. una
+        // segunda petición por doble clic o por una lectura previa
+        // eventualmente consistente), se considera ya eliminado y NO se
+        // propaga el error 404 crudo de Cosmos al usuario.
+        if (e?.code !== 404) throw e;
+      }
       await writeAuditLog({ entityType: "schedule", entityId: s.id, clientId: s.clientId, clientName: s.clientName, action: "schedule_deleted", performedBy: user.id, performedByEmail: user.email, metadata: { cancelledOpenTasks: cancelled } });
+      // Regenerar: si una tarea era compartida por otra programación activa
+      // (p. ej. una copia con el mismo alcance), vuelve a vincularse de
+      // inmediato en lugar de quedar cancelada hasta el próximo timer.
+      await regenerarTareasTrasGuardar();
       return noContent();
     } catch (e) { return serverError(e); }
   },

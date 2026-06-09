@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildScheduleRecord,
   deactivateDomainDefaultSchedule,
+  generateGenericScheduleName,
   isDomainDefaultScheduleForDomain,
   normalizeFrequencyResponsibility,
   validateFrequency,
@@ -56,6 +57,26 @@ describe("validateFrequency", () => {
 });
 
 describe("buildScheduleRecord", () => {
+  it("genera nombre descriptivo cuando la actualización programada no trae nombre", () => {
+    expect(generateGenericScheduleName({
+      frequencyType: "once",
+      clientName: "P&A",
+      startDate: "2026-06-10",
+    })).toBe("Actualización única — P&A — 2026-06-10");
+    expect(generateGenericScheduleName({
+      name: "  Ventana mensual crítica  ",
+      frequencyType: "monthly",
+      clientName: "P&A",
+      startDate: "2026-06-10",
+    })).toBe("Ventana mensual crítica");
+    expect(generateGenericScheduleName({
+      selectionMode: "licensing",
+      frequencyType: "weekly",
+      clientName: "P&A",
+      startDate: "2026-06-10",
+    })).toBe("Actualización por licenciamiento — semanal — 2026-06-10");
+  });
+
   it("construye una frecuencia tipo dominio asociada al dominio recién creado", () => {
     const r = buildScheduleRecord({
       input: { frequencyType: "weekly", weekdays: ["FRIDAY"], startDate: "2026-05-01", assignedRole: "domain_updater" },

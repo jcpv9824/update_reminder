@@ -63,6 +63,18 @@ Tras revisar en detalle, se completaron tres piezas que faltaban respecto al pla
 
 Pruebas agregadas: `api/src/tests/taskNotifications.test.ts` (6) y dos casos en `frontend/src/tests/FrecuenciasPage.test.tsx` (agrupacion por estado y duplicar).
 
+## Correccion: eliminacion idempotente de actualizaciones programadas
+
+Sintoma: al eliminar una actualizacion programada, a veces aparecia el error crudo de Cosmos `Entity with the specified id does not exist in the system` (404 en Delete) aunque la eliminacion si se realizaba.
+
+Causa: `findSchedule` usa una consulta cross-particion que podia devolver un documento ya eliminado en una segunda peticion (doble clic o lectura eventualmente consistente); el `.delete()` posterior chocaba con un documento inexistente y se propagaba el 404.
+
+Solucion:
+- `DELETE /schedules/{id}` ahora es **idempotente**: si el `.delete()` devuelve 404, se trata como ya eliminado y no se propaga el error.
+- La cancelacion de tareas de la programacion tolera tareas que desaparecieron de forma concurrente (404 por tarea se omite).
+- Tras eliminar, se ejecuta una regeneracion para que una tarea **compartida** por otra programacion activa (p. ej. una copia con el mismo alcance) se vuelva a vincular de inmediato.
+- Frontend: el boton de confirmacion de borrado ignora clics repetidos mientras la operacion esta en curso.
+
 ## Correccion de tareas huerfanas sin actualizaciones programadas
 
 Se corrigio un caso en el que seguian apareciendo tareas viejas vencidas o fallidas aunque ya no existieran actualizaciones programadas:
