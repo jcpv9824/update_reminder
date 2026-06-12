@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
@@ -43,6 +43,14 @@ type ConexionInfo = {
   user: string;
   hasPassword: boolean;
 };
+
+function normalizarBusqueda(valor: string | null | undefined): string {
+  return (valor ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
 
 function etiquetaTipo(targetType: "domain" | "database", plural = false): string {
   if (targetType === "domain") return plural ? "dominios" : "Dominio";
@@ -392,10 +400,58 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
   onSolicitarCompletar: (t: Tarea) => void;
   onAccion: (id: string, accion: AccionTarea, body?: any) => void;
 }) {
-  const pendientes = grupo.tareas.filter((t) => t.status !== "completed" && t.status !== "cancelled");
   const [bloqueo, setBloqueo] = useState<Tarea | null>(null);
   const [resolver, setResolver] = useState<Tarea | null>(null);
   const [reabrir, setReabrir] = useState<Tarea | null>(null);
+  const [busquedaDetalle, setBusquedaDetalle] = useState("");
+  const [servidorSeleccionado, setServidorSeleccionado] = useState("all");
+  const [conexionesPorTarea, setConexionesPorTarea] = useState<Record<string, ConexionInfo>>({});
+
+  const registrarConexion = useCallback((taskId: string, info: ConexionInfo) => {
+    setConexionesPorTarea((actual) => {
+      const existente = actual[taskId];
+      if (
+        existente?.server === info.server &&
+        existente?.databaseName === info.databaseName &&
+        existente?.user === info.user &&
+        existente?.hasPassword === info.hasPassword
+      ) {
+        return actual;
+      }
+      return { ...actual, [taskId]: info };
+    });
+  }, []);
+
+  useEffect(() => {
+    setBusquedaDetalle("");
+    setServidorSeleccionado("all");
+    setConexionesPorTarea({});
+  }, [grupo.id]);
+
+  const servidoresDisponibles = useMemo(() => {
+    return Array.from(new Set(Object.values(conexionesPorTarea).map((c) => c.server).filter(Boolean)))
+      .sort((a, b) => a.localeCompare(b, "es"));
+  }, [conexionesPorTarea]);
+
+  const tareasFiltradas = useMemo(() => {
+    const termino = normalizarBusqueda(busquedaDetalle);
+    return grupo.tareas.filter((tarea) => {
+      const conexion = conexionesPorTarea[tarea.id];
+      const valoresBusqueda = [
+        tarea.clientName,
+        tarea.domainName,
+        formatDomainForPublishing(tarea.domainName),
+        tarea.targetName,
+        conexion?.databaseName,
+        conexion?.server,
+      ];
+      const coincideTexto = !termino || normalizarBusqueda(valoresBusqueda.filter(Boolean).join(" ")).includes(termino);
+      const coincideServidor = grupo.targetType !== "database" || servidorSeleccionado === "all" || conexion?.server === servidorSeleccionado;
+      return coincideTexto && coincideServidor;
+    });
+  }, [busquedaDetalle, conexionesPorTarea, grupo.tareas, grupo.targetType, servidorSeleccionado]);
+
+  const pendientes = tareasFiltradas.filter((t) => t.status !== "completed" && t.status !== "cancelled");
   return (
     <>
       <p>
@@ -406,6 +462,32 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
         <strong>Total:</strong> {grupo.total} · <strong>Completadas:</strong> {grupo.completadasOk} / {grupo.total} · <strong>Con problemas:</strong> {grupo.completadasConProblemas}
       </p>
       {grupo.scheduleName && <p><strong>Actualización programada:</strong> {grupo.scheduleName}</p>}
+      <div className="grid-formulario" style={{ gridTemplateColumns: grupo.targetType === "database" ? "minmax(240px, 1fr) minmax(220px, 320px)" : "minmax(240px, 1fr)", marginTop: 12 }}>
+        <div className="fila-formulario">
+          <label htmlFor={`buscar-detalle-${grupo.id}`}>Buscar en este detalle</label>
+          <input
+            id={`buscar-detalle-${grupo.id}`}
+            type="search"
+            placeholder={grupo.targetType === "database" ? "Buscar por cliente, dominio o base..." : "Buscar por cliente o dominio..."}
+            value={busquedaDetalle}
+            onChange={(e) => setBusquedaDetalle(e.target.value)}
+          />
+        </div>
+        {grupo.targetType === "database" && (
+          <div className="fila-formulario">
+            <label htmlFor={`servidor-detalle-${grupo.id}`}>Filtrar por servidor</label>
+            <select id={`servidor-detalle-${grupo.id}`} value={servidorSeleccionado} onChange={(e) => setServidorSeleccionado(e.target.value)}>
+              <option value="all">Todos los servidores</option>
+              {servidoresDisponibles.map((servidor) => (
+                <option key={servidor} value={servidor}>{servidor}</option>
+              ))}
+            </select>
+          </div>
+        )}
+      </div>
+      <p className="texto-ayuda">
+        Mostrando {tareasFiltradas.length} de {grupo.tareas.length} {grupo.targetType === "domain" ? "dominios" : "bases"} del detalle.
+      </p>
       {grupo.targetType === "domain" ? (
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           <button
@@ -446,7 +528,13 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
           </tr>
         </thead>
         <tbody>
-          {grupo.tareas.map((tarea) => {
+          {tareasFiltradas.length === 0 ? (
+            <tr>
+              <td colSpan={6} className="texto-ayuda" style={{ textAlign: "center", padding: 18 }}>
+                No hay tareas que coincidan con la búsqueda.
+              </td>
+            </tr>
+          ) : tareasFiltradas.map((tarea) => {
             const estado = guardado[tarea.id];
             const puedeCambiar = puedeCambiarTarea(usuario, tarea);
             const notaMostrada = tarea.completedWithProblems
@@ -465,7 +553,7 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
                   <>
                     <td style={{ fontFamily: "monospace" }}>{dominioPublicable}</td>
                     <td>
-                      <ConexionBaseCelda tarea={tarea} usuario={usuario} />
+                      <ConexionBaseCelda tarea={tarea} usuario={usuario} onConexionCargada={registrarConexion} />
                     </td>
                   </>
                 )}
@@ -620,7 +708,11 @@ function ModalReabrirTarea({ tarea, onCerrar, onConfirmar }: {
   );
 }
 
-function ConexionBaseCelda({ tarea, usuario }: { tarea: Tarea; usuario: Usuario | null }) {
+function ConexionBaseCelda({ tarea, usuario, onConexionCargada }: {
+  tarea: Tarea;
+  usuario: Usuario | null;
+  onConexionCargada?: (taskId: string, info: ConexionInfo) => void;
+}) {
   const [passwordVisible, setPasswordVisible] = useState<string | null>(null);
   const [cargandoPwd, setCargandoPwd] = useState(false);
   const [errorPwd, setErrorPwd] = useState<string | null>(null);
@@ -633,6 +725,11 @@ function ConexionBaseCelda({ tarea, usuario }: { tarea: Tarea; usuario: Usuario 
     enabled: tarea.targetType === "database" && !!tarea.targetId && !!tarea.id,
     retry: false,
   });
+  const info = conexion.data;
+
+  useEffect(() => {
+    if (info) onConexionCargada?.(tarea.id, info);
+  }, [info, onConexionCargada, tarea.id]);
 
   function ocultarPassword() {
     if (ocultarTimer.current) { window.clearTimeout(ocultarTimer.current); ocultarTimer.current = null; }
@@ -696,7 +793,6 @@ function ConexionBaseCelda({ tarea, usuario }: { tarea: Tarea; usuario: Usuario 
       </div>
     );
   }
-  const info = conexion.data;
   if (!info) return <span className="texto-ayuda">No se pudo cargar la conexión.</span>;
   return (
     <div className="conexion-celda">

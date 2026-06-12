@@ -467,6 +467,37 @@ describe("TareasPage (vista unificada)", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("argatex.sagerp.cloud\nmachineparts.sagerp.cloud"));
   });
 
+  it("permite buscar en el detalle de dominios por cliente o dominio", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    mockTareas({
+      dominios: [
+        tarea({
+          id: "dom_pya",
+          clientName: "P&A",
+          domainName: "https://pya.sagerp.cloud:54678/",
+          targetName: "https://pya.sagerp.cloud:54678/",
+        }),
+        tarea({
+          id: "dom_asia",
+          clientName: "ASIA SUPPLY AND LOGISTICS",
+          domainName: "https://asiasuplog.sagerp.cloud:54678/",
+          targetName: "https://asiasuplog.sagerp.cloud:54678/",
+        }),
+      ],
+    });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    expect(await screen.findByText("P&A")).toBeInTheDocument();
+    expect(screen.getByText("ASIA SUPPLY AND LOGISTICS")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/Buscar en este detalle/i), { target: { value: "asia" } });
+
+    expect(screen.queryByText("P&A")).toBeNull();
+    expect(screen.getByText("ASIA SUPPLY AND LOGISTICS")).toBeInTheDocument();
+    expect(screen.getByText(/Mostrando 1 de 2 dominios/i)).toBeInTheDocument();
+  });
+
   it("muestra 'Tu rol puede atender esta tarea' cuando no hay asignado y el rol coincide", async () => {
     usuarioMock.id = "u";
     usuarioMock.roles = ["domain_updater"];
@@ -513,6 +544,61 @@ describe("TareasPage (vista unificada)", () => {
     expect(screen.queryByRole("button", { name: /Reportar problema/i })).toBeNull();
   });
 
+  it("permite buscar bases y filtrarlas por servidor en el detalle", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    mockTareas({
+      bases: [
+        tarea({
+          id: "base_pya",
+          targetType: "database",
+          targetId: "db_pya",
+          targetName: "PYACOL",
+          clientName: "P&A",
+          domainName: "https://pya.sagerp.cloud:54678/",
+          assignedRole: "database_updater",
+        }),
+        tarea({
+          id: "base_asia",
+          targetType: "database",
+          targetId: "db_asia",
+          targetName: "ASIASUPLOG-DB",
+          clientName: "ASIA SUPPLY AND LOGISTICS",
+          domainName: "https://asiasuplog.sagerp.cloud:54678/",
+          assignedRole: "database_updater",
+        }),
+      ],
+      basesDetalle: [
+        bd("db_pya", {
+          clientName: "P&A",
+          domainName: "https://pya.sagerp.cloud:54678/",
+          dbAccess: { ...bd("db_pya").dbAccess, serverHostPort: "data11.sagerp.co,54106", initialCatalog: "PYACOL" },
+        }),
+        bd("db_asia", {
+          clientName: "ASIA SUPPLY AND LOGISTICS",
+          domainName: "https://asiasuplog.sagerp.cloud:54678/",
+          dbAccess: { ...bd("db_asia").dbAccess, serverHostPort: "data15.sagerp.co,53504", initialCatalog: "ASIASUPLOG-DB" },
+        }),
+      ],
+    });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    expect(await screen.findByText("PYACOL")).toBeInTheDocument();
+    expect(await screen.findByText("ASIASUPLOG-DB")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/Buscar en este detalle/i), { target: { value: "asiasuplog" } });
+    expect(screen.queryByText("PYACOL")).toBeNull();
+    expect(screen.getByText("ASIASUPLOG-DB")).toBeInTheDocument();
+    expect(screen.getByText(/Mostrando 1 de 2 bases/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/Buscar en este detalle/i), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText(/Filtrar por servidor/i), { target: { value: "data11.sagerp.co,54106" } });
+
+    await waitFor(() => expect(screen.getByText("PYACOL")).toBeInTheDocument());
+    expect(screen.queryByText("ASIASUPLOG-DB")).toBeNull();
+    expect(screen.getByText(/Mostrando 1 de 2 bases/i)).toBeInTheDocument();
+  });
+
   it("grupo de bases por rol carga conexión por taskId aunque assignedUserIds esté vacío", async () => {
     usuarioMock.id = "u";
     usuarioMock.roles = ["database_updater"];
@@ -528,7 +614,7 @@ describe("TareasPage (vista unificada)", () => {
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
     expect(await screen.findByText(/Servidor:/i)).toBeInTheDocument();
-    expect(screen.getByText("data-ims.imsampedro.cloud,54101")).toBeInTheDocument();
+    expect(screen.getAllByText("data-ims.imsampedro.cloud,54101").length).toBeGreaterThan(0);
     expect(screen.queryByText(/Cargando conexión/i)).toBeNull();
     await waitFor(() =>
       expect(apiMock.get).toHaveBeenCalledWith("/databases/db_role/access-info?taskId=b_role")
