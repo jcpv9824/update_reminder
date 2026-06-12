@@ -21,6 +21,7 @@ export default function UsuariosPage() {
   const [modalAbierto, setModalAbierto] = useState(false);
   const [editando, setEditando] = useState<Usuario | null>(null);
   const [reset, setReset] = useState<Usuario | null>(null);
+  const [reenviar, setReenviar] = useState<Usuario | null>(null);
   const [exito, setExito] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pagina, setPagina] = useState(1);
@@ -45,6 +46,11 @@ export default function UsuariosPage() {
     mutationFn: ({ id, password }: any) => api.post(`/users/${id}/reset-password`, { password }),
     onSuccess: () => { setReset(null); setExito("Contraseña actualizada."); },
     onError: (e: any) => setError(e?.message),
+  });
+  const reenviarMut = useMutation({
+    mutationFn: (id: string) => api.post(`/users/${id}/resend-credentials`),
+    onSuccess: () => { setReenviar(null); setExito("Se generó una nueva contraseña temporal y se envió por correo al usuario."); },
+    onError: (e: any) => { setReenviar(null); setError(e?.message ?? "No se pudo reenviar la contraseña."); },
   });
   const desactivar = useMutation({ mutationFn: (id: string) => api.post(`/users/${id}/deactivate`), onSuccess: () => qc.invalidateQueries({ queryKey: ["usuarios"] }) });
   const reactivar = useMutation({ mutationFn: (id: string) => api.post(`/users/${id}/reactivate`), onSuccess: () => qc.invalidateQueries({ queryKey: ["usuarios"] }) });
@@ -73,6 +79,7 @@ export default function UsuariosPage() {
                   <td className="acciones-tabla">
                     <button onClick={() => setEditando(u)}>Editar</button>
                     <button onClick={() => setReset(u)}>Restablecer contraseña</button>
+                    <button onClick={() => setReenviar(u)}>Reenviar contraseña</button>
                     {u.active
                       ? <button className="advertencia" onClick={() => desactivar.mutate(u.id)}>Desactivar</button>
                       : <button className="exito" onClick={() => reactivar.mutate(u.id)}>Reactivar</button>}
@@ -100,6 +107,18 @@ export default function UsuariosPage() {
       </Modal>
       <Modal titulo={`Restablecer contraseña de ${reset?.displayName ?? ""}`} abierto={!!reset} onCerrar={() => setReset(null)}>
         {reset && <FormularioReset onSubmit={(p) => resetMut.mutate({ id: reset.id, password: p })} cargando={resetMut.isPending} />}
+      </Modal>
+      <Modal titulo={`Reenviar contraseña a ${reenviar?.displayName ?? ""}`} abierto={!!reenviar} onCerrar={() => setReenviar(null)}>
+        {reenviar && (
+          <div>
+            <p>Se generará una <strong>nueva contraseña temporal</strong> para <strong>{reenviar.email}</strong> y se enviará por correo junto con sus datos de acceso y el enlace de inicio de sesión.</p>
+            <p style={{ color: "#607086", fontSize: 13 }}>Por seguridad, las contraseñas se guardan cifradas y no se pueden recuperar; por eso se envía una contraseña nueva que reemplaza la anterior.</p>
+            <div className="acciones-formulario">
+              <button onClick={() => setReenviar(null)} disabled={reenviarMut.isPending}>Cancelar</button>
+              <button className="primario" onClick={() => reenviarMut.mutate(reenviar.id)} disabled={reenviarMut.isPending}>{reenviarMut.isPending ? "Enviando..." : "Generar y enviar"}</button>
+            </div>
+          </div>
+        )}
       </Modal>
     </>
   );

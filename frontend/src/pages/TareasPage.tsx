@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
@@ -87,9 +87,35 @@ function estadoDespuesDeAccion(accion: AccionTarea): Tarea["status"] {
   return "pending";
 }
 
-async function copiarTexto(texto: string): Promise<void> {
-  if (!texto) return;
-  await navigator.clipboard?.writeText(texto);
+// Copia robusta al portapapeles. El Clipboard API moderno exige "activación
+// transitoria" del usuario; si la copia ocurre DESPUÉS de un await de red
+// (p. ej. revelar la contraseña), esa activación ya expiró y writeText falla.
+// Por eso intentamos primero el API moderno y, si falla, usamos el método
+// clásico textarea + execCommand, que es más tolerante en ese escenario.
+async function copiarTexto(texto: string): Promise<boolean> {
+  if (!texto) return false;
+  try {
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(texto);
+      return true;
+    }
+  } catch {/* intentar el método de respaldo */}
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = texto;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
 }
 
 function claveResponsable(t: Tarea): string {
@@ -598,6 +624,8 @@ function ConexionBaseCelda({ tarea, usuario }: { tarea: Tarea; usuario: Usuario 
   const [passwordVisible, setPasswordVisible] = useState<string | null>(null);
   const [cargandoPwd, setCargandoPwd] = useState(false);
   const [errorPwd, setErrorPwd] = useState<string | null>(null);
+  const [mensajePwd, setMensajePwd] = useState<string | null>(null);
+  const ocultarTimer = useRef<number | null>(null);
   const puedeVerPassword = puedeCambiarTarea(usuario, tarea);
   const conexion = useQuery({
     queryKey: ["conexion-db-tarea", tarea.targetId, tarea.id],
@@ -606,20 +634,50 @@ function ConexionBaseCelda({ tarea, usuario }: { tarea: Tarea; usuario: Usuario 
     retry: false,
   });
 
-  async function revelarPassword(paraCopiar: boolean) {
+  function ocultarPassword() {
+    if (ocultarTimer.current) { window.clearTimeout(ocultarTimer.current); ocultarTimer.current = null; }
+    setPasswordVisible(null);
+  }
+
+  // "Ver" alterna: si ya está visible, la oculta; si no, la revela (con
+  // auto-ocultado a los 30s). Limpia el temporizador previo para no reocultar
+  // antes de tiempo al re-revelar.
+  async function alternarVer() {
+    if (passwordVisible) { ocultarPassword(); return; }
     if (!conexion.data || !puedeVerPassword) return;
     setCargandoPwd(true);
     setErrorPwd(null);
+    setMensajePwd(null);
     try {
       const r = await api.post<{ password: string }>(`/databases/${tarea.targetId}/reveal-password`, { taskId: tarea.id, reason: "task_detail" });
-      if (paraCopiar) {
-        await copiarTexto(r.password);
-      } else {
-        setPasswordVisible(r.password);
-        window.setTimeout(() => setPasswordVisible(null), 30000);
-      }
+      setPasswordVisible(r.password);
+      if (ocultarTimer.current) window.clearTimeout(ocultarTimer.current);
+      ocultarTimer.current = window.setTimeout(() => { setPasswordVisible(null); ocultarTimer.current = null; }, 30000);
     } catch (e: any) {
       setErrorPwd(e?.message ?? "No se pudo revelar la contraseña.");
+    } finally {
+      setCargandoPwd(false);
+    }
+  }
+
+  async function copiarPassword() {
+    if (!conexion.data || !puedeVerPassword) return;
+    setCargandoPwd(true);
+    setErrorPwd(null);
+    setMensajePwd(null);
+    try {
+      const r = await api.post<{ password: string }>(`/databases/${tarea.targetId}/reveal-password`, { taskId: tarea.id, reason: "task_detail_copy" });
+      const ok = await copiarTexto(r.password);
+      if (ok) {
+        setMensajePwd("Contraseña copiada al portapapeles.");
+      } else {
+        // Si el navegador bloqueó el portapapeles, mostramos la contraseña
+        // para que el usuario pueda copiarla manualmente.
+        setPasswordVisible(r.password);
+        setErrorPwd("No se pudo copiar automáticamente. La contraseña se muestra para copiarla manualmente.");
+      }
+    } catch (e: any) {
+      setErrorPwd(e?.message ?? "No se pudo copiar la contraseña.");
     } finally {
       setCargandoPwd(false);
     }
@@ -651,14 +709,15 @@ function ConexionBaseCelda({ tarea, usuario }: { tarea: Tarea; usuario: Usuario 
         <span className="acciones-tabla">
           {puedeVerPassword && info.hasPassword ? (
             <>
-              <button type="button" disabled={cargandoPwd} onClick={() => revelarPassword(false)}>Ver</button>
-              <button type="button" disabled={cargandoPwd} onClick={() => revelarPassword(true)}>Copiar</button>
+              <button type="button" disabled={cargandoPwd} onClick={alternarVer}>{passwordVisible ? "Ocultar" : "Ver"}</button>
+              <button type="button" disabled={cargandoPwd} onClick={copiarPassword}>Copiar</button>
             </>
           ) : (
             <button type="button" disabled title="No tienes permiso para ver esta contraseña.">Sin permiso</button>
           )}
         </span>
       </div>
+      {mensajePwd && <span className="texto-ayuda" style={{ color: "#047857" }}>{mensajePwd}</span>}
       {errorPwd && <span className="texto-ayuda" style={{ color: "#991b1b" }}>{errorPwd}</span>}
     </div>
   );

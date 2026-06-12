@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { hashPassword, verifyPassword, normalizeEmail } from "../lib/password";
+import { hashPassword, verifyPassword, normalizeEmail, generateTemporaryPassword } from "../lib/password";
 
 describe("password helpers", () => {
   it("hashPassword genera un hash que verifica con verifyPassword", async () => {
@@ -16,5 +16,15 @@ describe("password helpers", () => {
 
   it("normalizeEmail trim + lowercase", () => {
     expect(normalizeEmail("  Camilo.Palacio@PYA.com.co  ")).toBe("camilo.palacio@pya.com.co");
+  });
+
+  it("generateTemporaryPassword crea una contraseña temporal fuerte y legible", () => {
+    const password = generateTemporaryPassword();
+    expect(password).toHaveLength(12);
+    expect(password).toMatch(/[A-Z]/);
+    expect(password).toMatch(/[a-z]/);
+    expect(password).toMatch(/[2-9]/);
+    expect(password).toMatch(/[!@#$%*?]/);
+    expect(password).not.toMatch(/[IOlo01]/);
   });
 });

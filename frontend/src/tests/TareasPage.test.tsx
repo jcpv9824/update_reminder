@@ -608,6 +608,8 @@ describe("TareasPage (vista unificada)", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^Ver$/i }));
     await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/databases/db_1/reveal-password", { taskId: "b1", reason: "task_detail" }));
     expect(await screen.findByText("pwd-secreta")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Ocultar$/i }));
+    expect(screen.queryByText("pwd-secreta")).toBeNull();
     fireEvent.click(screen.getAllByRole("button", { name: /^Copiar$/i }).at(-1)!);
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("pwd-secreta"));
   });

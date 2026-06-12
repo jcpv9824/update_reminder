@@ -4,31 +4,44 @@ import { requireUser, loadUserProfile } from "../lib/auth";
 import { canManageUsers } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
-import { hashPassword, normalizeEmail } from "../lib/password";
+import { hashPassword, normalizeEmail, generateTemporaryPassword } from "../lib/password";
 import { badRequest, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import { getPagination, paginateArray } from "../lib/pagination";
 import { loadEmailAlertsSettings } from "../lib/settingsService";
-import { renderUserPasswordEmail, sendEmail } from "../lib/emailService";
+import { sendEmail } from "../lib/emailService";
+import { buildWelcomeUserEmail, buildResendCredentialsEmail } from "../lib/emailTemplates";
 import type { UserRecord } from "../types/models";
 
+// Envía el correo de credenciales (bienvenida, restablecimiento o reenvío).
+// `kind` decide la plantilla responsiva. Estos correos incluyen la contraseña
+// temporal porque se generan como credenciales de acceso; el maestro
+// `passwordNotificationEnabled` desactiva todo el envío si el negocio lo pide.
 async function notificarContrasena(args: {
   email: string;
   displayName: string;
   password: string;
-  isReset: boolean;
+  roles: string[];
+  kind: "welcome" | "reset" | "resend";
   performedBy: string;
   performedByEmail: string;
 }): Promise<void> {
   const settings = await loadEmailAlertsSettings();
   if (!settings.passwordNotificationEnabled) return;
-  const incluirPwd = !!settings.sendTemporaryPasswordByEmail;
-  const tpl = renderUserPasswordEmail({
-    displayName: args.displayName,
-    email: args.email,
-    temporaryPassword: incluirPwd ? args.password : undefined,
-    isReset: args.isReset,
-    appUrl: settings.frontendBaseUrl,
-  });
+  const tpl = args.kind === "welcome"
+    ? buildWelcomeUserEmail({
+        displayName: args.displayName,
+        email: args.email,
+        temporaryPassword: args.password,
+        roles: args.roles,
+        frontendBaseUrl: settings.frontendBaseUrl,
+      })
+    : buildResendCredentialsEmail({
+        displayName: args.displayName,
+        email: args.email,
+        temporaryPassword: args.password,
+        roles: args.roles,
+        frontendBaseUrl: settings.frontendBaseUrl,
+      });
   const r = await sendEmail({ to: args.email, subject: tpl.subject, html: tpl.html, text: tpl.text }, settings);
   await writeAuditLog({
     entityType: "user",
@@ -36,7 +49,7 @@ async function notificarContrasena(args: {
     action: r.ok ? "password_notification_sent" : "password_notification_failed",
     performedBy: args.performedBy,
     performedByEmail: args.performedByEmail,
-    metadata: { isReset: args.isReset, includedPassword: incluirPwd, error: r.ok ? undefined : r.error },
+    metadata: { kind: args.kind, includedPassword: true, error: r.ok ? undefined : r.error },
   });
 }
 
@@ -128,8 +141,8 @@ app.http("usersCreate", {
         performedByEmail: u.email,
         after: sanitize(record),
       });
-      // Notificación opcional con/ sin contraseña según settings.
-      try { await notificarContrasena({ email: record.email, displayName: record.displayName, password: parsed.data.password, isReset: false, performedBy: u.id, performedByEmail: u.email }); } catch {/* no bloquear creación */}
+      // Correo de bienvenida (responsivo) con credenciales y rol.
+      try { await notificarContrasena({ email: record.email, displayName: record.displayName, password: parsed.data.password, roles: record.roles, kind: "welcome", performedBy: u.id, performedByEmail: u.email }); } catch {/* no bloquear creación */}
       return created(sanitize(record));
     } catch (e: any) {
       if (e?.code === 409) return badRequest("Ya existe un usuario con ese identificador.");
@@ -206,8 +219,47 @@ app.http("usersResetPassword", {
         performedBy: u.id,
         performedByEmail: u.email,
       });
-      try { await notificarContrasena({ email: resource.email, displayName: resource.displayName, password: parsed.data.password, isReset: true, performedBy: u.id, performedByEmail: u.email }); } catch {/* no bloquear reset */}
+      try { await notificarContrasena({ email: resource.email, displayName: resource.displayName, password: parsed.data.password, roles: resource.roles, kind: "reset", performedBy: u.id, performedByEmail: u.email }); } catch {/* no bloquear reset */}
       return ok(sanitize(resource));
+    } catch (e) { return serverError(e); }
+  },
+});
+
+// Reenviar contraseña: como las contraseñas se guardan cifradas y no se pueden
+// recuperar, se genera una NUEVA contraseña temporal, se guarda su hash y se
+// envía por correo (plantilla responsiva). Solo administradores.
+app.http("usersResendCredentials", {
+  route: "users/{id}/resend-credentials",
+  methods: ["POST"],
+  authLevel: "anonymous",
+  handler: async (req): Promise<HttpResponseInit> => {
+    try {
+      const u = await getUserOrFail(req);
+      if (!canManageUsers(u)) return forbidden();
+      const id = req.params.id;
+      const container = getContainer("users");
+      const { resource } = await container.item(id, id).read<UserRecord>();
+      if (!resource) return notFound("Usuario no encontrado.");
+      const settings = await loadEmailAlertsSettings();
+      if (!settings.passwordNotificationEnabled) {
+        return badRequest("El envío de credenciales por correo está deshabilitado en Alertas y correos.");
+      }
+      const temporal = generateTemporaryPassword();
+      const now = new Date().toISOString();
+      resource.passwordHash = await hashPassword(temporal);
+      resource.passwordUpdatedAt = now;
+      resource.updatedAt = now;
+      resource.updatedBy = u.id;
+      await container.item(id, id).replace(resource);
+      await writeAuditLog({
+        entityType: "user",
+        entityId: id,
+        action: "user_credentials_resent",
+        performedBy: u.id,
+        performedByEmail: u.email,
+      });
+      await notificarContrasena({ email: resource.email, displayName: resource.displayName, password: temporal, roles: resource.roles, kind: "resend", performedBy: u.id, performedByEmail: u.email });
+      return ok({ ...sanitize(resource), emailSent: true });
     } catch (e) { return serverError(e); }
   },
 });

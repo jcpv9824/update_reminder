@@ -4,9 +4,12 @@ import {
   buildDomainReminderEmail,
   buildMastersReportEmail,
   buildOverdueTasksEmail,
+  buildResendCredentialsEmail,
   buildTestEmail,
+  buildWelcomeUserEmail,
   escapeHtml,
   normalizeBaseUrl,
+  roleLabels,
 } from "../lib/emailTemplates";
 
 describe("emailTemplates", () => {
@@ -107,6 +110,45 @@ describe("emailTemplates", () => {
     expect(serialized).toContain("info@pya.com.co");
     expect(serialized).toContain("https://app.example.com");
     expect(serialized).not.toMatch(/smtp-password-info|clave-real|valor-prueba-no-real/i);
+  });
+
+  it("buildWelcomeUserEmail incluye usuario, rol, contraseña temporal y enlace de login", () => {
+    const email = buildWelcomeUserEmail({
+      displayName: "Camilo",
+      email: "camilo@empresa.com",
+      temporaryPassword: "Tmp123!*",
+      roles: ["admin", "database_updater"],
+      frontendBaseUrl: "https://app.example.com/",
+    });
+    const serialized = `${email.html}\n${email.text}`;
+    expect(email.subject).toContain("Bienvenido");
+    expect(serialized).toContain("camilo@empresa.com");
+    expect(serialized).toContain("Tmp123!*");
+    expect(serialized).toContain("Administrador");
+    expect(serialized).toContain("Actualizador de bases de datos");
+    expect(serialized).toContain("https://app.example.com/login");
+    expect(serialized).not.toMatch(/smtp|secretName|keyVault/i);
+  });
+
+  it("buildResendCredentialsEmail indica que la contraseña temporal es nueva", () => {
+    const email = buildResendCredentialsEmail({
+      displayName: "Laura",
+      email: "laura@empresa.com",
+      temporaryPassword: "Nueva123!*",
+      roles: ["viewer"],
+      frontendBaseUrl: "https://app.example.com",
+    });
+    const serialized = `${email.html}\n${email.text}`;
+    expect(email.subject).toContain("Tus datos de acceso");
+    expect(serialized).toContain("nueva contraseña temporal");
+    expect(serialized).toContain("Nueva123!*");
+    expect(serialized).toContain("Visualizador");
+    expect(serialized).toContain("https://app.example.com/login");
+  });
+
+  it("roleLabels traduce roles conocidos y conserva roles desconocidos", () => {
+    expect(roleLabels(["client_manager", "rol_custom"])).toBe("Administrador de clientes, rol_custom");
+    expect(roleLabels([])).toBe("Sin rol asignado");
   });
 
   it("buildMastersReportEmail agrupa clientes, dominios y bases sin datos sensibles", () => {

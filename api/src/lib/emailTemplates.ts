@@ -365,6 +365,96 @@ export function buildTestEmail(input: {
   };
 }
 
+const ROLE_LABELS: Record<string, string> = {
+  admin: "Administrador",
+  client_manager: "Administrador de clientes",
+  database_updater: "Actualizador de bases de datos",
+  domain_updater: "Actualizador de dominios",
+  viewer: "Visualizador",
+};
+
+export function roleLabels(roles: string[] = []): string {
+  if (!roles.length) return "Sin rol asignado";
+  return roles.map((r) => ROLE_LABELS[r] ?? r).join(", ");
+}
+
+// Bloque de credenciales reutilizable (correo de acceso, contraseña temporal,
+// rol). Responsive: usa tabla con ancho 100% y estilos inline.
+function credentialsBlock(args: { email: string; temporaryPassword?: string; roles: string[] }): string {
+  const filas: string[] = [
+    `<tr><td style="padding:8px 12px; border:1px solid ${COLORS.neutral}; background:#f8fafc; font-weight:700; width:42%;">Correo de acceso</td><td style="padding:8px 12px; border:1px solid ${COLORS.neutral}; font-family:Consolas, 'Courier New', monospace;">${escapeHtml(args.email)}</td></tr>`,
+  ];
+  if (args.temporaryPassword) {
+    filas.push(`<tr><td style="padding:8px 12px; border:1px solid ${COLORS.neutral}; background:#f8fafc; font-weight:700;">Contraseña temporal</td><td style="padding:8px 12px; border:1px solid ${COLORS.neutral}; font-family:Consolas, 'Courier New', monospace; color:${COLORS.primary}; font-weight:700;">${escapeHtml(args.temporaryPassword)}</td></tr>`);
+  }
+  filas.push(`<tr><td style="padding:8px 12px; border:1px solid ${COLORS.neutral}; background:#f8fafc; font-weight:700;">Rol</td><td style="padding:8px 12px; border:1px solid ${COLORS.neutral};">${escapeHtml(roleLabels(args.roles))}</td></tr>`);
+  return `
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin:6px 0 4px; font-size:14px; line-height:20px;">
+      ${filas.join("")}
+    </table>`;
+}
+
+// Correo de bienvenida enviado cuando se crea un usuario. Incluye sus
+// credenciales (correo, contraseña temporal), su rol y el enlace de acceso.
+export function buildWelcomeUserEmail(input: {
+  displayName: string;
+  email: string;
+  temporaryPassword?: string;
+  roles?: string[];
+  frontendBaseUrl?: string;
+}): EmailBuildResult {
+  const baseUrl = normalizeBaseUrl(input.frontendBaseUrl);
+  const subject = "Bienvenido al Programador de Actualizaciones ERP";
+  const intro = `Hola ${input.displayName}, tu cuenta fue creada en el Programador de Actualizaciones ERP. A continuación encontrarás tus datos de acceso.`;
+  const nota = input.temporaryPassword
+    ? `<p style="margin:10px 0 0; font-size:13px; line-height:19px; color:${COLORS.muted};">Por seguridad, te recomendamos cambiar tu contraseña después de iniciar sesión por primera vez.</p>`
+    : `<p style="margin:10px 0 0; font-size:13px; line-height:19px; color:${COLORS.muted};">Solicita tu contraseña al administrador o usa la opción de inicio de sesión.</p>`;
+  const body = `
+    ${credentialsBlock({ email: input.email, temporaryPassword: input.temporaryPassword, roles: input.roles ?? [] })}
+    ${nota}`;
+  const text = [
+    `${intro}`,
+    `Correo de acceso: ${input.email}`,
+    input.temporaryPassword ? `Contraseña temporal: ${input.temporaryPassword}` : "Contraseña: solicítala al administrador.",
+    `Rol: ${roleLabels(input.roles ?? [])}`,
+    `Iniciar sesión: ${baseUrl}/login`,
+  ].join("\n");
+  return {
+    subject,
+    html: layout({ title: "Bienvenido", intro, preheader: intro, body, cta: "Iniciar sesión", ctaHref: `${baseUrl}/login` }),
+    text,
+  };
+}
+
+// Correo de reenvío de credenciales. Como las contraseñas se guardan cifradas
+// (no se pueden recuperar), este correo entrega una contraseña temporal NUEVA.
+export function buildResendCredentialsEmail(input: {
+  displayName: string;
+  email: string;
+  temporaryPassword: string;
+  roles?: string[];
+  frontendBaseUrl?: string;
+}): EmailBuildResult {
+  const baseUrl = normalizeBaseUrl(input.frontendBaseUrl);
+  const subject = "Tus datos de acceso — Programador de Actualizaciones ERP";
+  const intro = `Hola ${input.displayName}, un administrador reenvió tus datos de acceso al Programador de Actualizaciones ERP. Se generó una nueva contraseña temporal.`;
+  const body = `
+    ${credentialsBlock({ email: input.email, temporaryPassword: input.temporaryPassword, roles: input.roles ?? [] })}
+    <p style="margin:10px 0 0; font-size:13px; line-height:19px; color:${COLORS.muted};">Esta contraseña reemplaza la anterior. Te recomendamos cambiarla después de iniciar sesión.</p>`;
+  const text = [
+    `${intro}`,
+    `Correo de acceso: ${input.email}`,
+    `Nueva contraseña temporal: ${input.temporaryPassword}`,
+    `Rol: ${roleLabels(input.roles ?? [])}`,
+    `Iniciar sesión: ${baseUrl}/login`,
+  ].join("\n");
+  return {
+    subject,
+    html: layout({ title: "Tus datos de acceso", intro, preheader: intro, body, cta: "Iniciar sesión", ctaHref: `${baseUrl}/login` }),
+    text,
+  };
+}
+
 export function buildAdministrativeReminderEmail(input: {
   type: "sagWebVersion" | "whatsNew";
   subject?: string;
