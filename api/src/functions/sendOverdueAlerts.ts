@@ -5,6 +5,7 @@ import { buildOverdueTasksEmail, sendEmail } from "../lib/emailService";
 import { loadEmailAlertsSettings, saveEmailAlertsSettings } from "../lib/settingsService";
 import { resolveConfiguredRecipients } from "../lib/emailRecipients";
 import type { UpdateTask, UserRecord } from "../types/models";
+import { filterTasksForOperationalView } from "../lib/taskVisibility";
 
 type Recipient = { email: string; name?: string };
 
@@ -86,15 +87,25 @@ export async function ejecutarAlertasVencidas(log: (m: string) => void): Promise
   const { resources: tareas } = await getContainer("updateTasks")
     .items.query<UpdateTask>({ query: "SELECT * FROM c WHERE c.taskDate < @hoy AND c.status IN ('pending','in_progress','failed','blocked','reopened')", parameters: [{ name: "@hoy", value: hoy }] })
     .fetchAll();
-  if (tareas.length === 0) {
-    log("No hay tareas vencidas.");
+  const { resources: schedules } = await getContainer("updateSchedules").items
+    .query<{ id: string; active?: boolean }>({
+      query: "SELECT c.id, c.active FROM c WHERE (NOT IS_DEFINED(c.deletedAt) OR IS_NULL(c.deletedAt))",
+    })
+    .fetchAll();
+  const existingScheduleIds = new Set(schedules.map((schedule) => schedule.id));
+  const activeScheduleIds = new Set(schedules.filter((schedule) => schedule.active !== false).map((schedule) => schedule.id));
+  const tareasVisibles = filterTasksForOperationalView(tareas, { activeScheduleIds, existingScheduleIds });
+  const ocultas = tareas.length - tareasVisibles.length;
+
+  if (tareasVisibles.length === 0) {
+    if (ocultas > 0) log(`No hay tareas vencidas visibles. Se ignoraron ${ocultas} tarea(s) huérfanas o de actualizaciones inactivas/eliminadas.`);
+    else log("No hay tareas vencidas.");
     return { enviados: 0, tareas: 0 };
   }
-
-  const pendientes = tareas.filter((t) => !((t.overdueAlertSentDates ?? []).includes(hoy)));
+  const pendientes = tareasVisibles.filter((t) => !((t.overdueAlertSentDates ?? []).includes(hoy)));
   if (pendientes.length === 0) {
     log("Todas las tareas vencidas ya recibieron alerta hoy.");
-    return { enviados: 0, tareas: tareas.length };
+    return { enviados: 0, tareas: tareasVisibles.length };
   }
 
   const fallback = await fallbackRecipients(settings);
