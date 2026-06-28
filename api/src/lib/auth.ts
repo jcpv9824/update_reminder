@@ -3,10 +3,10 @@ import type { CurrentUser } from "../types/models";
 import { verifyJwt } from "./jwt";
 import { normalizeEmail } from "./password";
 
-// Extrae al usuario actual de la solicitud. El método principal es JWT
-// (Authorization: Bearer ...). Como respaldo se mantienen los modos
-// Static Web Apps (Microsoft Entra ID) y desarrollo, ambos solo si están
-// explícitamente habilitados.
+// Extrae al usuario actual de la solicitud. En producción solo se acepta el
+// JWT emitido por el login de la aplicación. No se confía en
+// x-ms-client-principal porque la Function App también tiene URL pública y ese
+// encabezado podría ser fabricado por un cliente directo.
 export async function getCurrentUser(
   req: HttpRequest
 ): Promise<CurrentUser | null> {
@@ -22,24 +22,6 @@ export async function getCurrentUser(
         roles: payload.roles ?? [],
       };
     }
-  }
-
-  // Static Web Apps / Entra ID (compatibilidad).
-  const principalHeader = req.headers.get("x-ms-client-principal");
-  if (principalHeader) {
-    try {
-      const decoded = Buffer.from(principalHeader, "base64").toString("utf8");
-      const p = JSON.parse(decoded);
-      const email = p.userDetails ?? "";
-      return {
-        id: p.userId ?? email,
-        email,
-        displayName: email,
-        roles: Array.isArray(p.userRoles)
-          ? p.userRoles.filter((r: string) => r !== "anonymous" && r !== "authenticated")
-          : [],
-      };
-    } catch {/* */}
   }
 
   // Modo desarrollo: solo si DEV_AUTH_ENABLED=true.

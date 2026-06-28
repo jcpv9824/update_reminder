@@ -971,6 +971,8 @@ Authentication:
 
 - email + password
 - JWT
+- Production API authentication accepts only the JWT issued by `/auth/login`.
+- `x-ms-client-principal` is intentionally ignored because the Function App has a public direct URL and the header can be spoofed.
 
 Do not break:
 
@@ -979,7 +981,7 @@ Do not break:
 - password reset, if present
 - setup first admin endpoints
 
-Dev mode may use headers if `DEV_AUTH_ENABLED=true`.
+Dev mode may use `x-dev-*` headers only if `DEV_AUTH_ENABLED=true`; production must keep it disabled.
 
 Never hardcode passwords.
 

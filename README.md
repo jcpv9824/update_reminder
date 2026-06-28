@@ -266,6 +266,7 @@ Los recordatorios de actualizaciones programadas usan por defecto la configuraci
 
 1. La pantalla de login pide únicamente correo y contraseña.
 2. El backend devuelve un JWT (`Authorization: Bearer …`).
+   En producción este JWT es el único mecanismo aceptado: la API ignora `x-ms-client-principal` aunque sea enviado por el cliente.
 3. Para crear el primer usuario, configure `SETUP_SECRET` en la Function App y llame `POST /api/setup/first-admin` con `id`, `email`, `displayName`, `password`.
 4. Para asignar contraseña al admin existente (`camilo.palacio@pya.com.co`), use `POST /api/setup/set-admin-password` (ver `CAMBIOS_V3.md`).
 5. Después de configurar el primer admin, vacíe `SETUP_SECRET`.
@@ -290,8 +291,8 @@ Consulte [DESPLIEGUE.md](DESPLIEGUE.md) para la guía completa con PowerShell.
 
 1. Inicie sesión como administrador.
 2. Vaya a **Usuarios y roles → Nuevo usuario**.
-3. Use como **Identificador** el correo Microsoft 365 del nuevo usuario.
-4. Asigne roles. El usuario podrá entrar con su cuenta corporativa.
+3. Registre el correo corporativo del nuevo usuario y una contraseña temporal según el flujo disponible.
+4. Asigne roles. El usuario entra con correo y contraseña; los roles siempre se recargan desde el perfil persistido.
 
 ## Documento original
 

@@ -60,6 +60,8 @@ Toda la UI, validaciones, correos y documentación deben permanecer en español.
 - Base de datos: Azure Cosmos DB.
 - Secretos: Azure Key Vault.
 - Autenticación: correo + contraseña con JWT.
+- La API productiva solo acepta el JWT emitido por `/auth/login`. No confiar ni reintroducir `x-ms-client-principal`: la Function App tiene URL pública directa y ese header puede falsificarse.
+- Los headers `x-dev-*` solo se aceptan cuando `DEV_AUTH_ENABLED=true`; producción debe mantenerlo en `false`.
 - Correos: `EmailService` con proveedores mock y SMTP.
 - Frontend producción: Azure Static Web Apps.
 - Backend producción: Azure Function App.

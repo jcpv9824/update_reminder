@@ -788,7 +788,7 @@ Cambios funcionales incluidos:
 | Function App falla con Node 20 | Azure ya no acepta Node 20 en esa suscripción/región | Crear con Node 22 o 24; usar `WEBSITE_NODE_DEFAULT_VERSION=~22` |
 | `func publish` sube 96 KB y Azure detecta cero funciones | El paquete no contiene dependencias / worker indexing no queda bien | Usar ZIP completo con `dist` + `node_modules` |
 | `az functionapp function list` no muestra nada | Azure no detectó funciones | Probar `func start` local; si local funciona, redeploy con ZIP completo |
-| `401 Unauthorized` en `/api/me` | `DEV_AUTH_ENABLED=false` | Para pruebas usar `DEV_AUTH_ENABLED=true`; en producción configurar Entra ID |
+| `401 Unauthorized` en `/api/me` | Falta JWT válido o expiró | Iniciar sesión con correo/contraseña y enviar `Authorization: Bearer <JWT>`; no usar `x-ms-client-principal` |
 | `Failed to fetch` en frontend | CORS o credentials mal configurado | Agregar origen y activar `supportCredentials=true` con `az resource update` |
 | `The request URI contains an invalid name: db-db_xxx-password` | Nombre de secreto de Key Vault tiene `_` | Sanitizar nombre en `src\lib\databaseService.ts` |
 | `rimraf no se reconoce` | Dependencias dev faltantes tras `npm prune` o instalación parcial | Ejecutar `npm install`; luego `npm run build` |
@@ -810,7 +810,7 @@ az functionapp config appsettings set `
   --settings "DEV_AUTH_ENABLED=false"
 ```
 
-2. Configurar autenticación real con Microsoft Entra ID.
+2. Verificar login correo/contraseña con JWT. La API debe ignorar `x-ms-client-principal`; no reactivar ese fallback mientras la Function App tenga acceso directo público.
 3. Revisar permisos del Key Vault. Para producción no siempre conviene `Key Vault Secrets Officer`; se puede separar lectura/escritura.
 4. Revisar reglas de acceso al API.
 5. Activar Application Insights.

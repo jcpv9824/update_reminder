@@ -46,6 +46,7 @@ Select-String -Path "frontend/src/**/*.*" -Pattern "window.alert|window.confirm|
 | BR-AUTH-04 | Las contrasenas se almacenan con hash, no en texto plano; la contrasena debe cumplir longitud minima. | `api/src/tests/password.test.ts` -> "hashPassword genera un hash que verifica con verifyPassword", "hashPassword rechaza contraseñas demasiado cortas" | Cubierta |
 | BR-AUTH-05 | Los emails de usuarios se normalizan con trim y lowercase. | `api/src/tests/password.test.ts` -> "normalizeEmail trim + lowercase" | Cubierta |
 | BR-AUTH-06 | Los tokens de restablecimiento no se guardan en texto plano; se guarda hash, expiracion y tokens unicos. | `api/src/tests/resetTokens.test.ts` | Cubierta |
+| BR-AUTH-07 | Produccion autentica exclusivamente con JWT de la aplicacion y rechaza `x-ms-client-principal` fabricado; `x-dev-*` requiere `DEV_AUTH_ENABLED=true`. | `api/src/tests/authSecurity.test.ts` | Cubierta por unidad backend |
 | BR-ROLE-01 | Roles vigentes: admin, client_manager, domain_updater, database_updater, viewer. | `api/src/tests/permissions.test.ts`, `api/src/types/models.ts` | Cubierta |
 | BR-ROLE-02 | Admin puede gestionar todo. | `api/src/tests/permissions.test.ts` -> "admin puede gestionar todo" | Cubierta |
 | BR-ROLE-03 | Client manager gestiona clientes y operacion relacionada, pero no usuarios. | `api/src/tests/permissions.test.ts` -> "client_manager puede gestionar clientes pero no usuarios" | Cubierta |
