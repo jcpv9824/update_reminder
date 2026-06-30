@@ -36,7 +36,8 @@ $contenedores = @(
   @{ Name = "emailNotifications"; Pk = "/id" },
   @{ Name = "licenseModules"; Pk = "/id" },
   @{ Name = "licenseAssignments"; Pk = "/clientId" },
-  @{ Name = "securityRateLimits"; Pk = "/id"; Ttl = -1 }
+  @{ Name = "securityRateLimits"; Pk = "/id"; Ttl = -1 },
+  @{ Name = "authSessions"; Pk = "/id"; Ttl = -1 }
 )
 foreach ($c in $contenedores) {
   if ($null -ne $c.Ttl) {
@@ -73,6 +74,7 @@ $cosmosConnectionString = az cosmosdb keys list --name $cosmosAccount --resource
 
 $setupSecret = [Guid]::NewGuid().ToString("N")
 $rateLimitHashSecret = [Guid]::NewGuid().ToString("N") + [Guid]::NewGuid().ToString("N")
+$jwtSecret = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
 az functionapp config appsettings set --name $functionApp --resource-group $ResourceGroup --settings `
   "COSMOS_CONNECTION_STRING=$cosmosConnectionString" `
   "COSMOS_DATABASE_NAME=$cosmosDatabase" `
@@ -80,6 +82,12 @@ az functionapp config appsettings set --name $functionApp --resource-group $Reso
   "APP_TIMEZONE=America/Bogota" `
   "DEV_AUTH_ENABLED=false" `
   "RATE_LIMIT_HASH_SECRET=$rateLimitHashSecret" `
+  "JWT_SECRET=$jwtSecret" `
+  "JWT_ACCESS_EXPIRES_IN=10m" `
+  "JWT_ISSUER=erp-update-scheduler-api" `
+  "JWT_AUDIENCE=erp-update-scheduler-web" `
+  "REFRESH_TOKEN_DAYS=30" `
+  "AUTH_COOKIE_SECURE=true" `
   "SETUP_SECRET=$setupSecret" | Out-Null
 
 Write-Host ""

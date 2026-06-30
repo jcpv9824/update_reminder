@@ -1,6 +1,7 @@
 import type { HttpRequest } from "@azure/functions";
 import type { CurrentUser } from "../types/models";
 import { verifyJwt } from "./jwt";
+import { validateAccessSession, type UserLoader, type AuthSessionStore } from "./authSessions";
 import { normalizeEmail } from "./password";
 
 // Extrae al usuario actual de la solicitud. En producción solo se acepta el
@@ -8,18 +9,21 @@ import { normalizeEmail } from "./password";
 // x-ms-client-principal porque la Function App también tiene URL pública y ese
 // encabezado podría ser fabricado por un cliente directo.
 export async function getCurrentUser(
-  req: HttpRequest
+  req: HttpRequest,
+  validationOptions: { store?: AuthSessionStore; loadUser?: UserLoader; nowMs?: number } = {}
 ): Promise<CurrentUser | null> {
   const auth = req.headers.get("authorization") ?? req.headers.get("Authorization");
   if (auth && auth.toLowerCase().startsWith("bearer ")) {
     const token = auth.slice(7).trim();
     const payload = verifyJwt(token);
     if (payload) {
+      const persisted = await validateAccessSession(payload, validationOptions);
+      if (!persisted) return null;
       return {
-        id: payload.sub,
-        email: payload.email,
-        displayName: payload.email,
-        roles: payload.roles ?? [],
+        id: persisted.id,
+        email: persisted.email,
+        displayName: persisted.displayName,
+        roles: persisted.roles ?? [],
       };
     }
   }

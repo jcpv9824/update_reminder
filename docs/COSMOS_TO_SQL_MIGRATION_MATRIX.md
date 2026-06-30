@@ -443,3 +443,9 @@ Runtime switch (`DATA_PROVIDER=sql`) must wait until:
 - Import script exists.
 - Validation script passes.
 - Staging environment confirms business-output equivalence.
+
+## 16. Estado de seguridad efimero excluido del traslado
+
+- `securityRateLimits`: no se migra; los contadores empiezan vacios en el nuevo almacen distribuido.
+- `authSessions`: no se migran sesiones activas ni hashes de refresh. El cutover revoca/cierra sesiones y exige un nuevo login.
+- El destino debe recrear expiracion, revocacion por usuario, hash de refresh y actualizacion atomica antes de habilitar autenticacion SQL.

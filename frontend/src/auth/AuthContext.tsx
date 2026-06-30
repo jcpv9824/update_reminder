@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import { api, getToken, setToken } from "../api/client";
+import { api, restoreSession, setToken } from "../api/client";
 import type { Usuario } from "../types";
 
 type EstadoAuth =
@@ -9,7 +9,7 @@ type EstadoAuth =
 
 type Contexto = EstadoAuth & {
   entrar: (email: string, password: string) => Promise<void>;
-  cerrarSesion: () => void;
+  cerrarSesion: () => Promise<void>;
   recargar: () => Promise<void>;
 };
 
@@ -19,7 +19,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [estado, setEstado] = useState<EstadoAuth>({ cargando: true });
 
   async function cargar() {
-    if (!getToken()) {
+    if (!await restoreSession()) {
       setEstado({ cargando: false, usuario: null });
       return;
     }
@@ -49,7 +49,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setEstado({ cargando: false, usuario: r.user });
   }
 
-  function cerrarSesion() {
+  async function cerrarSesion() {
+    await api.post<void>("/auth/logout");
     setToken(null);
     setEstado({ cargando: false, usuario: null });
   }

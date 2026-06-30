@@ -1,16 +1,20 @@
-// Cliente HTTP. Agrega automáticamente Authorization: Bearer <token>
-// si hay un token guardado en localStorage.
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api";
-const TOKEN_KEY = "erp_update_token";
+const LEGACY_TOKEN_KEY = "erp_update_token";
+
+let accessToken: string | null = null;
+let refreshInFlight: Promise<boolean> | null = null;
+
+// El access token vive solo en memoria. La limpieza elimina JWT heredados de
+// versiones anteriores sin volver a utilizarlos.
+try { localStorage.removeItem(LEGACY_TOKEN_KEY); } catch {/* entorno sin storage */}
 
 export function getToken(): string | null {
-  try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
+  return accessToken;
 }
-export function setToken(t: string | null) {
-  try {
-    if (t) localStorage.setItem(TOKEN_KEY, t);
-    else localStorage.removeItem(TOKEN_KEY);
-  } catch {/* */}
+
+export function setToken(token: string | null): void {
+  accessToken = token;
+  try { localStorage.removeItem(LEGACY_TOKEN_KEY); } catch {/* entorno sin storage */}
 }
 
 function devHeaders(): Record<string, string> {
@@ -18,43 +22,84 @@ function devHeaders(): Record<string, string> {
   try {
     const raw = localStorage.getItem("devUser");
     if (!raw) return {};
-    const u = JSON.parse(raw);
+    const user = JSON.parse(raw);
     return {
-      "x-dev-user-id": u.id ?? "",
-      "x-dev-user-email": u.email ?? "",
-      "x-dev-user-name": u.displayName ?? u.name ?? "",
-      "x-dev-user-roles": Array.isArray(u.roles) ? u.roles.join(",") : (u.roles ?? ""),
+      "x-dev-user-id": user.id ?? "",
+      "x-dev-user-email": user.email ?? "",
+      "x-dev-user-name": user.displayName ?? user.name ?? "",
+      "x-dev-user-roles": Array.isArray(user.roles) ? user.roles.join(",") : (user.roles ?? ""),
     };
-  } catch { return {}; }
+  } catch {
+    return {};
+  }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const url = `${API_BASE_URL}${path}`;
+async function execute(method: string, path: string, body?: unknown): Promise<Response> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    "X-Requested-With": "XMLHttpRequest",
     ...devHeaders(),
   };
-  const token = getToken();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  const res = await fetch(url, {
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+  return fetch(`${API_BASE_URL}${path}`, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
     credentials: "include",
   });
-  if (!res.ok) {
-    let mensaje = `Error ${res.status}`;
-    try { const data = await res.json(); mensaje = data.error ?? mensaje; } catch {/* */}
-    if (res.status === 401) {
-      // token expirado o inválido: limpiarlo para forzar login.
+}
+
+export async function restoreSession(force = false): Promise<boolean> {
+  if (accessToken && !force) return true;
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    try {
+      const response = await execute("POST", "/auth/refresh");
+      if (!response.ok) {
+        setToken(null);
+        return false;
+      }
+      const data = await response.json() as { token?: string };
+      if (!data.token) {
+        setToken(null);
+        return false;
+      }
+      setToken(data.token);
+      return true;
+    } catch {
       setToken(null);
+      return false;
+    } finally {
+      refreshInFlight = null;
     }
-    const error = new Error(mensaje) as Error & { status?: number };
-    error.status = res.status;
+  })();
+  return refreshInFlight;
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  let response = await execute(method, path, body);
+  const canRefresh = response.status === 401
+    && path !== "/auth/login"
+    && path !== "/auth/refresh"
+    && path !== "/auth/forgot-password"
+    && path !== "/auth/reset-password";
+  if (canRefresh && await restoreSession(true)) {
+    response = await execute(method, path, body);
+  }
+
+  if (!response.ok) {
+    let message = `Error ${response.status}`;
+    try {
+      const data = await response.json();
+      message = data.error ?? message;
+    } catch {/* respuesta no JSON */}
+    if (response.status === 401) setToken(null);
+    const error = new Error(message) as Error & { status?: number };
+    error.status = response.status;
     throw error;
   }
-  if (res.status === 204) return undefined as T;
-  const text = await res.text();
+  if (response.status === 204) return undefined as T;
+  const text = await response.text();
   return text ? (JSON.parse(text) as T) : (undefined as T);
 }
 

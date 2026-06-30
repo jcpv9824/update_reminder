@@ -53,11 +53,13 @@ La aplicacion tiene controles valiosos (hash de contrasenas, tokens de reset has
   - Pruebas: `api/src/tests/rateLimit.test.ts` cubre umbrales, lockout, expiracion, independencia IP/identidad, reset, seudonimizacion y respuesta `429` con `Retry-After`.
   - Defensa adicional recomendada: mantener reglas de rate limit en Azure API Management o Front Door/WAF para absorber trafico antes de que alcance Functions; no reemplaza el control distribuido de aplicacion.
 
-- [ ] **SEC-006 - P1 - Endurecer sesiones JWT.**
-  - Estado: Parcial.
-  - Evidencia: `api/src/lib/jwt.ts`, `frontend/src/api/client.ts`, `api/src/functions/auth.ts`.
-  - Brechas: token en `localStorage`; logout no revoca; cambio/reset/desactivacion no invalida tokens existentes; no `issuer`, `audience`, `jti`, `tokenVersion` ni algoritmo permitido explicito; secreto minimo aceptado de 16 caracteres.
-  - Cierre: cookie `HttpOnly`, `Secure`, `SameSite` o arquitectura BFF; access token corto + refresh rotatorio; `tokenVersion`/revocacion; HS256 explicitamente permitido o claves asimetricas; secreto >=32 bytes; pruebas de revocacion.
+- [x] **SEC-006 - P1 - Endurecer sesiones JWT.**
+  - Estado: Corregido el 2026-06-30.
+  - Access token: JWT HS256 explicitamente permitido, secreto minimo de 32 bytes, expiracion predeterminada de 10 minutos y claims obligatorios `iss`, `aud`, `jti`, `sid` y `ver`.
+  - Refresh: token opaco aleatorio de 256 bits, guardado solo como hash en `authSessions`, enviado mediante cookie `HttpOnly; Secure; SameSite=None` y rotado en cada uso. La reutilizacion del refresh anterior revoca su descendiente.
+  - Frontend: el access token vive solo en memoria; al cargar elimina el JWT legado de `localStorage`. `fetch` usa credenciales y refresh/logout exigen `X-Requested-With` para forzar preflight CORS y reducir CSRF.
+  - Revocacion: cada solicitud valida sesion y `tokenVersion`. Logout revoca la sesion; reset/cambio de contraseña, reenvio de credenciales y desactivacion incrementan version y revocan todas las sesiones del usuario.
+  - Pruebas: `jwt.test.ts`, `authSessions.test.ts`, `authSecurity.test.ts` y `frontend/src/tests/ApiClient.test.ts` cubren claims, algoritmo, secreto, rotacion, replay, logout/revocacion, version, cookie y ausencia de JWT persistido.
 
 - [ ] **SEC-007 - P1 - Politica de contrasenas y MFA.**
   - Estado: Falla para datos delicados.

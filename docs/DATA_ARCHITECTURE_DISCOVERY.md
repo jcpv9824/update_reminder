@@ -64,6 +64,7 @@ Definidos en `api/src/lib/cosmos.ts`.
 | `appSettings` | `EmailAlertsSettings` | `.item("email-alerts", "email-alerts")` | Configuración correo/alertas | `settings.app_settings`, tablas específicas opcionales | Puede conservar JSON controlado al inicio. |
 | `emailNotifications` | docs idempotencia | `.item(id, id)` | Idempotencia recordatorios admin/bloqueos | `notifications.email_notifications` | Migrar para no duplicar correos tras cutover. |
 | `securityRateLimits` | docs tecnicos con TTL | `.item(id, id)` y reemplazo por `_etag` | Rate limiting y lockout distribuido | Redis o tabla tecnica temporal | No exportar ni migrar como dato de negocio; iniciar vacio en cutover. |
+| `authSessions` | `AuthSessionRecord` con TTL | `.item(id, id)`, query por `userId`, reemplazo `_etag` | Refresh rotatorio, revocacion y replay | Redis o `security.auth_sessions` | No migrar sesiones activas; cerrar sesion en cutover. Nunca contiene refresh en claro. |
 
 ## 4. Modelos y campos
 

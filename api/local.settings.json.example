@@ -9,6 +9,12 @@
     "APP_TIMEZONE": "America/Bogota",
     "DEV_AUTH_ENABLED": "true",
     "RATE_LIMIT_HASH_SECRET": "genere-un-secreto-local-de-64-caracteres",
+    "JWT_SECRET": "genere-un-secreto-local-de-al-menos-32-bytes",
+    "JWT_ACCESS_EXPIRES_IN": "10m",
+    "JWT_ISSUER": "erp-update-scheduler-api",
+    "JWT_AUDIENCE": "erp-update-scheduler-web",
+    "REFRESH_TOKEN_DAYS": "30",
+    "AUTH_COOKIE_SECURE": "false",
     "SETUP_SECRET": ""
   },
   "Host": {

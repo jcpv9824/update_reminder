@@ -31,11 +31,27 @@ export type UserRecord = {
   lastLoginAt?: string | null;
   passwordHash?: string;
   passwordUpdatedAt?: string | null;
+  tokenVersion?: number;
   mustChangePassword?: boolean;
   // Reset de contraseña: nunca guardar el token en texto plano.
   passwordResetTokenHash?: string | null;
   passwordResetExpiresAt?: string | null;
   passwordResetUsedAt?: string | null;
+};
+
+export type AuthSessionRecord = {
+  id: string;
+  userId: string;
+  refreshTokenHash: string;
+  tokenVersion: number;
+  createdAt: string;
+  lastUsedAt: string;
+  expiresAt: string;
+  revokedAt?: string | null;
+  revokedReason?: string | null;
+  replacedBySessionId?: string | null;
+  ttl: number;
+  _etag?: string;
 };
 
 // Configuración de recordatorios por email para una frecuencia.

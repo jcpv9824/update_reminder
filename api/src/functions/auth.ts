@@ -7,6 +7,16 @@ import { writeAuditLog } from "../lib/audit";
 import { ok } from "../lib/http";
 import type { UserRecord } from "../types/models";
 import {
+  clearRefreshCookie,
+  createAuthSession,
+  getRefreshTokenFromRequest,
+  isTrustedSessionMutation,
+  refreshCookie,
+  revokeAllUserSessions,
+  revokeRefreshSession,
+  rotateAuthSession,
+} from "../lib/authSessions";
+import {
   checkLoginLockout,
   clearLoginAccountFailures,
   enforceRequestRateLimit,
@@ -22,7 +32,7 @@ const LoginSchema = z.object({
 const MENSAJE_LOGIN_GENERICO = "Correo o contraseña incorrectos.";
 
 function sanitize(u: UserRecord) {
-  const { passwordHash, ...rest } = u;
+  const { passwordHash, passwordResetTokenHash, passwordResetExpiresAt, passwordResetUsedAt, tokenVersion, ...rest } = u;
   return rest;
 }
 
@@ -69,7 +79,17 @@ app.http("authLogin", {
       user.lastLoginAt = new Date().toISOString();
       await getContainer("users").item(user.id, user.id).replace(user);
 
-      const token = signJwt({ id: user.id, email: user.email, displayName: user.displayName, roles: user.roles ?? [] });
+      let createdSession: Awaited<ReturnType<typeof createAuthSession>>;
+      try {
+        createdSession = await createAuthSession(user);
+      } catch {
+        throw Object.assign(new Error("No se pudo crear la sesión segura."), { status: 503 });
+      }
+      const { session, refreshToken } = createdSession;
+      const token = signJwt(
+        { id: user.id, email: user.email, displayName: user.displayName, roles: user.roles ?? [] },
+        { id: session.id, tokenVersion: session.tokenVersion }
+      );
       await writeAuditLog({
         entityType: "user",
         entityId: user.id,
@@ -77,7 +97,11 @@ app.http("authLogin", {
         performedBy: user.id,
         performedByEmail: user.email,
       });
-      return ok({ token, user: sanitize(user) });
+      return {
+        status: 200,
+        headers: { "Set-Cookie": refreshCookie(refreshToken), "Cache-Control": "no-store" },
+        jsonBody: { token, user: sanitize(user) },
+      };
     } catch (error: any) {
       if (error?.status === 503) return { status: 503, jsonBody: { error: "Servicio de seguridad temporalmente no disponible." } };
       // No filtrar stack traces ni mensajes detallados.
@@ -90,7 +114,50 @@ app.http("authLogout", {
   route: "auth/logout",
   methods: ["POST"],
   authLevel: "anonymous",
-  handler: async (): Promise<HttpResponseInit> => ({ status: 204 }),
+  handler: async (req): Promise<HttpResponseInit> => {
+    if (!isTrustedSessionMutation(req)) return { status: 403, jsonBody: { error: "Solicitud de sesión no válida." } };
+    try {
+      await revokeRefreshSession(getRefreshTokenFromRequest(req), "logout");
+    } catch {
+      return { status: 503, jsonBody: { error: "No se pudo cerrar la sesión de forma segura. Intente nuevamente." } };
+    }
+    return { status: 204, headers: { "Set-Cookie": clearRefreshCookie(), "Cache-Control": "no-store" } };
+  },
+});
+
+app.http("authRefresh", {
+  route: "auth/refresh",
+  methods: ["POST"],
+  authLevel: "anonymous",
+  handler: async (req): Promise<HttpResponseInit> => {
+    if (!isTrustedSessionMutation(req)) return { status: 403, jsonBody: { error: "Solicitud de sesión no válida." } };
+    try {
+      const currentToken = getRefreshTokenFromRequest(req);
+      const limited = await enforceRequestRateLimit(req, "auth_refresh", currentToken || undefined, RATE_LIMIT_POLICIES.refreshSession);
+      if (limited) return limited;
+      if (!currentToken) throw new Error("missing_refresh_token");
+      const rotated = await rotateAuthSession(currentToken);
+      if (!rotated) throw new Error("invalid_refresh_token");
+      const token = signJwt(
+        { id: rotated.user.id, email: rotated.user.email, displayName: rotated.user.displayName, roles: rotated.user.roles ?? [] },
+        { id: rotated.session.id, tokenVersion: rotated.session.tokenVersion }
+      );
+      return {
+        status: 200,
+        headers: { "Set-Cookie": refreshCookie(rotated.refreshToken), "Cache-Control": "no-store" },
+        jsonBody: { token },
+      };
+    } catch (error: any) {
+      if (error?.status === 503 || Number(error?.statusCode) >= 500) {
+        return { status: 503, jsonBody: { error: "Servicio de seguridad temporalmente no disponible." } };
+      }
+      return {
+        status: 401,
+        headers: { "Set-Cookie": clearRefreshCookie(), "Cache-Control": "no-store" },
+        jsonBody: { error: "Sesión expirada. Inicie sesión nuevamente." },
+      };
+    }
+  },
 });
 
 const ForgotSchema = z.object({ email: z.string().min(1).max(254) });
@@ -209,12 +276,14 @@ app.http("authResetPassword", {
       const now = new Date().toISOString();
       user.passwordHash = newHash;
       user.passwordUpdatedAt = now;
+      user.tokenVersion = (user.tokenVersion ?? 0) + 1;
       user.passwordResetUsedAt = now;
       user.passwordResetTokenHash = null;
       user.passwordResetExpiresAt = null;
       user.updatedAt = now;
       user.updatedBy = "system";
       await getContainer("users").item(user.id, user.id).replace(user);
+      await revokeAllUserSessions(user.id, "password_reset_completed");
       await writeAuditLog({
         entityType: "user",
         entityId: user.id,

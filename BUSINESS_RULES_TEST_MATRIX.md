@@ -356,6 +356,10 @@ Select-String -Path "frontend/src/**/*.*" -Pattern "window.alert|window.confirm|
 | BR-SEC-12 | Login, recuperacion, restablecimiento, setup y envios manuales aplican limites distribuidos por IP e identidad y responden `429` con `Retry-After`. | `api/src/tests/rateLimit.test.ts` | Cubierta por unidad backend |
 | BR-SEC-13 | Cinco credenciales invalidas bloquean temporalmente la IP/cuenta; una autenticacion valida limpia solo los fallos de la cuenta. | `api/src/tests/rateLimit.test.ts`; integracion en `api/src/functions/auth.ts` | Cubierta por unidad backend |
 | BR-SEC-14 | Los contadores de abuso no almacenan IP, correo ni token en claro y expiran mediante TTL. | `api/src/tests/rateLimit.test.ts`; contenedor `securityRateLimits` | Cubierta por unidad e infraestructura |
+| BR-SEC-15 | El access JWT usa HS256, secreto >=32 bytes, 10 minutos y claims `iss`, `aud`, `jti`, `sid`, `ver`. | `api/src/tests/jwt.test.ts` | Cubierta por unidad backend |
+| BR-SEC-16 | El refresh token se guarda hasheado, rota en cada uso y su reutilizacion revoca la sesion descendiente. | `api/src/tests/authSessions.test.ts` | Cubierta por unidad backend |
+| BR-SEC-17 | Logout, cambio/reset de contraseña, reenvio de credenciales y desactivacion invalidan sesiones existentes mediante revocacion y `tokenVersion`. | `api/src/tests/authSessions.test.ts`; integracion en `auth.ts`, `users.ts`, `setup.ts` | Cubierta por unidad backend |
+| BR-SEC-18 | El navegador no persiste JWT en localStorage; usa access token en memoria y cookie refresh HttpOnly con credenciales. | `frontend/src/tests/ApiClient.test.ts`; `api/src/tests/authSessions.test.ts` | Cubierta backend/frontend |
 
 ## Static Web Apps y despliegue
 

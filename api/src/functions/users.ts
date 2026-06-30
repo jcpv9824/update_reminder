@@ -11,6 +11,7 @@ import { loadEmailAlertsSettings } from "../lib/settingsService";
 import { sendEmail } from "../lib/emailService";
 import { buildWelcomeUserEmail, buildResendCredentialsEmail } from "../lib/emailTemplates";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
+import { revokeAllUserSessions } from "../lib/authSessions";
 import type { UserRecord } from "../types/models";
 
 // Envía el correo de credenciales (bienvenida, restablecimiento o reenvío).
@@ -83,7 +84,7 @@ const ResetPasswordSchema = z.object({
 });
 
 function sanitize(u: UserRecord) {
-  const { passwordHash, ...rest } = u;
+  const { passwordHash, passwordResetTokenHash, passwordResetExpiresAt, passwordResetUsedAt, tokenVersion, ...rest } = u;
   return rest;
 }
 
@@ -139,6 +140,7 @@ app.http("usersCreate", {
         lastLoginAt: null,
         passwordHash,
         passwordUpdatedAt: now,
+        tokenVersion: 0,
       };
       await getContainer("users").items.create(record);
       await writeAuditLog({
@@ -176,15 +178,18 @@ app.http("usersUpdate", {
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const before = { ...resource };
       const rolesChanged = parsed.data.roles && JSON.stringify(parsed.data.roles) !== JSON.stringify(resource.roles);
+      const deactivated = resource.active !== false && parsed.data.active === false;
       const updated: UserRecord = {
         ...resource,
         ...(parsed.data.displayName !== undefined ? { displayName: parsed.data.displayName.trim() } : {}),
         ...(parsed.data.roles !== undefined ? { roles: parsed.data.roles } : {}),
         ...(parsed.data.active !== undefined ? { active: parsed.data.active } : {}),
+        ...(deactivated ? { tokenVersion: (resource.tokenVersion ?? 0) + 1 } : {}),
         updatedAt: new Date().toISOString(),
         updatedBy: u.id,
       };
       await container.item(id, id).replace(updated);
+      if (deactivated) await revokeAllUserSessions(id, "user_deactivated");
       await writeAuditLog({
         entityType: "user",
         entityId: id,
@@ -224,9 +229,11 @@ app.http("usersResetPassword", {
       const now = new Date().toISOString();
       resource.passwordHash = await hashPassword(parsed.data.password);
       resource.passwordUpdatedAt = now;
+      resource.tokenVersion = (resource.tokenVersion ?? 0) + 1;
       resource.updatedAt = now;
       resource.updatedBy = u.id;
       await container.item(id, id).replace(resource);
+      await revokeAllUserSessions(id, "admin_password_reset");
       await writeAuditLog({
         entityType: "user",
         entityId: id,
@@ -270,9 +277,11 @@ app.http("usersResendCredentials", {
       const now = new Date().toISOString();
       resource.passwordHash = await hashPassword(temporal);
       resource.passwordUpdatedAt = now;
+      resource.tokenVersion = (resource.tokenVersion ?? 0) + 1;
       resource.updatedAt = now;
       resource.updatedBy = u.id;
       await container.item(id, id).replace(resource);
+      await revokeAllUserSessions(id, "credentials_resent");
       await writeAuditLog({
         entityType: "user",
         entityId: id,
@@ -294,9 +303,11 @@ async function setUserActive(req: HttpRequest, active: boolean, action: string):
   const { resource } = await container.item(id, id).read<UserRecord>();
   if (!resource) return notFound("Usuario no encontrado.");
   resource.active = active;
+  if (!active) resource.tokenVersion = (resource.tokenVersion ?? 0) + 1;
   resource.updatedAt = new Date().toISOString();
   resource.updatedBy = u.id;
   await container.item(id, id).replace(resource);
+  if (!active) await revokeAllUserSessions(id, "user_deactivated");
   await writeAuditLog({ entityType: "user", entityId: id, action, performedBy: u.id, performedByEmail: u.email, after: { active } });
   return ok(sanitize(resource));
 }

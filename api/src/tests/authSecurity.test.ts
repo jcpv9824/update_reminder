@@ -2,6 +2,7 @@ import type { HttpRequest } from "@azure/functions";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getCurrentUser, requireUser } from "../lib/auth";
 import { signJwt } from "../lib/jwt";
+import type { AuthSessionRecord, UserRecord } from "../types/models";
 
 function requestWithHeaders(headers: Record<string, string>): HttpRequest {
   return { headers: new Headers(headers) } as HttpRequest;
@@ -10,7 +11,9 @@ function requestWithHeaders(headers: Record<string, string>): HttpRequest {
 describe("auth security", () => {
   beforeEach(() => {
     process.env.JWT_SECRET = "secreto-suficientemente-largo-para-tests";
-    process.env.JWT_EXPIRES_IN = "1h";
+    process.env.JWT_ACCESS_EXPIRES_IN = "10m";
+    process.env.JWT_ISSUER = "erp-update-scheduler-api";
+    process.env.JWT_AUDIENCE = "erp-update-scheduler-web";
     process.env.DEV_AUTH_ENABLED = "false";
   });
 
@@ -49,16 +52,47 @@ describe("auth security", () => {
       email: "usuario@empresa.com",
       displayName: "Usuario",
       roles: ["client_manager"],
-    });
+    }, { id: "session_1", tokenVersion: 0 });
+
+    const persistedUser: UserRecord = {
+      id: "user_1",
+      email: "usuario@empresa.com",
+      displayName: "Usuario",
+      roles: ["client_manager"],
+      active: true,
+      tokenVersion: 0,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      createdBy: "system",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      updatedBy: "system",
+    };
+    const session: AuthSessionRecord = {
+      id: "session_1",
+      userId: "user_1",
+      refreshTokenHash: "hash",
+      tokenVersion: 0,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      lastUsedAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      ttl: 3600,
+    };
 
     const user = await getCurrentUser(requestWithHeaders({
       authorization: `Bearer ${token}`,
-    }));
+    }), {
+      store: {
+        read: async () => session,
+        create: async () => undefined,
+        replace: async () => undefined,
+        listByUser: async () => [session],
+      },
+      loadUser: async () => persistedUser,
+    });
 
     expect(user).toEqual({
       id: "user_1",
       email: "usuario@empresa.com",
-      displayName: "usuario@empresa.com",
+      displayName: "Usuario",
       roles: ["client_manager"],
     });
   });

@@ -91,6 +91,15 @@ Dependencias y cadena de suministro:
 - Consultar `SECURITY_DEPENDENCY_POLICY.md` para SLA, contención y excepciones.
 - No usar `npm audit fix --force` sin revisar cambios mayores y completar todas las pruebas.
 
+Sesiones seguras (SEC-006):
+
+- JWT de acceso HS256 con 10 minutos, `iss`, `aud`, `jti`, `sid` y `tokenVersion`.
+- Access token solo en memoria; nunca en `localStorage` o `sessionStorage`.
+- Refresh token rotatorio en cookie `HttpOnly; Secure; SameSite=None`; Cosmos conserva solo el hash.
+- Logout revoca la sesion. Reset/cambio de contraseña, reenvio de credenciales y desactivacion revocan todas las sesiones mediante `tokenVersion`.
+- Refresh/logout requieren `X-Requested-With` y CORS con credenciales para el origen productivo.
+- Configuracion y pruebas completas: `SECURITY_SESSIONS.md`.
+
 ## 4. Roles y permisos
 
 Roles funcionales:
@@ -467,6 +476,7 @@ Contenedores esperados por el código:
 - `appSettings`
 - `emailNotifications`
 - `securityRateLimits` (PK `/id`, TTL; estado tecnico efimero de SEC-005)
+- `authSessions` (PK `/id`, TTL; refresh tokens hasheados y revocacion SEC-006)
 
 Particiones clave importantes conocidas:
 
@@ -474,6 +484,7 @@ Particiones clave importantes conocidas:
 - `licenseAssignments`: `/clientId`.
 - `updateTasks`: suele operar por `taskBucket`.
 - `securityRateLimits`: `/id`; no contiene IP/correo/token en claro y no se migra como dato de negocio a SQL.
+- `authSessions`: `/id`; no contiene refresh token en claro. En el cutover SQL se cierran sesiones en vez de migrarlas.
 - `clients`, `domains`, `databases` usan patrones existentes por cliente/id; revisar código antes de migrar.
 
 Proteccion contra abuso (SEC-005):

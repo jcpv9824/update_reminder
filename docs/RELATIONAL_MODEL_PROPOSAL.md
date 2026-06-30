@@ -818,6 +818,7 @@ Para tareas/auditoría históricas que referencien maestros eliminados:
 | ¿Auditoría en SQL desde día 1? | Migrar si se corta todo; puede quedar temporal en Cosmos | Append-heavy, bajo acoplamiento operativo. |
 | ¿emailNotifications en SQL? | Sí antes de activar timers SQL | Evita correos duplicados. |
 | ¿securityRateLimits en SQL? | No como dato migrado | Es estado efimero; recrear el control con Redis o tabla tecnica con expiracion y operaciones atomicas. |
+| ¿authSessions en SQL? | Recrear, no migrar sesiones activas | Tabla tecnica/Redis con indice por usuario, expiracion, hash y rotacion atomica. Forzar login tras cutover. |
 | ¿licenseAssignments se usa? | No en lógica principal | Feature avanzada oculta. |
 | ¿FK estrictas desde el inicio? | Después de staging/validación | Evita bloquear por datos históricos hasta diagnosticar. |
 

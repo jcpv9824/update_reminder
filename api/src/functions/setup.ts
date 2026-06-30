@@ -6,9 +6,10 @@ import { hashPassword, normalizeEmail } from "../lib/password";
 import { badRequest, created, forbidden, ok, serverError } from "../lib/http";
 import type { UserRecord } from "../types/models";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
+import { revokeAllUserSessions } from "../lib/authSessions";
 
 function sanitize(u: UserRecord) {
-  const { passwordHash, ...rest } = u;
+  const { passwordHash, passwordResetTokenHash, passwordResetExpiresAt, passwordResetUsedAt, tokenVersion, ...rest } = u;
   return rest;
 }
 
@@ -52,6 +53,7 @@ app.http("setupFirstAdmin", {
         lastLoginAt: null,
         passwordHash,
         passwordUpdatedAt: now,
+        tokenVersion: 0,
       };
       try {
         await container.items.create(record);
@@ -68,10 +70,12 @@ app.http("setupFirstAdmin", {
               displayName: parsed.data.displayName,
               passwordHash,
               passwordUpdatedAt: now,
+              tokenVersion: (resource.tokenVersion ?? 0) + 1,
               updatedAt: now,
               updatedBy: "system",
             };
             await container.item(record.id, record.id).replace(updated);
+            await revokeAllUserSessions(updated.id, "setup_password_changed");
             return ok(sanitize(updated));
           }
         }
@@ -127,9 +131,11 @@ app.http("setupSetAdminPassword", {
       const now = new Date().toISOString();
       user.passwordHash = await hashPassword(parsed.data.password);
       user.passwordUpdatedAt = now;
+      user.tokenVersion = (user.tokenVersion ?? 0) + 1;
       user.updatedAt = now;
       user.updatedBy = "system";
       await container.item(user.id, user.id).replace(user);
+      await revokeAllUserSessions(user.id, "setup_password_changed");
       await writeAuditLog({
         entityType: "user",
         entityId: user.id,
