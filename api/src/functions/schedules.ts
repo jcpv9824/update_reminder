@@ -1,5 +1,5 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { canManageSchedules } from "../lib/permissions";
@@ -348,7 +348,7 @@ app.http("schedulesCreate", {
       if (!client) return badRequest("Cliente no encontrado.");
       const now = new Date().toISOString();
       const record: UpdateSchedule = {
-        id: `schedule_${uuid()}`,
+        id: `schedule_${randomUUID()}`,
         name: generateGenericScheduleName({
           name: parsed.data.name,
           selectionMode: normalized.selectionMode ?? parsed.data.selectionMode ?? "manual",

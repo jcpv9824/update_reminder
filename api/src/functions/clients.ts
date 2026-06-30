@@ -1,5 +1,5 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { canManageClients } from "../lib/permissions";
@@ -107,7 +107,7 @@ app.http("clientsCreate", {
       if (isHttpResponse(licenses)) return licenses;
       const now = new Date().toISOString();
       const record: ClientRecord = {
-        id: `client_${uuid()}`,
+        id: `client_${randomUUID()}`,
         externalId: parsed.data.externalId?.trim() || undefined,
         name: parsed.data.name.trim(),
         status: "active",

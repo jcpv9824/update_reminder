@@ -3,18 +3,23 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "security:audit:prod": "npm audit --omit=dev --audit-level=moderate",
+    "security:audit": "npm audit --audit-level=moderate"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.40.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.23.1"
+    "react-router-dom": "^6.30.4"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.4.2",
@@ -22,10 +27,10 @@
     "@testing-library/user-event": "^14.5.2",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^6.0.2",
+    "@vitejs/plugin-react": "^6.0.3",
     "jsdom": "^24.1.0",
     "typescript": "^5.4.5",
-    "vite": "^8.0.13",
-    "vitest": "^4.1.6"
+    "vite": "^8.1.1",
+    "vitest": "^4.1.9"
   }
 }

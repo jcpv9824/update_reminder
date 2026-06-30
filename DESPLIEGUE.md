@@ -53,6 +53,10 @@ La versión actual también incluye:
 
 ---
 
+## Quality gate de seguridad
+
+Antes de desplegar, backend y frontend deben aprobar `security:audit:prod`, `security:audit`, `npm test` y `npm run build`. El workflow de Static Web Apps ejecuta este gate con umbral `moderate`; si falla, no publica el frontend. Consulte `SECURITY_DEPENDENCY_POLICY.md` para SLA y excepciones.
+
 ## 1. Software necesario
 
 Instale:

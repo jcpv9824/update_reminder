@@ -1,4 +1,4 @@
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "node:crypto";
 import type { AuditLog } from "../types/models";
 
 const SENSITIVE_KEYS = ["password", "passwordhash", "rawDbAccess", "secret", "passwordPlain", "token", "jwt"];
@@ -38,7 +38,7 @@ export type BuildAuditLogInput = {
 
 export function buildAuditLogEntry(input: BuildAuditLogInput): AuditLog {
   return {
-    id: `audit_${uuid()}`,
+    id: `audit_${randomUUID()}`,
     entityType: input.entityType,
     entityId: input.entityId,
     clientId: input.clientId,

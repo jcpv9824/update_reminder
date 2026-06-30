@@ -37,12 +37,13 @@ La aplicacion tiene controles valiosos (hash de contrasenas, tokens de reset has
   - Implementacion: `access-info`, `copy-access-part` y `reveal-password` comparten politica de objeto. Servidor/usuario solo se obtienen mediante accion explicita autorizada; la contrasena mantiene una politica mas restrictiva y auditoria.
   - Pruebas: `objectAuthorization.test.ts` cubre viewer, domain_updater, client_manager, database_updater por maestro/tarea, tarea ajena y target incorrecto.
 
-- [ ] **SEC-004 - P1 - Actualizar dependencias vulnerables y bloquear regresiones.**
-  - Estado: Falla.
-  - Evidencia `npm audit` 2026-06-27:
-    - Backend: 4 vulnerabilidades (3 high, 1 moderate): `nodemailer@8.0.7`, `form-data@4.0.5`, `vite@8.0.13`, `uuid@9.0.1`.
-    - Frontend: 5 vulnerabilidades (3 high, 2 moderate): `vite@8.0.13`, `ws@8.20.0`, `form-data@4.0.5`, `react-router-dom/react-router@6.30.3`.
-  - Cierre: actualizar con pruebas completas; `npm audit --omit=dev` y audit total en CI; politica de Dependabot/Renovate y SLA por severidad.
+- [x] **SEC-004 - P1 - Actualizar dependencias vulnerables y bloquear regresiones.**
+  - Estado: Corregido el 2026-06-30.
+  - Backend: `nodemailer@9.0.3`, `vitest@4.1.9`, `vite@8.1.1` transitivo y `form-data@4.0.6`. Se elimino `uuid@9`; los IDs usan `node:crypto.randomUUID()` para conservar CommonJS sin introducir UUID 14 ESM-only.
+  - Frontend: `vite@8.1.1`, `vitest@4.1.9`, `react-router-dom/react-router@6.30.4`, `ws@8.21.0` y `form-data@4.0.6`.
+  - Resultado: auditoria de produccion y auditoria total con umbral `moderate` reportan 0 vulnerabilidades en ambos proyectos.
+  - Prevencion: el workflow ejecuta auditorias, pruebas y builds de backend/frontend antes de desplegar; `.github/dependabot.yml` revisa npm y GitHub Actions semanalmente.
+  - SLA y excepciones: `SECURITY_DEPENDENCY_POLICY.md`.
 
 - [ ] **SEC-005 - P1 - Rate limiting, lockout y proteccion contra abuso.**
   - Estado: Ausente.

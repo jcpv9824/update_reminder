@@ -1,4 +1,4 @@
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "node:crypto";
 import type { CurrentUser, RemindersConfig, UpdateSchedule, Weekday } from "../types/models";
 
 // Entrada parcial de frecuencia que pueden enviar las pantallas de
@@ -141,7 +141,7 @@ export function buildScheduleRecord(args: {
   const now = new Date().toISOString();
   const normalized = normalizeFrequencyResponsibility(args.input);
   return {
-    id: `schedule_${uuid()}`,
+    id: `schedule_${randomUUID()}`,
     name: generateGenericScheduleName({
       name: normalized.name,
       selectionMode: normalized.selectionMode,

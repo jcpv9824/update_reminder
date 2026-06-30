@@ -10,7 +10,46 @@ on:
       - main
 
 jobs:
+  quality_gate:
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
+    runs-on: ubuntu-latest
+    name: Security, tests and builds
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.0'
+          cache: npm
+          cache-dependency-path: |
+            api/package-lock.json
+            frontend/package-lock.json
+      - name: Install backend dependencies
+        working-directory: api
+        run: npm ci
+      - name: Audit backend production dependencies
+        working-directory: api
+        run: npm run security:audit:prod
+      - name: Audit all backend dependencies
+        working-directory: api
+        run: npm run security:audit
+      - name: Test and build backend
+        working-directory: api
+        run: npm test && npm run build
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Audit frontend production dependencies
+        working-directory: frontend
+        run: npm run security:audit:prod
+      - name: Audit all frontend dependencies
+        working-directory: frontend
+        run: npm run security:audit
+      - name: Test and build frontend
+        working-directory: frontend
+        run: npm test && npm run build
+
   build_and_deploy_job:
+    needs: quality_gate
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
     runs-on: ubuntu-latest
     name: Build and Deploy Job
@@ -18,14 +57,14 @@ jobs:
        id-token: write
        contents: read
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: true
           lfs: false
       - name: Install OIDC Client from Core Package
-        run: npm install @actions/core@1.6.0 @actions/http-client
+        run: npm install @actions/core@1.11.1 @actions/http-client
       - name: Get Id Token
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         id: idtoken
         with:
            script: |

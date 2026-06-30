@@ -1,5 +1,5 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
@@ -137,7 +137,7 @@ async function buildAssignment(input: z.infer<typeof AssignmentSchema>): Promise
   }
 
   return {
-    id: `license_assignment_${uuid()}`,
+    id: `license_assignment_${randomUUID()}`,
     moduleId: module.id,
     moduleName: module.name,
     moduleCode: module.code,
@@ -197,7 +197,7 @@ app.http("licenseModulesCreate", {
       if (typeof code !== "string") return code;
       const now = new Date().toISOString();
       const record: LicenseModuleRecord = {
-        id: `license_module_${uuid()}`,
+        id: `license_module_${randomUUID()}`,
         name: parsed.data.name,
         code,
         description: parsed.data.description,

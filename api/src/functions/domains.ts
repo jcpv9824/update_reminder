@@ -1,5 +1,5 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { canManageClients, canEditDomainLimited } from "../lib/permissions";
@@ -103,7 +103,7 @@ app.http("domainsCreate", {
       if (!client) return badRequest("Cliente no encontrado.");
       const now = new Date().toISOString();
       const record: DomainRecord = {
-        id: `domain_${uuid()}`,
+        id: `domain_${randomUUID()}`,
         clientId: client.id,
         clientName: client.name,
         domainName: parsed.data.domainName.trim(),

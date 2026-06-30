@@ -1,4 +1,4 @@
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "node:crypto";
 import { parseDbAccessString } from "./dbAccessParser";
 import { toKeyVaultSecretName } from "./keyVaultNames";
 import type { CurrentUser, DatabaseRecord } from "../types/models";
@@ -25,7 +25,7 @@ export function buildDatabaseRecordFromInput(
   input: BuildDatabaseInput
 ): BuildDatabaseResult {
   const parsed = parseDbAccessString(input.rawDbAccess);
-  const id = `db_${uuid()}`;
+  const id = `db_${randomUUID()}`;
   const now = new Date().toISOString();
   const passwordSecretName = toKeyVaultSecretName(`db-${id}-password`);
 

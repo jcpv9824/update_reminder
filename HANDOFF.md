@@ -83,6 +83,14 @@ Toda la UI, validaciones, correos y documentación deben permanecer en español.
 
 No documentar contraseñas reales, app passwords, JWT secrets, cadenas de conexión completas ni nombres sensibles de secretos.
 
+Dependencias y cadena de suministro:
+
+- Ejecutar `npm run security:audit:prod` y `npm run security:audit` en `api` y `frontend` antes de cada despliegue.
+- El umbral CI es `moderate`; cualquier vulnerabilidad moderada, alta o crítica bloquea el despliegue.
+- Dependabot revisa semanalmente npm de ambos proyectos y GitHub Actions.
+- Consultar `SECURITY_DEPENDENCY_POLICY.md` para SLA, contención y excepciones.
+- No usar `npm audit fix --force` sin revisar cambios mayores y completar todas las pruebas.
+
 ## 4. Roles y permisos
 
 Roles funcionales:

@@ -134,6 +134,8 @@ El campo **ID del cliente** (`externalId`) es opcional por ahora. Si se captura,
 - Los listados y detalles generales de bases usan DTOs sanitizados: nunca incluyen servidor, usuario SQL ni `passwordSecretName`. La conexión se consulta exclusivamente mediante **Ver acceso** y autorización backend.
 - Admin, administrador de clientes y visualizador conservan lectura global sanitizada. Los actualizadores solo reciben clientes, dominios, bases y tareas relacionados con asignaciones propias; ningún query param puede ampliar ese alcance.
 - Las tareas se filtran obligatoriamente por asignación en la API. Si existen usuarios específicos, el rol por sí solo no permite leer la tarea.
+- Antes de desplegar, CI ejecuta auditoría npm de producción y total con umbral `moderate`, además de todas las pruebas y builds. Dependabot revisa backend, frontend y GitHub Actions semanalmente.
+- La política y SLA de actualización de dependencias están en `SECURITY_DEPENDENCY_POLICY.md`.
 - El reporte de clientes/licencias/dominios/empresas no incluye usuarios SQL, servidores, puertos, contraseñas, cadenas de conexión completas, secretos ni tokens.
 - Las eliminaciones en cascada no eliminan auditoría y no borran secretos de Key Vault cuando el maestro queda en soft-delete.
 

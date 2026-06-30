@@ -351,6 +351,8 @@ Select-String -Path "frontend/src/**/*.*" -Pattern "window.alert|window.confirm|
 | BR-SEC-07 | Admin, client_manager y viewer tienen lectura operativa global sanitizada; actualizadores solo leen clientes, dominios, bases y tareas asignados por usuario, rol o relación directa. | `api/src/tests/objectAuthorization.test.ts` | Cubierta por unidad backend |
 | BR-SEC-08 | Los parametros de filtro (`assignedToMe`, `clientId`, `domainId`) nunca amplian el alcance autorizado por backend. | `api/src/tests/objectAuthorization.test.ts` -> filtrado BOLA/IDOR | Cubierta por unidad backend |
 | BR-SEC-09 | Copiar servidor/catalogo/usuario y revelar password aplican la misma autorizacion de objeto; una tarea ajena o de otra base no concede acceso. | `api/src/tests/objectAuthorization.test.ts` | Cubierta por unidad backend |
+| BR-SEC-10 | Backend y frontend deben mantener auditoria npm de produccion y total sin vulnerabilidades moderadas o superiores antes de desplegar. | Scripts `security:audit:prod`/`security:audit`; workflow de Static Web Apps | Cubierta por CI |
+| BR-SEC-11 | Dependabot revisa semanalmente dependencias npm y GitHub Actions; las remediaciones cumplen el SLA por severidad. | `.github/dependabot.yml`; `SECURITY_DEPENDENCY_POLICY.md` | Cubierta por proceso automatizado |
 
 ## Static Web Apps y despliegue
 
