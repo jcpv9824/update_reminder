@@ -46,7 +46,7 @@ export type Dominio = {
   domainName: string;
   environment: string;
   currentWebVersion?: string;
-  assignedUpdaterIds: string[];
+  assignedUpdaterIds?: string[];
   status: "active" | "inactive" | "deleted";
   notes?: string;
   createdAt: string;
@@ -64,19 +64,22 @@ export type BaseDeDatos = {
   companyName: string;
   environment: string;
   dbAccess: {
-    serverHostPort: string;
     initialCatalog: string;
-    userId: string;
-    passwordSecretName: string;
   };
   currentDbVersion?: string;
-  assignedUpdaterIds: string[];
+  assignedUpdaterIds?: string[];
   status: "active" | "inactive" | "deleted";
   notes?: string;
   createdAt: string;
   updatedAt: string;
   lastUpdatedAt?: string | null;
-  lastUpdatedBy?: string | null;
+};
+
+export type AccesoBaseDatos = {
+  server: string;
+  databaseName: string;
+  user: string;
+  hasPassword: boolean;
 };
 
 export type ModuloLicencia = {
@@ -188,7 +191,7 @@ export type EstadoTarea =
 export type Tarea = {
   id: string;
   taskDate: string;
-  taskBucket: string;
+  taskBucket?: string;
   clientId: string;
   clientName: string;
   domainId: string;
@@ -206,7 +209,7 @@ export type Tarea = {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
-  completedBy: string | null;
+  completedBy?: string | null;
   completedWithProblems?: boolean;
   problemNote?: string;
   completionNote?: string;

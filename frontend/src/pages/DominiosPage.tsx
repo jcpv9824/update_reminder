@@ -3,10 +3,11 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { BaseDeDatos, Cliente, Dominio, RespuestaPaginada } from "../types";
-import { Alerta, BotonCopiar, EtiquetaEstado, Modal, DialogoConfirmar, Paginacion } from "../components/Comunes";
+import { Alerta, EtiquetaEstado, Modal, DialogoConfirmar, Paginacion } from "../components/Comunes";
 import { AMBIENTES_OPERATIVOS, ETIQUETAS_AMBIENTE } from "../types";
 import { SelectorBuscable } from "../components/SelectorBuscable";
 import { formatDomainForPublishing } from "../utils/dominio";
+import { PanelAccesoBd } from "../components/PanelAccesoBd";
 
 type AccionDominio = "guardar" | "agregarBase" | "crearNuevo";
 
@@ -218,7 +219,7 @@ export default function DominiosPage() {
 
 function BasesAsociadasDominio({ dominio }: { dominio: Dominio }) {
   const navigate = useNavigate();
-  const [mensaje, setMensaje] = useState<string | null>(null);
+  const [verAcceso, setVerAcceso] = useState<BaseDeDatos | null>(null);
   const { data: bases = [], isLoading, isError } = useQuery({
     queryKey: ["dominio-bases", dominio.id],
     queryFn: () => api.get<BaseDeDatos[]>(`/domains/${dominio.id}/databases`),
@@ -230,7 +231,6 @@ function BasesAsociadasDominio({ dominio }: { dominio: Dominio }) {
       <p><strong>Ambiente:</strong> {ETIQUETAS_AMBIENTE[dominio.environment] ?? dominio.environment}</p>
       {isLoading && <div className="cargando">Cargando bases asociadas...</div>}
       {isError && <Alerta tipo="error">No se pudieron cargar las bases asociadas.</Alerta>}
-      {mensaje && <Alerta tipo="info">{mensaje}</Alerta>}
       {!isLoading && bases.length === 0 && <p className="vacio">No hay bases asociadas activas para este dominio.</p>}
       {bases.map((bd) => (
         <div className="tarjeta tarjeta-compacta" key={bd.id}>
@@ -238,26 +238,15 @@ function BasesAsociadasDominio({ dominio }: { dominio: Dominio }) {
           <p><strong>Base de datos:</strong> {bd.dbAccess.initialCatalog}</p>
           <p><strong>Ambiente:</strong> {ETIQUETAS_AMBIENTE[bd.environment] ?? bd.environment}</p>
           <p><strong>Estado:</strong> <EtiquetaEstado estado={bd.status} /></p>
-          <p><strong>Servidor y puerto:</strong> <code>{bd.dbAccess.serverHostPort}</code></p>
-          <p><strong>Usuario:</strong> <code>{bd.dbAccess.userId}</code></p>
-          <p><strong>Contraseña:</strong> ••••••••••••</p>
           <div className="acciones-tabla">
-            <BotonCopiar valor={bd.dbAccess.serverHostPort} etiqueta="Copiar servidor y puerto" />
-            <BotonCopiar valor={bd.dbAccess.initialCatalog} etiqueta="Copiar base de datos" />
-            <BotonCopiar valor={bd.dbAccess.userId} etiqueta="Copiar usuario" />
-            <button type="button" onClick={async () => {
-              try {
-                const r = await api.post<{ value: string }>(`/databases/${bd.id}/copy-access-part`, { part: "password" });
-                await navigator.clipboard.writeText(r.value);
-                setMensaje("Contraseña copiada al portapapeles.");
-              } catch (e: any) {
-                setMensaje(e?.message ?? "No se pudo copiar la contraseña.");
-              }
-            }}>Copiar contraseña</button>
+            <button type="button" onClick={() => setVerAcceso(bd)}>Ver acceso</button>
             <button type="button" onClick={() => navigate(`/bases-de-datos?edit=${encodeURIComponent(bd.id)}`)}>Editar base</button>
           </div>
         </div>
       ))}
+      <Modal titulo={`Acceso: ${verAcceso?.companyName ?? ""}`} abierto={!!verAcceso} onCerrar={() => setVerAcceso(null)}>
+        {verAcceso && <PanelAccesoBd bd={verAcceso} />}
+      </Modal>
     </div>
   );
 }

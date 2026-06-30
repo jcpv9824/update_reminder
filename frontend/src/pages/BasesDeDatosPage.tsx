@@ -266,7 +266,6 @@ function FormularioBd({ inicial, clientes, dominios, frecuencias, clienteInicial
       environment,
       currentDbVersion: currentDbVersion || undefined,
       notes,
-      assignedUpdaterIds: inicial?.assignedUpdaterIds ?? [],
     };
     if (!editando) {
       body.rawDbAccess = rawDbAccess;
@@ -320,10 +319,8 @@ function FormularioBd({ inicial, clientes, dominios, frecuencias, clienteInicial
         <div className="fila-formulario">
           <label>Acceso a la base de datos</label>
           <p className="texto-ayuda" style={{ marginBottom: 6 }}>
-            Servidor: <code>{inicial!.dbAccess.serverHostPort}</code><br />
             Base / Initial Catalog: <code>{inicial!.dbAccess.initialCatalog}</code><br />
-            Usuario: <code>{inicial!.dbAccess.userId}</code><br />
-            Contraseña: <strong>(no se muestra por seguridad)</strong>
+            Servidor, usuario y contraseña se consultan únicamente desde la acción <strong>Ver acceso</strong>.
           </p>
           {!cambiarAcceso ? (
             <button type="button" onClick={() => setCambiarAcceso(true)}>

@@ -16,7 +16,7 @@ Alcance: frontend React/Vite, API Azure Functions, Cosmos DB, Key Vault, correo,
 
 **Estado: NO APTO todavia para manejar datos delicados adicionales ni para un cutover SQL sin remediacion.**
 
-La aplicacion tiene controles valiosos (hash de contrasenas, tokens de reset hasheados, Key Vault, auditoria sanitizada, permisos funcionales y pruebas). El bypass SEC-001 fue corregido, pero varios endpoints aun exponen mas datos de los necesarios y las dependencias presentan vulnerabilidades altas corregibles.
+La aplicacion tiene controles valiosos (hash de contrasenas, tokens de reset hasheados, Key Vault, auditoria sanitizada, permisos funcionales y pruebas). Los bypass SEC-001/SEC-002 y la exposicion SEC-003 fueron corregidos, pero las dependencias y otros controles de endurecimiento aun presentan brechas que deben resolverse antes del cutover SQL.
 
 ## Acciones inmediatas P0/P1
 
@@ -26,16 +26,16 @@ La aplicacion tiene controles valiosos (hash de contrasenas, tokens de reset has
   - Desarrollo: `x-dev-*` sigue disponible exclusivamente con `DEV_AUTH_ENABLED=true`; produccion mantiene el flag en false.
   - Pruebas: `api/src/tests/authSecurity.test.ts` falsifica un principal con rol admin y verifica `null/401`; tambien cubre JWT valido y el gating del modo desarrollo.
 
-- [ ] **SEC-002 - P0 - Aplicar autorizacion de objeto y minimizacion de respuesta en listados.**
-  - Estado: Falla.
-  - Evidencia: `api/src/functions/databases.ts` (`databasesList`, `databasesGet`) devuelve `DatabaseRecord` completo a cualquier usuario autenticado; `api/src/functions/tasks.ts` lista/obtiene tareas sin filtrar por asignacion salvo parametro opcional.
-  - Riesgo: un viewer/updater puede consultar directamente API y obtener todos los clientes, tareas, servidor, usuario SQL y `passwordSecretName`, aunque la UI no lo muestre.
-  - Cierre: DTOs publicos sin referencias Key Vault; politicas por rol/cliente/asignacion obligatorias en backend; pruebas BOLA/IDOR para cada rol.
+- [x] **SEC-002 - P0 - Aplicar autorizacion de objeto y minimizacion de respuesta en listados.**
+  - Estado: Corregido el 2026-06-30.
+  - Implementacion: `objectAuthorization.ts` aplica lectura global solo a admin/client_manager/viewer y limita actualizadores a clientes, dominios, bases y tareas asignados por maestro, usuario o rol. Los filtros son obligatorios en backend y no dependen de query params.
+  - Minimizacion: `publicDtos.ts` elimina servidor, usuario SQL, `passwordSecretName`, actores internos, buckets, dedupe, sources y marcas de correo de respuestas generales. Los arboles de clientes/dominios tambien usan DTO de base sanitizado.
+  - Pruebas: `objectAuthorization.test.ts` cubre BOLA/IDOR para todos los roles, objetos propios/ajenos y asignacion individual/por rol; `publicDtos.test.ts` verifica ausencia estructural de datos sensibles.
 
-- [ ] **SEC-003 - P1 - Restringir metadata de acceso de bases de datos.**
-  - Estado: Falla.
-  - Evidencia: `databasesCopyAccessPart` solo valida permiso especial para `password`; servidor, catalogo y usuario quedan disponibles para cualquier autenticado. Los listados ya incluyen `dbAccess` completo.
-  - Cierre: aplicar `canAccessDatabaseTaskConnection`, `canRevealDatabaseSecret` o permiso administrativo a todas las partes; auditar; devolver DTO en listados.
+- [x] **SEC-003 - P1 - Restringir metadata de acceso de bases de datos.**
+  - Estado: Corregido el 2026-06-30 junto con SEC-002.
+  - Implementacion: `access-info`, `copy-access-part` y `reveal-password` comparten politica de objeto. Servidor/usuario solo se obtienen mediante accion explicita autorizada; la contrasena mantiene una politica mas restrictiva y auditoria.
+  - Pruebas: `objectAuthorization.test.ts` cubre viewer, domain_updater, client_manager, database_updater por maestro/tarea, tarea ajena y target incorrecto.
 
 - [ ] **SEC-004 - P1 - Actualizar dependencias vulnerables y bloquear regresiones.**
   - Estado: Falla.

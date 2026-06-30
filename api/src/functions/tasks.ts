@@ -5,6 +5,8 @@ import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { badRequest, forbidden, notFound, ok, serverError } from "../lib/http";
 import { filterTasksForOperationalView } from "../lib/taskVisibility";
+import { canReadTask, filterTasksForUser, isTaskAssignedToUser } from "../lib/objectAuthorization";
+import { toPublicTask } from "../lib/publicDtos";
 import type { DatabaseRecord, DomainRecord, UpdateTask } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
@@ -96,8 +98,9 @@ app.http("tasksList", {
         schedules.filter((schedule) => schedule.active !== false).map((schedule) => schedule.id)
       );
       items = filterTasksForOperationalView(items, { activeScheduleIds, existingScheduleIds });
-      if (assignedToMe) items = items.filter((t) => t.assignedUserIds.includes(user.id));
-      return ok(items);
+      items = filterTasksForUser(user, items);
+      if (assignedToMe) items = items.filter((t) => isTaskAssignedToUser(user, t));
+      return ok(items.map(toPublicTask));
     } catch (e) {
       return serverError(e);
     }
@@ -110,10 +113,11 @@ app.http("tasksGet", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      await getUserOrFail(req);
+      const user = await getUserOrFail(req);
       const t = await findTask(req.params.id);
       if (!t) return notFound("Tarea no encontrada.");
-      return ok(t);
+      if (!canReadTask(user, t)) return forbidden("No tiene permisos para consultar esta tarea.");
+      return ok(toPublicTask(t));
     } catch (e) { return serverError(e); }
   },
 });
@@ -347,7 +351,7 @@ async function changeTaskStatus(
       else if (decision === "exito") void notificarCompletadaConExito(t, user.email);
     }
 
-    return ok(t);
+    return ok(toPublicTask(t));
   } catch (e) {
     return serverError(e);
   }

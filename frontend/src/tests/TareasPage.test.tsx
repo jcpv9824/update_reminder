@@ -17,6 +17,15 @@ vi.mock("../auth/AuthContext", () => ({
 
 import TareasPage from "../pages/TareasPage";
 
+type BaseDetallePrueba = Omit<BaseDeDatos, "dbAccess"> & {
+  dbAccess: {
+    initialCatalog: string;
+    serverHostPort: string;
+    userId: string;
+    passwordSecretName?: string;
+  };
+};
+
 function renderPagina() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -63,7 +72,7 @@ function tarea(overrides: Partial<Tarea>): Tarea {
   };
 }
 
-function bd(id: string, overrides: Partial<BaseDeDatos> = {}): BaseDeDatos {
+function bd(id: string, overrides: Partial<BaseDetallePrueba> = {}): BaseDetallePrueba {
   return {
     id,
     clientId: "client_1",
@@ -86,7 +95,7 @@ function bd(id: string, overrides: Partial<BaseDeDatos> = {}): BaseDeDatos {
   };
 }
 
-function mockTareas({ dominios = [], bases = [], basesDetalle = [], usuarios = [] }: { dominios?: Tarea[]; bases?: Tarea[]; basesDetalle?: BaseDeDatos[]; usuarios?: any[] }) {
+function mockTareas({ dominios = [], bases = [], basesDetalle = [], usuarios = [] }: { dominios?: Tarea[]; bases?: Tarea[]; basesDetalle?: BaseDetallePrueba[]; usuarios?: any[] }) {
   apiMock.get.mockImplementation((path = "") => {
     if (path === "/users") return Promise.resolve(usuarios);
     if (path === "/schedules") return Promise.resolve([{ id: "schedule_1", name: "Actualización mensual" }]);

@@ -1,7 +1,7 @@
 # Reglas de negocio y matriz de pruebas
 
 Aplicacion: **Programador de Actualizaciones ERP**  
-Ultima revision de este documento: 2026-06-02  
+Ultima revision de este documento: 2026-06-30
 Objetivo: documentar las reglas de negocio vigentes y relacionarlas con pruebas automatizadas existentes o esperadas.
 
 Este archivo es una matriz viva. Cuando una regla cambie, debe actualizarse la regla, el codigo y la prueba asociada en el mismo cambio.
@@ -347,6 +347,10 @@ Select-String -Path "frontend/src/**/*.*" -Pattern "window.alert|window.confirm|
 | BR-SEC-03 | SMTP password se guarda en Key Vault y no se expone en respuesta. | `api/src/tests/settingsService.test.ts`; `frontend/src/tests/AlertasCorreosPage.test.tsx` | Cubierta |
 | BR-SEC-04 | Emails/reportes no exponen secretos ni connection strings completas. | `api/src/tests/reportsService.test.ts`; `api/src/tests/emailTemplates.test.ts`; `api/src/tests/completionFlow.test.ts` | Cubierta |
 | BR-SEC-05 | Copia/revelacion de password de base requiere permisos. | `api/src/tests/permissions.test.ts`; `frontend/src/tests/TareasPage.test.tsx` | Cubierta |
+| BR-SEC-06 | Listados y detalles de bases nunca exponen servidor, usuario SQL ni referencias Key Vault; esos datos se obtienen solo mediante `access-info` autorizado. | `api/src/tests/publicDtos.test.ts`; `api/src/tests/objectAuthorization.test.ts`; `frontend/src/tests/DominiosPage.test.tsx` | Cubierta |
+| BR-SEC-07 | Admin, client_manager y viewer tienen lectura operativa global sanitizada; actualizadores solo leen clientes, dominios, bases y tareas asignados por usuario, rol o relación directa. | `api/src/tests/objectAuthorization.test.ts` | Cubierta por unidad backend |
+| BR-SEC-08 | Los parametros de filtro (`assignedToMe`, `clientId`, `domainId`) nunca amplian el alcance autorizado por backend. | `api/src/tests/objectAuthorization.test.ts` -> filtrado BOLA/IDOR | Cubierta por unidad backend |
+| BR-SEC-09 | Copiar servidor/catalogo/usuario y revelar password aplican la misma autorizacion de objeto; una tarea ajena o de otra base no concede acceso. | `api/src/tests/objectAuthorization.test.ts` | Cubierta por unidad backend |
 
 ## Static Web Apps y despliegue
 

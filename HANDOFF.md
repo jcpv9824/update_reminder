@@ -93,6 +93,14 @@ Roles funcionales:
 - `database_updater`: Actualizador de bases de datos. Atiende tareas de base.
 - `viewer`: Visualizador. Solo consulta; no debe cambiar estados ni revelar secretos.
 
+Autorizacion de objeto obligatoria (SEC-002):
+
+- `admin`, `client_manager` y `viewer` pueden leer metadata operativa global, siempre sanitizada.
+- `domain_updater` solo lee dominios/tareas asignados individualmente o por rol; puede ver metadata no sensible de bases dentro de un dominio asignado.
+- `database_updater` solo lee bases/tareas asignadas individualmente, por maestro o por rol. Una tarea asignada concede acceso unicamente a su base y relaciones directas.
+- Los listados de bases no devuelven servidor, usuario SQL ni referencias Key Vault. **Ver acceso** usa un endpoint explicito con autorizacion; contraseña y copias siguen auditadas.
+- `assignedToMe`, `clientId`, `domainId` y otros filtros solo reducen resultados: nunca amplian el alcance calculado por backend.
+
 Licenciamiento en menú solo debe verse para `admin` y `client_manager`. Updaters no deben ver ese módulo.
 
 ## 5. Módulos funcionales

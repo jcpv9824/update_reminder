@@ -13,6 +13,8 @@ import { hasDuplicateDomainUrl } from "../lib/duplicateValidation";
 import { isAllowedEnvironment } from "../lib/environments";
 import { isValidHttpsDomain } from "../lib/inputValidation";
 import { isDomainDefaultScheduleForDomain } from "../lib/scheduleService";
+import { canReadDatabaseInDomain, canReadDomain, filterDomainsForUser } from "../lib/objectAuthorization";
+import { toPublicDatabase } from "../lib/publicDtos";
 import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
@@ -38,7 +40,7 @@ app.http("domainsList", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      await getUserOrFail(req);
+      const user = await getUserOrFail(req);
       const container = getContainer("domains");
       const clientId = req.query.get("clientId");
       const status = req.query.get("status");
@@ -50,8 +52,13 @@ app.http("domainsList", {
         ? { query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: clientId }] }
         : { query: "SELECT * FROM c" };
       const { resources } = await container.items.query<DomainRecord>(querySpec).fetchAll();
+      const { resources: scopeDatabases } = await getContainer("databases").items.readAll<DatabaseRecord>().fetchAll();
+      const { resources: scopeTasks } = canManageClients(user) || user.roles.includes("viewer")
+        ? { resources: [] as UpdateTask[] }
+        : await getContainer("updateTasks").items.readAll<UpdateTask>().fetchAll();
       const includeDeleted = req.query.get("includeDeleted") === "true";
-      let items = resources;
+      let items = filterDomainsForUser(user, resources, scopeDatabases, scopeTasks);
+      if (!canManageClients(user)) items = items.filter((domain) => domain.status !== "deleted");
       if (!includeDeleted && !status) items = items.filter((d) => d.status !== "deleted");
       if (status) items = items.filter((d) => d.status === status);
       if (environment) items = items.filter((d) => d.environment === environment);
@@ -140,12 +147,20 @@ app.http("domainsGet", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      await getUserOrFail(req);
+      const user = await getUserOrFail(req);
       const id = req.params.id;
       const { resources } = await getContainer("domains")
         .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })
         .fetchAll();
       if (!resources.length) return notFound("Dominio no encontrado.");
+      if (resources[0].status === "deleted" && !canManageClients(user)) return forbidden("No tiene permisos para consultar este dominio.");
+      const { resources: databases } = await getContainer("databases").items
+        .query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.domainId = @d", parameters: [{ name: "@d", value: id }] })
+        .fetchAll();
+      const { resources: tasks } = await getContainer("updateTasks").items
+        .query<UpdateTask>({ query: "SELECT * FROM c WHERE c.domainId = @d", parameters: [{ name: "@d", value: id }] })
+        .fetchAll();
+      if (!canReadDomain(user, resources[0], databases, tasks)) return forbidden("No tiene permisos para consultar este dominio.");
       return ok(resources[0]);
     } catch (e) {
       return serverError(e);
@@ -159,13 +174,14 @@ app.http("domainsDatabases", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      await getUserOrFail(req);
+      const user = await getUserOrFail(req);
       const id = req.params.id;
-      const includeDeleted = req.query.get("includeDeleted") === "true";
+      const includeDeleted = req.query.get("includeDeleted") === "true" && canManageClients(user);
       const { resources: domains } = await getContainer("domains")
         .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })
         .fetchAll();
       if (!domains.length || (!includeDeleted && domains[0].status === "deleted")) return notFound("Dominio no encontrado.");
+      const domain = domains[0];
       const { resources } = await getContainer("databases")
         .items.query<DatabaseRecord>({
           query: includeDeleted
@@ -174,7 +190,13 @@ app.http("domainsDatabases", {
           parameters: [{ name: "@d", value: id }],
         })
         .fetchAll();
-      return ok(resources);
+      const { resources: tasks } = await getContainer("updateTasks").items
+        .query<UpdateTask>({ query: "SELECT * FROM c WHERE c.domainId = @d", parameters: [{ name: "@d", value: id }] })
+        .fetchAll();
+      if (!canReadDomain(user, domain, resources, tasks)) return forbidden("No tiene permisos para consultar este dominio.");
+      return ok(resources
+        .filter((database) => canReadDatabaseInDomain(user, database, domain, tasks))
+        .map(toPublicDatabase));
     } catch (e) {
       return serverError(e);
     }

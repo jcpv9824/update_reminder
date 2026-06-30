@@ -131,6 +131,9 @@ El campo **ID del cliente** (`externalId`) es opcional por ahora. Si se captura,
 - En Cosmos DB solo se guarda la **referencia** al secreto, nunca la contraseña.
 - Los registros de auditoría **eliminan automáticamente** cualquier campo cuyo nombre incluya `password`, `secret`, `rawDbAccess`.
 - Cada acción de **revelar** o **copiar** la contraseña genera una entrada de auditoría con el usuario, la fecha y la base de datos asociada.
+- Los listados y detalles generales de bases usan DTOs sanitizados: nunca incluyen servidor, usuario SQL ni `passwordSecretName`. La conexión se consulta exclusivamente mediante **Ver acceso** y autorización backend.
+- Admin, administrador de clientes y visualizador conservan lectura global sanitizada. Los actualizadores solo reciben clientes, dominios, bases y tareas relacionados con asignaciones propias; ningún query param puede ampliar ese alcance.
+- Las tareas se filtran obligatoriamente por asignación en la API. Si existen usuarios específicos, el rol por sí solo no permite leer la tarea.
 - El reporte de clientes/licencias/dominios/empresas no incluye usuarios SQL, servidores, puertos, contraseñas, cadenas de conexión completas, secretos ni tokens.
 - Las eliminaciones en cascada no eliminan auditoría y no borran secretos de Key Vault cuando el maestro queda en soft-delete.
 

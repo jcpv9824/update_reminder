@@ -8,6 +8,8 @@ import { getContainer } from "../lib/cosmos";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import { getPagination, paginateArray } from "../lib/pagination";
 import { hasDuplicateClientExternalId, hasDuplicateClientName } from "../lib/duplicateValidation";
+import { canReadAllOperationalData, filterClientIdsForUser } from "../lib/objectAuthorization";
+import { toPublicDatabase } from "../lib/publicDtos";
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 const ClientSchema = z.object({
@@ -57,13 +59,23 @@ app.http("clientsList", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      await getUserOrFail(req);
+      const user = await getUserOrFail(req);
       const container = getContainer("clients");
       const { resources } = await container.items.readAll<ClientRecord>().fetchAll();
       const search = req.query.get("search")?.trim().toLowerCase();
       const status = req.query.get("status");
       const includeDeleted = req.query.get("includeDeleted") === "true";
       let items = resources;
+      if (!canReadAllOperationalData(user)) {
+        const [{ resources: domains }, { resources: databases }, { resources: tasks }] = await Promise.all([
+          getContainer("domains").items.readAll<DomainRecord>().fetchAll(),
+          getContainer("databases").items.readAll<DatabaseRecord>().fetchAll(),
+          getContainer("updateTasks").items.readAll<UpdateTask>().fetchAll(),
+        ]);
+        const allowedClientIds = filterClientIdsForUser(user, domains, databases, tasks) ?? new Set<string>();
+        items = items.filter((client) => allowedClientIds.has(client.id));
+      }
+      if (!canManageClients(user)) items = items.filter((client) => client.status !== "deleted");
       if (!includeDeleted && !status) items = items.filter((c) => c.status !== "deleted");
       if (search) items = items.filter((c) => `${c.externalId ?? ""} ${c.name} ${c.status} ${c.notes ?? ""}`.toLowerCase().includes(search));
       if (status) items = items.filter((c) => c.status === status);
@@ -131,10 +143,20 @@ app.http("clientsGet", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      await getUserOrFail(req);
+      const user = await getUserOrFail(req);
       const id = req.params.id;
       const { resource } = await getContainer("clients").item(id, id).read<ClientRecord>();
       if (!resource) return notFound("Cliente no encontrado.");
+      if (resource.status === "deleted" && !canManageClients(user)) return forbidden("No tiene permisos para consultar este cliente.");
+      if (!canReadAllOperationalData(user)) {
+        const [{ resources: domains }, { resources: databases }, { resources: tasks }] = await Promise.all([
+          getContainer("domains").items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: id }] }).fetchAll(),
+          getContainer("databases").items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: id }] }).fetchAll(),
+          getContainer("updateTasks").items.query<UpdateTask>({ query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: id }] }).fetchAll(),
+        ]);
+        const allowedClientIds = filterClientIdsForUser(user, domains, databases, tasks) ?? new Set<string>();
+        if (!allowedClientIds.has(id)) return forbidden("No tiene permisos para consultar este cliente.");
+      }
       return ok(resource);
     } catch (e) {
       return serverError(e);
@@ -148,7 +170,8 @@ app.http("clientsTree", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      await getUserOrFail(req);
+      const user = await getUserOrFail(req);
+      if (!canReadAllOperationalData(user)) return forbidden();
       const id = req.params.id;
       const { resource: client } = await getContainer("clients").item(id, id).read<ClientRecord>();
       if (!client || client.status === "deleted") return notFound("Cliente no encontrado.");
@@ -166,7 +189,7 @@ app.http("clientsTree", {
         client,
         domains: domains.map((domain) => ({
           domain,
-          databases: databases.filter((db) => db.domainId === domain.id),
+          databases: databases.filter((db) => db.domainId === domain.id).map(toPublicDatabase),
         })),
       });
     } catch (e) {
