@@ -466,13 +466,23 @@ Contenedores esperados por el código:
 - `auditLogs`
 - `appSettings`
 - `emailNotifications`
+- `securityRateLimits` (PK `/id`, TTL; estado tecnico efimero de SEC-005)
 
 Particiones clave importantes conocidas:
 
 - `licenseModules`: `/id`.
 - `licenseAssignments`: `/clientId`.
 - `updateTasks`: suele operar por `taskBucket`.
+- `securityRateLimits`: `/id`; no contiene IP/correo/token en claro y no se migra como dato de negocio a SQL.
 - `clients`, `domains`, `databases` usan patrones existentes por cliente/id; revisar código antes de migrar.
+
+Proteccion contra abuso (SEC-005):
+
+- Login, recuperacion/restablecimiento, setup y envios manuales de correo aplican limites distribuidos por IP e identidad.
+- Cinco fallos de login en 15 minutos bloquean durante 15 minutos. Un login valido limpia solo el contador de cuenta.
+- Toda limitacion responde `429` y `Retry-After`; una falla del almacen de seguridad responde `503`.
+- Los bloqueos generan logs estructurados y auditoria sin almacenar identificadores originales.
+- `RATE_LIMIT_HASH_SECRET` debe ser aleatorio y no versionarse. Detalle operativo en `SECURITY_RATE_LIMITING.md`.
 
 ## 15. Deployment
 

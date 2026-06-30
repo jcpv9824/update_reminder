@@ -10,6 +10,7 @@ import { getPagination, paginateArray } from "../lib/pagination";
 import { loadEmailAlertsSettings } from "../lib/settingsService";
 import { sendEmail } from "../lib/emailService";
 import { buildWelcomeUserEmail, buildResendCredentialsEmail } from "../lib/emailTemplates";
+import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
 import type { UserRecord } from "../types/models";
 
 // Envía el correo de credenciales (bienvenida, restablecimiento o reenvío).
@@ -115,6 +116,13 @@ app.http("usersCreate", {
       const parsed = UserCreateSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const email = normalizeEmail(parsed.data.email);
+      const limited = await enforceRequestRateLimit(
+        req,
+        "email_user_welcome",
+        `${u.id}:${email}`,
+        RATE_LIMIT_POLICIES.userEmail
+      );
+      if (limited) return limited;
       const id = parsed.data.id?.trim() || email;
       const now = new Date().toISOString();
       const passwordHash = await hashPassword(parsed.data.password);
@@ -203,6 +211,13 @@ app.http("usersResetPassword", {
       const body = await req.json();
       const parsed = ResetPasswordSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      const limited = await enforceRequestRateLimit(
+        req,
+        "email_user_password_reset",
+        `${u.id}:${id}`,
+        RATE_LIMIT_POLICIES.userEmail
+      );
+      if (limited) return limited;
       const container = getContainer("users");
       const { resource } = await container.item(id, id).read<UserRecord>();
       if (!resource) return notFound("Usuario no encontrado.");
@@ -237,6 +252,13 @@ app.http("usersResendCredentials", {
       const u = await getUserOrFail(req);
       if (!canManageUsers(u)) return forbidden();
       const id = req.params.id;
+      const limited = await enforceRequestRateLimit(
+        req,
+        "email_user_credentials_resend",
+        `${u.id}:${id}`,
+        RATE_LIMIT_POLICIES.userEmail
+      );
+      if (limited) return limited;
       const container = getContainer("users");
       const { resource } = await container.item(id, id).read<UserRecord>();
       if (!resource) return notFound("Usuario no encontrado.");

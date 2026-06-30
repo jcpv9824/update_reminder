@@ -6,6 +6,13 @@ import { signJwt } from "../lib/jwt";
 import { writeAuditLog } from "../lib/audit";
 import { ok } from "../lib/http";
 import type { UserRecord } from "../types/models";
+import {
+  checkLoginLockout,
+  clearLoginAccountFailures,
+  enforceRequestRateLimit,
+  RATE_LIMIT_POLICIES,
+  recordLoginFailure,
+} from "../lib/rateLimit";
 
 const LoginSchema = z.object({
   email: z.string().min(1).max(254),
@@ -30,21 +37,33 @@ app.http("authLogin", {
     try {
       const body = await req.json().catch(() => ({}));
       const parsed = LoginSchema.safeParse(body);
+      const email = parsed.success ? normalizeEmail(parsed.data.email) : "";
+      const requestLimited = await enforceRequestRateLimit(req, "auth_login_request", email || undefined, RATE_LIMIT_POLICIES.loginRequest);
+      if (requestLimited) return requestLimited;
+      const locked = await checkLoginLockout(req, email || "invalid");
+      if (locked) return locked;
       if (!parsed.success) {
+        const limited = await recordLoginFailure(req, "invalid");
+        if (limited) return limited;
         return { status: 401, jsonBody: { error: MENSAJE_LOGIN_GENERICO } };
       }
-      const email = normalizeEmail(parsed.data.email);
       const { resources } = await getContainer("users")
         .items.query<UserRecord>({ query: "SELECT * FROM c WHERE LOWER(c.email) = @e", parameters: [{ name: "@e", value: email }] })
         .fetchAll();
       const user = resources[0];
       if (!user || !user.passwordHash || !user.active) {
+        const limited = await recordLoginFailure(req, email);
+        if (limited) return limited;
         return { status: 401, jsonBody: { error: MENSAJE_LOGIN_GENERICO } };
       }
       const okPwd = await verifyPassword(parsed.data.password, user.passwordHash);
       if (!okPwd) {
+        const limited = await recordLoginFailure(req, email);
+        if (limited) return limited;
         return { status: 401, jsonBody: { error: MENSAJE_LOGIN_GENERICO } };
       }
+
+      await clearLoginAccountFailures(email);
 
       // Actualizar lastLoginAt sin tocar passwordHash.
       user.lastLoginAt = new Date().toISOString();
@@ -59,7 +78,8 @@ app.http("authLogin", {
         performedByEmail: user.email,
       });
       return ok({ token, user: sanitize(user) });
-    } catch {
+    } catch (error: any) {
+      if (error?.status === 503) return { status: 503, jsonBody: { error: "Servicio de seguridad temporalmente no disponible." } };
       // No filtrar stack traces ni mensajes detallados.
       return { status: 401, jsonBody: { error: MENSAJE_LOGIN_GENERICO } };
     }
@@ -88,8 +108,11 @@ app.http("authForgotPassword", {
     try {
       const body = await req.json().catch(() => ({}));
       const parsed = ForgotSchema.safeParse(body);
+      const identity = parsed.success ? normalizeEmail(parsed.data.email) : undefined;
+      const limited = await enforceRequestRateLimit(req, "auth_forgot_password", identity, RATE_LIMIT_POLICIES.forgotPassword);
+      if (limited) return limited;
       if (!parsed.success) return ok({ message: MENSAJE_FORGOT_GENERICO });
-      const email = normalizeEmail(parsed.data.email);
+      const email = identity!;
 
       const { resources } = await getContainer("users")
         .items.query<UserRecord>({ query: "SELECT * FROM c WHERE LOWER(c.email) = @e", parameters: [{ name: "@e", value: email }] })
@@ -132,7 +155,8 @@ app.http("authForgotPassword", {
       }
       // Respuesta única, idéntica para todos los casos.
       return ok({ message: MENSAJE_FORGOT_GENERICO });
-    } catch {
+    } catch (error: any) {
+      if (error?.status === 503) return { status: 503, jsonBody: { error: "Servicio de seguridad temporalmente no disponible." } };
       return ok({ message: MENSAJE_FORGOT_GENERICO });
     }
   },
@@ -154,6 +178,13 @@ app.http("authResetPassword", {
     try {
       const body = await req.json().catch(() => ({}));
       const parsed = ResetSchema.safeParse(body);
+      const limited = await enforceRequestRateLimit(
+        req,
+        "auth_reset_password",
+        parsed.success ? parsed.data.token : undefined,
+        RATE_LIMIT_POLICIES.resetPassword
+      );
+      if (limited) return limited;
       if (!parsed.success) {
         return { status: 400, jsonBody: { error: parsed.success === false ? "Datos no válidos." : MENSAJE_RESET_INVALIDO } };
       }
@@ -192,7 +223,8 @@ app.http("authResetPassword", {
         performedByEmail: user.email,
       });
       return ok({ message: "Tu contraseña fue actualizada correctamente. Ya puedes iniciar sesión." });
-    } catch {
+    } catch (error: any) {
+      if (error?.status === 503) return { status: 503, jsonBody: { error: "Servicio de seguridad temporalmente no disponible." } };
       return { status: 400, jsonBody: { error: MENSAJE_RESET_INVALIDO } };
     }
   },

@@ -817,6 +817,7 @@ Para tareas/auditoría históricas que referencien maestros eliminados:
 | ¿Settings JSON o normalizado? | JSON en fase inicial | Reduce riesgo y cambio de forma. |
 | ¿Auditoría en SQL desde día 1? | Migrar si se corta todo; puede quedar temporal en Cosmos | Append-heavy, bajo acoplamiento operativo. |
 | ¿emailNotifications en SQL? | Sí antes de activar timers SQL | Evita correos duplicados. |
+| ¿securityRateLimits en SQL? | No como dato migrado | Es estado efimero; recrear el control con Redis o tabla tecnica con expiracion y operaciones atomicas. |
 | ¿licenseAssignments se usa? | No en lógica principal | Feature avanzada oculta. |
 | ¿FK estrictas desde el inicio? | Después de staging/validación | Evita bloquear por datos históricos hasta diagnosticar. |
 

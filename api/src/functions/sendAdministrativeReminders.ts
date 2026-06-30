@@ -9,6 +9,7 @@ import { administrativeReminderDueToday, type AdministrativeReminderDue } from "
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { hasRole } from "../lib/permissions";
 import { badRequest, forbidden, ok, serverError } from "../lib/http";
+import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
 import type { AdministrativeReminderSettings } from "../types/models";
 
 type ReminderKey = "sag-web-version" | "whats-new";
@@ -121,6 +122,13 @@ app.http("settingsEmailAlertsAdministrativeReminderTest", {
         ? settings.administrativeReminders!.sagWebVersionReminder
         : settings.administrativeReminders!.whatsNewReminder;
       const recipients = parsed.emails.length > 0 ? parsed.emails : reminder.recipients;
+      const limited = await enforceRequestRateLimit(
+        req,
+        `email_admin_reminder_${key}`,
+        profile.id,
+        RATE_LIMIT_POLICIES.testEmail
+      );
+      if (limited) return limited;
       const result = await sendOne(key, reminder, settings.frontendBaseUrl, recipients);
       return ok({ ok: result.sent, message: result.sent ? "Correo de prueba enviado correctamente." : "No se pudo enviar el correo de prueba.", details: result.reason });
     } catch (e) {

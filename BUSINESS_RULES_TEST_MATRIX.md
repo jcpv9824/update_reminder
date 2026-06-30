@@ -353,6 +353,9 @@ Select-String -Path "frontend/src/**/*.*" -Pattern "window.alert|window.confirm|
 | BR-SEC-09 | Copiar servidor/catalogo/usuario y revelar password aplican la misma autorizacion de objeto; una tarea ajena o de otra base no concede acceso. | `api/src/tests/objectAuthorization.test.ts` | Cubierta por unidad backend |
 | BR-SEC-10 | Backend y frontend deben mantener auditoria npm de produccion y total sin vulnerabilidades moderadas o superiores antes de desplegar. | Scripts `security:audit:prod`/`security:audit`; workflow de Static Web Apps | Cubierta por CI |
 | BR-SEC-11 | Dependabot revisa semanalmente dependencias npm y GitHub Actions; las remediaciones cumplen el SLA por severidad. | `.github/dependabot.yml`; `SECURITY_DEPENDENCY_POLICY.md` | Cubierta por proceso automatizado |
+| BR-SEC-12 | Login, recuperacion, restablecimiento, setup y envios manuales aplican limites distribuidos por IP e identidad y responden `429` con `Retry-After`. | `api/src/tests/rateLimit.test.ts` | Cubierta por unidad backend |
+| BR-SEC-13 | Cinco credenciales invalidas bloquean temporalmente la IP/cuenta; una autenticacion valida limpia solo los fallos de la cuenta. | `api/src/tests/rateLimit.test.ts`; integracion en `api/src/functions/auth.ts` | Cubierta por unidad backend |
+| BR-SEC-14 | Los contadores de abuso no almacenan IP, correo ni token en claro y expiran mediante TTL. | `api/src/tests/rateLimit.test.ts`; contenedor `securityRateLimits` | Cubierta por unidad e infraestructura |
 
 ## Static Web Apps y despliegue
 

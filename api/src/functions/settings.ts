@@ -6,6 +6,7 @@ import { writeAuditLog } from "../lib/audit";
 import { loadEmailAlertsSettings, sanitizeForResponse, saveEmailAlertsSettings } from "../lib/settingsService";
 import { buildTestEmail, sendEmail } from "../lib/emailService";
 import { badRequest, forbidden, ok, serverError } from "../lib/http";
+import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
 
 async function getAdmin(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -126,6 +127,8 @@ app.http("settingsEmailAlertsTestEmail", {
       const body = await req.json();
       const parsed = TestSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      const limited = await enforceRequestRateLimit(req, "email_test", `${admin.id}:${parsed.data.to}`, RATE_LIMIT_POLICIES.testEmail);
+      if (limited) return limited;
       const settings = await loadEmailAlertsSettings();
       const email = buildTestEmail({
         recipientName: admin.displayName,

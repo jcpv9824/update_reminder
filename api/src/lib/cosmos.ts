@@ -33,7 +33,8 @@ export type ContainerName =
   | "licenseAssignments"
   | "auditLogs"
   | "appSettings"
-  | "emailNotifications";
+  | "emailNotifications"
+  | "securityRateLimits";
 
 export function getContainer(name: ContainerName): Container {
   return getDatabase().container(name);

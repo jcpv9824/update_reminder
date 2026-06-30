@@ -45,11 +45,13 @@ La aplicacion tiene controles valiosos (hash de contrasenas, tokens de reset has
   - Prevencion: el workflow ejecuta auditorias, pruebas y builds de backend/frontend antes de desplegar; `.github/dependabot.yml` revisa npm y GitHub Actions semanalmente.
   - SLA y excepciones: `SECURITY_DEPENDENCY_POLICY.md`.
 
-- [ ] **SEC-005 - P1 - Rate limiting, lockout y proteccion contra abuso.**
-  - Estado: Ausente.
-  - Evidencia: `auth/login`, `forgot-password`, `reset-password`, setup y endpoints de correo no tienen limite por IP/cuenta ni backoff.
-  - Riesgo: fuerza bruta, spam de reset/correo, costo y denegacion de servicio.
-  - Cierre: Azure API Management/Front Door o middleware distribuido; limites por IP+identidad, lockout temporal, metricas y alertas; pruebas 429.
+- [x] **SEC-005 - P1 - Rate limiting, lockout y proteccion contra abuso.**
+  - Estado: Corregido el 2026-06-30.
+  - Implementacion: `api/src/lib/rateLimit.ts` usa contadores distribuidos en Cosmos (`securityRateLimits`, PK `/id`, TTL) con concurrencia optimista. Aplica limites combinados por IP e identidad a login, recuperacion/restablecimiento, setup, correos de prueba, reporte maestro y correos de credenciales.
+  - Lockout: cinco fallos de login en 15 minutos bloquean durante 15 minutos; un login valido limpia el contador de fallos de la cuenta. Los limites restantes devuelven `429` y `Retry-After` con ventanas acordes al costo del endpoint.
+  - Privacidad y observabilidad: IP, correo y token se convierten en HMAC; no se persiste ni registra el valor original. Cada bloqueo emite evento estructurado `rate_limit_exceeded` y auditoria `rate_limit_exceeded`/`account_lockout_triggered` para metricas y alertas.
+  - Pruebas: `api/src/tests/rateLimit.test.ts` cubre umbrales, lockout, expiracion, independencia IP/identidad, reset, seudonimizacion y respuesta `429` con `Retry-After`.
+  - Defensa adicional recomendada: mantener reglas de rate limit en Azure API Management o Front Door/WAF para absorber trafico antes de que alcance Functions; no reemplaza el control distribuido de aplicacion.
 
 - [ ] **SEC-006 - P1 - Endurecer sesiones JWT.**
   - Estado: Parcial.

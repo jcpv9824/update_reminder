@@ -35,11 +35,17 @@ $contenedores = @(
   @{ Name = "auditLogs";      Pk = "/clientId" },
   @{ Name = "emailNotifications"; Pk = "/id" },
   @{ Name = "licenseModules"; Pk = "/id" },
-  @{ Name = "licenseAssignments"; Pk = "/clientId" }
+  @{ Name = "licenseAssignments"; Pk = "/clientId" },
+  @{ Name = "securityRateLimits"; Pk = "/id"; Ttl = -1 }
 )
 foreach ($c in $contenedores) {
-  az cosmosdb sql container create --account-name $cosmosAccount --resource-group $ResourceGroup `
-    --database-name $cosmosDatabase --name $c.Name --partition-key-path $c.Pk | Out-Null
+  if ($null -ne $c.Ttl) {
+    az cosmosdb sql container create --account-name $cosmosAccount --resource-group $ResourceGroup `
+      --database-name $cosmosDatabase --name $c.Name --partition-key-path $c.Pk --ttl $c.Ttl | Out-Null
+  } else {
+    az cosmosdb sql container create --account-name $cosmosAccount --resource-group $ResourceGroup `
+      --database-name $cosmosDatabase --name $c.Name --partition-key-path $c.Pk | Out-Null
+  }
 }
 
 Write-Host "==> Creando Key Vault $keyVaultName..."
@@ -66,12 +72,14 @@ $cosmosConnectionString = az cosmosdb keys list --name $cosmosAccount --resource
   --type connection-strings --query "connectionStrings[0].connectionString" --output tsv
 
 $setupSecret = [Guid]::NewGuid().ToString("N")
+$rateLimitHashSecret = [Guid]::NewGuid().ToString("N") + [Guid]::NewGuid().ToString("N")
 az functionapp config appsettings set --name $functionApp --resource-group $ResourceGroup --settings `
   "COSMOS_CONNECTION_STRING=$cosmosConnectionString" `
   "COSMOS_DATABASE_NAME=$cosmosDatabase" `
   "KEY_VAULT_URL=https://$keyVaultName.vault.azure.net/" `
   "APP_TIMEZONE=America/Bogota" `
   "DEV_AUTH_ENABLED=false" `
+  "RATE_LIMIT_HASH_SECRET=$rateLimitHashSecret" `
   "SETUP_SECRET=$setupSecret" | Out-Null
 
 Write-Host ""

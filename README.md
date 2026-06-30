@@ -126,6 +126,14 @@ El campo **ID del cliente** (`externalId`) es opcional por ahora. Si se captura,
 
 ## Seguridad
 
+### Protección contra abuso
+
+- Los endpoints sensibles usan rate limiting distribuido en Cosmos por IP e identidad.
+- Login aplica lockout temporal tras cinco fallos en 15 minutos; las respuestas limitadas usan HTTP `429` y `Retry-After`.
+- Recuperación/restablecimiento, setup y envíos manuales de correo tienen límites independientes según su costo.
+- Los identificadores se guardan como HMAC; nunca se persisten IP, correo, token ni secreto en claro en `securityRateLimits`.
+- Los eventos bloqueados quedan en logs estructurados y auditoría. Consulte `SECURITY_RATE_LIMITING.md` para límites y operación.
+
 - La contraseña SMTP se guarda en **Azure Key Vault**. El frontend nunca la recibe ni la muestra; Cosmos DB solo guarda el nombre del secreto y el indicador de configuración.
 - La contraseña de cada base de datos se guarda en **Azure Key Vault** con el nombre `db-{databaseId}-password`.
 - En Cosmos DB solo se guarda la **referencia** al secreto, nunca la contraseña.

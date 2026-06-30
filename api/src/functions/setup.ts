@@ -5,6 +5,7 @@ import { getContainer } from "../lib/cosmos";
 import { hashPassword, normalizeEmail } from "../lib/password";
 import { badRequest, created, forbidden, ok, serverError } from "../lib/http";
 import type { UserRecord } from "../types/models";
+import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
 
 function sanitize(u: UserRecord) {
   const { passwordHash, ...rest } = u;
@@ -28,6 +29,8 @@ app.http("setupFirstAdmin", {
       const expected = process.env.SETUP_SECRET;
       if (!expected) return forbidden("La inicialización está deshabilitada.");
       const body = await req.json();
+      const limited = await enforceRequestRateLimit(req, "setup_first_admin", String((body as any)?.email ?? (body as any)?.id ?? ""), RATE_LIMIT_POLICIES.setup);
+      if (limited) return limited;
       const parsed = SetupSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       if (parsed.data.setupSecret !== expected) return forbidden("Clave de inicialización incorrecta.");
@@ -108,6 +111,8 @@ app.http("setupSetAdminPassword", {
       const expected = process.env.SETUP_SECRET;
       if (!expected) return forbidden("La inicialización está deshabilitada.");
       const body = await req.json();
+      const limited = await enforceRequestRateLimit(req, "setup_set_admin_password", String((body as any)?.email ?? ""), RATE_LIMIT_POLICIES.setup);
+      if (limited) return limited;
       const parsed = SetAdminPwdSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       if (parsed.data.setupSecret !== expected) return forbidden("Clave de inicialización incorrecta.");

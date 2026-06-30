@@ -8,6 +8,7 @@ import { sendEmail } from "../lib/emailService";
 import { badRequest, forbidden, ok, serverError } from "../lib/http";
 import { buildMastersReportEmail, parseSemicolonEmails } from "../lib/reportsService";
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseAssignmentRecord, LicenseModuleRecord, UpdateSchedule } from "../types/models";
+import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
 
 async function getAllowedUser(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -53,6 +54,9 @@ app.http("mastersReportSendEmail", {
       } catch (e: any) {
         return badRequest(e?.message ?? "Destinatarios inválidos.");
       }
+
+      const limited = await enforceRequestRateLimit(req, "email_masters_report", user.id, RATE_LIMIT_POLICIES.mastersReport);
+      if (limited) return limited;
 
       const [{ resources: clients }, { resources: domains }, { resources: databases }, { resources: schedules }, licenseModules, licenseAssignments] = await Promise.all([
         getContainer("clients").items.query<ClientRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll(),
