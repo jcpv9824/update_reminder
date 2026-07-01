@@ -337,6 +337,10 @@ Select-String -Path "frontend/src/**/*.*" -Pattern "window.alert|window.confirm|
 | BR-AUD-02 | Audit log nunca incluye contrasenas aunque vengan en `after`. | `api/src/tests/auditLog.test.ts` | Cubierta |
 | BR-AUD-03 | Auditoria se lista con busqueda/paginacion desde UI. | `frontend/src/tests/AuditoriaPage.test.tsx` | Cubierta |
 | BR-AUD-04 | No eliminar audit logs en cascadas o limpiezas. | Regla documentada en handoff; no hay test especifico de cascade actual en esta matriz | Requiere vigilancia |
+| BR-AUD-05 | `before`/`after` solo conservan campos permitidos por tipo de entidad; metadata solo conserva campos permitidos por accion. | `api/src/tests/auditLog.test.ts` | Cubierta |
+| BR-AUD-06 | Connection strings, authorization, cookies, API keys, passwords, tokens, JWT, headers y cuerpos HTTP nunca se persisten en auditoria. | `api/src/tests/auditLog.test.ts` | Cubierta |
+| BR-AUD-07 | Secretos incrustados en campos permitidos se reemplazan por `[REDACTED]`; tipos/eventos desconocidos no conservan payload. | `api/src/tests/auditLog.test.ts` | Cubierta |
+| BR-AUD-08 | El saneamiento historico conserva ID, fecha y particion, es idempotente y no imprime contenido. | `api/src/tests/auditLog.test.ts`; `api/scripts/sanitize-audit-logs.js` | Cubierta por unidad y procedimiento |
 
 ## Seguridad de secretos
 

@@ -60,7 +60,7 @@ Definidos en `api/src/lib/cosmos.ts`.
 | `updateTasks` | `UpdateTask` | `.item(id, taskBucket)` | Tareas operativas, estados, alertas, recordatorios | `workflow.update_tasks`, `workflow.task_status_history`, `workflow.task_sources` | Preservar `taskBucket`, `dedupeKey`, `sources`, estados. |
 | `licenseModules` | `LicenseModuleRecord` | `.item(id, id)` | Maestro de módulos/licencias | `licensing.license_modules` | Código opcional/autogenerado; unique por code normalizado. |
 | `licenseAssignments` | `LicenseAssignmentRecord` | `.item(id, clientId)` | Asignaciones avanzadas ocultas | `licensing.license_assignments` | Reservado; UI normal usa licencias por cliente. Migrar si existe. |
-| `auditLogs` | `AuditLog` | append/query paginada | Auditoría | `audit.audit_logs` o conservar temporalmente en Cosmos | Append-heavy; puede migrar después. Sanitiza secretos. |
+| `auditLogs` | `AuditLog` | append/query paginada | Auditoría | `audit.audit_logs` o conservar temporalmente en Cosmos | Allowlist por entidad/accion. Ejecutar saneamiento historico antes de exportar o migrar. |
 | `appSettings` | `EmailAlertsSettings` | `.item("email-alerts", "email-alerts")` | Configuración correo/alertas | `settings.app_settings`, tablas específicas opcionales | Puede conservar JSON controlado al inicio. |
 | `emailNotifications` | docs idempotencia | `.item(id, id)` | Idempotencia recordatorios admin/bloqueos | `notifications.email_notifications` | Migrar para no duplicar correos tras cutover. |
 | `securityRateLimits` | docs tecnicos con TTL | `.item(id, id)` y reemplazo por `_etag` | Rate limiting y lockout distribuido | Redis o tabla tecnica temporal | No exportar ni migrar como dato de negocio; iniciar vacio en cutover. |

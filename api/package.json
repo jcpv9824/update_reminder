@@ -19,7 +19,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "security:audit:prod": "npm audit --omit=dev --audit-level=moderate",
-    "security:audit": "npm audit --audit-level=moderate"
+    "security:audit": "npm audit --audit-level=moderate",
+    "security:sanitize-audit": "node scripts/sanitize-audit-logs.js"
   },
   "dependencies": {
     "@azure/cosmos": "^4.0.0",

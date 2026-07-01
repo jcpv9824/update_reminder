@@ -71,10 +71,13 @@ La aplicacion tiene controles valiosos (hash de contrasenas, tokens de reset has
   - Evidencia: `api/src/functions/sendBlockedReminders.ts` interpola cliente, dominio, objetivo y motivo directamente en HTML; otras plantillas usan escape.
   - Cierre: usar `escapeHtml`/plantilla central para todos los campos; pruebas con `<script>`, links y caracteres especiales.
 
-- [ ] **SEC-009 - P1 - Completar sanitizacion de auditoria.**
-  - Estado: Parcial.
-  - Evidencia: `api/src/lib/audit.ts` usa denylist por nombre de clave (`password`, `secret`, `token`, etc.). No cubre de forma garantizada `connectionString`, `authorization`, `cookie`, `apiKey` ni secretos bajo claves genericas.
-  - Cierre: allowlist por tipo de evento/entidad; tests con todas las variantes; clasificacion de datos; nunca guardar cuerpo HTTP completo.
+- [x] **SEC-009 - P1 - Completar sanitizacion de auditoria.**
+  - Estado: Corregido el 2026-06-30.
+  - Implementacion: `api/src/lib/audit.ts` usa allowlist de snapshots por `entityType`, allowlist de metadata por `action` y esquemas anidados. Tipos/eventos desconocidos no conservan `before`, `after` ni metadata.
+  - Datos restringidos: servidor, usuario SQL, destinatarios, errores externos y texto libre se omiten. Passwords, hashes, tokens, JWT, cookies, authorization, API keys, connection strings, headers y cuerpos HTTP nunca se guardan.
+  - Defensa adicional: campos permitidos pasan por deteccion de bearer/JWT/private key/credenciales/SAS/URLs con secretos y se reemplazan por `[REDACTED]`.
+  - Historico: `npm run security:sanitize-audit -- --apply` reprocesa documentos existentes, conserva ID/fecha/particion y registra el resumen sin imprimir contenido.
+  - Pruebas: `api/src/tests/auditLog.test.ts` cubre variantes de claves, secretos bajo campos permitidos/genericos, objetos HTTP, esquemas desconocidos, estructuras anidadas y saneamiento historico.
 
 - [ ] **SEC-010 - P1 - Corregir postura de red/transportes de Azure Functions.**
   - Estado productivo verificado: Parcial.

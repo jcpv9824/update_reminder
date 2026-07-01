@@ -100,6 +100,15 @@ Sesiones seguras (SEC-006):
 - Refresh/logout requieren `X-Requested-With` y CORS con credenciales para el origen productivo.
 - Configuracion y pruebas completas: `SECURITY_SESSIONS.md`.
 
+Sanitizacion de auditoria (SEC-009):
+
+- `audit.ts` es el unico constructor autorizado para documentos de auditoria.
+- `before`/`after` usan allowlist por entidad; metadata usa allowlist por accion.
+- No pasar `req`, body, headers, authorization, cookies, errores completos ni objetos arbitrarios a la auditoria.
+- Texto libre, servidor, usuario SQL, destinatarios y errores externos se omiten; patrones de credenciales en campos permitidos se redactan.
+- Antes de migrar `auditLogs` a SQL, ejecutar y verificar `security:sanitize-audit`.
+- Contrato y clasificacion: `SECURITY_AUDIT_SANITIZATION.md`.
+
 ## 4. Roles y permisos
 
 Roles funcionales:

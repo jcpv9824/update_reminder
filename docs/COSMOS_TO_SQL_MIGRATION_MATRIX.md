@@ -449,3 +449,12 @@ Runtime switch (`DATA_PROVIDER=sql`) must wait until:
 - `securityRateLimits`: no se migra; los contadores empiezan vacios en el nuevo almacen distribuido.
 - `authSessions`: no se migran sesiones activas ni hashes de refresh. El cutover revoca/cierra sesiones y exige un nuevo login.
 - El destino debe recrear expiracion, revocacion por usuario, hash de refresh y actualizacion atomica antes de habilitar autenticacion SQL.
+
+## 17. Precondicion de auditoria
+
+Antes de exportar/importar `auditLogs`:
+
+1. Ejecutar `npm run security:sanitize-audit` y revisar conteos.
+2. Ejecutar `npm run security:sanitize-audit -- --apply` en una ventana controlada.
+3. Repetir dry-run; debe informar `updated: 0` salvo registros creados por una version antigua.
+4. El importador SQL debe volver a aplicar el DTO allowlist; nunca confiar ciegamente en JSON historico.

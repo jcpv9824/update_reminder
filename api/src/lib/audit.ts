@@ -1,24 +1,240 @@
 import { randomUUID } from "node:crypto";
 import type { AuditLog } from "../types/models";
 
-const SENSITIVE_KEYS = ["password", "passwordhash", "rawDbAccess", "secret", "passwordPlain", "token", "jwt"];
+type AuditRule =
+  | "scalar"
+  | "scalarArray"
+  | { object: AuditSchema }
+  | { array: AuditRule };
+type AuditSchema = Record<string, AuditRule>;
 
-function sanitize(value: unknown): unknown {
-  if (value == null) return value;
-  if (Array.isArray(value)) return value.map(sanitize);
-  if (typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (SENSITIVE_KEYS.some((s) => k.toLowerCase().includes(s.toLowerCase()))) {
-        // Se omite la clave sensible por completo.
-        continue;
-      }
-      out[k] = sanitize(v);
-    }
-    return out;
-  }
-  return value;
+const sourceSchema: AuditSchema = {
+  scheduleId: "scalar",
+  scheduleType: "scalar",
+  createdAt: "scalar",
+};
+
+const scopeDatabaseSchema: AuditSchema = { databaseId: "scalar" };
+const scopeDomainSchema: AuditSchema = {
+  domainId: "scalar",
+  includeAllDatabases: "scalar",
+  databaseIds: "scalarArray",
+  databases: { array: { object: scopeDatabaseSchema } },
+};
+const scopeGroupSchema: AuditSchema = {
+  clientId: "scalar",
+  includeAllDomains: "scalar",
+  domainIds: "scalarArray",
+  domains: { array: { object: scopeDomainSchema } },
+};
+const remindersSchema: AuditSchema = {
+  remindersEnabled: "scalar",
+  reminderDaysBefore: "scalarArray",
+  reminderTime: "scalar",
+  reminderRecipientsMode: "scalar",
+  timezone: "scalar",
+  useGlobalReminderSettings: "scalar",
+};
+const licensingScopeSchema: AuditSchema = {
+  licenseModuleIds: "scalarArray",
+  licenseMatchMode: "scalar",
+  environment: "scalar",
+  targetTypes: "scalar",
+  activeOnly: "scalar",
+  excludedDomainIds: "scalarArray",
+  excludedDatabaseIds: "scalarArray",
+};
+
+const ENTITY_SNAPSHOT_SCHEMAS: Record<string, AuditSchema> = {
+  client: {
+    id: "scalar", externalId: "scalar", name: "scalar", status: "scalar",
+    licenseModuleIds: "scalarArray", licenseModuleNames: "scalarArray",
+    createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
+    deletedAt: "scalar", deletedBy: "scalar",
+  },
+  domain: {
+    id: "scalar", clientId: "scalar", clientName: "scalar", domainName: "scalar",
+    domainForPublishing: "scalar", environment: "scalar", currentWebVersion: "scalar",
+    assignedUpdaterIds: "scalarArray", status: "scalar", lastUpdatedAt: "scalar", lastUpdatedBy: "scalar",
+    createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
+    deletedAt: "scalar", deletedBy: "scalar",
+  },
+  database: {
+    id: "scalar", clientId: "scalar", clientName: "scalar", domainId: "scalar", domainName: "scalar",
+    companyName: "scalar", environment: "scalar", currentDbVersion: "scalar",
+    assignedUpdaterIds: "scalarArray", status: "scalar", lastUpdatedAt: "scalar", lastUpdatedBy: "scalar",
+    dbAccess: { object: { initialCatalog: "scalar" } },
+    initialCatalog: "scalar",
+    createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
+    deletedAt: "scalar", deletedBy: "scalar",
+  },
+  schedule: {
+    id: "scalar", name: "scalar", clientId: "scalar", clientName: "scalar", domainId: "scalar",
+    domainName: "scalar", targetType: "scalar", targetIds: "scalarArray", frequencyType: "scalar",
+    everyNWeeks: "scalar", weekdays: "scalarArray", intervalDays: "scalar", preferredWeekdays: "scalarArray",
+    dayOfMonth: "scalar", startDate: "scalar", endDate: "scalar", timezone: "scalar",
+    assignedRole: "scalar", assignedUserIds: "scalarArray", databaseAssignedUserIds: "scalarArray",
+    databaseReminderRecipientsMode: "scalar", selectionMode: "scalar", assignmentMode: "scalar",
+    domainAssignedRole: "scalar", databaseAssignedRole: "scalar", origin: "scalar", active: "scalar",
+    scopeGroups: { array: { object: scopeGroupSchema } },
+    licensingScope: { object: licensingScopeSchema },
+    reminders: { object: remindersSchema },
+    completedAt: "scalar", completedReason: "scalar",
+    createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
+    deletedAt: "scalar", deletedBy: "scalar",
+  },
+  task: {
+    id: "scalar", taskDate: "scalar", clientId: "scalar", clientName: "scalar", domainId: "scalar",
+    domainName: "scalar", targetType: "scalar", targetId: "scalar", targetName: "scalar",
+    scheduleId: "scalar", rootScheduleId: "scalar", dedupeKey: "scalar", assignedRole: "scalar",
+    assignedUserIds: "scalarArray", status: "scalar", result: "scalar", completedWithProblems: "scalar",
+    createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
+    completedAt: "scalar", completedBy: "scalar", blockedAt: "scalar", blockedBy: "scalar",
+    reopenedAt: "scalar", reopenedBy: "scalar", resolvedAt: "scalar", resolvedBy: "scalar",
+    sources: { array: { object: sourceSchema } },
+  },
+  user: {
+    id: "scalar", displayName: "scalar", email: "scalar", roles: "scalarArray", active: "scalar",
+    mustChangePassword: "scalar", lastLoginAt: "scalar", passwordUpdatedAt: "scalar",
+    createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
+  },
+  licenseModule: {
+    id: "scalar", name: "scalar", code: "scalar", status: "scalar",
+    createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
+    deletedAt: "scalar", deletedBy: "scalar",
+  },
+  licenseAssignment: {
+    id: "scalar", licenseModuleId: "scalar", licenseModuleName: "scalar", assignmentLevel: "scalar",
+    clientId: "scalar", clientName: "scalar", domainId: "scalar", domainName: "scalar",
+    databaseId: "scalar", databaseName: "scalar", environment: "scalar", status: "scalar",
+    createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
+    deletedAt: "scalar", deletedBy: "scalar",
+  },
+  settings: {
+    id: "scalar", emailProvider: "scalar", emailEnabled: "scalar", smtpPort: "scalar", smtpSecure: "scalar",
+    updaterRemindersEnabled: "scalar", reminderDaysBefore: "scalarArray", reminderTime: "scalar",
+    timezone: "scalar", overdueAlertsEnabled: "scalar", overdueFrequency: "scalar",
+    overdueWeekday: "scalar", overdueTime: "scalar", blockedAlertsEnabled: "scalar",
+    blockedReminderEnabled: "scalar", blockedReminderDaysAfter: "scalarArray",
+    passwordNotificationEnabled: "scalar", updatedAt: "scalar", updatedBy: "scalar",
+  },
+};
+
+const COMMON_COUNT_FIELDS = [
+  "clients", "domains", "databases", "schedules", "tasks", "futureTasks", "openTasks",
+  "created", "updated", "obsoleted", "skipped", "deduplicated", "updatedSources",
+  "cancelledTasks", "cancelledOpenTasks", "cascadeSchedules", "obsoletedTasks", "recipientsCount",
+] as const;
+
+function fields(...keys: string[]): AuditSchema {
+  return Object.fromEntries(keys.map((key) => [key, "scalar"])) as AuditSchema;
 }
+
+const cascadeFields = fields(
+  ...COMMON_COUNT_FIELDS,
+  "cascadeFromClient", "cascadeFromDomain", "cascadeFromDatabase"
+);
+const refreshFields = fields("date", "windowStart", "windowEnd", "created", "updated", "obsoleted", "skipped", "deduplicated", "updatedSources");
+
+const ACTION_METADATA_SCHEMAS: Record<string, AuditSchema> = {
+  password_reset_requested: fields("expiresAt"),
+  user_created: fields("firstAdmin"),
+  user_password_reset: fields("setup"),
+  password_notification_sent: fields("kind", "includedPassword"),
+  password_notification_failed: fields("kind", "includedPassword"),
+  client_deleted_cascade: cascadeFields,
+  domain_deleted_cascade: cascadeFields,
+  database_deleted_cascade: cascadeFields,
+  schedule_deleted_cascade: cascadeFields,
+  task_cancelled: fields(...COMMON_COUNT_FIELDS, "cascadeFromClient", "previousStatus", "newStatus"),
+  database_deactivated: fields("obsoletedTasks"),
+  database_reactivated: fields("obsoletedTasks"),
+  domain_deactivated: fields("obsoletedTasks"),
+  domain_reactivated: fields("obsoletedTasks"),
+  database_access_part_copied: fields("part"),
+  database_password_copied: fields("databaseId", "taskId"),
+  database_password_revealed: fields("databaseId", "taskId"),
+  task_generated: fields("scheduleId", "targetType", "targetId", "date"),
+  task_assignment_synced: fields("taskId", "scheduleId", "targetType"),
+  task_obsoleted: fields("reason", "taskId", "scheduleId", "targetType", "targetId", "domainId", "scheduledFor"),
+  tasks_refreshed_manually: refreshFields,
+  schedule_one_time_completed: fields("reason", "runDate", "scheduleId"),
+  schedule_updated: fields("oneTimeScheduleRescheduled", "oldDate", "newDate", "cancelledOpenTasks"),
+  schedule_deleted: fields("cancelledOpenTasks"),
+  reminder_email_sent: fields("daysBefore", "targetType"),
+  reminder_email_failed: fields("daysBefore", "targetType"),
+  blocked_task_reminder_sent: fields("daysAfter", "recipientsCount"),
+  blocked_task_reminder_failed: fields("daysAfter", "recipientsCount"),
+  administrative_reminder_sent: fields("key", "period", "sendDate", "recipientsCount"),
+  administrative_reminder_failed: fields("key", "period", "sendDate", "recipientsCount"),
+  admin_reminder_test_sent: fields("key", "period", "sendDate", "recipientsCount"),
+  admin_reminder_test_failed: fields("key", "period", "sendDate", "recipientsCount"),
+  overdue_alert_sent: fields("date", "recipientsCount", "domainCount", "databaseCount"),
+  overdue_alert_failed: fields("date", "recipientsCount", "domainCount", "databaseCount"),
+  masters_report_email_sent: fields("recipientsCount", "provider"),
+  masters_report_email_failed: fields("recipientsCount", "provider"),
+  test_email_sent: fields("provider"),
+  test_email_failed: fields("provider"),
+  task_started: fields("previousStatus", "newStatus"),
+  task_completed: fields("previousStatus", "newStatus"),
+  task_completed_with_problems: fields("previousStatus", "newStatus"),
+  task_failed: fields("previousStatus", "newStatus"),
+  task_blocked: fields("previousStatus", "newStatus"),
+  task_reopened: fields("previousStatus", "newStatus"),
+  task_cancelled_status: fields("previousStatus", "newStatus"),
+  task_block_resolved: fields("previousStatus", "newStatus"),
+  rate_limit_exceeded: fields("scope", "keyType", "retryAfterSeconds"),
+  account_lockout_triggered: fields("scope", "keyType", "retryAfterSeconds"),
+  audit_logs_sanitized: fields("scanned", "updated"),
+};
+
+const SECRET_CONTENT_PATTERNS = [
+  /\bbearer\s+[a-z0-9._~+\/-]+=*/i,
+  /\beyJ[a-z0-9_-]+\.eyJ[a-z0-9_-]+\.[a-z0-9_-]+\b/i,
+  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/i,
+  /\b(?:password|pwd|secret|token|api[_-]?key|authorization|cookie|connectionstring)\s*[:=]\s*[^;\s]+/i,
+  /\b(?:server|data source|initial catalog|database|user id|uid|password|pwd|accountkey|sharedaccesssignature)\s*=/i,
+  /[?&](?:token|api[_-]?key|key|code|sig)=[^&\s]+/i,
+  /:\/\/[^\s/@:]+:[^\s/@]+@/i,
+];
+
+function sanitizeScalar(value: unknown): string | number | boolean | null | undefined {
+  if (value == null) return value as null | undefined;
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value !== "string") return undefined;
+  if (SECRET_CONTENT_PATTERNS.some((pattern) => pattern.test(value))) return "[REDACTED]";
+  return value.length > 1000 ? `${value.slice(0, 1000)}…` : value;
+}
+
+function sanitizeByRule(value: unknown, rule: AuditRule): unknown {
+  if (rule === "scalar") return sanitizeScalar(value);
+  if (rule === "scalarArray") {
+    if (!Array.isArray(value)) return undefined;
+    return value.slice(0, 200).map(sanitizeScalar).filter((item) => item !== undefined);
+  }
+  if ("object" in rule) return sanitizeObject(value, rule.object);
+  if (!Array.isArray(value)) return undefined;
+  return value.slice(0, 200).map((item) => sanitizeByRule(item, rule.array)).filter((item) => item !== undefined);
+}
+
+function sanitizeObject(value: unknown, schema: AuditSchema | undefined): Record<string, unknown> | undefined {
+  if (!schema || !value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  for (const [key, rule] of Object.entries(schema)) {
+    if (!(key in input)) continue;
+    const sanitized = sanitizeByRule(input[key], rule);
+    if (sanitized !== undefined) output[key] = sanitized;
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
+}
+
+export const AUDIT_DATA_CLASSIFICATION = {
+  operational: "IDs, nombres, estados, fechas, roles, alcance y conteos autorizados por allowlist.",
+  personal: "Correo del actor; se conserva para trazabilidad con acceso restringido a auditoria.",
+  restricted: "Servidor, usuario SQL, destinatarios, errores externos y texto libre se omiten de snapshots/metadata.",
+  secret: "Passwords, hashes, tokens, JWT, cookies, authorization, API keys, connection strings y cuerpos HTTP nunca se guardan.",
+} as const;
 
 export type BuildAuditLogInput = {
   entityType: string;
@@ -37,27 +253,48 @@ export type BuildAuditLogInput = {
 };
 
 export function buildAuditLogEntry(input: BuildAuditLogInput): AuditLog {
+  const snapshotSchema = ENTITY_SNAPSHOT_SCHEMAS[input.entityType];
+  const metadataSchema = ACTION_METADATA_SCHEMAS[input.action];
   return {
     id: `audit_${randomUUID()}`,
-    entityType: input.entityType,
-    entityId: input.entityId,
-    clientId: input.clientId,
-    clientName: input.clientName,
-    domainId: input.domainId,
-    domainName: input.domainName,
-    companyName: input.companyName,
-    action: input.action,
-    performedBy: input.performedBy,
-    performedByEmail: input.performedByEmail,
+    entityType: sanitizeScalar(input.entityType) as string,
+    entityId: sanitizeScalar(input.entityId) as string,
+    clientId: sanitizeScalar(input.clientId) as string | undefined,
+    clientName: sanitizeScalar(input.clientName) as string | undefined,
+    domainId: sanitizeScalar(input.domainId) as string | undefined,
+    domainName: sanitizeScalar(input.domainName) as string | undefined,
+    companyName: sanitizeScalar(input.companyName) as string | undefined,
+    action: sanitizeScalar(input.action) as string,
+    performedBy: sanitizeScalar(input.performedBy) as string,
+    performedByEmail: sanitizeScalar(input.performedByEmail) as string,
     performedAt: new Date().toISOString(),
-    before: sanitize(input.before),
-    after: sanitize(input.after),
-    metadata: input.metadata ? (sanitize(input.metadata) as Record<string, unknown>) : undefined,
+    before: sanitizeObject(input.before, snapshotSchema),
+    after: sanitizeObject(input.after, snapshotSchema),
+    metadata: sanitizeObject(input.metadata, metadataSchema),
   };
 }
 
-// Escribe una entrada de auditoría en Cosmos DB. Se importa perezosamente
-// para que las pruebas unitarias del builder no requieran credenciales.
+export function sanitizeStoredAuditLogEntry(entry: AuditLog): AuditLog {
+  const sanitized = buildAuditLogEntry({
+    entityType: entry.entityType,
+    entityId: entry.entityId,
+    clientId: entry.clientId,
+    clientName: entry.clientName,
+    domainId: entry.domainId,
+    domainName: entry.domainName,
+    companyName: entry.companyName,
+    action: entry.action,
+    performedBy: entry.performedBy,
+    performedByEmail: entry.performedByEmail,
+    before: entry.before,
+    after: entry.after,
+    metadata: entry.metadata,
+  });
+  return { ...sanitized, id: entry.id, performedAt: entry.performedAt };
+}
+
+// Solo este builder puede crear documentos de auditoria. Los handlers nunca
+// deben persistir req, headers, cookies ni cuerpos HTTP completos.
 export async function writeAuditLog(input: BuildAuditLogInput): Promise<AuditLog> {
   const entry = buildAuditLogEntry(input);
   const { getContainer } = await import("./cosmos");

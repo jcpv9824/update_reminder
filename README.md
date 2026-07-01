@@ -142,6 +142,14 @@ El campo **ID del cliente** (`externalId`) es opcional por ahora. Si se captura,
 - Logout, cambios de contraseña y desactivación revocan sesiones de inmediato.
 - `JWT_SECRET` debe contener al menos 32 bytes. Consulte `SECURITY_SESSIONS.md`.
 
+### Auditoría segura
+
+- Snapshots permitidos por tipo de entidad y metadata permitida por acción.
+- Nunca guarda cuerpos HTTP, headers, authorization, cookies, API keys, cadenas de conexión ni secretos.
+- Campos permitidos también detectan y redactan contenido con credenciales.
+- Los registros históricos se sanean con `npm run security:sanitize-audit -- --apply`.
+- Clasificación y procedimiento: `SECURITY_AUDIT_SANITIZATION.md`.
+
 - La contraseña SMTP se guarda en **Azure Key Vault**. El frontend nunca la recibe ni la muestra; Cosmos DB solo guarda el nombre del secreto y el indicador de configuración.
 - La contraseña de cada base de datos se guarda en **Azure Key Vault** con el nombre `db-{databaseId}-password`.
 - En Cosmos DB solo se guarda la **referencia** al secreto, nunca la contraseña.

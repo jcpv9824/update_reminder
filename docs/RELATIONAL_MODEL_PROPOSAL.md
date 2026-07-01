@@ -819,6 +819,7 @@ Para tareas/auditoría históricas que referencien maestros eliminados:
 | ¿emailNotifications en SQL? | Sí antes de activar timers SQL | Evita correos duplicados. |
 | ¿securityRateLimits en SQL? | No como dato migrado | Es estado efimero; recrear el control con Redis o tabla tecnica con expiracion y operaciones atomicas. |
 | ¿authSessions en SQL? | Recrear, no migrar sesiones activas | Tabla tecnica/Redis con indice por usuario, expiracion, hash y rotacion atomica. Forzar login tras cutover. |
+| ¿auditLogs se copian sin transformar? | No | Ejecutar allowlist SEC-009 antes del snapshot/import; SQL debe aceptar solo DTO de auditoria clasificado, nunca cuerpos arbitrarios. |
 | ¿licenseAssignments se usa? | No en lógica principal | Feature avanzada oculta. |
 | ¿FK estrictas desde el inicio? | Después de staging/validación | Evita bloquear por datos históricos hasta diagnosticar. |
 
