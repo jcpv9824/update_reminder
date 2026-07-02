@@ -73,7 +73,7 @@ describe("sesiones refresh rotatorias", () => {
   it("rota el token, revoca la sesión anterior y conserva la versión", async () => {
     const store = new MemorySessionStore();
     const currentUser = user();
-    const created = await createAuthSession(currentUser, { store, nowMs: 0 });
+    const created = await createAuthSession(currentUser, { store, nowMs: 0, mfaVerifiedAt: "2026-07-02T15:00:00.000Z" });
     const rotated = await rotateAuthSession(created.refreshToken, {
       store,
       nowMs: 1_000,
@@ -83,17 +83,25 @@ describe("sesiones refresh rotatorias", () => {
     expect(rotated).not.toBeNull();
     expect(rotated?.refreshToken).not.toBe(created.refreshToken);
     expect(rotated?.session.tokenVersion).toBe(2);
+    expect(rotated?.session.mfaVerifiedAt).toBe("2026-07-02T15:00:00.000Z");
     expect((await store.read(created.session.id))?.revokedReason).toBe("rotated");
   });
 
   it("detecta reutilización del refresh anterior y revoca su descendiente", async () => {
     const store = new MemorySessionStore();
     const currentUser = user();
-    const created = await createAuthSession(currentUser, { store, nowMs: 0 });
+    const created = await createAuthSession(currentUser, { store, nowMs: 0, mfaVerifiedAt: "2026-07-02T15:00:00.000Z" });
     const rotated = await rotateAuthSession(created.refreshToken, { store, nowMs: 1_000, loadUser: async () => currentUser });
 
     expect(await rotateAuthSession(created.refreshToken, { store, nowMs: 2_000, loadUser: async () => currentUser })).toBeNull();
     expect((await store.read(rotated!.session.id))?.revokedReason).toBe("refresh_token_reuse_detected");
+  });
+
+  it("no refresca una sesión sensible que no verificó MFA", async () => {
+    const store = new MemorySessionStore();
+    const currentUser = user({ roles: ["client_manager"] });
+    const created = await createAuthSession(currentUser, { store, nowMs: 0 });
+    expect(await rotateAuthSession(created.refreshToken, { store, nowMs: 1_000, loadUser: async () => currentUser })).toBeNull();
   });
 
   it("rechaza access token si la sesión fue revocada o cambió tokenVersion", async () => {
@@ -106,12 +114,13 @@ describe("sesiones refresh rotatorias", () => {
       roles: currentUser.roles,
       sid: created.session.id,
       ver: 2,
+      amr: ["pwd"],
       jti: "jti",
       iss: "issuer",
       aud: "audience",
     };
 
-    expect(await validateAccessSession(payload, { store, nowMs: 1_000, loadUser: async () => currentUser })).toMatchObject({ id: currentUser.id });
+    expect(await validateAccessSession(payload, { store, nowMs: 1_000, loadUser: async () => currentUser })).toMatchObject({ user: { id: currentUser.id } });
     expect(await validateAccessSession({ ...payload, ver: 1 }, { store, nowMs: 1_000, loadUser: async () => currentUser })).toBeNull();
     await revokeRefreshSession(created.refreshToken, "logout", { store, nowMs: 2_000 });
     expect(await validateAccessSession(payload, { store, nowMs: 3_000, loadUser: async () => currentUser })).toBeNull();

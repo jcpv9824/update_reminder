@@ -928,6 +928,8 @@ La contraseña se guarda en Key Vault. No se muestra, no vuelve al frontend y no
 
 ### 16.4 Pruebas manuales después de publicar
 
+Antes del despliegue SEC-007, configure una sola vez `MFA_RECOVERY_PEPPER` con al menos 32 bytes aleatorios y mantengalo como secreto operativo. Configure tambien `MFA_ISSUER`, `BCRYPT_COST=12`, `PASSWORD_MAX_AGE_DAYS=180`, `PWNED_PASSWORDS_ENABLED=true` y `PWNED_PASSWORDS_FAIL_CLOSED=true`. No regenere el pepper en cada despliegue porque invalidaria los codigos de recuperacion existentes. Consulte `SECURITY_PASSWORD_MFA.md`.
+
 1. **Configuración P&A**: en **Alertas y correos**, pulse **Usar configuración recomendada de P&A** y confirme servidor `smtp.office365.com`, puerto `587`, remitente `info@pya.com.co`.
 2. **Correo de prueba**: escriba un correo en **Correo de prueba** y pulse **Enviar correo de prueba**.
 3. **Reporte manual**: en **Reporte de clientes/dominios/empresas**, escriba `correo1@empresa.com; correo2@empresa.com` y pulse **Enviar reporte**. El reporte no debe contener contraseñas, usuarios SQL, cadenas de conexión completas, secretos ni tokens.

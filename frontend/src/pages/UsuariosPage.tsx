@@ -12,6 +12,8 @@ type Usuario = {
   active: boolean;
   createdAt: string;
   updatedAt: string;
+  mfaEnabled?: boolean;
+  mustChangePassword?: boolean;
 };
 
 const ROLES = ["admin", "client_manager", "database_updater", "domain_updater", "viewer"];
@@ -67,14 +69,15 @@ export default function UsuariosPage() {
       {isLoading ? <div className="cargando">Cargando...</div> : (
         <>
           <table>
-            <thead><tr><th>Nombre</th><th>Correo</th><th>Roles</th><th>Estado</th><th>Acciones</th></tr></thead>
+            <thead><tr><th>Nombre</th><th>Correo</th><th>Roles</th><th>MFA</th><th>Estado</th><th>Acciones</th></tr></thead>
             <tbody>
-              {usuarios.length === 0 ? (<tr><td colSpan={5} className="vacio">No hay usuarios registrados.</td></tr>) :
+              {usuarios.length === 0 ? (<tr><td colSpan={6} className="vacio">No hay usuarios registrados.</td></tr>) :
               usuarios.map((u) => (
                 <tr key={u.id}>
                   <td>{u.displayName}</td>
                   <td>{u.email}</td>
                   <td>{u.roles.map((r) => ETIQUETAS_ROLES[r] ?? r).join(", ")}</td>
+                  <td>{u.mfaEnabled ? "Activa" : "Pendiente"}</td>
                   <td><EtiquetaEstado estado={u.active ? "active" : "inactive"} /></td>
                   <td className="acciones-tabla">
                     <button onClick={() => setEditando(u)}>Editar</button>
@@ -142,14 +145,14 @@ function FormularioCrear({ onSubmit, cargando }: { onSubmit: (v: any) => void; c
       e.preventDefault();
       if (!displayName.trim()) return setErr("El nombre es obligatorio.");
       if (!email.trim()) return setErr("El correo es obligatorio.");
-      if (password.length < 6) return setErr("La contraseña debe tener al menos 6 caracteres.");
+      if (password.length < 14) return setErr("La contraseña debe tener al menos 14 caracteres.");
       if (password !== confirmacion) return setErr("Las contraseñas no coinciden.");
       onSubmit({ displayName, email: email.trim(), password, roles, active });
     }}>
       {err && <Alerta tipo="error">{err}</Alerta>}
       <div className="fila-formulario"><label>Nombre *</label><input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required /></div>
       <div className="fila-formulario"><label>Correo electrónico *</label><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></div>
-      <div className="fila-formulario"><label>Contraseña temporal *</label><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required /></div>
+      <div className="fila-formulario"><label>Contraseña temporal *</label><input type="password" maxLength={72} value={password} onChange={(e) => setPassword(e.target.value)} required /><small>Use al menos 14 caracteres. El usuario deberá cambiarla en su primer acceso.</small></div>
       <div className="fila-formulario"><label>Confirmar contraseña *</label><input type="password" value={confirmacion} onChange={(e) => setConfirmacion(e.target.value)} required /></div>
       <div className="fila-formulario"><label>Roles</label>
         {ROLES.map((r) => (
@@ -209,12 +212,12 @@ function FormularioReset({ onSubmit, cargando }: { onSubmit: (p: string) => void
   return (
     <form onSubmit={(e) => {
       e.preventDefault();
-      if (pwd.length < 6) return setErr("La contraseña debe tener al menos 6 caracteres.");
+      if (pwd.length < 14) return setErr("La contraseña debe tener al menos 14 caracteres.");
       if (pwd !== conf) return setErr("Las contraseñas no coinciden.");
       onSubmit(pwd);
     }}>
       {err && <Alerta tipo="error">{err}</Alerta>}
-      <div className="fila-formulario"><label>Nueva contraseña *</label><input type="password" value={pwd} onChange={(e) => setPwd(e.target.value)} /></div>
+      <div className="fila-formulario"><label>Nueva contraseña temporal *</label><input type="password" maxLength={72} value={pwd} onChange={(e) => setPwd(e.target.value)} /><small>El usuario deberá cambiarla en su siguiente acceso.</small></div>
       <div className="fila-formulario"><label>Confirmar *</label><input type="password" value={conf} onChange={(e) => setConf(e.target.value)} /></div>
       <div className="acciones-formulario">
         <button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Cambiar contraseña"}</button>

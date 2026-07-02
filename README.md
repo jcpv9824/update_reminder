@@ -150,10 +150,20 @@ El campo **ID del cliente** (`externalId`) es opcional por ahora. Si se captura,
 - Los registros históricos se sanean con `npm run security:sanitize-audit -- --apply`.
 - Clasificación y procedimiento: `SECURITY_AUDIT_SANITIZATION.md`.
 
+### Contrasenas y MFA
+
+- Las contrasenas definitivas admiten passphrases y requieren minimo 14 caracteres; bcrypt usa costo 12.
+- Se rechazan contrasenas comunes, derivadas del usuario y comprometidas mediante HIBP k-anonymity.
+- Las credenciales temporales exigen cambio en el primer acceso y las definitivas expiran a los 180 dias por defecto.
+- MFA TOTP es obligatorio para administrador, administrador de clientes y actualizador de bases de datos.
+- El secreto TOTP permanece en Key Vault. Los codigos de recuperacion son de un solo uso y solo se almacenan como hash.
+- Revelar/copiar passwords de bases y cambiar el password SMTP exige una sesion MFA verificada.
+- Configuracion y recuperacion: `SECURITY_PASSWORD_MFA.md`.
+
 - La contraseña SMTP se guarda en **Azure Key Vault**. El frontend nunca la recibe ni la muestra; Cosmos DB solo guarda el nombre del secreto y el indicador de configuración.
 - La contraseña de cada base de datos se guarda en **Azure Key Vault** con el nombre `db-{databaseId}-password`.
 - En Cosmos DB solo se guarda la **referencia** al secreto, nunca la contraseña.
-- Los registros de auditoría **eliminan automáticamente** cualquier campo cuyo nombre incluya `password`, `secret`, `rawDbAccess`.
+- Los registros de auditoría usan allowlists por entidad y acción; campos no declarados nunca se persisten.
 - Cada acción de **revelar** o **copiar** la contraseña genera una entrada de auditoría con el usuario, la fecha y la base de datos asociada.
 - Los listados y detalles generales de bases usan DTOs sanitizados: nunca incluyen servidor, usuario SQL ni `passwordSecretName`. La conexión se consulta exclusivamente mediante **Ver acceso** y autorización backend.
 - Admin, administrador de clientes y visualizador conservan lectura global sanitizada. Los actualizadores solo reciben clientes, dominios, bases y tareas relacionados con asignaciones propias; ningún query param puede ampliar ese alcance.

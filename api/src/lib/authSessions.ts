@@ -3,6 +3,7 @@ import type { HttpRequest } from "@azure/functions";
 import { getContainer } from "./cosmos";
 import type { AuthSessionRecord, UserRecord } from "../types/models";
 import type { JwtPayload } from "./jwt";
+import { requiresMfaForRoles } from "./mfa";
 
 export interface AuthSessionStore {
   read(id: string): Promise<AuthSessionRecord | null>;
@@ -82,7 +83,7 @@ async function defaultLoadUser(id: string): Promise<UserRecord | null> {
   }
 }
 
-function makeSession(user: UserRecord, nowMs: number): { record: AuthSessionRecord; refreshToken: string } {
+function makeSession(user: UserRecord, nowMs: number, mfaVerifiedAt?: string | null): { record: AuthSessionRecord; refreshToken: string } {
   const id = randomUUID();
   const refreshToken = `${id}.${randomBytes(32).toString("base64url")}`;
   const lifetime = refreshLifetimeSeconds();
@@ -100,6 +101,7 @@ function makeSession(user: UserRecord, nowMs: number): { record: AuthSessionReco
       revokedAt: null,
       revokedReason: null,
       replacedBySessionId: null,
+      mfaVerifiedAt: mfaVerifiedAt ?? null,
       ttl: lifetime + 86400,
     },
   };
@@ -107,10 +109,10 @@ function makeSession(user: UserRecord, nowMs: number): { record: AuthSessionReco
 
 export async function createAuthSession(
   user: UserRecord,
-  options: { store?: AuthSessionStore; nowMs?: number } = {}
+  options: { store?: AuthSessionStore; nowMs?: number; mfaVerifiedAt?: string | null } = {}
 ): Promise<{ session: AuthSessionRecord; refreshToken: string }> {
   const store = options.store ?? cosmosStore;
-  const created = makeSession(user, options.nowMs ?? Date.now());
+  const created = makeSession(user, options.nowMs ?? Date.now(), options.mfaVerifiedAt);
   await store.create(created.record);
   return { session: created.record, refreshToken: created.refreshToken };
 }
@@ -145,8 +147,9 @@ export async function rotateAuthSession(
 
   const user = await loadUser(current.userId);
   if (!user || !user.active || (user.tokenVersion ?? 0) !== current.tokenVersion) return null;
+  if (requiresMfaForRoles(user.roles ?? []) && !current.mfaVerifiedAt) return null;
 
-  const next = makeSession(user, nowMs);
+  const next = makeSession(user, nowMs, current.mfaVerifiedAt);
   current.revokedAt = new Date(nowMs).toISOString();
   current.revokedReason = "rotated";
   current.replacedBySessionId = next.record.id;
@@ -159,7 +162,7 @@ export async function rotateAuthSession(
 export async function validateAccessSession(
   payload: JwtPayload,
   options: { store?: AuthSessionStore; loadUser?: UserLoader; nowMs?: number } = {}
-): Promise<UserRecord | null> {
+): Promise<{ user: UserRecord; session: AuthSessionRecord } | null> {
   const store = options.store ?? cosmosStore;
   const loadUser = options.loadUser ?? defaultLoadUser;
   const nowMs = options.nowMs ?? Date.now();
@@ -168,7 +171,7 @@ export async function validateAccessSession(
   if (session.userId !== user.id || Date.parse(session.expiresAt) <= nowMs) return null;
   const version = user.tokenVersion ?? 0;
   if (payload.ver !== version || session.tokenVersion !== version) return null;
-  return user;
+  return { user, session };
 }
 
 export async function revokeRefreshSession(

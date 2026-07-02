@@ -109,6 +109,15 @@ Sanitizacion de auditoria (SEC-009):
 - Antes de migrar `auditLogs` a SQL, ejecutar y verificar `security:sanitize-audit`.
 - Contrato y clasificacion: `SECURITY_AUDIT_SANITIZATION.md`.
 
+Politica de contrasenas y MFA (SEC-007):
+
+- Contrasenas definitivas: minimo 14 caracteres, maximo 72 bytes, bcrypt costo 12 y validacion de filtraciones por k-anonymity.
+- Credenciales creadas/restablecidas por admin exigen cambio en el primer acceso; las definitivas expiran a los 180 dias por defecto.
+- MFA TOTP obligatorio para `admin`, `client_manager` y `database_updater`.
+- Secretos TOTP permanecen en Key Vault. Cosmos solo guarda referencia, estado, anti-replay y hashes de recuperacion.
+- Revelar/copiar passwords de bases y cambiar password SMTP requiere una sesion MFA verificada.
+- Variables, pruebas y recuperacion: `SECURITY_PASSWORD_MFA.md`.
+
 ## 4. Roles y permisos
 
 Roles funcionales:

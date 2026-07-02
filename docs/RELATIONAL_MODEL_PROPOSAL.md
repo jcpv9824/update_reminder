@@ -134,7 +134,14 @@ migration.*
 | `active` | BIT | no | Estado usuario. |
 | `password_hash` | NVARCHAR(500) | sí | Hash actual, nunca password real. |
 | `password_updated_at` | DATETIME2 | sí |  |
+| `password_expires_at` | DATETIME2 | sí | Expiracion de la credencial definitiva. |
 | `must_change_password` | BIT | no | Default 0. |
+| `token_version` | INT | no | Revocacion global de sesiones. |
+| `mfa_enabled` | BIT | no | MFA TOTP confirmado. |
+| `mfa_secret_name` | NVARCHAR(200) | sí | Referencia a Key Vault; nunca el secreto. |
+| `mfa_enrolled_at` | DATETIME2 | sí | Fecha de enrolamiento. |
+| `mfa_last_time_step` | BIGINT | sí | Anti-replay TOTP. |
+| `mfa_recovery_code_hashes_json` | NVARCHAR(MAX) | sí | Compatibilidad inicial; preferir tabla hija normalizada. |
 | `last_login_at` | DATETIME2 | sí |  |
 | `password_reset_token_hash` | NVARCHAR(500) | sí | Hash solamente. |
 | `password_reset_expires_at` | DATETIME2 | sí |  |
@@ -147,6 +154,8 @@ Constraints:
 - `PK_security_users(id)`
 - `UQ_security_users_email_normalized(email_normalized)`
 - `CK_security_users_email_not_empty`
+
+Los codigos de recuperacion deben migrarse preferiblemente a `security.user_mfa_recovery_codes(user_id, code_hash, consumed_at, created_at)`. El secreto TOTP permanece en Key Vault y SQL conserva solo `mfa_secret_name`.
 
 ### 3.2 `security.roles`
 

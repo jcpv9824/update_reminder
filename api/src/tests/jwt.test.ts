@@ -27,9 +27,15 @@ describe("jwt endurecido", () => {
       ver: 3,
       iss: "erp-update-scheduler-api",
       aud: "erp-update-scheduler-web",
+      amr: ["pwd"],
     });
     expect(payload?.jti).toMatch(/^[0-9a-f-]{36}$/);
     expect((payload?.exp ?? 0) - (payload?.iat ?? 0)).toBe(600);
+  });
+
+  it("marca la autenticación multifactor en el access token", () => {
+    const payload = verifyJwt(signJwt(user, { ...session, mfaVerifiedAt: "2026-07-02T15:00:00.000Z" }));
+    expect(payload?.amr).toEqual(["pwd", "otp"]);
   });
 
   it("rechaza issuer y audience diferentes", () => {

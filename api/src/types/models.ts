@@ -16,6 +16,8 @@ export type CurrentUser = {
   email: string;
   displayName: string;
   roles: string[];
+  mfaVerified?: boolean;
+  mfaVerifiedAt?: string | null;
 };
 
 export type UserRecord = {
@@ -33,6 +35,12 @@ export type UserRecord = {
   passwordUpdatedAt?: string | null;
   tokenVersion?: number;
   mustChangePassword?: boolean;
+  passwordExpiresAt?: string | null;
+  mfaEnabled?: boolean;
+  mfaSecretName?: string | null;
+  mfaEnrolledAt?: string | null;
+  mfaLastTimeStep?: number | null;
+  mfaRecoveryCodeHashes?: string[];
   // Reset de contraseña: nunca guardar el token en texto plano.
   passwordResetTokenHash?: string | null;
   passwordResetExpiresAt?: string | null;
@@ -50,6 +58,7 @@ export type AuthSessionRecord = {
   revokedAt?: string | null;
   revokedReason?: string | null;
   replacedBySessionId?: string | null;
+  mfaVerifiedAt?: string | null;
   ttl: number;
   _etag?: string;
 };

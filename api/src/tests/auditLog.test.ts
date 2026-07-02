@@ -38,6 +38,17 @@ describe("buildAuditLogEntry", () => {
     expect(json).not.toContain("tampoco");
   });
 
+  it("audita estado MFA sin guardar secreto, time step ni códigos de recuperación", () => {
+    const entry = buildAuditLogEntry({
+      entityType: "user", entityId: "u1", action: "mfa_enabled",
+      performedBy: "u1", performedByEmail: "u@x.com",
+      after: { id: "u1", mfaEnabled: true, mfaEnrolledAt: "2026-07-02T15:00:00Z", mfaSecretName: "mfa-secreto", mfaLastTimeStep: 123, mfaRecoveryCodeHashes: ["hash-secreto"] },
+    });
+    expect(entry.after).toEqual({ id: "u1", mfaEnabled: true, mfaEnrolledAt: "2026-07-02T15:00:00Z" });
+    expect(JSON.stringify(entry)).not.toContain("mfa-secreto");
+    expect(JSON.stringify(entry)).not.toContain("hash-secreto");
+  });
+
   it("usa allowlist de entidad y elimina variantes sensibles y cuerpos HTTP", () => {
     const entry = buildAuditLogEntry({
       entityType: "database",

@@ -15,7 +15,7 @@ export default function ResetPasswordPage() {
     e.preventDefault();
     setError(null); setExito(null);
     if (!token) { setError("El enlace no es válido o ya expiró. Solicita uno nuevo."); return; }
-    if (password.length < 6) { setError("La contraseña debe tener al menos 6 caracteres."); return; }
+    if (password.length < 14) { setError("La contraseña debe tener al menos 14 caracteres."); return; }
     if (password !== confirmacion) { setError("Las contraseñas no coinciden."); return; }
     setCargando(true);
     try {
@@ -44,11 +44,12 @@ export default function ResetPasswordPage() {
           <form onSubmit={enviar}>
             <div className="fila-formulario">
               <label htmlFor="reset-pwd">Nueva contraseña</label>
-              <input id="reset-pwd" type="password" autoComplete="new-password" maxLength={200} value={password} onChange={(e) => setPassword(e.target.value)} required />
+              <input id="reset-pwd" type="password" autoComplete="new-password" maxLength={72} value={password} onChange={(e) => setPassword(e.target.value)} required />
+              <small>Use una frase de al menos 14 caracteres que no contenga su nombre o correo.</small>
             </div>
             <div className="fila-formulario">
               <label htmlFor="reset-conf">Confirmar contraseña</label>
-              <input id="reset-conf" type="password" autoComplete="new-password" maxLength={200} value={confirmacion} onChange={(e) => setConfirmacion(e.target.value)} required />
+              <input id="reset-conf" type="password" autoComplete="new-password" maxLength={72} value={confirmacion} onChange={(e) => setConfirmacion(e.target.value)} required />
             </div>
             <button type="submit" className="primario" style={{ width: "100%", padding: "10px", marginTop: 8 }} disabled={cargando}>
               {cargando ? "Guardando..." : "Restablecer contraseña"}

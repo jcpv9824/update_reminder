@@ -1,11 +1,12 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { z } from "zod";
 import { getContainer } from "../lib/cosmos";
-import { verifyPassword, normalizeEmail } from "../lib/password";
+import { hashPassword, normalizeEmail, passwordChangeRequired, passwordExpirationIso, validatePasswordPolicy, verifyPassword } from "../lib/password";
 import { signJwt } from "../lib/jwt";
 import { writeAuditLog } from "../lib/audit";
 import { ok } from "../lib/http";
 import type { UserRecord } from "../types/models";
+import { generateRecoveryCodes, prepareMfaEnrollment, requiresMfaForRoles, verifyMfaCode } from "../lib/mfa";
 import {
   clearRefreshCookie,
   createAuthSession,
@@ -27,12 +28,15 @@ import {
 const LoginSchema = z.object({
   email: z.string().min(1).max(254),
   password: z.string().min(1).max(200),
+  newPassword: z.string().max(200).optional(),
+  mfaCode: z.string().max(64).optional(),
 });
 
 const MENSAJE_LOGIN_GENERICO = "Correo o contraseña incorrectos.";
 
 function sanitize(u: UserRecord) {
-  const { passwordHash, passwordResetTokenHash, passwordResetExpiresAt, passwordResetUsedAt, tokenVersion, ...rest } = u;
+  const { passwordHash, passwordResetTokenHash, passwordResetExpiresAt, passwordResetUsedAt, tokenVersion,
+    mfaSecretName, mfaLastTimeStep, mfaRecoveryCodeHashes, ...rest } = u;
   return rest;
 }
 
@@ -75,20 +79,100 @@ app.http("authLogin", {
 
       await clearLoginAccountFailures(email);
 
+      if (passwordChangeRequired(user)) {
+        if (!parsed.data.newPassword) {
+          return { status: 200, headers: { "Cache-Control": "no-store" }, jsonBody: { passwordChangeRequired: true } };
+        }
+        try {
+          await validatePasswordPolicy(parsed.data.newPassword, { email: user.email, displayName: user.displayName });
+          if (await verifyPassword(parsed.data.newPassword, user.passwordHash)) {
+            return { status: 400, jsonBody: { error: "La nueva contraseña debe ser diferente de la contraseña temporal o vencida." } };
+          }
+        } catch (error: any) {
+          return { status: error?.status === 503 ? 503 : 400, jsonBody: { error: error?.message || "La contraseña no cumple la política de seguridad." } };
+        }
+        const changedAt = new Date().toISOString();
+        user.passwordHash = await hashPassword(parsed.data.newPassword);
+        user.passwordUpdatedAt = changedAt;
+        user.passwordExpiresAt = passwordExpirationIso();
+        user.mustChangePassword = false;
+        user.tokenVersion = (user.tokenVersion ?? 0) + 1;
+        user.updatedAt = changedAt;
+        user.updatedBy = user.id;
+        await getContainer("users").item(user.id, user.id).replace(user);
+        await revokeAllUserSessions(user.id, "mandatory_password_change");
+        await writeAuditLog({
+          entityType: "user", entityId: user.id, action: "mandatory_password_changed",
+          performedBy: user.id, performedByEmail: user.email,
+        });
+        return { status: 200, headers: { "Cache-Control": "no-store" }, jsonBody: { passwordChanged: true, message: "Contraseña actualizada. Inicie sesión nuevamente." } };
+      }
+
+      let mfaVerifiedAt: string | null = null;
+      if (requiresMfaForRoles(user.roles ?? [])) {
+        if (!parsed.data.mfaCode) {
+          if (user.mfaEnabled) {
+            return { status: 200, headers: { "Cache-Control": "no-store" }, jsonBody: { mfaRequired: true } };
+          }
+          const enrollment = await prepareMfaEnrollment(user);
+          user.mfaSecretName = enrollment.secretName;
+          user.updatedAt = new Date().toISOString();
+          await getContainer("users").item(user.id, user.id).replace(user);
+          return {
+            status: 200,
+            headers: { "Cache-Control": "no-store" },
+            jsonBody: { mfaSetupRequired: true, mfaSetup: { secret: enrollment.secret, otpauthUri: enrollment.otpauthUri } },
+          };
+        }
+        const mfaLimited = await enforceRequestRateLimit(req, "auth_mfa_verify", email, RATE_LIMIT_POLICIES.mfaVerification);
+        if (mfaLimited) return mfaLimited;
+        const enrollment = user.mfaEnabled ? null : await prepareMfaEnrollment(user);
+        const verification = await verifyMfaCode({ user, code: parsed.data.mfaCode, secret: enrollment?.secret });
+        if (!verification.valid) {
+          return { status: 401, jsonBody: { error: "El código MFA no es válido o ya fue utilizado." } };
+        }
+        const now = new Date().toISOString();
+        if (!user.mfaEnabled) {
+          const recovery = generateRecoveryCodes();
+          user.mfaEnabled = true;
+          user.mfaSecretName = enrollment!.secretName;
+          user.mfaEnrolledAt = now;
+          user.mfaRecoveryCodeHashes = recovery.hashes;
+          user.mfaLastTimeStep = verification.timeStep ?? null;
+          user.updatedAt = now;
+          user.updatedBy = user.id;
+          await getContainer("users").item(user.id, user.id).replace(user);
+          await writeAuditLog({ entityType: "user", entityId: user.id, action: "mfa_enabled", performedBy: user.id, performedByEmail: user.email });
+          return {
+            status: 200,
+            headers: { "Cache-Control": "no-store" },
+            jsonBody: { mfaEnrollmentCompleted: true, recoveryCodes: recovery.plain },
+          };
+        }
+        user.mfaLastTimeStep = verification.timeStep ?? user.mfaLastTimeStep ?? null;
+        if (verification.recoveryCodeHashes) user.mfaRecoveryCodeHashes = verification.recoveryCodeHashes;
+        user.updatedAt = now;
+        await getContainer("users").item(user.id, user.id).replace(user);
+        if (verification.method === "recovery") {
+          await writeAuditLog({ entityType: "user", entityId: user.id, action: "mfa_recovery_code_used", performedBy: user.id, performedByEmail: user.email });
+        }
+        mfaVerifiedAt = now;
+      }
+
       // Actualizar lastLoginAt sin tocar passwordHash.
       user.lastLoginAt = new Date().toISOString();
       await getContainer("users").item(user.id, user.id).replace(user);
 
       let createdSession: Awaited<ReturnType<typeof createAuthSession>>;
       try {
-        createdSession = await createAuthSession(user);
+        createdSession = await createAuthSession(user, { mfaVerifiedAt });
       } catch {
         throw Object.assign(new Error("No se pudo crear la sesión segura."), { status: 503 });
       }
       const { session, refreshToken } = createdSession;
       const token = signJwt(
         { id: user.id, email: user.email, displayName: user.displayName, roles: user.roles ?? [] },
-        { id: session.id, tokenVersion: session.tokenVersion }
+        { id: session.id, tokenVersion: session.tokenVersion, mfaVerifiedAt: session.mfaVerifiedAt }
       );
       await writeAuditLog({
         entityType: "user",
@@ -140,7 +224,7 @@ app.http("authRefresh", {
       if (!rotated) throw new Error("invalid_refresh_token");
       const token = signJwt(
         { id: rotated.user.id, email: rotated.user.email, displayName: rotated.user.displayName, roles: rotated.user.roles ?? [] },
-        { id: rotated.session.id, tokenVersion: rotated.session.tokenVersion }
+        { id: rotated.session.id, tokenVersion: rotated.session.tokenVersion, mfaVerifiedAt: rotated.session.mfaVerifiedAt }
       );
       return {
         status: 200,
@@ -231,7 +315,7 @@ app.http("authForgotPassword", {
 
 const ResetSchema = z.object({
   token: z.string().min(16).max(256),
-  password: z.string().min(6).max(200),
+  password: z.string().min(14).max(200),
 });
 
 const MENSAJE_RESET_INVALIDO = "El enlace no es válido o ya expiró. Solicita uno nuevo.";
@@ -256,7 +340,6 @@ app.http("authResetPassword", {
         return { status: 400, jsonBody: { error: parsed.success === false ? "Datos no válidos." : MENSAJE_RESET_INVALIDO } };
       }
       const { hashResetToken, isResetTokenExpired } = await import("../lib/resetTokens");
-      const { hashPassword } = await import("../lib/password");
       const { writeAuditLog } = await import("../lib/audit");
       const tokenHash = hashResetToken(parsed.data.token);
       const { resources } = await getContainer("users")
@@ -272,10 +355,17 @@ app.http("authResetPassword", {
       if (isResetTokenExpired(user.passwordResetExpiresAt)) {
         return { status: 400, jsonBody: { error: MENSAJE_RESET_INVALIDO } };
       }
+      try {
+        await validatePasswordPolicy(parsed.data.password, { email: user.email, displayName: user.displayName });
+      } catch (error: any) {
+        return { status: error?.status === 503 ? 503 : 400, jsonBody: { error: error?.message || "La contraseña no cumple la política de seguridad." } };
+      }
       const newHash = await hashPassword(parsed.data.password);
       const now = new Date().toISOString();
       user.passwordHash = newHash;
       user.passwordUpdatedAt = now;
+      user.passwordExpiresAt = passwordExpirationIso();
+      user.mustChangePassword = false;
       user.tokenVersion = (user.tokenVersion ?? 0) + 1;
       user.passwordResetUsedAt = now;
       user.passwordResetTokenHash = null;

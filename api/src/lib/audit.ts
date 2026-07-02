@@ -96,6 +96,7 @@ const ENTITY_SNAPSHOT_SCHEMAS: Record<string, AuditSchema> = {
   user: {
     id: "scalar", displayName: "scalar", email: "scalar", roles: "scalarArray", active: "scalar",
     mustChangePassword: "scalar", lastLoginAt: "scalar", passwordUpdatedAt: "scalar",
+    passwordExpiresAt: "scalar", mfaEnabled: "scalar", mfaEnrolledAt: "scalar",
     createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
   },
   licenseModule: {
@@ -138,6 +139,9 @@ const refreshFields = fields("date", "windowStart", "windowEnd", "created", "upd
 
 const ACTION_METADATA_SCHEMAS: Record<string, AuditSchema> = {
   password_reset_requested: fields("expiresAt"),
+  mandatory_password_changed: fields(),
+  mfa_enabled: fields(),
+  mfa_recovery_code_used: fields(),
   user_created: fields("firstAdmin"),
   user_password_reset: fields("setup"),
   password_notification_sent: fields("kind", "includedPassword"),

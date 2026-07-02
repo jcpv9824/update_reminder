@@ -26,6 +26,7 @@ export type JwtPayload = {
   roles: string[];
   sid: string;
   ver: number;
+  amr: string[];
   jti: string;
   iss: string;
   aud: string | string[];
@@ -33,7 +34,7 @@ export type JwtPayload = {
   exp?: number;
 };
 
-export function signJwt(user: CurrentUser, session: { id: string; tokenVersion: number }): string {
+export function signJwt(user: CurrentUser, session: { id: string; tokenVersion: number; mfaVerifiedAt?: string | null }): string {
   const expiresIn = (process.env.JWT_ACCESS_EXPIRES_IN || "10m") as SignOptions["expiresIn"];
   return jwt.sign(
     {
@@ -41,6 +42,7 @@ export function signJwt(user: CurrentUser, session: { id: string; tokenVersion: 
       roles: user.roles,
       sid: session.id,
       ver: session.tokenVersion,
+      amr: session.mfaVerifiedAt ? ["pwd", "otp"] : ["pwd"],
     },
     getSecret(),
     {
@@ -68,6 +70,7 @@ export function verifyJwt(token: string): JwtPayload | null {
       || !Array.isArray(payload.roles)
       || typeof payload.sid !== "string"
       || typeof payload.ver !== "number"
+      || !Array.isArray(payload.amr)
       || typeof payload.jti !== "string"
     ) return null;
     return payload as JwtPayload;

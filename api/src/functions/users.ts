@@ -4,7 +4,7 @@ import { requireUser, loadUserProfile } from "../lib/auth";
 import { canManageUsers } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
-import { hashPassword, normalizeEmail, generateTemporaryPassword } from "../lib/password";
+import { generateTemporaryPassword, hashPassword, normalizeEmail, passwordExpirationIso, validatePasswordPolicy } from "../lib/password";
 import { badRequest, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import { getPagination, paginateArray } from "../lib/pagination";
 import { loadEmailAlertsSettings } from "../lib/settingsService";
@@ -70,7 +70,7 @@ const UserCreateSchema = z.object({
   email: z.string().email("Correo electrónico no válido."),
   roles: z.array(z.enum(VALID_ROLES)).default([]),
   active: z.boolean().default(true),
-  password: z.string().min(6, "La contraseña debe tener al menos 6 caracteres."),
+  password: z.string().min(14, "La contraseña debe tener al menos 14 caracteres."),
 });
 
 const UserUpdateSchema = z.object({
@@ -80,11 +80,12 @@ const UserUpdateSchema = z.object({
 });
 
 const ResetPasswordSchema = z.object({
-  password: z.string().min(6, "La contraseña debe tener al menos 6 caracteres."),
+  password: z.string().min(14, "La contraseña debe tener al menos 14 caracteres."),
 });
 
 function sanitize(u: UserRecord) {
-  const { passwordHash, passwordResetTokenHash, passwordResetExpiresAt, passwordResetUsedAt, tokenVersion, ...rest } = u;
+  const { passwordHash, passwordResetTokenHash, passwordResetExpiresAt, passwordResetUsedAt, tokenVersion,
+    mfaSecretName, mfaLastTimeStep, mfaRecoveryCodeHashes, ...rest } = u;
   return rest;
 }
 
@@ -126,6 +127,11 @@ app.http("usersCreate", {
       if (limited) return limited;
       const id = parsed.data.id?.trim() || email;
       const now = new Date().toISOString();
+      try {
+        await validatePasswordPolicy(parsed.data.password, { email, displayName: parsed.data.displayName });
+      } catch (error: any) {
+        return error?.status === 503 ? { status: 503, jsonBody: { error: error.message } } : badRequest(error.message);
+      }
       const passwordHash = await hashPassword(parsed.data.password);
       const record: UserRecord = {
         id,
@@ -140,6 +146,9 @@ app.http("usersCreate", {
         lastLoginAt: null,
         passwordHash,
         passwordUpdatedAt: now,
+        passwordExpiresAt: null,
+        mustChangePassword: true,
+        mfaEnabled: false,
         tokenVersion: 0,
       };
       await getContainer("users").items.create(record);
@@ -227,8 +236,15 @@ app.http("usersResetPassword", {
       const { resource } = await container.item(id, id).read<UserRecord>();
       if (!resource) return notFound("Usuario no encontrado.");
       const now = new Date().toISOString();
+      try {
+        await validatePasswordPolicy(parsed.data.password, { email: resource.email, displayName: resource.displayName });
+      } catch (error: any) {
+        return error?.status === 503 ? { status: 503, jsonBody: { error: error.message } } : badRequest(error.message);
+      }
       resource.passwordHash = await hashPassword(parsed.data.password);
       resource.passwordUpdatedAt = now;
+      resource.passwordExpiresAt = null;
+      resource.mustChangePassword = true;
       resource.tokenVersion = (resource.tokenVersion ?? 0) + 1;
       resource.updatedAt = now;
       resource.updatedBy = u.id;
@@ -277,6 +293,8 @@ app.http("usersResendCredentials", {
       const now = new Date().toISOString();
       resource.passwordHash = await hashPassword(temporal);
       resource.passwordUpdatedAt = now;
+      resource.passwordExpiresAt = null;
+      resource.mustChangePassword = true;
       resource.tokenVersion = (resource.tokenVersion ?? 0) + 1;
       resource.updatedAt = now;
       resource.updatedBy = u.id;

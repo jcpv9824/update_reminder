@@ -8,9 +8,21 @@ type EstadoAuth =
   | { cargando: false; usuario: Usuario };
 
 type Contexto = EstadoAuth & {
-  entrar: (email: string, password: string) => Promise<void>;
+  entrar: (email: string, password: string, options?: { newPassword?: string; mfaCode?: string }) => Promise<LoginFlowResult>;
   cerrarSesion: () => Promise<void>;
   recargar: () => Promise<void>;
+};
+
+export type LoginFlowResult = {
+  authenticated?: boolean;
+  passwordChangeRequired?: boolean;
+  passwordChanged?: boolean;
+  message?: string;
+  mfaRequired?: boolean;
+  mfaSetupRequired?: boolean;
+  mfaSetup?: { secret: string; otpauthUri: string };
+  mfaEnrollmentCompleted?: boolean;
+  recoveryCodes?: string[];
 };
 
 const Ctx = createContext<Contexto | null>(null);
@@ -43,10 +55,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { cargar(); }, []);
 
-  async function entrar(email: string, password: string) {
-    const r = await api.post<{ token: string; user: Usuario }>("/auth/login", { email, password });
-    setToken(r.token);
-    setEstado({ cargando: false, usuario: r.user });
+  async function entrar(email: string, password: string, options: { newPassword?: string; mfaCode?: string } = {}): Promise<LoginFlowResult> {
+    const r = await api.post<LoginFlowResult & { token?: string; user?: Usuario }>("/auth/login", { email, password, ...options });
+    if (r.token && r.user) {
+      setToken(r.token);
+      setEstado({ cargando: false, usuario: r.user });
+      return { authenticated: true };
+    }
+    return r;
   }
 
   async function cerrarSesion() {

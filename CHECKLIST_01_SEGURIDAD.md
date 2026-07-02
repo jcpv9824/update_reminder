@@ -61,10 +61,15 @@ La aplicacion tiene controles valiosos (hash de contrasenas, tokens de reset has
   - Revocacion: cada solicitud valida sesion y `tokenVersion`. Logout revoca la sesion; reset/cambio de contraseña, reenvio de credenciales y desactivacion incrementan version y revocan todas las sesiones del usuario.
   - Pruebas: `jwt.test.ts`, `authSessions.test.ts`, `authSecurity.test.ts` y `frontend/src/tests/ApiClient.test.ts` cubren claims, algoritmo, secreto, rotacion, replay, logout/revocacion, version, cookie y ausencia de JWT persistido.
 
-- [ ] **SEC-007 - P1 - Politica de contrasenas y MFA.**
-  - Estado: Falla para datos delicados.
-  - Evidencia: minimo 6 caracteres en `password.ts`, `auth.ts`, `users.ts`, `setup.ts`; bcrypt costo 10; no MFA.
-  - Cierre: minimo 12-14 caracteres o passphrases, lista de contrasenas comprometidas, MFA para admin/client_manager y acceso a secretos, rotacion/primer cambio obligatorio.
+- [x] **SEC-007 - P1 - Politica de contrasenas y MFA.**
+  - Estado: Corregido el 2026-07-02.
+  - Contrasenas: minimo 14 caracteres, maximo 72 bytes por limite de bcrypt, passphrases permitidas, rechazo de espacios en bordes, datos del usuario y lista local de contrasenas comunes. Bcrypt usa costo 12 en runtime.
+  - Filtraciones: integracion HIBP Pwned Passwords por k-anonymity; solo se transmite el prefijo SHA-1 de cinco caracteres. Produccion opera con validacion habilitada y fail-closed.
+  - Ciclo de vida: credenciales creadas/restablecidas por admin son temporales y exigen cambio en el primer acceso. Las definitivas expiran a los 180 dias por defecto; cambio/reset revoca sesiones mediante `tokenVersion`.
+  - MFA: TOTP obligatorio para `admin`, `client_manager` y `database_updater`. El secreto se guarda en Key Vault; Cosmos conserva solo referencia, estado, anti-replay y hashes HMAC de codigos de recuperacion de un solo uso.
+  - Secretos: revelar/copiar passwords de bases y cambiar password SMTP exige sesion MFA verificada, ademas de la autorizacion de rol/objeto existente.
+  - Pruebas: `password.test.ts`, `mfa.test.ts`, `authSecurity.test.ts`, `authSessions.test.ts`, `jwt.test.ts` y `frontend/src/tests/LoginPage.test.tsx` cubren politica, filtraciones, expiracion, enrolamiento, anti-replay, recuperacion, rotacion y bloqueo de sesiones sensibles sin MFA.
+  - Operacion y recuperacion: `SECURITY_PASSWORD_MFA.md`.
 
 - [ ] **SEC-008 - P1 - Evitar inyeccion HTML en correos de bloqueos.**
   - Estado: Falla.

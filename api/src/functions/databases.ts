@@ -6,6 +6,7 @@ import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { cancelPendingTasksForDatabase } from "../lib/taskCleanup";
 import * as keyVault from "../lib/keyVault";
+import { requireVerifiedMfa } from "../lib/mfa";
 import { buildDatabaseRecordFromInput } from "../lib/databaseService";
 import { buildDatabaseAccessInfo } from "../lib/databaseAccessInfo";
 import { parseDbAccessString } from "../lib/dbAccessParser";
@@ -380,6 +381,7 @@ app.http("databasesCopyAccessPart", {
 
       if (part === "password") {
         if (!canReadDatabasePassword(user, db, task)) return forbidden("No tiene permisos para acceder a la contraseña.");
+        requireVerifiedMfa(user);
         const value = await keyVault.getSecret(db.dbAccess.passwordSecretName);
         await writeAuditLog({
           entityType: "database",
@@ -435,6 +437,7 @@ app.http("databasesRevealPassword", {
         task = await findTask(requestedTaskId);
       }
       if (!canReadDatabasePassword(user, db, task)) return forbidden("No tiene permisos para acceder a la contraseña.");
+      requireVerifiedMfa(user);
       const value = await keyVault.getSecret(db.dbAccess.passwordSecretName);
       const metadata: Record<string, string> = { databaseId: db.id, reason: typeof body.reason === "string" ? body.reason : "manual" };
       if (taskId) metadata.taskId = taskId;

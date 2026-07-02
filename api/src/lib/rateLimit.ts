@@ -38,6 +38,7 @@ export interface RateLimitStore {
 export const RATE_LIMIT_POLICIES = {
   loginRequest: { maxAttempts: 10, windowSeconds: 300, blockSeconds: 900 },
   loginFailure: { maxAttempts: 5, windowSeconds: 900, blockSeconds: 900, blockOnLimitReached: true },
+  mfaVerification: { maxAttempts: 5, windowSeconds: 300, blockSeconds: 900, blockOnLimitReached: true },
   refreshSession: { maxAttempts: 30, windowSeconds: 300, blockSeconds: 900 },
   forgotPassword: { maxAttempts: 5, windowSeconds: 3600, blockSeconds: 3600 },
   resetPassword: { maxAttempts: 10, windowSeconds: 3600, blockSeconds: 3600 },
