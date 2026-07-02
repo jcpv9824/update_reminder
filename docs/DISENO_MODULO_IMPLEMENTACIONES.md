@@ -1,5 +1,7 @@
 # Diseño — Módulo "Implementaciones" dentro del Programador de Actualizaciones ERP
 
+> **Nota:** este documento es la **visión general preliminar**. La especificación detallada y verificada (spec-driven, con requisitos, módulos M1–M6 y matriz de trazabilidad) vive en **`docs/implementaciones/`** y **prevalece** sobre este documento donde difieran (p. ej. la etapa `solicitudes` reemplaza la secuencia `infra_request → prerequisites`; ver hallazgo H-01/H-14 en `docs/implementaciones/08_MATRIZ_TRAZABILIDAD.md`).
+
 > Documento de diseño (análisis de negocio + arquitectura de solución) para convertir los **tres procesos de implementación de SAG Web** —Migración (Caso 1), Cliente nuevo (Caso 2) y Módulos especiales (Caso 3)— en **un solo módulo** dentro del sistema existente, con acceso por roles para todos los interesados, captura de información estructurada, trazabilidad paso a paso y correos enviados directamente desde la plataforma.
 >
 > Fuentes: `Step-by-step/Documentación maestra (Claude)/01–05` (procesos, glosario, entregables, correos, decisiones).
