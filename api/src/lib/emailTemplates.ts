@@ -421,7 +421,7 @@ export function buildWelcomeUserEmail(input: {
   ].join("\n");
   return {
     subject,
-    html: layout({ title: "Bienvenido", intro, preheader: intro, body, cta: "Iniciar sesión", ctaHref: `${baseUrl}/login` }),
+    html: layout({ title: "Bienvenido", intro, preheader: intro, body, cta: "Iniciar sesión", ctaHref: `${baseUrl}/login`, footerNote: "Correo generado automáticamente por el Programador de Actualizaciones ERP. Si no esperabas este correo, contacta al administrador." }),
     text,
   };
 }
@@ -450,7 +450,7 @@ export function buildResendCredentialsEmail(input: {
   ].join("\n");
   return {
     subject,
-    html: layout({ title: "Tus datos de acceso", intro, preheader: intro, body, cta: "Iniciar sesión", ctaHref: `${baseUrl}/login` }),
+    html: layout({ title: "Tus datos de acceso", intro, preheader: intro, body, cta: "Iniciar sesión", ctaHref: `${baseUrl}/login`, footerNote: "Correo generado automáticamente por el Programador de Actualizaciones ERP. Si no solicitaste este reenvío, contacta al administrador de inmediato." }),
     text,
   };
 }

@@ -151,6 +151,56 @@ describe("emailTemplates", () => {
     expect(roleLabels([])).toBe("Sin rol asignado");
   });
 
+  it("buildWelcomeUserEmail incluye credenciales, rol y enlace de acceso", () => {
+    const email = buildWelcomeUserEmail({
+      displayName: "Laura Pérez",
+      email: "laura@example.com",
+      temporaryPassword: "Temp#1234",
+      roles: ["admin", "viewer"],
+      frontendBaseUrl: "https://app.example.com/",
+    });
+    const serialized = `${email.html}\n${email.text}`;
+    expect(email.subject).toContain("Bienvenido");
+    expect(serialized).toContain("laura@example.com");
+    expect(serialized).toContain("Temp#1234");
+    expect(serialized).toContain("Administrador");
+    expect(serialized).toContain("https://app.example.com/login");
+    // Estándar responsivo: usa el layout con viewport y ancho máximo.
+    expect(email.html).toContain("max-width");
+  });
+
+  it("buildWelcomeUserEmail sin contraseña no muestra fila de contraseña", () => {
+    const email = buildWelcomeUserEmail({
+      displayName: "Laura",
+      email: "laura@example.com",
+      roles: ["viewer"],
+    });
+    expect(email.html).not.toContain("Contraseña temporal");
+    expect(email.text).toContain("solicítala al administrador");
+  });
+
+  it("buildResendCredentialsEmail entrega la nueva contraseña temporal y escapa HTML", () => {
+    const email = buildResendCredentialsEmail({
+      displayName: "Pedro <script>",
+      email: "pedro@example.com",
+      temporaryPassword: "Nueva#5678",
+      roles: ["database_updater"],
+      frontendBaseUrl: "https://app.example.com",
+    });
+    const serialized = `${email.html}\n${email.text}`;
+    expect(email.subject).toContain("datos de acceso");
+    expect(serialized).toContain("Nueva#5678");
+    expect(serialized).toContain("Actualizador de bases de datos");
+    expect(serialized).toContain("https://app.example.com/login");
+    expect(email.html).not.toContain("<script>");
+    expect(email.html).toContain("reemplaza la anterior");
+  });
+
+  it("roleLabels traduce roles y tolera desconocidos", () => {
+    expect(roleLabels(["admin", "otro_rol"])).toBe("Administrador, otro_rol");
+    expect(roleLabels([])).toBe("Sin rol asignado");
+  });
+
   it("buildMastersReportEmail agrupa clientes, dominios y bases sin datos sensibles", () => {
     const email = buildMastersReportEmail({
       frontendBaseUrl: "https://app.example.com",
