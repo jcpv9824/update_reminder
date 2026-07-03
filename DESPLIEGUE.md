@@ -928,6 +928,15 @@ La contraseña se guarda en Key Vault. No se muestra, no vuelve al frontend y no
 
 ### 16.4 Pruebas manuales después de publicar
 
+Antes o despues de un despliegue de infraestructura, reaplique y verifique la postura de transporte:
+
+```powershell
+cd "C:\Users\jcami\Desktop\Actualizaciones automáticas\erp-update-scheduler"
+.\scripts\harden-function-transport.ps1
+```
+
+No agregue localhost ni placeholders a CORS productivo. `supportCredentials=true` es necesario mientras la cookie refresh HttpOnly cruce de Static Web Apps a la Function App; consulte `SECURITY_TRANSPORT_NETWORK.md`.
+
 Antes del despliegue SEC-007, configure una sola vez `MFA_RECOVERY_PEPPER` con al menos 32 bytes aleatorios y mantengalo como secreto operativo. Configure tambien `MFA_ISSUER`, `BCRYPT_COST=12`, `PASSWORD_MAX_AGE_DAYS=180`, `PWNED_PASSWORDS_ENABLED=true` y `PWNED_PASSWORDS_FAIL_CLOSED=true`. No regenere el pepper en cada despliegue porque invalidaria los codigos de recuperacion existentes. Consulte `SECURITY_PASSWORD_MFA.md`.
 
 1. **Configuración P&A**: en **Alertas y correos**, pulse **Usar configuración recomendada de P&A** y confirme servidor `smtp.office365.com`, puerto `587`, remitente `info@pya.com.co`.

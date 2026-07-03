@@ -100,6 +100,14 @@ Sesiones seguras (SEC-006):
 - Refresh/logout requieren `X-Requested-With` y CORS con credenciales para el origen productivo.
 - Configuracion y pruebas completas: `SECURITY_SESSIONS.md`.
 
+Transporte y red (SEC-010):
+
+- Function App con `httpsOnly=true`, TLS 1.2 en app/SCM, HTTP/2 y FTPS deshabilitado.
+- CORS permite solo el origen productivo de Static Web Apps.
+- `supportCredentials=true` es deliberado mientras el refresh token use cookie HttpOnly entre origenes distintos; no usar wildcard.
+- El plan actual es Consumption `Y1`, sin Private Endpoint/VNet Integration. La red publica no puede deshabilitarse hasta migrar de plan y definir conectividad del frontend/BFF.
+- Script y runbook: `scripts/harden-function-transport.ps1` y `SECURITY_TRANSPORT_NETWORK.md`.
+
 Sanitizacion de auditoria (SEC-009):
 
 - `audit.ts` es el unico constructor autorizado para documentos de auditoria.

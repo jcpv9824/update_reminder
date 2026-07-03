@@ -364,6 +364,7 @@ Select-String -Path "frontend/src/**/*.*" -Pattern "window.alert|window.confirm|
 | BR-SEC-16 | El refresh token se guarda hasheado, rota en cada uso y su reutilizacion revoca la sesion descendiente. | `api/src/tests/authSessions.test.ts` | Cubierta por unidad backend |
 | BR-SEC-17 | Logout, cambio/reset de contraseña, reenvio de credenciales y desactivacion invalidan sesiones existentes mediante revocacion y `tokenVersion`. | `api/src/tests/authSessions.test.ts`; integracion en `auth.ts`, `users.ts`, `setup.ts` | Cubierta por unidad backend |
 | BR-SEC-18 | El navegador no persiste JWT en localStorage; usa access token en memoria y cookie refresh HttpOnly con credenciales. | `frontend/src/tests/ApiClient.test.ts`; `api/src/tests/authSessions.test.ts` | Cubierta backend/frontend |
+| BR-SEC-19 | Produccion fuerza HTTPS/TLS 1.2, deshabilita FTPS y permite CORS solo desde el frontend productivo. Credenciales CORS se mantienen exclusivamente para la cookie refresh HttpOnly cross-origin. | `scripts/harden-function-transport.ps1`; verificacion ARM y preflight productivo/localhost | Cubierta por script idempotente e infraestructura |
 
 ## Static Web Apps y despliegue
 

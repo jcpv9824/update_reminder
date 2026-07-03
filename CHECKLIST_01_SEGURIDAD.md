@@ -86,11 +86,13 @@ La aplicacion tiene controles valiosos (hash de contrasenas, tokens de reset has
   - Historico: `npm run security:sanitize-audit -- --apply` reprocesa documentos existentes, conserva ID/fecha/particion y registra el resumen sin imprimir contenido.
   - Pruebas: `api/src/tests/auditLog.test.ts` cubre variantes de claves, secretos bajo campos permitidos/genericos, objetos HTTP, esquemas desconocidos, estructuras anidadas y saneamiento historico.
 
-- [ ] **SEC-010 - P1 - Corregir postura de red/transportes de Azure Functions.**
-  - Estado productivo verificado: Parcial.
-  - Bien: TLS minimo 1.2, Managed Identity activa, `DEV_AUTH_ENABLED=false`, `SETUP_SECRET` vacio.
-  - Brechas: `httpsOnly` no aparece forzado; FTPS=`FtpsOnly` en vez de Disabled; CORS conserva localhost y placeholder, `supportCredentials=true`.
-  - Cierre: HTTPS only, FTPS disabled, CORS solo origen productivo requerido, credentials false salvo justificacion, Private Endpoint/VNet si aplica.
+- [x] **SEC-010 - P1 - Corregir postura de red/transportes de Azure Functions.**
+  - Estado: Corregido y verificado en produccion el 2026-07-03.
+  - Transporte: `httpsOnly=true`, HTTP redirige 301 a HTTPS, FTPS=`Disabled`, TLS minimo 1.2 en app y SCM, HTTP/2 activo y Managed Identity conservada.
+  - CORS: unico origen `https://agreeable-wave-07469d50f.7.azurestaticapps.net`. Localhost, 127.0.0.1 y placeholder fueron eliminados; un preflight desde localhost devuelve 400.
+  - Credenciales CORS: se conserva `supportCredentials=true` por justificacion obligatoria: el refresh token SEC-006 viaja en cookie `HttpOnly; Secure; SameSite=None` entre SWA y Functions, que son origenes distintos. Desactivarlo rompe refresh/logout. No se permite wildcard.
+  - Red privada: no aplica directamente al plan actual Consumption `Y1`, que no soporta Private Endpoint/VNet Integration. `publicNetworkAccess` permanece habilitado hasta migrar a Flex Consumption/Elastic Premium/Dedicated y proveer conectividad privada para frontend/despliegue.
+  - Infraestructura reproducible: `scripts/harden-function-transport.ps1`; decision y plan de evolucion en `SECURITY_TRANSPORT_NETWORK.md`.
 
 ## Identidad, secretos y datos
 

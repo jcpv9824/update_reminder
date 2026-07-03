@@ -62,6 +62,9 @@ az functionapp create --resource-group $ResourceGroup --consumption-plan-locatio
 
 Write-Host "==> Habilitando identidad administrada..."
 az functionapp identity assign --name $functionApp --resource-group $ResourceGroup | Out-Null
+$functionAppId = az functionapp show --name $functionApp --resource-group $ResourceGroup --query id --output tsv
+az resource update --ids $functionAppId --set properties.httpsOnly=true --output none
+az functionapp config set --name $functionApp --resource-group $ResourceGroup --ftps-state Disabled --min-tls-version 1.2 --output none
 $functionPrincipalId = az functionapp identity show --name $functionApp --resource-group $ResourceGroup --query principalId --output tsv
 $keyVaultId          = az keyvault show --name $keyVaultName --resource-group $ResourceGroup --query id --output tsv
 

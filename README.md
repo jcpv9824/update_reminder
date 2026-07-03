@@ -142,6 +142,14 @@ El campo **ID del cliente** (`externalId`) es opcional por ahora. Si se captura,
 - Logout, cambios de contraseña y desactivación revocan sesiones de inmediato.
 - `JWT_SECRET` debe contener al menos 32 bytes. Consulte `SECURITY_SESSIONS.md`.
 
+### Transporte y red
+
+- Azure Functions fuerza HTTPS, TLS 1.2 y tiene FTPS deshabilitado.
+- CORS permite exclusivamente el origen productivo de Static Web Apps.
+- CORS con credenciales se mantiene porque el refresh token usa cookie HttpOnly cross-origin; nunca se combina con `*`.
+- El endurecimiento se reaplica/verifica con `scripts/harden-function-transport.ps1`.
+- Private Endpoint requiere migrar el plan Consumption `Y1` a Flex/Premium/Dedicated. Consulte `SECURITY_TRANSPORT_NETWORK.md`.
+
 ### Auditoría segura
 
 - Snapshots permitidos por tipo de entidad y metadata permitida por acción.
