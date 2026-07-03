@@ -287,7 +287,7 @@ Select-String -Path "frontend/src/**/*.*" -Pattern "window.alert|window.confirm|
 | BR-MAIL-08 | Fallida envia correo de problema si alertas estan activas; no si estan desactivadas. | `api/src/tests/taskNotifications.test.ts` | Cubierta |
 | BR-MAIL-09 | Bloqueada envia correo de problema si alertas estan activas. | `api/src/tests/taskNotifications.test.ts` | Cubierta |
 | BR-MAIL-10 | En progreso/cancelada/reabierta no envian correo automatico de estado. | `api/src/tests/taskNotifications.test.ts` | Cubierta |
-| BR-MAIL-11 | Emails HTML escapan caracteres peligrosos y no contienen secretos. | `api/src/tests/emailEscape.test.ts`; `api/src/tests/completionFlow.test.ts`; `api/src/tests/emailTemplates.test.ts` | Cubierta |
+| BR-MAIL-11 | Emails HTML escapan caracteres peligrosos y no contienen secretos. Los recordatorios de bloqueos usan plantilla central y neutralizan etiquetas, atributos y links ejecutables en todos los campos dinamicos. | `api/src/tests/emailEscape.test.ts`; `api/src/tests/completionFlow.test.ts`; `api/src/tests/emailTemplates.test.ts`; `api/src/tests/sendBlockedReminders.test.ts` | Cubierta |
 | BR-MAIL-12 | Plantillas usan base URL normalizada sin slash final. | `api/src/tests/emailTemplates.test.ts` | Cubierta |
 
 ## Alertas y correos - UI y configuracion

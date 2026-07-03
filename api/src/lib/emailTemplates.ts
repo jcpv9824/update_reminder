@@ -32,6 +32,15 @@ export type DatabaseTaskEmailItem = {
   notes?: string;
 };
 
+export type BlockedTaskReminderEmailItem = {
+  clientName: string;
+  domainName: string;
+  targetType: "domain" | "database";
+  targetName: string;
+  daysAfter: number;
+  reason?: string | null;
+};
+
 export type MasterReportDatabase = {
   name: string;
   companyName?: string;
@@ -86,7 +95,17 @@ export function escapeHtml(value: unknown): string {
 }
 
 export function normalizeBaseUrl(frontendBaseUrl?: string): string {
-  return (frontendBaseUrl || "https://agreeable-wave-07469d50f.7.azurestaticapps.net").replace(/\/+$/, "");
+  const fallback = "https://agreeable-wave-07469d50f.7.azurestaticapps.net";
+  const raw = (frontendBaseUrl || fallback).trim().replace(/\/+$/, "");
+  try {
+    const parsed = new URL(raw);
+    if (!(["http:", "https:"] as string[]).includes(parsed.protocol) || parsed.username || parsed.password) return fallback;
+    parsed.hash = "";
+    parsed.search = "";
+    return parsed.toString().replace(/\/+$/, "");
+  } catch {
+    return fallback;
+  }
 }
 
 function parseDate(value?: string | Date): Date | null {
@@ -336,6 +355,55 @@ export function buildOverdueTasksEmail(input: {
     subject,
     html: layout({ title: "Tareas vencidas de actualización", intro, preheader: intro, body, cta: "Revisar tareas vencidas", ctaHref: `${baseUrl}/tareas`, alert: true }),
     text: `${subject}\n\n${intro}\n\n${textSections}\n\nRevisar tareas vencidas: ${baseUrl}/tareas`,
+  };
+}
+
+export function buildBlockedTaskReminderEmail(input: {
+  task: BlockedTaskReminderEmailItem;
+  frontendBaseUrl?: string;
+}): EmailBuildResult {
+  const baseUrl = normalizeBaseUrl(input.frontendBaseUrl);
+  const task = input.task;
+  const typeLabel = task.targetType === "database" ? "Base de datos" : "Dominio";
+  const reason = task.reason || "-";
+  const subject = "Recordatorio: tarea bloqueada sin resolver";
+  const intro = "La tarea bloqueada sigue sin resolverse y requiere atención.";
+  const body = `
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+      ${metric("Días desde el bloqueo", task.daysAfter, COLORS.danger)}
+      ${metric("Tipo de tarea", typeLabel, COLORS.primary)}
+    </tr></table>
+    ${taskTable(["Campo", "Detalle"], [
+      [escapeHtml("Cliente"), escapeHtml(task.clientName)],
+      [escapeHtml("Dominio"), escapeHtml(task.domainName)],
+      [escapeHtml("Tipo"), escapeHtml(typeLabel)],
+      [escapeHtml("Objetivo"), escapeHtml(task.targetName)],
+      [escapeHtml("Motivo"), escapeHtml(reason)],
+    ])}`;
+  const text = [
+    subject,
+    "",
+    intro,
+    `Cliente: ${task.clientName}`,
+    `Dominio: ${task.domainName}`,
+    `Tipo: ${typeLabel}`,
+    `Objetivo: ${task.targetName}`,
+    `Días desde el bloqueo: ${task.daysAfter}`,
+    `Motivo: ${reason}`,
+    `Revisar tarea: ${baseUrl}/tareas`,
+  ].join("\n");
+  return {
+    subject,
+    html: layout({
+      title: "Tarea bloqueada sin resolver",
+      intro,
+      preheader: intro,
+      body,
+      cta: "Revisar tarea bloqueada",
+      ctaHref: `${baseUrl}/tareas`,
+      alert: true,
+    }),
+    text,
   };
 }
 

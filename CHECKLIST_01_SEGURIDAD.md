@@ -71,10 +71,12 @@ La aplicacion tiene controles valiosos (hash de contrasenas, tokens de reset has
   - Pruebas: `password.test.ts`, `mfa.test.ts`, `authSecurity.test.ts`, `authSessions.test.ts`, `jwt.test.ts` y `frontend/src/tests/LoginPage.test.tsx` cubren politica, filtraciones, expiracion, enrolamiento, anti-replay, recuperacion, rotacion y bloqueo de sesiones sensibles sin MFA.
   - Operacion y recuperacion: `SECURITY_PASSWORD_MFA.md`.
 
-- [ ] **SEC-008 - P1 - Evitar inyeccion HTML en correos de bloqueos.**
-  - Estado: Falla.
-  - Evidencia: `api/src/functions/sendBlockedReminders.ts` interpola cliente, dominio, objetivo y motivo directamente en HTML; otras plantillas usan escape.
-  - Cierre: usar `escapeHtml`/plantilla central para todos los campos; pruebas con `<script>`, links y caracteres especiales.
+- [x] **SEC-008 - P1 - Evitar inyeccion HTML en correos de bloqueos.**
+  - Estado: Corregido el 2026-07-03.
+  - Implementacion: `buildBlockedTaskReminderEmail` centraliza el correo corporativo de bloqueos no resueltos. Cliente, dominio, tipo, objetivo, motivo, conteos y URL pasan por `escapeHtml` antes de insertarse en HTML o atributos.
+  - Flujo: `sendBlockedReminders.ts` ya no construye HTML mediante interpolacion de documentos Cosmos; entrega un DTO a la plantilla central. El correo inmediato de bloqueo/error conserva escape explicito en todos los campos y sus enlaces tambien se escapan.
+  - Texto plano: conserva el contenido legible como texto, sin interpretarlo como HTML.
+  - Pruebas: `emailTemplates.test.ts` cubre `<script>`, `<img>`, `<svg>`, links `javascript:`, atributos, comillas, apostrofes y ampersand; `sendBlockedReminders.test.ts` verifica el mensaje real enviado por el timer y su idempotency key.
 
 - [x] **SEC-009 - P1 - Completar sanitizacion de auditoria.**
   - Estado: Corregido el 2026-06-30.

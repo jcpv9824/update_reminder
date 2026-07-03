@@ -432,6 +432,8 @@ Alertas bloqueadas/errores:
 - Enviar inmediatamente al bloquear como comportamiento natural.
 - Configurar destinatarios por roles y correos manuales.
 - Recordatorios si el bloqueo sigue sin resolverse, por días después del bloqueo.
+- El HTML de estos correos se genera mediante plantilla central. Cliente, dominio, objetivo, motivo y enlaces se escapan; datos con etiquetas o links se muestran como texto y no se ejecutan.
+- Regresiones SEC-008: `emailTemplates.test.ts`, `emailEscape.test.ts`, `completionFlow.test.ts` y `sendBlockedReminders.test.ts`.
 - No duplicar recordatorios.
 - No enviar si la tarea ya fue resuelta.
 

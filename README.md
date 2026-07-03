@@ -192,6 +192,8 @@ Para probar el envío, escriba un destinatario en **Correo de prueba** y pulse *
 
 En **Alertas de tareas vencidas** configure roles destinatarios, correos adicionales, frecuencia diaria/semanal, hora y zona horaria. En **Alertas de tareas bloqueadas / errores de actualización** configure destinatarios independientes. Cuando una tarea se bloquea, la alerta inmediata se envía por defecto si las alertas de bloqueos están activas. También puede activar recordatorios de bloqueos no resueltos.
 
+Los correos inmediatos y los recordatorios posteriores de bloqueos escapan todo contenido dinamico procedente de clientes, dominios, bases y motivos. Etiquetas HTML, atributos y enlaces incluidos en datos operativos se muestran como texto y nunca se ejecutan dentro del correo.
+
 En **Recordatorios administrativos** configure los dos recordatorios mensuales: guardar la última versión mensual de SAG Web y crear el documento “¿Qué hay de nuevo en SAG Web?”. La regla por defecto es **Último día hábil del mes**. Si el último día del mes cae sábado o domingo, se envían dos recordatorios: viernes anterior y lunes siguiente, ambos asociados al periodo del mes que terminó.
 
 Para enviar el reporte maestro, abra **Reporte de clientes/dominios/empresas**, escriba destinatarios separados por punto y coma, por ejemplo `correo1@empresa.com; correo2@empresa.com`, y pulse **Enviar reporte**. El reporte incluye solo clientes, licencias/módulos, dominios y bases activos, con ambiente. Las licencias se muestran debajo de cada cliente, se deduplican por módulo y si no hay licencias activas aparece **Sin licencias registradas**.

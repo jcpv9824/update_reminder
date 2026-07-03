@@ -5,6 +5,7 @@ import { sendEmail } from "../lib/emailService";
 import { loadEmailAlertsSettings } from "../lib/settingsService";
 import { writeAuditLog } from "../lib/audit";
 import type { UpdateTask } from "../types/models";
+import { buildBlockedTaskReminderEmail } from "../lib/emailTemplates";
 
 function bogotaNow(): Date {
   return new Date(Date.now() - 5 * 3600_000);
@@ -62,18 +63,18 @@ export async function ejecutarRecordatoriosBloqueos(log: (message: string) => vo
     const elapsed = daysBetweenIso(task.blockedAt, today);
     if (!days.includes(elapsed)) continue;
     if (await wasSent(task.id, elapsed)) continue;
-    const subject = "Recordatorio: tarea bloqueada sin resolver";
-    const html = `<p>La tarea bloqueada sigue sin resolverse.</p>
-      <ul>
-        <li><strong>Cliente:</strong> ${task.clientName}</li>
-        <li><strong>Dominio:</strong> ${task.domainName}</li>
-        <li><strong>Tipo:</strong> ${task.targetType === "database" ? "Base de datos" : "Dominio"}</li>
-        <li><strong>Objetivo:</strong> ${task.targetName}</li>
-        <li><strong>Días desde bloqueo:</strong> ${elapsed}</li>
-        <li><strong>Motivo:</strong> ${task.blockReason ?? task.problemNote ?? "-"}</li>
-      </ul>`;
-    const text = `La tarea bloqueada sigue sin resolverse. Cliente: ${task.clientName}. Dominio: ${task.domainName}. Objetivo: ${task.targetName}. Días desde bloqueo: ${elapsed}. Motivo: ${task.blockReason ?? task.problemNote ?? "-"}`;
-    const result = await sendEmail({ to: recipients, subject, html, text }, settings);
+    const email = buildBlockedTaskReminderEmail({
+      task: {
+        clientName: task.clientName,
+        domainName: task.domainName,
+        targetType: task.targetType,
+        targetName: task.targetName,
+        daysAfter: elapsed,
+        reason: task.blockReason ?? task.problemNote,
+      },
+      frontendBaseUrl: settings.frontendBaseUrl,
+    });
+    const result = await sendEmail({ to: recipients, subject: email.subject, html: email.html, text: email.text }, settings);
     await writeAuditLog({
       entityType: "task",
       entityId: task.id,

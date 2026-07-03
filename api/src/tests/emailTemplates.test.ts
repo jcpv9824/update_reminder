@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildDatabaseReminderEmail,
+  buildBlockedTaskReminderEmail,
   buildDomainReminderEmail,
   buildMastersReportEmail,
   buildOverdueTasksEmail,
@@ -19,6 +20,11 @@ describe("emailTemplates", () => {
 
   it("normalizeBaseUrl evita slash final", () => {
     expect(normalizeBaseUrl("https://app.example.com///")).toBe("https://app.example.com");
+  });
+
+  it("normalizeBaseUrl rechaza esquemas ejecutables y credenciales embebidas", () => {
+    expect(normalizeBaseUrl("javascript:alert(1)")).toBe("https://agreeable-wave-07469d50f.7.azurestaticapps.net");
+    expect(normalizeBaseUrl("https://usuario:clave@app.example.com")).toBe("https://agreeable-wave-07469d50f.7.azurestaticapps.net");
   });
 
   it("buildDomainReminderEmail genera solo recordatorio de dominios para el responsable", () => {
@@ -94,6 +100,41 @@ describe("emailTemplates", () => {
     expect(onlyDatabases.subject).toBe("Alerta: tienes bases de datos vencidas por actualizar");
     expect(onlyDatabases.html).toContain("Bases de datos / empresas vencidas");
     expect(onlyDatabases.html).not.toContain(">Dominios vencidos</h2>");
+  });
+
+  it("buildBlockedTaskReminderEmail neutraliza HTML, enlaces y atributos en todos los campos", () => {
+    const email = buildBlockedTaskReminderEmail({
+      frontendBaseUrl: `https://app.example.com/\" onmouseover=\"alert(9)`,
+      task: {
+        clientName: `<script>alert("cliente")</script>`,
+        domainName: `dominio.example.com"><img src=x onerror=alert(2)>`,
+        targetType: "database",
+        targetName: `<a href="javascript:alert(3)">Base & Empresa</a>`,
+        daysAfter: 3,
+        reason: `Tom & Jerry dijo: "falló" ' <svg onload=alert(4)>`,
+      },
+    });
+
+    expect(email.subject).toBe("Recordatorio: tarea bloqueada sin resolver");
+    expect(email.html).not.toMatch(/<script|<img|<svg|<a href="javascript:/i);
+    expect(email.html).not.toContain(`onmouseover="alert(9)`);
+    expect(email.html).toContain("&lt;script&gt;alert(&quot;");
+    expect(email.html).toContain("&lt;a href=&quot;javascript:alert(3)&quot;&gt;");
+    expect(email.html).toContain("Base &amp; Empresa");
+    expect(email.html).toContain("Tom &amp; Jerry");
+    expect(email.html).toContain("&#39;");
+    expect(email.text).toContain(`<script>alert("cliente")</script>`);
+    expect(email.text).toContain("Días desde el bloqueo: 3");
+  });
+
+  it("buildBlockedTaskReminderEmail usa valores seguros cuando no hay motivo", () => {
+    const email = buildBlockedTaskReminderEmail({
+      task: { clientName: "Cliente", domainName: "erp.example.com", targetType: "domain", targetName: "ERP", daysAfter: 1 },
+    });
+    expect(email.html).toContain("Tarea bloqueada sin resolver");
+    expect(email.html).toContain("Dominio");
+    expect(email.text).toContain("Motivo: -");
+    expect(email.html).toContain("/tareas");
   });
 
   it("buildTestEmail muestra proveedor, remitente, fecha y URL sin secretos", () => {

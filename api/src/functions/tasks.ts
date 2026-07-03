@@ -126,6 +126,7 @@ async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string):
   try {
     const { loadEmailAlertsSettings } = await import("../lib/settingsService");
     const { sendEmail, escapeHtml, formatDomainForPublishing } = await import("../lib/emailService");
+    const { normalizeBaseUrl } = await import("../lib/emailTemplates");
     const { resolveConfiguredRecipients } = await import("../lib/emailRecipients");
     const settings = await loadEmailAlertsSettings();
     const destinatarios = await resolveConfiguredRecipients(
@@ -143,7 +144,7 @@ async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string):
       : (t.targetType === "domain" ? "Error reportado en actualización de dominio" : "Error reportado en actualización de base de datos");
     const detalleProblema = t.problemNote || t.notes || "(sin detalle)";
     const linkApp = settings.frontendBaseUrl
-      ? `<p><a href="${settings.frontendBaseUrl.replace(/\/$/, "")}/tareas">Abrir tareas</a></p>`
+      ? `<p><a href="${escapeHtml(`${normalizeBaseUrl(settings.frontendBaseUrl)}/tareas`)}">Abrir tareas</a></p>`
       : "";
     const dominioPublicable = formatDomainForPublishing(t.domainName);
     let dbInfo: DatabaseRecord | null = null;
@@ -188,6 +189,7 @@ async function notificarCompletadaConExito(t: UpdateTask, performedByEmail: stri
   try {
     const { loadEmailAlertsSettings } = await import("../lib/settingsService");
     const { sendEmail, escapeHtml, formatDomainForPublishing } = await import("../lib/emailService");
+    const { normalizeBaseUrl } = await import("../lib/emailTemplates");
     const { resolveConfiguredRecipients } = await import("../lib/emailRecipients");
     const settings = await loadEmailAlertsSettings();
     const destinatarios = await resolveConfiguredRecipients(
@@ -201,7 +203,7 @@ async function notificarCompletadaConExito(t: UpdateTask, performedByEmail: stri
       : "Actualización de base de datos completada";
     const dominioPublicable = formatDomainForPublishing(t.domainName);
     const linkApp = settings.frontendBaseUrl
-      ? `<p><a href="${settings.frontendBaseUrl.replace(/\/$/, "")}/tareas">Abrir tareas</a></p>`
+      ? `<p><a href="${escapeHtml(`${normalizeBaseUrl(settings.frontendBaseUrl)}/tareas`)}">Abrir tareas</a></p>`
       : "";
     const nota = t.completionNote || t.notes || "";
     const html = `
