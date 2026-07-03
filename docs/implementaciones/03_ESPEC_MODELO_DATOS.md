@@ -64,7 +64,7 @@ Espejo del `Checklist de Ventas - {caso}` [VEN] §B. La plantilla del caso (M3) 
 ```ts
 interface ImplementationData {
   // Licenciamiento y alcance
-  contractedUsers?: number;          // C1: obligatorio (RN-02). C2: opcional (pendiente [DEC] B.5). C3: obligatorio.
+  contractedUsers?: number;          // Dato comercial: lo definen Ventas y el cliente; lo registra Ventas (no se pide por correo). C1: obligatorio (RN-02). C2/C3: obligatorio para completitud.
   licensedModules: string[];         // los 3 casos ([VEN] §B)
   specialModules?: string[];         // C3: módulo(s) a habilitar
   hosting?: "cloud" | "local";       // SOLO C3 (RN-15); obligatorio en C3

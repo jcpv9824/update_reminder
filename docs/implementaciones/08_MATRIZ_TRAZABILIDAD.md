@@ -73,15 +73,15 @@
 
 | # | Hallazgo | Clase | Resolución en la espec |
 |---|---|---|---|
-| **H-01** | **Las fuentes discrepan en el orden correo-cliente vs. correo-Elasticserver.** [PROC] §1.A/2.A/3.A: requisitos al cliente ANTES de Elasticserver (pasos 4→5). [VEN] §D: la cadena numera Elasticserver primero. | RESUELTO | Etapa única `solicitudes` con las dos acciones en **orden libre** y guard de salida que exige ambas (M3 §1). No se contradice a ninguna fuente y refleja que son solicitudes independientes a terceros distintos. |
+| **H-01** | **Las fuentes discrepaban en el orden correo-cliente vs. correo-Elasticserver.** [PROC] §1.A/2.A/3.A: requisitos al cliente ANTES de Elasticserver. [VEN] §D: la cadena numeraba Elasticserver primero. | RESUELTO (por Juan Camilo, jul. 2026) | **C1: orden obligatorio cliente → Elasticserver** (la solicitud a Elasticserver necesita el nombre de la BD que entrega el cliente). **C2/C3: orden libre.** Etapa única `solicitudes` con guard por caso (M3 §1); [VEN] §D corregido en la fuente. |
 | **H-02** | **C1 puede iniciarlo Soporte.** [PROC] §1.A: "Responsable inicial: Ventas **o Soporte**". La matriz inicial daba la creación solo a Ventas. | RESUELTO | M1 §2 fila 1: Soporte/Líder pueden **abrir** (`draft`); las etapas de Ventas siguen siendo de Ventas. |
 | **H-03** | **Orden de scripts:** el docx original de migración corría reportes antes que formatos; el orden canónico ([SQL] §A, carpeta + Visio) es formatos → reportes, y el script 2 crea la tabla que llena el 5. | CONFIRMADO | M3 usa el orden corregido (RN-09). La espec sigue la fuente corregida, no el docx viejo. |
-| **H-04** | **Credenciales en correos:** los docx usan `{{placeholders}}` ("nunca datos reales"); nunca hubo intención de contraseñas en texto plano. | DESVIACIÓN DELIBERADA | M4 §5: los correos 4a/4b **no llevan contraseñas**; el sistema formaliza la entrega por canal seguro. Queda la pregunta operativa P-06 (¿cómo recibe el cliente su contraseña de SAG Web?) — hoy el proceso no lo especifica del todo. |
+| **H-04** | **Credenciales en correos:** los docx usan placeholders ("nunca datos reales"); nunca hubo intención de contraseñas en texto plano. | DESVIACIÓN DELIBERADA + ACLARADO | M4 §5: los correos 4a/4b **no llevan contraseñas**. Aclarado (jul. 2026): **P&A crea contraseñas NUEVAS** para los usuarios (no se extraen) siguiendo el **estándar de la diapositiva 15 de `SAG Web - Generalidades.pptx`** — la contraseña es la de **SAG Admin**. La documentación detallada del estándar está pendiente de aprobación del texto propuesto (P-06). |
 | **H-05** | **El correo 3 (entrega a Soporte) hoy ES el contenedor de la información.** | DESVIACIÓN DELIBERADA | M4 §4: se conserva el correo (el proceso lo exige) pero como **resumen + enlace al sistema**; los datos viven estructurados y las credenciales nunca viajan. Evita divergencia correo-vs-sistema. |
 | **H-06** | **Ventas hoy ve las credenciales SQL** (las recibe de Elasticserver por correo). | DESVIACIÓN DELIBERADA | M1 §2: Ventas **registra** accesos (solo-escritura) pero no puede revelarlos. Reducción de exposición sin bloquear el flujo. Requiere aviso operativo a Ventas al desplegar. |
 | **H-07** | **[SQL] §B trae un cuarto caso ("Actualización", 3 scripts)** que no es ninguno de los tres procesos. | CONFIRMADO (fuera de alcance) | M3 §5.3: no es una implementación (es mantenimiento de clientes ya en SAG Web — de hecho es el dominio del resto de ESTE sistema). El diseño de plantillas permite agregarlo si el negocio lo pide. |
 | **H-08** | **"Enviar credenciales" aparece como paso 15/16 del paso a paso C1**, pero también es la etapa `test_delivery`/`production`. | RESUELTO (doble contabilidad) | M3 §2: el envío NO se duplica como paso del checklist; es el correo de la etapa. Un solo lugar para una sola acción. |
-| **H-09** | **¿C2 pide usuarios contratados?** [DEC] B.5 abierto: el correo de prerrequisitos de C2 hoy no lo pide. | PENDIENTE | M2 §3: `contractedUsers` **opcional** en C2 (no bloquea completitud); M4 §3 lo incluye en el correo solo si la decisión lo confirma. |
+| **H-09** | **¿C2 pide usuarios contratados?** [DEC] B.5 abierto: el correo de prerrequisitos de C2 hoy no lo pide. | RESUELTO (jul. 2026) | El N.º de usuarios contratados es **dato comercial que definen Ventas y el cliente**: lo registra Ventas en el sistema (campo de `collecting`), **no** se pide por correo en ningún caso. M4 §3 no lo incluye en el correo 2. |
 | **H-10** | **Patrón de dominio:** [DEC] B.7 detecta un ejemplo con `sagwerp.cloud:44795` vs. el patrón `sagerp.cloud:54678`. | PENDIENTE | M5 §3: validación **suave** (advertencia) del patrón; endurecer cuando se confirme. |
 | **H-11** | **Direcciones reales faltantes:** remitente Ventas→cliente y buzón de Soporte ([DEC] B.1). | PENDIENTE | M4 §4: settings vacíos **bloquean el envío** con mensaje accionable (CA-M4-7) — coherente con RF-19, nunca direcciones inventadas. |
 | **H-12** | **Links de video** del correo de prerrequisitos C1 ([DEC] B.3). | PENDIENTE | M4 §3: la sección va sin botón hasta tener el link (no placeholder roto). |
@@ -101,20 +101,20 @@
 | SAG Admin (FASE C, Líder) | cliente+compañías+usuarios+asociar | cliente+compañías+**admin** | reutilizar-o-crear+usuarios del módulo | ✔ [PROC] |
 | Plesk tras SAG Admin; storage al final | ✔ | ✔ | ✔ | ✔ RN-14 |
 | ¿Pruebas primero? | siempre | siempre | decisión por módulo (catálogo) | ✔ [PROC] §4 |
-| Producción | ambiente separado (F repite prep+SAG Admin) | mismo ambiente (borrado de movimientos + reales) | según rama | ✔ RN-12 / [SQL] §C ter |
+| Producción | misma publicación y mismo cliente SAG Admin; **solo cambia la BD** (preparar BD prod + reapuntar conexión) | mismo ambiente (borrado de movimientos + reales) | según rama | ✔ RN-12 actualizada ([DEC] jul. 2026) |
 | Local/nube | solo nube | solo nube | único con local (IPs firewall) | ✔ RN-15 |
 
 **Conclusión de la verificación:** la especificación cubre los 20 RF, las 18 RN y los 10 RNF; el cotejo encontró **2 discrepancias reales** (H-01, H-02) que se corrigieron en la espec, **3 desviaciones deliberadas** de seguridad/consistencia justificadas (H-04, H-05, H-06) que requieren visto bueno operativo, y **5 pendientes** que ya estaban abiertos en [DEC] y que la espec absorbe sin bloquear (defaults seguros). No quedó ningún elemento de los procesos fuente sin representar en el software, ni ningún elemento del software sin fuente o justificación.
 
 ## D. Preguntas abiertas consolidadas (insumo para Juan Camilo antes de construir)
 
-| # | Pregunta | Origen | Default de la espec mientras tanto |
+| # | Pregunta | Origen | Estado / default |
 |---|---|---|---|
-| P-01 | Buzón real de Soporte y remitente de Ventas→cliente | [DEC] B.1 / H-11 | Envío bloqueado hasta configurar |
-| P-02 | ¿C2 pide N.º de usuarios contratados? | [DEC] B.5 / H-09 | Campo opcional |
-| P-03 | Completar catálogo de módulos C3 (¿pruebas?) | [DEC] B.4 / RF-12 | Semilla: WMS sí; portales/Power BI no; editable |
-| P-04 | Links de video (correos únicos, nombre de BD) | [DEC] B.3 / H-12 | Sección sin botón |
-| P-05 | ¿Quién en Ventas arma la entrega a Soporte? | [DEC] B.6 | Cualquier `implementation_sales`; queda trazado quién |
-| P-06 | Canal de entrega de contraseñas de SAG Web al cliente | H-04 | Correo sin contraseñas; canal seguro por definir |
-| P-07 | ¿Los correos al cliente salen del mismo SMTP o remitente por área? | diseño §11 | Mismo SMTP configurado |
-| P-08 | Confirmar patrón único de subdominio | [DEC] B.7 / H-10 | Validación suave |
+| P-01 | Buzón real de Soporte y remitente de Ventas→cliente | [DEC] B.1 / H-11 | **Abierta.** Envío bloqueado hasta configurar |
+| P-02 | ~~¿C2 pide N.º de usuarios contratados?~~ | [DEC] B.5 / H-09 | **RESUELTA:** dato comercial de Ventas; se registra en el sistema, no se pide por correo |
+| P-03 | Completar catálogo de módulos C3 (¿pruebas?) | [DEC] B.4 / RF-12 | **Abierta.** Semilla: WMS sí; portales/Power BI no; editable |
+| P-04 | Link del video "nombre de la BD" (el de correos únicos ya existe: Canva) | [DEC] B.3 / H-12 | **Semiabierta.** Sección sin botón hasta tener el link |
+| P-05 | ¿Quién en Ventas arma la entrega a Soporte? | [DEC] B.6 | **Abierta.** Cualquier `implementation_sales`; queda trazado quién |
+| P-06 | Estándar de contraseñas (pptx diapositiva 15): texto de documentación propuesto, **pendiente de aprobación de Juan Camilo** | H-04 | Correo sin contraseñas; el estándar existe y se documentará al aprobarse el texto |
+| P-07 | ¿Los correos al cliente salen del mismo SMTP o remitente por área? | diseño §11 | **Abierta.** Mismo SMTP configurado |
+| P-08 | Confirmar patrón único de subdominio | [DEC] B.7 / H-10 | **Abierta.** Validación suave |

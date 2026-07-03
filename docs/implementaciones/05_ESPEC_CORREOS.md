@@ -11,7 +11,7 @@
 4a. Líder  → Cliente       : Credenciales de PRUEBAS               (etapa test_delivery)
 4b. Líder  → Cliente       : Credenciales de PRODUCCIÓN            (etapa production)
 ```
-*(No hay correo aparte "solo para el dominio" — regla explícita [VEN] §D. Los correos 1 y 2 pueden enviarse en cualquier orden dentro de la etapa `solicitudes` — las fuentes discrepan en el orden y son solicitudes independientes; ver hallazgo H-01 en `08`. La respuesta de Elasticserver se registra manualmente en Fase 1: `elasticserver.deliveredAt`.)*
+*(No hay correo aparte "solo para el dominio" — regla explícita [VEN] §D. **Orden dentro de `solicitudes`:** en **C1 es obligatorio correo 2 → correo 1** — la solicitud a Elasticserver necesita el nombre de la BD que entrega el cliente; el envío del correo 1 en C1 exige `originalDbName` por compañía. En C2/C3 el orden es libre. Ver H-01 en `08`. La respuesta de Elasticserver se registra manualmente en Fase 1: `elasticserver.deliveredAt`.)*
 
 **Comportamiento común a los cuatro builders:**
 - Estándar responsivo existente: `layout()` — máx. 700px, tabla, paleta corporativa, preheader, CTA, `escapeHtml` en todo dato del usuario (RNF-08).
@@ -41,7 +41,7 @@
 | Variante | Contenido obligatorio | Fuente |
 |---|---|---|
 | **C1** | (a) Regla de usuarios: dejar activos SOLO los que se migran, activos ≤ contratados, cada uno con **correo real y único** en SAG Clásico (RN-02/03); (b) las **dos consultas SQL** (duplicados y sin correo) para que el cliente corrija — en bloque `<pre>` monoespaciado; (c) datos de **las compañías** (RN-05 — NO datos del cliente); (d) **nombre de la BD** (referencia a video — link pendiente [DEC] B.3: hasta tenerlo, la sección va sin botón); (e) **NO** pide lista de usuarios (RN-04); (f) **sin** sección de BD local (100% nube) | [VEN] D.2 |
-| **C2** | Datos de las compañías a montar (ID, nombre, contacto, teléfono, logos); usuarios a contratar (pendiente [DEC] B.5 — el campo se incluye solo si la decisión lo confirma); **sin** queries, **sin** conexión | [VEN] D.2 |
+| **C2** | Datos de las compañías a montar (ID, nombre, contacto, teléfono, logos); **sin** queries, **sin** conexión, **sin** pedir usuarios contratados (dato comercial que registra Ventas — H-09 resuelto) | [VEN] D.2 |
 | **C3 nube** | Lista de usuarios del módulo (nombre, ID, **correo único**), datos de compañías; sin datos de conexión | [VEN] D.2, RN-04 |
 | **C3 local** | Lo de C3 nube **+** datos de conexión a su BD **+** IPs de firewall a autorizar: `179.32.54.66`, `148.224.28.55` | RN-15 |
 | Destinatario | `data.client.contactEmail` (el contacto derivado por Ventas) | [VEN] §B |

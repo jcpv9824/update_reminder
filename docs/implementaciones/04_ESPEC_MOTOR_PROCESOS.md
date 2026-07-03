@@ -12,7 +12,10 @@ Pausa: on_hold ⇄ (etapa en curso)
 ```
 \* `screening` solo existe en C1/C2 (RF-03). `test_delivery`/`client_testing` se omiten en C3 cuando la decisión `requires_test_env = no` (RF-12).
 
-**Etapa `solicitudes` (una sola, con dos acciones en orden libre):** agrupa la solicitud a Elasticserver (correo 1) y los prerrequisitos al cliente (correo 2). *Justificación (hallazgo H-01 en `08`):* las dos fuentes discrepan en el orden — [PROC] pone requisitos al cliente (paso 4) ANTES de Elasticserver (paso 5) en los tres flujos; [VEN] §D numera la cadena con Elasticserver primero. Son solicitudes independientes a terceros distintos que avanzan en paralelo; imponer un orden lineal contradiría a una de las dos fuentes. La guard de salida exige AMBAS.
+**Etapa `solicitudes` (una sola, con dos acciones):** agrupa los prerrequisitos al cliente (correo 2) y la solicitud a Elasticserver (correo 1). **Orden por caso (resuelto por Juan Camilo — H-01):**
+- **C1 (migración): orden OBLIGATORIO correo 2 → correo 1.** La solicitud a Elasticserver necesita el **nombre de la BD** que el cliente entrega al responder los prerrequisitos (con él Elasticserver localiza la BD de producción, entrega accesos y crea la copia de pruebas). Guard adicional: el envío del correo 1 en C1 exige `originalDbName` en cada compañía.
+- **C2 y C3: orden libre** (no hay acople de datos); ambas acciones pueden ir en paralelo.
+La guard de salida hacia `collecting` exige AMBAS en todos los casos.
 
 **Transiciones válidas** (el backend rechaza cualquier otra — RNF-02):
 
@@ -72,12 +75,12 @@ Fuente primaria: [PROC] §1 (flujo de negocio 14 pasos + paso a paso técnico 16
 | `c1.d.objectStorage` | D | Parámetros Web → Almacenamiento de Archivos (fila del archivo de buckets) — casi al final (RN-14) | ✔ | support | [PROC] §1.B.13 |
 | `c1.e.validarFinal` | E | Validar: acceder a SAG Web y confirmar permisos migrados de ≥1 usuario | ✔ | support | [PROC] §1.B.14 |
 | — | E | *(El envío de credenciales de pruebas NO es un paso del checklist: es la etapa `test_delivery` con el correo 4a — evita doble contabilidad)* | | lead | [PROC] §1.B.15 |
-| `c1.f.prepararProduccion` | F | Repetir preparación sobre BD de producción: librerías + 5 scripts (incl. `sp_migrar`) | ✔ | support | [PROC] §1.B.16 |
-| `c1.f.sagAdminProduccion` | F | Crear cliente y compañía de producción en SAG Admin (apuntando a BD de producción) + asociar usuarios (se reutilizan los genéricos) | ✔ | **lead** | [PROC] §1.B.16 |
-| `c1.f.publicarProduccion` | F | Publicar / object storage de producción | ✔ | support | [PROC] §1.B.16 |
+| `c1.f.prepararProduccion` | F | Preparar la BD de producción: actualizar librerías + correr los 5 scripts (incl. `sp_migrar`) sobre la BD de producción (el acceso ya se tiene desde `solicitudes` — RN-08) | ✔ | support | [PROC] §1.B.16 |
+| `c1.f.repuntarConexion` | F | **Reapuntar la cadena de conexión** de la(s) compañía(s) del cliente EXISTENTE en SAG Admin hacia la BD de producción. **NO** se crea cliente/compañía de producción, **NO** se recrean usuarios, **NO** se vuelve a publicar en Plesk ni a configurar object storage (dominio y bucket son los mismos) | ✔ | **lead** | [PROC] §1.B.16 (corregido por Juan Camilo, jul. 2026) |
+| `c1.f.validarProduccion` | F | Validar acceso en producción (login + permisos) | ✔ | support | [PROC] §1.B.16 |
 | — | F | *(Credenciales de producción = correo 4b en la etapa `production`)* | | lead | [PROC] §1.B.16 |
 
-**Nota de fidelidad:** producción en C1 es **ambiente separado** (RN-12) — por eso FASE F repite preparación y SAG Admin. El motor exige `client_tests_passed=yes` antes de habilitar los pasos F.
+**Nota de fidelidad (actualizada):** en C1 **lo único separado de producción es la base de datos**; la publicación, el cliente de SAG Admin, los usuarios y el bucket **se reutilizan** (decisión de Juan Camilo que corrigió la versión anterior del proceso — ver [DEC] ronda jul. 2026). El motor exige `client_tests_passed=yes` antes de habilitar los pasos F.
 
 ---
 
@@ -102,15 +105,14 @@ Fuente: [PROC] §2 + [SQL] §B (cliente nuevo) y §C ter (script de borrado). Fu
 | `c2.a.entregables` | A | Validar datos: usuarios contratados, dominio, cliente/compañías, módulos. **NO aplican queries de correos** (no hay base previa — RN-03/04) | ✔ | support | [PROC] §2.B.1 |
 | `c2.b.bdNueva` | B | Confirmar recepción de la BD nueva (clon de `NEW SAG`; la entrega infraestructura, la solicitó Ventas) | ✔ | support | [PROC] §2.B.2 |
 | `c2.b.scripts` | B | Correr **4 scripts** (SIN `sp_migrar`): `a_sag_web → a_sagweb_Menu → a_format_sag_web → a_report_sag_web` (RN-09) | ✔ | support | [PROC] §2.B.3, [SQL] §B |
-| `c2.c.cadenaConexion` | C | Cadena de conexión a la BD nueva | ✔ | **lead** | [PROC] §2.B.4 |
-| `c2.c.crearCliente` | C | Crear cliente + licenciamiento (RN-13) | ✔ | **lead** | [PROC] §2.B.5 |
-| `c2.c.crearCompanias` | C | Crear compañías | ✔ | **lead** | [PROC] §2.B.6 |
-| `c2.c.usuarioAdmin` | C | Crear el **usuario administrador** en SAG Admin y asociarlo (la BD clonada ya trae ese admin con permisos web; los demás usuarios los crea el CLIENTE en SAG Web — RN-04) | ✔ | **lead** | [PROC] §2.B.7, [DEC] B.8 |
-| `c2.d.plesk` | D | Publicar en Plesk (igual C1; RN-14) | ✔ | support | [PROC] §2.B.9 |
-| `c2.d.objectStorage` | D | Object storage / Parámetros Web (con el usuario admin) | ✔ | support | [PROC] §2.B.10 |
-| `c2.e.validarFinal` | E | Validar login + permisos/menús del admin | ✔ | support | [PROC] §2.B.11 |
-| `c2.f.borrarDatosPrueba` | F | **Mismo ambiente** (RN-12): borrar datos de prueba con el script de borrado de movimientos (deja la BD en cero, reinicia consecutivos; enlace SharePoint en `instructions`) | ✔ | support | [PROC] §2.B.13, [SQL] §C ter |
-| `c2.f.cargarReales` | F | Cargar los datos reales y promover a producción | ✔ | support | [PROC] §2.B.13–14 |
+| `c2.c.cadenaConexion` | C | Obtener la cadena de conexión a la BD nueva | ✔ | support | docx C2 Paso 3 (responsable: Servicio al Cliente) |
+| `c2.c.crearCliente` | C | Crear cliente + licenciamiento (RN-13) | ✔ | **lead** | docx C2 Paso 4 |
+| `c2.c.crearCompanias` | C | Crear compañías | ✔ | **lead** | docx C2 Paso 5 |
+| `c2.c.usuarioAdmin` | C | Crear el **usuario administrador** y asociarlo al cliente (docx: pasos 6 y 7; la BD clonada ya trae ese admin con permisos web; los demás usuarios los crea el CLIENTE en SAG Web — RN-04) | ✔ | **lead** | docx C2 Pasos 6–7, [DEC] B.8 |
+| `c2.d.plesk` | D | Publicar en Plesk (igual C1; RN-14) | ✔ | support | docx C2 Paso 8 |
+| `c2.d.objectStorage` | D | Object storage / Parámetros Web (con el usuario admin) | ✔ | support | docx C2 Paso 9 |
+| `c2.e.validarFinal` | E | Validar login + permisos/menús del admin | ✔ | **lead** | docx C2 Paso 10 (responsable: Líder de Operaciones) |
+| `c2.f.produccion` | F | **Mismo ambiente** (RN-12): borrar datos de prueba con el script de borrado de movimientos (deja la BD en cero, reinicia consecutivos; enlace SharePoint en `instructions`) y **cargar los datos reales** — lo hace el agente de Soporte asignado junto con el cliente (o solo el cliente), manual o con importaciones según el caso | ✔ | **lead** | docx C2 Paso 12, [SQL] §C ter, [DEC] jul. 2026 |
 
 **Notas de fidelidad:**
 - No existe paso "crear usuarios" ni "extraer usuarios": decisión resuelta [DEC] B.8 (el cliente los crea). El modelo de datos tampoco tiene lista de usuarios en C2 (coherencia esquema-proceso).
