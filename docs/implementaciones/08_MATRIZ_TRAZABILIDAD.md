@@ -115,6 +115,6 @@
 | P-03 | Completar catálogo de módulos C3 (¿pruebas?) | [DEC] B.4 / RF-12 | **Abierta.** Semilla: WMS sí; portales/Power BI no; editable |
 | P-04 | Link del video "nombre de la BD" (el de correos únicos ya existe: Canva) | [DEC] B.3 / H-12 | **Semiabierta.** Sección sin botón hasta tener el link |
 | P-05 | ¿Quién en Ventas arma la entrega a Soporte? | [DEC] B.6 | **Abierta.** Cualquier `implementation_sales`; queda trazado quién |
-| P-06 | Estándar de contraseñas (pptx diapositiva 15): texto de documentación propuesto, **pendiente de aprobación de Juan Camilo** | H-04 | Correo sin contraseñas; el estándar existe y se documentará al aprobarse el texto |
+| P-06 | ~~Estándar de contraseñas~~ | H-04 | **RESUELTA (texto aprobado):** documentado en `01_contexto_y_glosario.md` §6 bis — contraseña NUEVA de SAG Admin, 8 caracteres (Inicial + 4 del apellido + año + `*`); tildes/ñ tal cual (recordatorio suave). Sufijo "- PRUEBAS" en cliente/compañía de pruebas, se retira al pasar a producción. Los correos siguen sin contraseñas |
 | P-07 | ¿Los correos al cliente salen del mismo SMTP o remitente por área? | diseño §11 | **Abierta.** Mismo SMTP configurado |
 | P-08 | Confirmar patrón único de subdominio | [DEC] B.7 / H-10 | **Abierta.** Validación suave |

@@ -69,14 +69,14 @@ Fuente primaria: [PROC] §1 (flujo de negocio 14 pasos + paso a paso técnico 16
 | `c1.c.cadenaConexion` | C | Armar cadena de conexión (`IP,Puerto; Initial Catalog; User ID; Password`) | ✔ | **lead** | [PROC] §1.B.7 |
 | `c1.c.crearCliente` | C | Crear cliente + licenciamiento en SAG Admin (reglas RN-13 en `instructions`) | ✔ | **lead** | [PROC] §1.B.8 |
 | `c1.c.crearCompanias` | C | Crear compañías (NIT limpio, Token=1, Dispositivos=1) | ✔ | **lead** | [PROC] §1.B.9 |
-| `c1.c.crearUsuarios` | C | Crear usuarios (de la lista extraída) | ✔ | **lead** | [PROC] §1.B.10 |
+| `c1.c.crearUsuarios` | C | Crear usuarios (de la lista extraída), cada uno con **contraseña NUEVA** según el estándar de 8 caracteres (Inicial nombre + 4 letras apellido + 2 dígitos del año + `*`; en `instructions`) | ✔ | **lead** | [PROC] §1.B.10, [CTX] §6 bis |
 | `c1.c.asociarUsuarios` | C | Asociar usuarios al cliente (usuarios genéricos) | ✔ | **lead** | [PROC] §1.B.11 |
 | `c1.d.plesk` | D | Publicar en Plesk (borrar contenido por defecto, subir paquete `.rar` de Teams, extraer, borrar `.rar`) — DESPUÉS de SAG Admin (RN-14) | ✔ | support | [PROC] §1.B.12 |
 | `c1.d.objectStorage` | D | Parámetros Web → Almacenamiento de Archivos (fila del archivo de buckets) — casi al final (RN-14) | ✔ | support | [PROC] §1.B.13 |
 | `c1.e.validarFinal` | E | Validar: acceder a SAG Web y confirmar permisos migrados de ≥1 usuario | ✔ | support | [PROC] §1.B.14 |
 | — | E | *(El envío de credenciales de pruebas NO es un paso del checklist: es la etapa `test_delivery` con el correo 4a — evita doble contabilidad)* | | lead | [PROC] §1.B.15 |
 | `c1.f.prepararProduccion` | F | Preparar la BD de producción: actualizar librerías + correr los 5 scripts (incl. `sp_migrar`) sobre la BD de producción (el acceso ya se tiene desde `solicitudes` — RN-08) | ✔ | support | [PROC] §1.B.16 |
-| `c1.f.repuntarConexion` | F | **Reapuntar la cadena de conexión** de la(s) compañía(s) del cliente EXISTENTE en SAG Admin hacia la BD de producción. **NO** se crea cliente/compañía de producción, **NO** se recrean usuarios, **NO** se vuelve a publicar en Plesk ni a configurar object storage (dominio y bucket son los mismos) | ✔ | **lead** | [PROC] §1.B.16 (corregido por Juan Camilo, jul. 2026) |
+| `c1.f.repuntarConexion` | F | **Reapuntar la cadena de conexión** de la(s) compañía(s) del cliente EXISTENTE en SAG Admin hacia la BD de producción y **retirar el sufijo "- PRUEBAS"** del nombre si se usó. **NO** se crea cliente/compañía de producción, **NO** se recrean usuarios, **NO** se vuelve a publicar en Plesk ni a configurar object storage (dominio y bucket son los mismos) | ✔ | **lead** | [PROC] §1.B.16 (corregido por Juan Camilo, jul. 2026), [CTX] §6 bis |
 | `c1.f.validarProduccion` | F | Validar acceso en producción (login + permisos) | ✔ | support | [PROC] §1.B.16 |
 | — | F | *(Credenciales de producción = correo 4b en la etapa `production`)* | | lead | [PROC] §1.B.16 |
 
