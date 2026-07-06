@@ -40,10 +40,10 @@ Apertura → (Filtro de Ventas)* → Solicitud a Elasticserver → Prerrequisito
 | Dimensión | Caso 1: Migración | Caso 2: Cliente nuevo | Caso 3: Módulo especial |
 |---|---|---|---|
 | Filtro inicial (¿opciones existen? / ¿híbrido? / rechazo) | Sí | Sí | No (entra directo) |
-| Lista de usuarios | No se pide (Soporte extrae de la BD) | No se pide (cliente crea los suyos) | Sí (subconjunto del módulo) |
-| Solicitud a Elasticserver | Dominio + BD pruebas + acceso a producción, por compañía | Dominio + BD nueva | Dominio; BD pruebas solo si aplica; nada de BD si es local |
+| Lista de usuarios | No se pide (Soporte extrae de la BD) | No se pide como lista; SÍ el correo del admin por compañía (RN-19) | Sí (subconjunto del módulo) |
+| Solicitud a Elasticserver | Dominio + BD pruebas + acceso a producción, por compañía | Dominio + BD nueva por compañía | Dominio; BD pruebas solo si aplica; nada de BD si es local |
 | Local / nube | 100% nube | 100% nube | Único caso con BD local (IPs de firewall) |
-| Scripts web (checklist técnico) | 5 (incluye `sp_migrar`) | 4 (sin SP) | 4 + `a_sagweb_migrar_login` |
+| Scripts web (checklist técnico) | 5 (incluye `sp_migrar`) | 4 (sin SP) + `a_sagweb_actualizar_admin` | 4 + `a_sagweb_migrar_login` |
 | Queries de correos (duplicados/vacíos) | Sí | No | Sí |
 | ¿Pruebas primero? | Siempre pruebas | Siempre pruebas | Decisión por módulo (WMS sí; portales/Power BI directo) |
 | Producción | Ambiente separado (repetir preparación) | Mismo ambiente (borrar datos de prueba) | Según la rama elegida |

@@ -95,6 +95,9 @@ interface CompanyDeliverable {
   name: string;
   contactName: string; contactPhone: string; contactEmail: string;
   hasLogo: boolean;                  // Fase 1 sin adjuntos: se registra que el logo se recibió (dónde está, en notas)
+  adminEmail?: string;               // C2 (RN-19): correo REAL del administrador del sistema de ESTA compañía,
+                                     // entregado por el cliente en prerrequisitos (puede repetirse entre compañías).
+                                     // OBLIGATORIO para la completitud de C2.
   originalDbName?: string;           // C1: nombre de la BD original ([VEN] §B: "va dentro de los datos de acceso")
   testDbAccessId?: string;           // referencia al acceso seguro (RNF-01) — NUNCA credenciales en claro
   prodDbAccessId?: string;           // C1: RN-08 (se piden ambos de una vez). C3 local: acceso a la BD del cliente.
@@ -200,3 +203,4 @@ interface ImplementationEvent {
 - **CA-M2-4:** `deliverablesComplete` para C3 exige `hosting`, `specialModules`, `moduleUsers` (≥1, con email) y, si `hosting=local`, acceso a BD del cliente por compañía — sin exigir BD de Elasticserver.
 - **CA-M2-5:** Los eventos no admiten UPDATE/DELETE por ninguna vía de la API.
 - **CA-M2-6:** Reintentar la creación (mismo request-id) no duplica pasos ni eventos.
+- **CA-M2-7:** `deliverablesComplete` para C2 exige `adminEmail` (con formato válido) en **cada** compañía (RN-19) y NO exige lista de usuarios ni accesos de BD; un C2 con 3 compañías y 2 correos de admin queda incompleto nombrando la compañía faltante.

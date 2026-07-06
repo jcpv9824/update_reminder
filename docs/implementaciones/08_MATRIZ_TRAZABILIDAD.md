@@ -87,16 +87,17 @@
 | **H-12** | **Links de video** del correo de prerrequisitos C1 ([DEC] B.3). | PENDIENTE | M4 §3: la sección va sin botón hasta tener el link (no placeholder roto). |
 | **H-13** | **¿Módulos especiales requieren scripts propios además de los 4+login?** ([SQL] §E). | PENDIENTE | M3 `c3.b.scripts` admite evidencia de scripts adicionales; `moduleTestCatalog` puede anotarlo (`notes`). Si se confirma, versión nueva de la plantilla C3 (RNF-05). |
 | **H-14** | El **diseño preliminar** (`docs/DISENO_MODULO_IMPLEMENTACIONES.md` §5) mostraba `infra_request → prerequisites` en secuencia. | RESUELTO | Esta especificación lo **supersede** (H-01). El diseño preliminar queda como visión general; la espec manda. |
+| **H-15** | **Hueco multi-tenant en C2 (reportado por Juan Camilo, jul. 2026):** el admin de la plantilla `NEW SAG`, creado tal cual en SAG Admin y asociado a varios clientes nuevos, dejaba UN usuario con acceso a TODOS esos clientes (asociación multi-cliente + credenciales compartidas). | RESUELTO (proceso corregido) | RN-19: el cliente envía en prerrequisitos el **correo real del admin por compañía** → nuevo Paso 3 del paso a paso (`a_sagweb_actualizar_admin`, `ka_nl_tercero = 1`, solo UPDATE) → admins creados en SAG Admin uno por compañía con **contraseña de estándar de compañía** → Elasticserver crea **una BD por compañía**. Paso a paso C2 = 13 pasos. **Sin remediación**: las implementaciones previas ya aplicaban el cambio de correo en la práctica; se formaliza lo que los documentos no reflejaban. |
 
 ## C. Verificación de cobertura por caso (resumen ejecutivo del cotejo)
 
 | Punto del proceso | C1 espec | C2 espec | C3 espec | ¿Coincide con la fuente? |
 |---|---|---|---|---|
 | Filtro/rechazo de Ventas | screening ✔ | screening ✔ | sin screening ✔ | ✔ [PROC] |
-| Lista de usuarios | no se pide; se extrae (paso B.6) | no existe; admin + cliente crea | `moduleUsers` del cliente | ✔ RN-04 / [DEC] |
-| Solicitud a Elasticserver | dominio + pruebas + prod por compañía | dominio + BD nueva | dominio (+pruebas condicional; local sin BD) | ✔ [VEN] D.1 |
+| Lista de usuarios | no se pide; se extrae (paso B.6) | no existe como lista; **correo del admin por compañía** (RN-19) + cliente crea los suyos | `moduleUsers` del cliente | ✔ RN-04/RN-19 / [DEC] |
+| Solicitud a Elasticserver | dominio + pruebas + prod por compañía | dominio + **BD nueva por compañía** | dominio (+pruebas condicional; local sin BD) | ✔ [VEN] D.1, RN-19 |
 | Queries de correos (STOP) | sí (2 pasos blocking) | no existen | sí (2 pasos blocking) | ✔ [PROC]/[SQL] |
-| Scripts | 5 | 4 | 4 + `a_sagweb_migrar_login` | ✔ [SQL] §C |
+| Scripts | 5 | 4 + `a_sagweb_actualizar_admin` (por compañía) | 4 + `a_sagweb_migrar_login` | ✔ [SQL] §C/§C quater |
 | Librerías antes de scripts | paso previo ✔ | n/a (BD nueva) | n/a | ✔ [PROC] |
 | SAG Admin (FASE C, Líder) | cliente+compañías+usuarios+asociar | cliente+compañías+**admin** | reutilizar-o-crear+usuarios del módulo | ✔ [PROC] |
 | Plesk tras SAG Admin; storage al final | ✔ | ✔ | ✔ | ✔ RN-14 |

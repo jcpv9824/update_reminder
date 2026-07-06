@@ -28,7 +28,7 @@
 | Destinatario | `requerimientos@elasticserver.co` (configurable en Alertas y correos) | [VEN] §D |
 | Contenido común | Nombre del cliente + **solicitud del dominio** (patrón `{cliente}.sagerp.cloud` — RN-17 como sugerencia) | [CTX] §3.1: "en los TRES casos se solicita el dominio" |
 | C1 | Por **cada compañía**: solicitar BD de pruebas (copia de la de producción) + accesos a **ambas** (pruebas y producción) — de una sola vez | RN-08, [VEN] D.1 |
-| C2 | Solicitar **una BD nueva** — sin explicar el procedimiento, **sin mencionar NEW SAG** | RN-06, [VEN] D.1 |
+| C2 | Solicitar **una BD nueva POR CADA COMPAÑÍA** (se listan las compañías) — sin explicar el procedimiento, **sin mencionar NEW SAG** | RN-06, RN-19, [VEN] D.1 |
 | C3 nube | BD de pruebas **solo si** `requiresTestEnvironment=true`; si no, solo dominio | [VEN] D.1 |
 | C3 local | **Solo dominio** (la BD queda en servidores del cliente) | RN-15 |
 | Prohibiciones (validadas en prueba) | No dictar nombres de BD, no explicar procedimientos, no mencionar `NEW SAG`, no incluir credenciales | RN-06 |
@@ -41,7 +41,7 @@
 | Variante | Contenido obligatorio | Fuente |
 |---|---|---|
 | **C1** | (a) Regla de usuarios: dejar activos SOLO los que se migran, activos ≤ contratados, cada uno con **correo real y único** en SAG Clásico (RN-02/03); (b) las **dos consultas SQL** (duplicados y sin correo) para que el cliente corrija — en bloque `<pre>` monoespaciado; (c) datos de **las compañías** (RN-05 — NO datos del cliente); (d) **nombre de la BD** (referencia a video — link pendiente [DEC] B.3: hasta tenerlo, la sección va sin botón); (e) **NO** pide lista de usuarios (RN-04); (f) **sin** sección de BD local (100% nube) | [VEN] D.2 |
-| **C2** | Datos de las compañías a montar (ID, nombre, contacto, teléfono, logos); **sin** queries, **sin** conexión, **sin** pedir usuarios contratados (dato comercial que registra Ventas — H-09 resuelto) | [VEN] D.2 |
+| **C2** | Datos de las compañías a montar (ID, nombre, contacto, teléfono, logos); **correo del administrador del sistema POR COMPAÑÍA** (RN-19 — redacción "envíenos", sin fallbacks; puede repetirse el mismo); **sin** queries, **sin** conexión, **sin** pedir usuarios contratados (dato comercial que registra Ventas — H-09 resuelto) | [VEN] D.2 |
 | **C3 nube** | Lista de usuarios del módulo (nombre, ID, **correo único**), datos de compañías; sin datos de conexión | [VEN] D.2, RN-04 |
 | **C3 local** | Lo de C3 nube **+** datos de conexión a su BD **+** IPs de firewall a autorizar: `179.32.54.66`, `148.224.28.55` | RN-15 |
 | Destinatario | `data.client.contactEmail` (el contacto derivado por Ventas) | [VEN] §B |
