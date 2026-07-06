@@ -61,15 +61,16 @@ La aplicacion tiene controles valiosos (hash de contrasenas, tokens de reset has
   - Revocacion: cada solicitud valida sesion y `tokenVersion`. Logout revoca la sesion; reset/cambio de contraseña, reenvio de credenciales y desactivacion incrementan version y revocan todas las sesiones del usuario.
   - Pruebas: `jwt.test.ts`, `authSessions.test.ts`, `authSecurity.test.ts` y `frontend/src/tests/ApiClient.test.ts` cubren claims, algoritmo, secreto, rotacion, replay, logout/revocacion, version, cookie y ausencia de JWT persistido.
 
-- [x] **SEC-007 - P1 - Politica de contrasenas y MFA.**
-  - Estado: Corregido el 2026-07-02.
+- [ ] **SEC-007 - P1 - Politica de contrasenas y MFA.**
+  - Estado: Parcial por decision de producto del 2026-07-06. La politica de contrasenas esta corregida; el segundo factor fue retirado para mantener un acceso de un solo paso.
   - Contrasenas: minimo 14 caracteres, maximo 72 bytes por limite de bcrypt, passphrases permitidas, rechazo de espacios en bordes, datos del usuario y lista local de contrasenas comunes. Bcrypt usa costo 12 en runtime.
   - Filtraciones: integracion HIBP Pwned Passwords por k-anonymity; solo se transmite el prefijo SHA-1 de cinco caracteres. Produccion opera con validacion habilitada y fail-closed.
   - Ciclo de vida: credenciales creadas/restablecidas por admin son temporales y exigen cambio en el primer acceso. Las definitivas expiran a los 180 dias por defecto; cambio/reset revoca sesiones mediante `tokenVersion`.
-  - MFA: TOTP obligatorio para `admin`, `client_manager` y `database_updater`. El secreto se guarda en Key Vault; Cosmos conserva solo referencia, estado, anti-replay y hashes HMAC de codigos de recuperacion de un solo uso.
-  - Secretos: revelar/copiar passwords de bases y cambiar password SMTP exige sesion MFA verificada, ademas de la autorizacion de rol/objeto existente.
-  - Pruebas: `password.test.ts`, `mfa.test.ts`, `authSecurity.test.ts`, `authSessions.test.ts`, `jwt.test.ts` y `frontend/src/tests/LoginPage.test.tsx` cubren politica, filtraciones, expiracion, enrolamiento, anti-replay, recuperacion, rotacion y bloqueo de sesiones sensibles sin MFA.
-  - Operacion y recuperacion: `SECURITY_PASSWORD_MFA.md`.
+  - Acceso: correo y contrasena en un solo paso para todos los roles. No se solicita TOTP, codigo de recuperacion ni segundo factor.
+  - Secretos: revelar/copiar passwords de bases y cambiar password SMTP conserva autorizacion de rol/objeto y auditoria, pero ya no exige MFA. Esto deja un riesgo residual explicito para cuentas comprometidas.
+  - Controles compensatorios: rate limiting y lockout, JWT corto, refresh rotatorio, revocacion/tokenVersion, password robusta, HIBP, autorizacion por objeto y auditoria.
+  - Pruebas: `password.test.ts`, `authSecurity.test.ts`, `authSessions.test.ts`, `jwt.test.ts` y `frontend/src/tests/LoginPage.test.tsx` cubren politica, filtraciones, expiracion, sesion de roles sensibles sin segundo factor, rotacion y login de un solo paso.
+  - Operacion y riesgo aceptado: `SECURITY_PASSWORD_POLICY.md`.
 
 - [x] **SEC-008 - P1 - Evitar inyeccion HTML en correos de bloqueos.**
   - Estado: Corregido el 2026-07-03.

@@ -16,8 +16,6 @@ export type CurrentUser = {
   email: string;
   displayName: string;
   roles: string[];
-  mfaVerified?: boolean;
-  mfaVerifiedAt?: string | null;
 };
 
 export type UserRecord = {
@@ -36,6 +34,8 @@ export type UserRecord = {
   tokenVersion?: number;
   mustChangePassword?: boolean;
   passwordExpiresAt?: string | null;
+  // Campos heredados de la fase MFA retirada. Se conservan temporalmente para
+  // ocultarlos en DTOs y facilitar limpieza/migracion; no participan en auth.
   mfaEnabled?: boolean;
   mfaSecretName?: string | null;
   mfaEnrolledAt?: string | null;
@@ -58,7 +58,6 @@ export type AuthSessionRecord = {
   revokedAt?: string | null;
   revokedReason?: string | null;
   replacedBySessionId?: string | null;
-  mfaVerifiedAt?: string | null;
   ttl: number;
   _etag?: string;
 };

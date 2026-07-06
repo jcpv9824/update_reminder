@@ -74,7 +74,6 @@ describe("auth security", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
       lastUsedAt: "2026-01-01T00:00:00.000Z",
       expiresAt: "2099-01-01T00:00:00.000Z",
-      mfaVerifiedAt: "2026-07-02T15:00:00.000Z",
       ttl: 3600,
     };
 
@@ -95,17 +94,15 @@ describe("auth security", () => {
       email: "usuario@empresa.com",
       displayName: "Usuario",
       roles: ["client_manager"],
-      mfaVerified: true,
-      mfaVerifiedAt: "2026-07-02T15:00:00.000Z",
     });
   });
 
-  it("rechaza sesión sin MFA cuando el rol persistido es sensible", async () => {
+  it("acepta sesión válida de administrador sin pedir un segundo factor", async () => {
     const token = signJwt({ id: "user_1", email: "u@x.com", displayName: "U", roles: ["viewer"] }, { id: "session_1", tokenVersion: 0 });
     const persisted: UserRecord = { id: "user_1", email: "u@x.com", displayName: "U", roles: ["admin"], active: true, tokenVersion: 0, createdAt: "2026-01-01T00:00:00Z", createdBy: "system", updatedAt: "2026-01-01T00:00:00Z", updatedBy: "system" };
-    const session: AuthSessionRecord = { id: "session_1", userId: "user_1", refreshTokenHash: "hash", tokenVersion: 0, createdAt: "2026-01-01T00:00:00Z", lastUsedAt: "2026-01-01T00:00:00Z", expiresAt: "2099-01-01T00:00:00Z", mfaVerifiedAt: null, ttl: 3600 };
+    const session: AuthSessionRecord = { id: "session_1", userId: "user_1", refreshTokenHash: "hash", tokenVersion: 0, createdAt: "2026-01-01T00:00:00Z", lastUsedAt: "2026-01-01T00:00:00Z", expiresAt: "2099-01-01T00:00:00Z", ttl: 3600 };
     const store = { read: async () => session, create: async () => undefined, replace: async () => undefined, listByUser: async () => [session] };
-    expect(await getCurrentUser(requestWithHeaders({ authorization: `Bearer ${token}` }), { store, loadUser: async () => persisted })).toBeNull();
+    expect(await getCurrentUser(requestWithHeaders({ authorization: `Bearer ${token}` }), { store, loadUser: async () => persisted })).toMatchObject({ id: "user_1", roles: ["admin"] });
   });
 
   it("solo acepta headers de desarrollo cuando DEV_AUTH_ENABLED=true", async () => {

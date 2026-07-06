@@ -1,5 +1,7 @@
 # Cambios V25 - SEC-007 contrasenas y MFA
 
+> Nota histórica: MFA/TOTP fue retirado por decisión de producto en V28 (2026-07-06). Consulte `CAMBIOS_V28.md` y `SECURITY_PASSWORD_POLICY.md` para el comportamiento vigente.
+
 Fecha: 2026-07-02
 
 - Politica de contrasenas de minimo 14 caracteres, passphrases y bcrypt costo 12.

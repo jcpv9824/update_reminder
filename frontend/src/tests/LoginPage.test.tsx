@@ -24,6 +24,7 @@ describe("LoginPage seguro", () => {
     renderPage(); credentials();
     await waitFor(() => expect(entrarMock).toHaveBeenCalledWith("user@x.com", "Temporal muy segura 2026", {}));
     expect(screen.queryByText(/Microsoft/i)).toBeNull();
+    expect(screen.queryByText(/MFA|autenticador|código de recuperación/i)).toBeNull();
   });
 
   it("solicita cambio obligatorio y valida mínimo 14", async () => {
@@ -47,23 +48,4 @@ describe("LoginPage seguro", () => {
     expect(await screen.findByText(/Contraseña actualizada/i)).toBeInTheDocument();
   });
 
-  it("solicita y envía código MFA", async () => {
-    entrarMock.mockResolvedValueOnce({ mfaRequired: true }).mockResolvedValueOnce({ authenticated: true });
-    renderPage(); credentials();
-    const input = await screen.findByLabelText(/Código MFA/i);
-    fireEvent.change(input, { target: { value: "123456" } });
-    fireEvent.click(screen.getByRole("button", { name: /Verificar código/i }));
-    await waitFor(() => expect(entrarMock).toHaveBeenLastCalledWith("user@x.com", "Temporal muy segura 2026", { mfaCode: "123456" }));
-  });
-
-  it("muestra enrolamiento y entrega única de códigos de recuperación", async () => {
-    entrarMock.mockResolvedValueOnce({ mfaSetupRequired: true, mfaSetup: { secret: "SECRETOBASE32", otpauthUri: "otpauth://totp/test" } })
-      .mockResolvedValueOnce({ mfaEnrollmentCompleted: true, recoveryCodes: ["AAAA-BBBB-CCCC-DDDD"] });
-    renderPage(); credentials();
-    expect(await screen.findByDisplayValue("SECRETOBASE32")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText(/Código MFA/i), { target: { value: "654321" } });
-    fireEvent.click(screen.getByRole("button", { name: /Activar MFA/i }));
-    expect(await screen.findByText("AAAA-BBBB-CCCC-DDDD")).toBeInTheDocument();
-    expect(screen.getByText(/No volverán a mostrarse/i)).toBeInTheDocument();
-  });
 });

@@ -33,11 +33,6 @@ describe("jwt endurecido", () => {
     expect((payload?.exp ?? 0) - (payload?.iat ?? 0)).toBe(600);
   });
 
-  it("marca la autenticación multifactor en el access token", () => {
-    const payload = verifyJwt(signJwt(user, { ...session, mfaVerifiedAt: "2026-07-02T15:00:00.000Z" }));
-    expect(payload?.amr).toEqual(["pwd", "otp"]);
-  });
-
   it("rechaza issuer y audience diferentes", () => {
     const wrongIssuer = jwt.sign(
       { email: user.email, roles: user.roles, sid: session.id, ver: 3 },

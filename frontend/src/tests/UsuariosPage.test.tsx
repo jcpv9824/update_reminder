@@ -32,6 +32,7 @@ beforeEach(() => {
       email: "laura@empresa.com",
       roles: ["database_updater"],
       active: true,
+      mfaEnabled: true,
       createdAt: "2026-06-01T10:00:00.000Z",
       updatedAt: "2026-06-01T10:00:00.000Z",
     }],
@@ -43,6 +44,13 @@ beforeEach(() => {
 });
 
 describe("UsuariosPage", () => {
+  it("no muestra estado ni controles de segundo factor", async () => {
+    renderPagina();
+    expect(await screen.findByText("Laura Pérez")).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "MFA" })).toBeNull();
+    expect(screen.queryByText("Activa", { selector: "td" })).toBeNull();
+  });
+
   it("permite reenviar credenciales generando una nueva contraseña temporal", async () => {
     renderPagina();
     expect(await screen.findByText("Laura Pérez")).toBeInTheDocument();

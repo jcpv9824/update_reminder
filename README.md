@@ -158,15 +158,14 @@ El campo **ID del cliente** (`externalId`) es opcional por ahora. Si se captura,
 - Los registros históricos se sanean con `npm run security:sanitize-audit -- --apply`.
 - Clasificación y procedimiento: `SECURITY_AUDIT_SANITIZATION.md`.
 
-### Contrasenas y MFA
+### Contrasenas y acceso
 
 - Las contrasenas definitivas admiten passphrases y requieren minimo 14 caracteres; bcrypt usa costo 12.
 - Se rechazan contrasenas comunes, derivadas del usuario y comprometidas mediante HIBP k-anonymity.
 - Las credenciales temporales exigen cambio en el primer acceso y las definitivas expiran a los 180 dias por defecto.
-- MFA TOTP es obligatorio para administrador, administrador de clientes y actualizador de bases de datos.
-- El secreto TOTP permanece en Key Vault. Los codigos de recuperacion son de un solo uso y solo se almacenan como hash.
-- Revelar/copiar passwords de bases y cambiar el password SMTP exige una sesion MFA verificada.
-- Configuracion y recuperacion: `SECURITY_PASSWORD_MFA.md`.
+- El acceso es deliberadamente simple: correo y contraseña. No se solicita segundo factor ni código de autenticador.
+- Las acciones sensibles conservan autorización backend por rol, cliente, asignación y objeto, además de auditoría.
+- Política, controles compensatorios y riesgo residual: `SECURITY_PASSWORD_POLICY.md`.
 
 - La contraseña SMTP se guarda en **Azure Key Vault**. El frontend nunca la recibe ni la muestra; Cosmos DB solo guarda el nombre del secreto y el indicador de configuración.
 - La contraseña de cada base de datos se guarda en **Azure Key Vault** con el nombre `db-{databaseId}-password`.

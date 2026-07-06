@@ -85,10 +85,7 @@ Definidos en `api/src/lib/cosmos.ts`.
 | `mustChangePassword` | boolean | no | auth/user flows | posible | no | `must_change_password` | Preservar. |
 | `passwordExpiresAt` | string/null | no | expiración de credenciales | posible | no | `password_expires_at` | Preservar/derivar por política. |
 | `tokenVersion` | number | no | revocación de sesiones | nunca | restringido | `token_version` | Preservar. |
-| `mfaEnabled`, `mfaEnrolledAt` | boolean/string | no | MFA TOTP | estado en usuarios | no | `mfa_enabled`, `mfa_enrolled_at` | Preservar. |
-| `mfaSecretName` | string/null | no | lookup en Key Vault | nunca | restringido | `mfa_secret_name` | Solo referencia; el secreto permanece en Key Vault. |
-| `mfaLastTimeStep` | number/null | no | anti-replay TOTP | nunca | restringido | `mfa_last_time_step` | Preservar. |
-| `mfaRecoveryCodeHashes` | string[] | no | recuperación MFA | nunca | sí | `security.user_mfa_recovery_codes` | Un hash por fila; nunca código plano. |
+| `mfaEnabled`, `mfaEnrolledAt`, `mfaSecretName`, `mfaLastTimeStep`, `mfaRecoveryCodeHashes` | varios | no | legado retirado | ninguno; no participa en autenticacion ni API | no | solo `migration.migration_raw_documents` | No migrar al modelo SQL operativo. Conservar temporalmente en el snapshot bruto y eliminar según retención aprobada. Los secretos TOTP heredados en Key Vault requieren limpieza controlada separada. |
 | `passwordResetTokenHash` | string/null | no | forgot/reset | nunca | sí | `password_reset_token_hash` | Hash solamente. |
 | `passwordResetExpiresAt` | string/null | no | forgot/reset | nunca | sí | `password_reset_expires_at` | Preservar. |
 | `passwordResetUsedAt` | string/null | no | forgot/reset | nunca | sí | `password_reset_used_at` | Preservar. |

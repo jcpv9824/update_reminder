@@ -12,7 +12,6 @@ export type Usuario = {
   displayName: string;
   roles: string[];
   active?: boolean;
-  mfaEnabled?: boolean;
   mustChangePassword?: boolean;
   passwordExpiresAt?: string | null;
 };

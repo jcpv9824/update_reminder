@@ -10,7 +10,7 @@ import { revokeAllUserSessions } from "../lib/authSessions";
 
 function sanitize(u: UserRecord) {
   const { passwordHash, passwordResetTokenHash, passwordResetExpiresAt, passwordResetUsedAt, tokenVersion,
-    mfaSecretName, mfaLastTimeStep, mfaRecoveryCodeHashes, ...rest } = u;
+    mfaEnabled, mfaSecretName, mfaEnrolledAt, mfaLastTimeStep, mfaRecoveryCodeHashes, ...rest } = u;
   return rest;
 }
 
@@ -61,7 +61,6 @@ app.http("setupFirstAdmin", {
         passwordUpdatedAt: now,
         passwordExpiresAt: passwordExpirationIso(),
         mustChangePassword: false,
-        mfaEnabled: false,
         tokenVersion: 0,
       };
       try {

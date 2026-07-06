@@ -85,7 +85,7 @@ const ResetPasswordSchema = z.object({
 
 function sanitize(u: UserRecord) {
   const { passwordHash, passwordResetTokenHash, passwordResetExpiresAt, passwordResetUsedAt, tokenVersion,
-    mfaSecretName, mfaLastTimeStep, mfaRecoveryCodeHashes, ...rest } = u;
+    mfaEnabled, mfaSecretName, mfaEnrolledAt, mfaLastTimeStep, mfaRecoveryCodeHashes, ...rest } = u;
   return rest;
 }
 
@@ -148,7 +148,6 @@ app.http("usersCreate", {
         passwordUpdatedAt: now,
         passwordExpiresAt: null,
         mustChangePassword: true,
-        mfaEnabled: false,
         tokenVersion: 0,
       };
       await getContainer("users").items.create(record);

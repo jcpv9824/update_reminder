@@ -73,7 +73,7 @@ describe("sesiones refresh rotatorias", () => {
   it("rota el token, revoca la sesión anterior y conserva la versión", async () => {
     const store = new MemorySessionStore();
     const currentUser = user();
-    const created = await createAuthSession(currentUser, { store, nowMs: 0, mfaVerifiedAt: "2026-07-02T15:00:00.000Z" });
+    const created = await createAuthSession(currentUser, { store, nowMs: 0 });
     const rotated = await rotateAuthSession(created.refreshToken, {
       store,
       nowMs: 1_000,
@@ -83,25 +83,24 @@ describe("sesiones refresh rotatorias", () => {
     expect(rotated).not.toBeNull();
     expect(rotated?.refreshToken).not.toBe(created.refreshToken);
     expect(rotated?.session.tokenVersion).toBe(2);
-    expect(rotated?.session.mfaVerifiedAt).toBe("2026-07-02T15:00:00.000Z");
     expect((await store.read(created.session.id))?.revokedReason).toBe("rotated");
   });
 
   it("detecta reutilización del refresh anterior y revoca su descendiente", async () => {
     const store = new MemorySessionStore();
     const currentUser = user();
-    const created = await createAuthSession(currentUser, { store, nowMs: 0, mfaVerifiedAt: "2026-07-02T15:00:00.000Z" });
+    const created = await createAuthSession(currentUser, { store, nowMs: 0 });
     const rotated = await rotateAuthSession(created.refreshToken, { store, nowMs: 1_000, loadUser: async () => currentUser });
 
     expect(await rotateAuthSession(created.refreshToken, { store, nowMs: 2_000, loadUser: async () => currentUser })).toBeNull();
     expect((await store.read(rotated!.session.id))?.revokedReason).toBe("refresh_token_reuse_detected");
   });
 
-  it("no refresca una sesión sensible que no verificó MFA", async () => {
+  it("refresca una sesión de rol sensible sin pedir un segundo factor", async () => {
     const store = new MemorySessionStore();
     const currentUser = user({ roles: ["client_manager"] });
     const created = await createAuthSession(currentUser, { store, nowMs: 0 });
-    expect(await rotateAuthSession(created.refreshToken, { store, nowMs: 1_000, loadUser: async () => currentUser })).toBeNull();
+    expect(await rotateAuthSession(created.refreshToken, { store, nowMs: 1_000, loadUser: async () => currentUser })).not.toBeNull();
   });
 
   it("rechaza access token si la sesión fue revocada o cambió tokenVersion", async () => {

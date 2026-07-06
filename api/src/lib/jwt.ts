@@ -34,7 +34,7 @@ export type JwtPayload = {
   exp?: number;
 };
 
-export function signJwt(user: CurrentUser, session: { id: string; tokenVersion: number; mfaVerifiedAt?: string | null }): string {
+export function signJwt(user: CurrentUser, session: { id: string; tokenVersion: number }): string {
   const expiresIn = (process.env.JWT_ACCESS_EXPIRES_IN || "10m") as SignOptions["expiresIn"];
   return jwt.sign(
     {
@@ -42,7 +42,7 @@ export function signJwt(user: CurrentUser, session: { id: string; tokenVersion: 
       roles: user.roles,
       sid: session.id,
       ver: session.tokenVersion,
-      amr: session.mfaVerifiedAt ? ["pwd", "otp"] : ["pwd"],
+      amr: ["pwd"],
     },
     getSecret(),
     {

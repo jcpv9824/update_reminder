@@ -77,7 +77,6 @@ $cosmosConnectionString = az cosmosdb keys list --name $cosmosAccount --resource
 
 $setupSecret = [Guid]::NewGuid().ToString("N")
 $rateLimitHashSecret = [Guid]::NewGuid().ToString("N") + [Guid]::NewGuid().ToString("N")
-$mfaRecoveryPepper = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
 $jwtSecret = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
 az functionapp config appsettings set --name $functionApp --resource-group $ResourceGroup --settings `
   "COSMOS_CONNECTION_STRING=$cosmosConnectionString" `
@@ -86,8 +85,6 @@ az functionapp config appsettings set --name $functionApp --resource-group $Reso
   "APP_TIMEZONE=America/Bogota" `
   "DEV_AUTH_ENABLED=false" `
   "RATE_LIMIT_HASH_SECRET=$rateLimitHashSecret" `
-  "MFA_RECOVERY_PEPPER=$mfaRecoveryPepper" `
-  "MFA_ISSUER=Programador de Actualizaciones ERP" `
   "BCRYPT_COST=12" `
   "PASSWORD_MAX_AGE_DAYS=180" `
   "PWNED_PASSWORDS_ENABLED=true" `

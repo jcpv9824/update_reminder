@@ -43,11 +43,7 @@ Reglas globales:
 | users | mustChangePassword | security.users | must_change_password | boolean | no | false | bit | no |
 | users | passwordExpiresAt | security.users | password_expires_at | datetime | no | derive from passwordUpdatedAt + policy | valid datetime | no |
 | users | tokenVersion | security.users | token_version | integer | no | 0 | >= 0 | no |
-| users | mfaEnabled | security.users | mfa_enabled | boolean | no | false | bit | no |
-| users | mfaSecretName | security.users | mfa_secret_name | copy reference only | no | null | secret must remain in Key Vault | restricted |
-| users | mfaEnrolledAt | security.users | mfa_enrolled_at | datetime | no | null | valid datetime | no |
-| users | mfaLastTimeStep | security.users | mfa_last_time_step | integer | no | null | >= 0 | restricted |
-| users | mfaRecoveryCodeHashes | security.user_mfa_recovery_codes | code_hash | one row per hash | no | none | never plain recovery code | secret |
+| users | mfaEnabled, mfaSecretName, mfaEnrolledAt, mfaLastTimeStep, mfaRecoveryCodeHashes | migration.migration_raw_documents | raw_json | preserve only inside encrypted migration snapshot; do not project into operational SQL | no | omit | verify absent from `security.users` and public exports | restricted legacy |
 | users | lastLoginAt | security.users | last_login_at | datetime | no | null | valid datetime | no |
 | users | passwordResetTokenHash | security.users | password_reset_token_hash | copy hash only | no | null | never plain token | yes |
 | users | passwordResetExpiresAt | security.users | password_reset_expires_at | datetime | no | null | valid datetime | yes |

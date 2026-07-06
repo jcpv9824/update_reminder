@@ -7,7 +7,6 @@ import { loadEmailAlertsSettings, sanitizeForResponse, saveEmailAlertsSettings }
 import { buildTestEmail, sendEmail } from "../lib/emailService";
 import { badRequest, forbidden, ok, serverError } from "../lib/http";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
-import { requireVerifiedMfa } from "../lib/mfa";
 
 async function getAdmin(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -100,7 +99,6 @@ app.http("settingsEmailAlertsUpdate", {
       const parsed = SettingsSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const passwordChanged = typeof parsed.data.smtpPassword === "string" && parsed.data.smtpPassword.length > 0;
-      if (passwordChanged) requireVerifiedMfa(admin);
       const next = await saveEmailAlertsSettings({ patch: parsed.data, performedBy: admin.id });
       // Auditar sin incluir la contraseña SMTP. El sanitizador de audit ya
       // omite "password"; aquí enviamos solo claves seguras.

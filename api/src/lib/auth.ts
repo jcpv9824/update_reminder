@@ -3,7 +3,6 @@ import type { CurrentUser } from "../types/models";
 import { verifyJwt } from "./jwt";
 import { validateAccessSession, type UserLoader, type AuthSessionStore } from "./authSessions";
 import { normalizeEmail } from "./password";
-import { requiresMfaForRoles } from "./mfa";
 
 // Extrae al usuario actual de la solicitud. En producción solo se acepta el
 // JWT emitido por el login de la aplicación. No se confía en
@@ -20,15 +19,12 @@ export async function getCurrentUser(
     if (payload) {
       const validated = await validateAccessSession(payload, validationOptions);
       if (!validated) return null;
-      const { user: persisted, session } = validated;
-      if (requiresMfaForRoles(persisted.roles ?? []) && !session.mfaVerifiedAt) return null;
+      const { user: persisted } = validated;
       return {
         id: persisted.id,
         email: persisted.email,
         displayName: persisted.displayName,
         roles: persisted.roles ?? [],
-        mfaVerified: !!session.mfaVerifiedAt,
-        mfaVerifiedAt: session.mfaVerifiedAt ?? null,
       };
     }
   }
@@ -43,8 +39,6 @@ export async function getCurrentUser(
         email: req.headers.get("x-dev-user-email") ?? "dev@local",
         displayName: req.headers.get("x-dev-user-name") ?? "Usuario Dev",
         roles: rolesHeader.split(",").map((r) => r.trim()).filter(Boolean),
-        mfaVerified: true,
-        mfaVerifiedAt: new Date().toISOString(),
       };
     }
   }
@@ -94,8 +88,6 @@ export async function loadUserProfileDetailed(user: CurrentUser): Promise<Profil
         email: resource.email ?? user.email,
         displayName: resource.displayName ?? user.displayName,
         roles: resource.roles ?? [],
-        mfaVerified: user.mfaVerified,
-        mfaVerifiedAt: user.mfaVerifiedAt,
       },
     };
   } catch {

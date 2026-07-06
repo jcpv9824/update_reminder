@@ -12,7 +12,6 @@ type Usuario = {
   active: boolean;
   createdAt: string;
   updatedAt: string;
-  mfaEnabled?: boolean;
   mustChangePassword?: boolean;
 };
 
@@ -69,15 +68,14 @@ export default function UsuariosPage() {
       {isLoading ? <div className="cargando">Cargando...</div> : (
         <>
           <table>
-            <thead><tr><th>Nombre</th><th>Correo</th><th>Roles</th><th>MFA</th><th>Estado</th><th>Acciones</th></tr></thead>
+            <thead><tr><th>Nombre</th><th>Correo</th><th>Roles</th><th>Estado</th><th>Acciones</th></tr></thead>
             <tbody>
-              {usuarios.length === 0 ? (<tr><td colSpan={6} className="vacio">No hay usuarios registrados.</td></tr>) :
+              {usuarios.length === 0 ? (<tr><td colSpan={5} className="vacio">No hay usuarios registrados.</td></tr>) :
               usuarios.map((u) => (
                 <tr key={u.id}>
                   <td>{u.displayName}</td>
                   <td>{u.email}</td>
                   <td>{u.roles.map((r) => ETIQUETAS_ROLES[r] ?? r).join(", ")}</td>
-                  <td>{u.mfaEnabled ? "Activa" : "Pendiente"}</td>
                   <td><EtiquetaEstado estado={u.active ? "active" : "inactive"} /></td>
                   <td className="acciones-tabla">
                     <button onClick={() => setEditando(u)}>Editar</button>
