@@ -87,6 +87,7 @@
 | **H-12** | **Links de video** del correo de prerrequisitos C1 ([DEC] B.3). | PENDIENTE | M4 §3: la sección va sin botón hasta tener el link (no placeholder roto). |
 | **H-13** | **¿Módulos especiales requieren scripts propios además de los 4+login?** ([SQL] §E). | PENDIENTE | M3 `c3.b.scripts` admite evidencia de scripts adicionales; `moduleTestCatalog` puede anotarlo (`notes`). Si se confirma, versión nueva de la plantilla C3 (RNF-05). |
 | **H-14** | El **diseño preliminar** (`docs/DISENO_MODULO_IMPLEMENTACIONES.md` §5) mostraba `infra_request → prerequisites` en secuencia. | RESUELTO | Esta especificación lo **supersede** (H-01). El diseño preliminar queda como visión general; la espec manda. |
+| **H-16** | **Simplificación implementada (jul. 2026): importación CSV de usuarios en C1.** La creación/asociación manual en SAG Admin fue reemplazada por una importación desde el Detalle del cliente (crea nuevos con contraseña autogenerada, omite existentes/inválidos, asocia todos, descarga Excel de resultados = insumo de credenciales). Query de extracción ahora con NúmeroTelefono; nuevos scripts 08/09/10 en la carpeta C1; nuevo paso STOP de formato de correos (FASE A) espejado al cliente como Consulta 3. | RESUELTO (ya implementado y probado por el negocio) | Plantilla C1 actualizada (`c1.a.correosInvalidos`, `c1.b.extraerUsuarios` CSV+conteo, `c1.c.importarUsuarios`); RN-03/RN-11 actualizadas. Solo C1 por ahora (C3 se definirá después). |
 | **H-15** | **Hueco multi-tenant en C2 (reportado por Juan Camilo, jul. 2026):** el admin de la plantilla `NEW SAG`, creado tal cual en SAG Admin y asociado a varios clientes nuevos, dejaba UN usuario con acceso a TODOS esos clientes (asociación multi-cliente + credenciales compartidas). | RESUELTO (proceso corregido) | RN-19: el cliente envía en prerrequisitos el **correo real del admin por compañía** → nuevo Paso 3 del paso a paso (`a_sagweb_actualizar_admin`, `ka_nl_tercero = 1`, solo UPDATE) → admins creados en SAG Admin uno por compañía con **contraseña de estándar de compañía** → Elasticserver crea **una BD por compañía**. Paso a paso C2 = 13 pasos. **Sin remediación**: las implementaciones previas ya aplicaban el cambio de correo en la práctica; se formaliza lo que los documentos no reflejaban. |
 
 ## C. Verificación de cobertura por caso (resumen ejecutivo del cotejo)
@@ -94,9 +95,9 @@
 | Punto del proceso | C1 espec | C2 espec | C3 espec | ¿Coincide con la fuente? |
 |---|---|---|---|---|
 | Filtro/rechazo de Ventas | screening ✔ | screening ✔ | sin screening ✔ | ✔ [PROC] |
-| Lista de usuarios | no se pide; se extrae (paso B.6) | no existe como lista; **correo del admin por compañía** (RN-19) + cliente crea los suyos | `moduleUsers` del cliente | ✔ RN-04/RN-19 / [DEC] |
+| Lista de usuarios | no se pide; se extrae a CSV y se **importa** (Pasos 7 y 11) | no existe como lista; **correo del admin por compañía** (RN-19) + cliente crea los suyos | `moduleUsers` del cliente | ✔ RN-04/RN-19 / [DEC] |
 | Solicitud a Elasticserver | dominio + pruebas + prod por compañía | dominio + **BD nueva por compañía** | dominio (+pruebas condicional; local sin BD) | ✔ [VEN] D.1, RN-19 |
-| Queries de correos (STOP) | sí (2 pasos blocking) | no existen | sí (2 pasos blocking) | ✔ [PROC]/[SQL] |
+| Queries de correos (STOP) | sí (**3** pasos blocking: duplicados, vacíos, formato) | no existen | sí (2 pasos blocking) | ✔ [PROC]/[SQL]/[DEC] jul. 2026 |
 | Scripts | 5 | 4 + `a_sagweb_actualizar_admin` (por compañía) | 4 + `a_sagweb_migrar_login` | ✔ [SQL] §C/§C quater |
 | Librerías antes de scripts | paso previo ✔ | n/a (BD nueva) | n/a | ✔ [PROC] |
 | SAG Admin (FASE C, Líder) | cliente+compañías+usuarios+asociar | cliente+compañías+**admin** | reutilizar-o-crear+usuarios del módulo | ✔ [PROC] |
