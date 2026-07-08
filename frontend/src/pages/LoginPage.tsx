@@ -46,8 +46,8 @@ export default function LoginPage() {
   return (
     <div className="login-pantalla">
       <div className="login-tarjeta">
-        <h1>Programador de Actualizaciones</h1>
-        <p style={{ textAlign: "center", color: "#6b7280", marginBottom: 24 }}>Gestión de actualizaciones de dominios y bases de datos</p>
+        <h1>Portal SAG Web</h1>
+        <p style={{ textAlign: "center", color: "#6b7280", marginBottom: 24 }}>Gestión operativa de servicios SAG Web</p>
         {mensaje && <div className="alerta alerta-info">{mensaje}</div>}
         {info && <div className="alerta alerta-exito">{info}</div>}
         {error && <div className="alerta alerta-error">{error}</div>}

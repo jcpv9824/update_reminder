@@ -94,7 +94,7 @@ describe("AlertasCorreosPage", () => {
     await screen.findByRole("heading", { name: /Alertas y correos/i });
     fireEvent.click(screen.getByRole("button", { name: /Usar configuración recomendada de P&A/i }));
     expect(screen.getAllByDisplayValue("info@pya.com.co").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByDisplayValue("Programador de Actualizaciones")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Portal SAG Web")).toBeInTheDocument();
     expect(screen.getByDisplayValue("https://agreeable-wave-07469d50f.7.azurestaticapps.net")).toBeInTheDocument();
     fireEvent.click(screen.getByText(/Configuración SMTP avanzada/i));
     expect(screen.getByDisplayValue("smtp.office365.com")).toBeInTheDocument();

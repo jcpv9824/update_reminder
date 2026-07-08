@@ -81,10 +81,21 @@ const formatos = [
   },
 ];
 
+const modulosLicencia = [
+  {
+    id: "modulo_contabilidad",
+    name: "Contabilidad",
+    code: "CONTABILIDAD",
+    status: "active",
+    active: true,
+  },
+];
+
 function mockGets() {
   apiMock.get.mockImplementation((path: string) => {
     if (path === "/catalogo-formatos/admin/fuentes-formatos") return Promise.resolve(fuentes);
     if (path === "/catalogo-formatos/admin/formatos-impresion") return Promise.resolve(formatos);
+    if (path === "/license-modules") return Promise.resolve(modulosLicencia);
     if (path === "/public/fuentes-formatos") return Promise.resolve(fuentes);
     if (path.startsWith("/public/formatos-impresion")) {
       if (path.includes("q=resumido")) return Promise.resolve([formatos[1]]);
@@ -106,6 +117,12 @@ function field(label: string) {
   return within(node.parentElement!).getByRole("textbox");
 }
 
+function selectField(label: string) {
+  const matches = screen.getAllByText(label);
+  const node = matches[matches.length - 1];
+  return within(node.parentElement!).getByRole("combobox");
+}
+
 beforeEach(() => {
   apiMock.get.mockReset();
   apiMock.post.mockReset();
@@ -115,20 +132,19 @@ beforeEach(() => {
 });
 
 describe("FormatosImpresionPublicPage", () => {
-  it("muestra fuentes, resultados y carga el PDF seleccionado", async () => {
+  it("muestra tipos de fuente, marca SAG Web y carga el PDF seleccionado", async () => {
     renderWithQuery(<FormatosImpresionPublicPage />);
     expect(await screen.findByRole("heading", { name: "Catálogo de Formatos de Impresión" })).toBeInTheDocument();
+    expect(screen.getByText("Catálogo de formatos de impresión disponibles en SAG Web.")).toBeInTheDocument();
+    expect(screen.getByAltText("SAG Web")).toHaveAttribute("src", "https://pya.com.co/wp-content/uploads/2025/12/H_LOGO.png");
+    expect(screen.getByRole("heading", { name: "Filtrar por tipo de fuente" })).toBeInTheDocument();
     expect((await screen.findAllByText("Factura de venta")).length).toBeGreaterThan(0);
     expect((await screen.findAllByText("Factura de Venta - Estándar")).length).toBeGreaterThan(0);
     expect(screen.getByTitle("Vista previa Factura de Venta - Estándar")).toHaveAttribute(
       "src",
       "/api/public/formatos-impresion/formato_estandar/pdf"
     );
-    expect(screen.getByRole("link", { name: "Descargar PDF" })).toHaveAttribute(
-      "href",
-      "/api/public/formatos-impresion/formato_estandar/descargar"
-    );
-    expect(screen.queryByText(/SAG/i)).toBeNull();
+    expect(screen.queryByRole("link", { name: "Descargar PDF" })).toBeNull();
   });
 
   it("combina búsqueda con la consulta pública y actualiza la selección", async () => {
@@ -158,11 +174,11 @@ describe("FormatosImpresionPublicPage", () => {
 });
 
 describe("FormatosImpresionAdminPage", () => {
-  it("crea una Fuente desde la pestaña administrativa", async () => {
+  it("crea un tipo de fuente desde la pestaña administrativa", async () => {
     apiMock.post.mockResolvedValue({ id: "fuente_nueva", nombre: "Cotización" });
     renderWithQuery(<FormatosImpresionAdminPage />);
-    fireEvent.click(await screen.findByRole("button", { name: "Nueva Fuente" }));
-    await userEvent.type(field("Nombre de la Fuente *"), "Cotización");
+    fireEvent.click(await screen.findByRole("button", { name: "Nuevo tipo de fuente" }));
+    await userEvent.type(field("Nombre del tipo de fuente *"), "Cotización");
     await userEvent.type(field("Descripción"), "Formatos para cotizaciones");
     fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
     await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/catalogo-formatos/admin/fuentes-formatos", expect.objectContaining({
@@ -181,6 +197,19 @@ describe("FormatosImpresionAdminPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
     expect(await screen.findByText("Debe cargar un PDF.")).toBeInTheDocument();
     expect(apiMock.post).not.toHaveBeenCalled();
+  });
+
+  it("muestra metadatos opcionales de tamaño y licencia en el formato", async () => {
+    renderWithQuery(<FormatosImpresionAdminPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Formatos" }));
+    fireEvent.click(screen.getByRole("button", { name: "Nuevo formato" }));
+
+    expect(screen.queryByText("PDF (opcional para reemplazar)")).toBeNull();
+    await userEvent.selectOptions(selectField("Tamaño del formato"), "personalizado");
+    expect(field("Tamaño personalizado")).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("Restringir por tipo de licencia"));
+    expect(selectField("Tipo de licencia")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Contabilidad" })).toBeInTheDocument();
   });
 
   it("permite limpiar rápidamente la búsqueda administrativa", async () => {

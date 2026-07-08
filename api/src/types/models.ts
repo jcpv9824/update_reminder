@@ -200,6 +200,12 @@ export type FormatoImpresionRecord = {
   fuenteId: string;
   fuenteNombre: string;
   descripcion: string;
+  tamanoFormato?: "carta" | "oficio" | "a4" | "legal" | "personalizado";
+  tamanoFormatoPersonalizado?: string;
+  requiereLicencia?: boolean;
+  licenciaModuloId?: string;
+  licenciaModuloNombre?: string;
+  licenciaModuloCodigo?: string;
   pdfBase64: string;
   pdfNombreOriginal: string;
   pdfMimeType: "application/pdf";

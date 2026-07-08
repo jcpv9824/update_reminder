@@ -7,12 +7,13 @@ import { getContainer } from "../lib/cosmos";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import { getPagination, paginateArray } from "../lib/pagination";
 import { canManagePrintFormats } from "../lib/permissions";
-import type { FormatoImpresionRecord, FuenteFormatoRecord } from "../types/models";
+import type { FormatoImpresionRecord, FuenteFormatoRecord, LicenseModuleRecord } from "../types/models";
 
 const MAX_PDF_BYTES = 1_500_000;
+const TamanoFormatoSchema = z.enum(["carta", "oficio", "a4", "legal", "personalizado"]);
 
 const FuenteSchema = z.object({
-  nombre: z.string().min(1, "El nombre de la Fuente es obligatorio.").max(160),
+  nombre: z.string().min(1, "El nombre del tipo de fuente es obligatorio.").max(160),
   descripcion: z.string().max(1000).optional(),
   activa: z.boolean().default(true),
 });
@@ -26,8 +27,12 @@ const PdfSchema = z.object({
 
 const FormatoSchema = z.object({
   nombre: z.string().min(1, "El nombre del formato es obligatorio.").max(200),
-  fuenteId: z.string().min(1, "La Fuente es obligatoria."),
+  fuenteId: z.string().min(1, "El tipo de fuente es obligatorio."),
   descripcion: z.string().min(1, "La descripción es obligatoria.").max(1600),
+  tamanoFormato: TamanoFormatoSchema.nullable().optional(),
+  tamanoFormatoPersonalizado: z.string().trim().max(80).nullable().optional(),
+  requiereLicencia: z.boolean().optional(),
+  licenciaModuloId: z.string().trim().max(160).nullable().optional(),
   activo: z.boolean().default(true),
 }).merge(PdfSchema);
 
@@ -58,6 +63,41 @@ function sanitizeFormato(record: FormatoImpresionRecord) {
     ...rest,
     pdfUrl: `/api/public/formatos-impresion/${record.id}/pdf`,
     downloadUrl: `/api/public/formatos-impresion/${record.id}/descargar`,
+  };
+}
+
+function buildTamanoFormatoFields(input: Partial<z.infer<typeof FormatoSchema>>): Partial<FormatoImpresionRecord> {
+  if (input.tamanoFormato === undefined && input.tamanoFormatoPersonalizado === undefined) return {};
+  if (!input.tamanoFormato) return { tamanoFormato: undefined, tamanoFormatoPersonalizado: undefined };
+  return {
+    tamanoFormato: input.tamanoFormato,
+    tamanoFormatoPersonalizado: input.tamanoFormato === "personalizado" ? (input.tamanoFormatoPersonalizado?.trim() || undefined) : undefined,
+  };
+}
+
+async function buildLicenciaFields(input: {
+  requiereLicencia?: boolean;
+  licenciaModuloId?: string | null;
+}): Promise<Partial<FormatoImpresionRecord> | HttpResponseInit> {
+  if (!input.requiereLicencia) {
+    return {
+      requiereLicencia: false,
+      licenciaModuloId: undefined,
+      licenciaModuloNombre: undefined,
+      licenciaModuloCodigo: undefined,
+    };
+  }
+  const id = input.licenciaModuloId?.trim();
+  if (!id) return badRequest("Seleccione el tipo de licencia requerido para el formato.");
+  const { resource } = await getContainer("licenseModules").item(id, id).read<LicenseModuleRecord>();
+  if (!resource || resource.status !== "active" || resource.active === false || resource.deletedAt) {
+    return badRequest("El tipo de licencia seleccionado no está activo.");
+  }
+  return {
+    requiereLicencia: true,
+    licenciaModuloId: resource.id,
+    licenciaModuloNombre: resource.name,
+    licenciaModuloCodigo: resource.code,
   };
 }
 
@@ -175,7 +215,7 @@ app.http("adminFuentesFormatosCreate", {
       if (!canManagePrintFormats(user)) return forbidden();
       const parsed = FuenteSchema.safeParse(await req.json());
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
-      if (await hasDuplicateFuenteName(parsed.data.nombre)) return conflict("Ya existe una Fuente con este nombre.");
+      if (await hasDuplicateFuenteName(parsed.data.nombre)) return conflict("Ya existe un tipo de fuente con este nombre.");
       const now = new Date().toISOString();
       const record: FuenteFormatoRecord = {
         id: `fuente_formato_${randomUUID()}`,
@@ -213,7 +253,7 @@ app.http("adminFuentesFormatosGet", {
       const user = await getUserOrFail(req);
       if (!canManagePrintFormats(user)) return forbidden();
       const record = await readFuente(req.params.id);
-      if (!record) return notFound("Fuente no encontrada.");
+      if (!record) return notFound("Tipo de fuente no encontrado.");
       return ok(sanitizeFuente(record));
     } catch (e) {
       return serverError(e);
@@ -233,9 +273,9 @@ app.http("adminFuentesFormatosUpdate", {
       const parsed = FuenteUpdateSchema.safeParse(await req.json());
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const current = await readFuente(id);
-      if (!current) return notFound("Fuente no encontrada.");
+      if (!current) return notFound("Tipo de fuente no encontrado.");
       if (parsed.data.nombre !== undefined && await hasDuplicateFuenteName(parsed.data.nombre, id)) {
-        return conflict("Ya existe una Fuente con este nombre.");
+        return conflict("Ya existe un tipo de fuente con este nombre.");
       }
       const before = { ...current };
       const updated: FuenteFormatoRecord = {
@@ -279,10 +319,10 @@ app.http("adminFuentesFormatosDelete", {
       if (!canManagePrintFormats(user)) return forbidden();
       const id = req.params.id;
       const current = await readFuente(id);
-      if (!current) return notFound("Fuente no encontrada.");
+      if (!current) return notFound("Tipo de fuente no encontrado.");
       const formatos = await readFormatos();
       const asociados = formatos.filter((formato) => formato.fuenteId === id).length;
-      if (asociados > 0) return conflict("No se puede eliminar la Fuente porque tiene formatos asociados.", { dependencies: { formatos: asociados } });
+      if (asociados > 0) return conflict("No se puede eliminar el tipo de fuente porque tiene formatos asociados.", { dependencies: { formatos: asociados } });
       const deleted: FuenteFormatoRecord = {
         ...current,
         activa: false,
@@ -346,9 +386,14 @@ app.http("adminFormatosImpresionCreate", {
       const pdf = validatePdf(parsed.data);
       if (isHttpResponse(pdf)) return pdf;
       const fuente = await readFuente(parsed.data.fuenteId);
-      if (!fuente) return badRequest("La Fuente seleccionada no existe.");
-      if (!fuente.activa) return badRequest("Solo puede crear formatos en Fuentes activas.");
-      if (await hasDuplicateFormatoName(parsed.data.nombre, fuente.id)) return conflict("Ya existe un formato con este nombre dentro de la Fuente seleccionada.");
+      if (!fuente) return badRequest("El tipo de fuente seleccionado no existe.");
+      if (!fuente.activa) return badRequest("Solo puede crear formatos en tipos de fuente activos.");
+      if (await hasDuplicateFormatoName(parsed.data.nombre, fuente.id)) return conflict("Ya existe un formato con este nombre dentro del tipo de fuente seleccionado.");
+      const licenciaFields = await buildLicenciaFields({
+        requiereLicencia: parsed.data.requiereLicencia ?? false,
+        licenciaModuloId: parsed.data.licenciaModuloId,
+      });
+      if (typeof (licenciaFields as HttpResponseInit).status === "number") return licenciaFields as HttpResponseInit;
       const now = new Date().toISOString();
       const record: FormatoImpresionRecord = {
         id: `formato_impresion_${randomUUID()}`,
@@ -356,6 +401,8 @@ app.http("adminFormatosImpresionCreate", {
         fuenteId: fuente.id,
         fuenteNombre: fuente.nombre,
         descripcion: parsed.data.descripcion.trim(),
+        ...buildTamanoFormatoFields(parsed.data),
+        ...(licenciaFields as Partial<FormatoImpresionRecord>),
         pdfBase64: pdf.toString("base64"),
         pdfNombreOriginal: sanitizePdfName(parsed.data.pdfNombreOriginal),
         pdfMimeType: "application/pdf",
@@ -415,12 +462,17 @@ app.http("adminFormatosImpresionUpdate", {
       if (!current) return notFound("Formato no encontrado.");
       let fuenteId = parsed.data.fuenteId ?? current.fuenteId;
       const fuente = await readFuente(fuenteId);
-      if (!fuente) return badRequest("La Fuente seleccionada no existe.");
-      if (parsed.data.fuenteId && !fuente.activa) return badRequest("Solo puede asignar formatos a Fuentes activas.");
+      if (!fuente) return badRequest("El tipo de fuente seleccionado no existe.");
+      if (parsed.data.fuenteId && !fuente.activa) return badRequest("Solo puede asignar formatos a tipos de fuente activos.");
       const nextName = parsed.data.nombre ?? current.nombre;
       if (await hasDuplicateFormatoName(nextName, fuente.id, id)) {
-        return conflict("Ya existe un formato con este nombre dentro de la Fuente seleccionada.");
+        return conflict("Ya existe un formato con este nombre dentro del tipo de fuente seleccionado.");
       }
+      const licenciaFields = await buildLicenciaFields({
+        requiereLicencia: parsed.data.requiereLicencia ?? current.requiereLicencia ?? false,
+        licenciaModuloId: parsed.data.licenciaModuloId !== undefined ? parsed.data.licenciaModuloId : current.licenciaModuloId,
+      });
+      if (typeof (licenciaFields as HttpResponseInit).status === "number") return licenciaFields as HttpResponseInit;
       let pdfBase64 = current.pdfBase64;
       let pdfNombreOriginal = current.pdfNombreOriginal;
       let replacedPdf = false;
@@ -439,6 +491,8 @@ app.http("adminFormatosImpresionUpdate", {
         fuenteId: fuente.id,
         fuenteNombre: fuente.nombre,
         ...(parsed.data.descripcion !== undefined ? { descripcion: parsed.data.descripcion.trim() } : {}),
+        ...buildTamanoFormatoFields(parsed.data),
+        ...(licenciaFields as Partial<FormatoImpresionRecord>),
         pdfBase64,
         pdfNombreOriginal,
         ...(parsed.data.activo !== undefined ? { activo: parsed.data.activo, status: parsed.data.activo ? "active" : "inactive" } : {}),

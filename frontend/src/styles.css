@@ -560,7 +560,7 @@ td:last-child:has(.acciones-tabla) { text-align: right; }
 .catalogo-encabezado {
   display: flex;
   justify-content: space-between;
-  align-items: flex-end;
+  align-items: center;
   gap: 16px;
   margin-bottom: 14px;
 }
@@ -572,6 +572,12 @@ td:last-child:has(.acciones-tabla) { text-align: right; }
 .catalogo-encabezado p {
   margin: 4px 0 0;
   color: #667085;
+}
+.catalogo-logo {
+  width: 150px;
+  max-width: 32vw;
+  height: auto;
+  object-fit: contain;
 }
 .catalogo-grid {
   display: grid;
@@ -728,6 +734,10 @@ td:last-child:has(.acciones-tabla) { text-align: right; }
     min-height: 520px;
   }
   .catalogo-preview-barra {
+    flex-direction: column;
+  }
+  .catalogo-encabezado {
+    align-items: flex-start;
     flex-direction: column;
   }
   .boton-descarga {

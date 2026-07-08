@@ -60,7 +60,7 @@ const RUTA = "/settings/email-alerts";
 const PYA_DEFAULTS = {
   emailProvider: "smtp" as const,
   emailFrom: "info@pya.com.co",
-  emailFromName: "Programador de Actualizaciones",
+  emailFromName: "Portal SAG Web",
   smtpHost: "smtp.office365.com",
   smtpPort: 587,
   smtpSecure: false,

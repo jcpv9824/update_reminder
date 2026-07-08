@@ -25,7 +25,7 @@ export default function AppLayout() {
   return (
     <div className="contenedor-app">
       <aside className="barra-lateral">
-        <h1>Programador de Actualizaciones</h1>
+        <h1>Portal SAG Web</h1>
         <nav>
           {elementosVisibles.map((e) => (
             <NavLink key={e.ruta} to={e.ruta} className={({ isActive }) => (isActive ? "activo" : "")}>

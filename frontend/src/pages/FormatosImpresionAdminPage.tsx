@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, apiUrl } from "../api/client";
 import { Alerta, DialogoConfirmar, EtiquetaEstado, Modal } from "../components/Comunes";
-import type { FormatoImpresion, FuenteFormato } from "../types";
+import type { FormatoImpresion, FuenteFormato, ModuloLicencia } from "../types";
 
 type Tab = "fuentes" | "formatos";
 const ADMIN_API = "/catalogo-formatos/admin";
@@ -31,10 +31,16 @@ export default function FormatosImpresionAdminPage() {
     queryKey: ["formatos-impresion-admin"],
     queryFn: () => api.get<FormatoImpresion[]>(`${ADMIN_API}/formatos-impresion`),
   });
+  const { data: modulosLicencia = [] } = useQuery({
+    queryKey: ["license-modules", "formatos-impresion"],
+    queryFn: () => api.get<ModuloLicencia[]>("/license-modules"),
+    retry: false,
+  });
 
   const fuentesFiltradas = useMemo(() => filtrar(fuentes, busqueda), [fuentes, busqueda]);
   const formatosFiltrados = useMemo(() => filtrar(formatos, busqueda), [formatos, busqueda]);
   const fuentesActivas = fuentes.filter((fuente) => fuente.activa && fuente.status !== "deleted");
+  const modulosLicenciaActivos = modulosLicencia.filter((modulo) => modulo.status === "active" && modulo.active !== false);
 
   function onSuccess(texto: string) {
     qc.invalidateQueries({ queryKey: ["fuentes-formatos-admin"] });
@@ -49,8 +55,8 @@ export default function FormatosImpresionAdminPage() {
 
   const guardarFuente = useMutation({
     mutationFn: ({ id, body }: { id?: string; body: any }) => id ? api.put(`${ADMIN_API}/fuentes-formatos/${id}`, body) : api.post(`${ADMIN_API}/fuentes-formatos`, body),
-    onSuccess: (_, vars) => onSuccess(vars.id ? "Fuente actualizada correctamente." : "Fuente creada correctamente."),
-    onError: (e: any) => setError(e?.message ?? "No se pudo guardar la Fuente."),
+    onSuccess: (_, vars) => onSuccess(vars.id ? "Tipo de fuente actualizado correctamente." : "Tipo de fuente creado correctamente."),
+    onError: (e: any) => setError(e?.message ?? "No se pudo guardar el tipo de fuente."),
   });
   const guardarFormato = useMutation({
     mutationFn: ({ id, body }: { id?: string; body: any }) => id ? api.put(`${ADMIN_API}/formatos-impresion/${id}`, body) : api.post(`${ADMIN_API}/formatos-impresion`, body),
@@ -59,8 +65,8 @@ export default function FormatosImpresionAdminPage() {
   });
   const borrarFuente = useMutation({
     mutationFn: (id: string) => api.del(`${ADMIN_API}/fuentes-formatos/${id}`),
-    onSuccess: () => onSuccess("Fuente eliminada."),
-    onError: (e: any) => setError(e?.message ?? "No se pudo eliminar la Fuente."),
+    onSuccess: () => onSuccess("Tipo de fuente eliminado."),
+    onError: (e: any) => setError(e?.message ?? "No se pudo eliminar el tipo de fuente."),
   });
   const borrarFormato = useMutation({
     mutationFn: (id: string) => api.del(`${ADMIN_API}/formatos-impresion/${id}`),
@@ -73,14 +79,14 @@ export default function FormatosImpresionAdminPage() {
       <div className="encabezado-pagina">
         <h2>Formatos de Impresión</h2>
         <button className="primario" onClick={() => tab === "fuentes" ? setModalFuente("nuevo") : setModalFormato("nuevo")}>
-          {tab === "fuentes" ? "Nueva Fuente" : "Nuevo formato"}
+          {tab === "fuentes" ? "Nuevo tipo de fuente" : "Nuevo formato"}
         </button>
       </div>
       {mensaje && <Alerta tipo="exito">{mensaje}</Alerta>}
       {error && <Alerta tipo="error">{error}</Alerta>}
 
       <div className="pestanas">
-        <button className={tab === "fuentes" ? "activo" : ""} onClick={() => setTab("fuentes")}>Fuentes</button>
+        <button className={tab === "fuentes" ? "activo" : ""} onClick={() => setTab("fuentes")}>Tipos de fuente</button>
         <button className={tab === "formatos" ? "activo" : ""} onClick={() => setTab("formatos")}>Formatos</button>
       </div>
       <div className="barra-filtros">
@@ -98,9 +104,9 @@ export default function FormatosImpresionAdminPage() {
       </div>
 
       {tab === "fuentes" && (
-        cargandoFuentes ? <div className="cargando">Cargando Fuentes...</div> : (
+        cargandoFuentes ? <div className="cargando">Cargando tipos de fuente...</div> : (
           <table>
-            <thead><tr><th>Nombre de la Fuente</th><th>Descripción</th><th>Estado</th><th>Acciones</th></tr></thead>
+            <thead><tr><th>Nombre del tipo de fuente</th><th>Descripción</th><th>Estado</th><th>Acciones</th></tr></thead>
             <tbody>
               {fuentesFiltradas.map((fuente) => (
                 <tr key={fuente.id}>
@@ -113,7 +119,7 @@ export default function FormatosImpresionAdminPage() {
                   </td>
                 </tr>
               ))}
-              {fuentesFiltradas.length === 0 && <tr><td colSpan={4}><div className="vacio">No hay Fuentes para mostrar.</div></td></tr>}
+              {fuentesFiltradas.length === 0 && <tr><td colSpan={4}><div className="vacio">No hay tipos de fuente para mostrar.</div></td></tr>}
             </tbody>
           </table>
         )
@@ -122,7 +128,7 @@ export default function FormatosImpresionAdminPage() {
       {tab === "formatos" && (
         cargandoFormatos ? <div className="cargando">Cargando formatos...</div> : (
           <table>
-            <thead><tr><th>Nombre del formato</th><th>Fuente</th><th>Descripción</th><th>PDF</th><th>Estado</th><th>Acciones</th></tr></thead>
+            <thead><tr><th>Nombre del formato</th><th>Tipo de fuente</th><th>Descripción</th><th>PDF</th><th>Estado</th><th>Acciones</th></tr></thead>
             <tbody>
               {formatosFiltrados.map((formato) => (
                 <tr key={formato.id}>
@@ -143,7 +149,7 @@ export default function FormatosImpresionAdminPage() {
         )
       )}
 
-      <Modal titulo={modalFuente === "nuevo" ? "Nueva Fuente" : "Editar Fuente"} abierto={!!modalFuente} onCerrar={() => setModalFuente(null)}>
+      <Modal titulo={modalFuente === "nuevo" ? "Nuevo tipo de fuente" : "Editar tipo de fuente"} abierto={!!modalFuente} onCerrar={() => setModalFuente(null)}>
         <FormularioFuente
           inicial={modalFuente && modalFuente !== "nuevo" ? modalFuente : undefined}
           cargando={guardarFuente.isPending}
@@ -154,14 +160,15 @@ export default function FormatosImpresionAdminPage() {
         <FormularioFormato
           inicial={modalFormato && modalFormato !== "nuevo" ? modalFormato : undefined}
           fuentes={fuentesActivas}
+          modulosLicencia={modulosLicenciaActivos}
           cargando={guardarFormato.isPending}
           onSubmit={(body) => guardarFormato.mutate({ id: modalFormato && modalFormato !== "nuevo" ? modalFormato.id : undefined, body })}
         />
       </Modal>
       <DialogoConfirmar
         abierto={!!eliminarFuente}
-        titulo="Eliminar Fuente"
-        mensaje={eliminarFuente ? `¿Eliminar la Fuente "${eliminarFuente.nombre}"? Solo se permite si no tiene formatos asociados.` : ""}
+        titulo="Eliminar tipo de fuente"
+        mensaje={eliminarFuente ? `¿Eliminar el tipo de fuente "${eliminarFuente.nombre}"? Solo se permite si no tiene formatos asociados.` : ""}
         textoConfirmar="Eliminar"
         variante="peligro"
         onConfirmar={() => eliminarFuente && borrarFuente.mutate(eliminarFuente.id)}
@@ -194,14 +201,14 @@ function FormularioFuente({ inicial, cargando, onSubmit }: { inicial?: FuenteFor
 
   function submit(e: FormEvent) {
     e.preventDefault();
-    if (!nombre.trim()) { setError("El nombre de la Fuente es obligatorio."); return; }
+    if (!nombre.trim()) { setError("El nombre del tipo de fuente es obligatorio."); return; }
     onSubmit({ nombre, descripcion, activa });
   }
 
   return (
     <form onSubmit={submit}>
       {error && <Alerta tipo="error">{error}</Alerta>}
-      <div className="fila-formulario"><label>Nombre de la Fuente *</label><input value={nombre} onChange={(e) => setNombre(e.target.value)} /></div>
+      <div className="fila-formulario"><label>Nombre del tipo de fuente *</label><input value={nombre} onChange={(e) => setNombre(e.target.value)} /></div>
       <div className="fila-formulario"><label>Descripción</label><textarea value={descripcion} onChange={(e) => setDescripcion(e.target.value)} rows={3} /></div>
       <div className="fila-formulario"><label><input type="checkbox" checked={activa} onChange={(e) => setActiva(e.target.checked)} style={{ width: "auto", marginRight: 6 }} />Activa</label></div>
       <div className="acciones-formulario"><button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button></div>
@@ -209,10 +216,14 @@ function FormularioFuente({ inicial, cargando, onSubmit }: { inicial?: FuenteFor
   );
 }
 
-function FormularioFormato({ inicial, fuentes, cargando, onSubmit }: { inicial?: FormatoImpresion; fuentes: FuenteFormato[]; cargando: boolean; onSubmit: (body: any) => void }) {
+function FormularioFormato({ inicial, fuentes, modulosLicencia, cargando, onSubmit }: { inicial?: FormatoImpresion; fuentes: FuenteFormato[]; modulosLicencia: ModuloLicencia[]; cargando: boolean; onSubmit: (body: any) => void }) {
   const [nombre, setNombre] = useState(inicial?.nombre ?? "");
   const [fuenteId, setFuenteId] = useState(inicial?.fuenteId ?? fuentes[0]?.id ?? "");
   const [descripcion, setDescripcion] = useState(inicial?.descripcion ?? "");
+  const [tamanoFormato, setTamanoFormato] = useState(inicial?.tamanoFormato ?? "");
+  const [tamanoFormatoPersonalizado, setTamanoFormatoPersonalizado] = useState(inicial?.tamanoFormatoPersonalizado ?? "");
+  const [requiereLicencia, setRequiereLicencia] = useState(inicial?.requiereLicencia ?? false);
+  const [licenciaModuloId, setLicenciaModuloId] = useState(inicial?.licenciaModuloId ?? "");
   const [activo, setActivo] = useState(inicial?.activo ?? true);
   const [pdf, setPdf] = useState<PdfPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -240,13 +251,19 @@ function FormularioFormato({ inicial, fuentes, cargando, onSubmit }: { inicial?:
   function submit(e: FormEvent) {
     e.preventDefault();
     if (!nombre.trim()) { setError("El nombre del formato es obligatorio."); return; }
-    if (!fuenteId) { setError("La Fuente es obligatoria."); return; }
+    if (!fuenteId) { setError("El tipo de fuente es obligatorio."); return; }
     if (!descripcion.trim()) { setError("La descripción es obligatoria."); return; }
+    if (tamanoFormato === "personalizado" && !tamanoFormatoPersonalizado.trim()) { setError("Ingrese el tamaño personalizado."); return; }
+    if (requiereLicencia && !licenciaModuloId) { setError("Seleccione el tipo de licencia requerido."); return; }
     if (!inicial && !pdf) { setError("Debe cargar un PDF."); return; }
     onSubmit({
       nombre,
       fuenteId,
       descripcion,
+      tamanoFormato: tamanoFormato || null,
+      tamanoFormatoPersonalizado: tamanoFormato === "personalizado" ? tamanoFormatoPersonalizado : "",
+      requiereLicencia,
+      licenciaModuloId: requiereLicencia ? licenciaModuloId : null,
       activo,
       ...(pdf ?? {}),
     });
@@ -256,9 +273,13 @@ function FormularioFormato({ inicial, fuentes, cargando, onSubmit }: { inicial?:
     <form onSubmit={submit}>
       {error && <Alerta tipo="error">{error}</Alerta>}
       <div className="fila-formulario"><label>Nombre del formato *</label><input value={nombre} onChange={(e) => setNombre(e.target.value)} /></div>
-      <div className="fila-formulario"><label>Fuente *</label><select value={fuenteId} onChange={(e) => setFuenteId(e.target.value)}>{fuentes.map((fuente) => <option key={fuente.id} value={fuente.id}>{fuente.nombre}</option>)}</select></div>
+      <div className="fila-formulario"><label>Tipo de fuente *</label><select value={fuenteId} onChange={(e) => setFuenteId(e.target.value)}>{fuentes.map((fuente) => <option key={fuente.id} value={fuente.id}>{fuente.nombre}</option>)}</select></div>
       <div className="fila-formulario"><label>Descripción *</label><textarea value={descripcion} onChange={(e) => setDescripcion(e.target.value)} rows={3} /></div>
-      <div className="fila-formulario"><label>PDF {inicial ? "(opcional para reemplazar)" : "*"}</label><input type="file" accept="application/pdf,.pdf" onChange={(e) => cargarPdf(e.target.files?.[0])} /></div>
+      <div className="fila-formulario"><label>Tamaño del formato</label><select value={tamanoFormato} onChange={(e) => setTamanoFormato(e.target.value)}><option value="">Sin especificar</option><option value="carta">Carta</option><option value="oficio">Oficio</option><option value="a4">A4</option><option value="legal">Legal</option><option value="personalizado">Personalizado</option></select></div>
+      {tamanoFormato === "personalizado" && <div className="fila-formulario"><label>Tamaño personalizado</label><input value={tamanoFormatoPersonalizado} onChange={(e) => setTamanoFormatoPersonalizado(e.target.value)} placeholder="Ej: 21 x 14 cm" /></div>}
+      <div className="fila-formulario"><label><input type="checkbox" checked={requiereLicencia} onChange={(e) => setRequiereLicencia(e.target.checked)} style={{ width: "auto", marginRight: 6 }} />Restringir por tipo de licencia</label></div>
+      {requiereLicencia && <div className="fila-formulario"><label>Tipo de licencia</label><select value={licenciaModuloId} onChange={(e) => setLicenciaModuloId(e.target.value)}><option value="">Seleccione un tipo de licencia</option>{modulosLicencia.map((modulo) => <option key={modulo.id} value={modulo.id}>{modulo.name}</option>)}</select></div>}
+      <div className="fila-formulario"><label>PDF {!inicial ? "*" : ""}</label><input type="file" accept="application/pdf,.pdf" onChange={(e) => cargarPdf(e.target.files?.[0])} /></div>
       {inicial && <p className="texto-ayuda">PDF actual: {inicial.pdfNombreOriginal}</p>}
       {pdf && <p className="texto-ayuda">PDF seleccionado: {pdf.pdfNombreOriginal}</p>}
       <div className="fila-formulario"><label><input type="checkbox" checked={activo} onChange={(e) => setActivo(e.target.checked)} style={{ width: "auto", marginRight: 6 }} />Activo</label></div>

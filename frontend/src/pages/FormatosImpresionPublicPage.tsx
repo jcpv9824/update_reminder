@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { api, apiUrl } from "../api/client";
 import type { FormatoImpresion, FuenteFormato } from "../types";
 
+const LOGO_SAG_WEB = "https://pya.com.co/wp-content/uploads/2025/12/H_LOGO.png";
+
 export default function FormatosImpresionPublicPage() {
   const [fuenteId, setFuenteId] = useState("todas");
   const [busqueda, setBusqueda] = useState("");
@@ -44,18 +46,19 @@ export default function FormatosImpresionPublicPage() {
         <div className="catalogo-encabezado">
           <div>
             <h1>Catálogo de Formatos de Impresión</h1>
-            <p>Consulta de formatos disponibles para selección en el ERP.</p>
+            <p>Catálogo de formatos de impresión disponibles en SAG Web.</p>
           </div>
+          <img className="catalogo-logo" src={LOGO_SAG_WEB} alt="SAG Web" />
         </div>
 
         <div className="catalogo-grid">
           <aside className="catalogo-panel catalogo-fuentes">
-            <h2>Filtrar por Fuente</h2>
+            <h2>Filtrar por tipo de fuente</h2>
             <button
               className={fuenteId === "todas" ? "activo" : ""}
               onClick={() => setFuenteId("todas")}
             >
-              <span>Todas las fuentes</span><strong>{total}</strong>
+              <span>Todos los tipos</span><strong>{total}</strong>
             </button>
             {cargandoFuentes ? <div className="catalogo-vacio">Cargando...</div> : fuentes.map((fuente) => (
               <button
@@ -109,11 +112,6 @@ export default function FormatosImpresionPublicPage() {
                 <h2>Vista previa del formato</h2>
                 {seleccionado && <p>{seleccionado.nombre}</p>}
               </div>
-              {seleccionado && (
-                <a className="boton-descarga" href={apiUrl(`/public/formatos-impresion/${seleccionado.id}/descargar`)}>
-                  Descargar PDF
-                </a>
-              )}
             </div>
             {!seleccionado ? (
               <div className="catalogo-vacio catalogo-vacio-preview">Seleccione un formato de la lista para ver su vista previa.</div>

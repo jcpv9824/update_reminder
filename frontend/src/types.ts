@@ -137,6 +137,12 @@ export type FormatoImpresion = {
   fuenteId: string;
   fuenteNombre: string;
   descripcion: string;
+  tamanoFormato?: "carta" | "oficio" | "a4" | "legal" | "personalizado";
+  tamanoFormatoPersonalizado?: string;
+  requiereLicencia?: boolean;
+  licenciaModuloId?: string;
+  licenciaModuloNombre?: string;
+  licenciaModuloCodigo?: string;
   pdfNombreOriginal: string;
   pdfMimeType: "application/pdf";
   pdfUrl: string;
