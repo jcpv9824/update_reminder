@@ -147,7 +147,7 @@ function pdfResponse(formato: FormatoImpresionRecord, disposition: "inline" | "a
 }
 
 app.http("adminFuentesFormatosList", {
-  route: "admin/fuentes-formatos",
+  route: "catalogo-formatos/admin/fuentes-formatos",
   methods: ["GET"],
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
@@ -168,7 +168,7 @@ app.http("adminFuentesFormatosList", {
 });
 
 app.http("adminFuentesFormatosCreate", {
-  route: "admin/fuentes-formatos",
+  route: "catalogo-formatos/admin/fuentes-formatos",
   methods: ["POST"],
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
@@ -208,7 +208,7 @@ app.http("adminFuentesFormatosCreate", {
 });
 
 app.http("adminFuentesFormatosGet", {
-  route: "admin/fuentes-formatos/{id}",
+  route: "catalogo-formatos/admin/fuentes-formatos/{id}",
   methods: ["GET"],
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
@@ -225,7 +225,7 @@ app.http("adminFuentesFormatosGet", {
 });
 
 app.http("adminFuentesFormatosUpdate", {
-  route: "admin/fuentes-formatos/{id}",
+  route: "catalogo-formatos/admin/fuentes-formatos/{id}",
   methods: ["PUT"],
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
@@ -274,7 +274,7 @@ app.http("adminFuentesFormatosUpdate", {
 });
 
 app.http("adminFuentesFormatosDelete", {
-  route: "admin/fuentes-formatos/{id}",
+  route: "catalogo-formatos/admin/fuentes-formatos/{id}",
   methods: ["DELETE"],
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
@@ -314,7 +314,7 @@ app.http("adminFuentesFormatosDelete", {
 });
 
 app.http("adminFormatosImpresionList", {
-  route: "admin/formatos-impresion",
+  route: "catalogo-formatos/admin/formatos-impresion",
   methods: ["GET"],
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
@@ -338,7 +338,7 @@ app.http("adminFormatosImpresionList", {
 });
 
 app.http("adminFormatosImpresionCreate", {
-  route: "admin/formatos-impresion",
+  route: "catalogo-formatos/admin/formatos-impresion",
   methods: ["POST"],
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
@@ -389,7 +389,7 @@ app.http("adminFormatosImpresionCreate", {
 });
 
 app.http("adminFormatosImpresionGet", {
-  route: "admin/formatos-impresion/{id}",
+  route: "catalogo-formatos/admin/formatos-impresion/{id}",
   methods: ["GET"],
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
@@ -406,7 +406,7 @@ app.http("adminFormatosImpresionGet", {
 });
 
 app.http("adminFormatosImpresionUpdate", {
-  route: "admin/formatos-impresion/{id}",
+  route: "catalogo-formatos/admin/formatos-impresion/{id}",
   methods: ["PUT"],
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
@@ -470,7 +470,7 @@ app.http("adminFormatosImpresionUpdate", {
 });
 
 app.http("adminFormatosImpresionReplacePdf", {
-  route: "admin/formatos-impresion/{id}/pdf",
+  route: "catalogo-formatos/admin/formatos-impresion/{id}/pdf",
   methods: ["POST"],
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
@@ -511,7 +511,7 @@ app.http("adminFormatosImpresionReplacePdf", {
 });
 
 app.http("adminFormatosImpresionDelete", {
-  route: "admin/formatos-impresion/{id}",
+  route: "catalogo-formatos/admin/formatos-impresion/{id}",
   methods: ["DELETE"],
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {

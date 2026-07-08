@@ -83,8 +83,8 @@ const formatos = [
 
 function mockGets() {
   apiMock.get.mockImplementation((path: string) => {
-    if (path === "/admin/fuentes-formatos") return Promise.resolve(fuentes);
-    if (path === "/admin/formatos-impresion") return Promise.resolve(formatos);
+    if (path === "/catalogo-formatos/admin/fuentes-formatos") return Promise.resolve(fuentes);
+    if (path === "/catalogo-formatos/admin/formatos-impresion") return Promise.resolve(formatos);
     if (path === "/public/fuentes-formatos") return Promise.resolve(fuentes);
     if (path.startsWith("/public/formatos-impresion")) {
       if (path.includes("q=resumido")) return Promise.resolve([formatos[1]]);
@@ -153,7 +153,7 @@ describe("FormatosImpresionAdminPage", () => {
     await userEvent.type(field("Nombre de la Fuente *"), "Cotización");
     await userEvent.type(field("Descripción"), "Formatos para cotizaciones");
     fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
-    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/admin/fuentes-formatos", expect.objectContaining({
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/catalogo-formatos/admin/fuentes-formatos", expect.objectContaining({
       nombre: "Cotización",
       descripcion: "Formatos para cotizaciones",
       activa: true,

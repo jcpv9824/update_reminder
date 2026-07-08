@@ -5,6 +5,7 @@ import { Alerta, DialogoConfirmar, EtiquetaEstado, Modal } from "../components/C
 import type { FormatoImpresion, FuenteFormato } from "../types";
 
 type Tab = "fuentes" | "formatos";
+const ADMIN_API = "/catalogo-formatos/admin";
 
 type PdfPayload = {
   pdfBase64: string;
@@ -24,11 +25,11 @@ export default function FormatosImpresionAdminPage() {
 
   const { data: fuentes = [], isLoading: cargandoFuentes } = useQuery({
     queryKey: ["fuentes-formatos-admin"],
-    queryFn: () => api.get<FuenteFormato[]>("/admin/fuentes-formatos"),
+    queryFn: () => api.get<FuenteFormato[]>(`${ADMIN_API}/fuentes-formatos`),
   });
   const { data: formatos = [], isLoading: cargandoFormatos } = useQuery({
     queryKey: ["formatos-impresion-admin"],
-    queryFn: () => api.get<FormatoImpresion[]>("/admin/formatos-impresion"),
+    queryFn: () => api.get<FormatoImpresion[]>(`${ADMIN_API}/formatos-impresion`),
   });
 
   const fuentesFiltradas = useMemo(() => filtrar(fuentes, busqueda), [fuentes, busqueda]);
@@ -47,22 +48,22 @@ export default function FormatosImpresionAdminPage() {
   }
 
   const guardarFuente = useMutation({
-    mutationFn: ({ id, body }: { id?: string; body: any }) => id ? api.put(`/admin/fuentes-formatos/${id}`, body) : api.post("/admin/fuentes-formatos", body),
+    mutationFn: ({ id, body }: { id?: string; body: any }) => id ? api.put(`${ADMIN_API}/fuentes-formatos/${id}`, body) : api.post(`${ADMIN_API}/fuentes-formatos`, body),
     onSuccess: (_, vars) => onSuccess(vars.id ? "Fuente actualizada correctamente." : "Fuente creada correctamente."),
     onError: (e: any) => setError(e?.message ?? "No se pudo guardar la Fuente."),
   });
   const guardarFormato = useMutation({
-    mutationFn: ({ id, body }: { id?: string; body: any }) => id ? api.put(`/admin/formatos-impresion/${id}`, body) : api.post("/admin/formatos-impresion", body),
+    mutationFn: ({ id, body }: { id?: string; body: any }) => id ? api.put(`${ADMIN_API}/formatos-impresion/${id}`, body) : api.post(`${ADMIN_API}/formatos-impresion`, body),
     onSuccess: (_, vars) => onSuccess(vars.id ? "Formato actualizado correctamente." : "Formato creado correctamente."),
     onError: (e: any) => setError(e?.message ?? "No se pudo guardar el formato."),
   });
   const borrarFuente = useMutation({
-    mutationFn: (id: string) => api.del(`/admin/fuentes-formatos/${id}`),
+    mutationFn: (id: string) => api.del(`${ADMIN_API}/fuentes-formatos/${id}`),
     onSuccess: () => onSuccess("Fuente eliminada."),
     onError: (e: any) => setError(e?.message ?? "No se pudo eliminar la Fuente."),
   });
   const borrarFormato = useMutation({
-    mutationFn: (id: string) => api.del(`/admin/formatos-impresion/${id}`),
+    mutationFn: (id: string) => api.del(`${ADMIN_API}/formatos-impresion/${id}`),
     onSuccess: () => onSuccess("Formato eliminado."),
     onError: (e: any) => setError(e?.message ?? "No se pudo eliminar el formato."),
   });
