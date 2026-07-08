@@ -221,7 +221,6 @@ describe("buildAuditLogEntry", () => {
         nombre: "Factura de venta",
         descripcion: "Documentos de venta",
         activa: true,
-        orden: 1,
         unsafe: "no debe persistir",
       },
     });
@@ -230,7 +229,6 @@ describe("buildAuditLogEntry", () => {
       nombre: "Factura de venta",
       descripcion: "Documentos de venta",
       activa: true,
-      orden: 1,
     });
     expect(JSON.stringify(entry)).not.toContain("unsafe");
   });

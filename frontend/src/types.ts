@@ -123,7 +123,6 @@ export type FuenteFormato = {
   nombre: string;
   descripcion?: string;
   activa: boolean;
-  orden?: number | null;
   status: "active" | "inactive" | "deleted";
   formatosActivos?: number;
   createdAt: string;
@@ -143,7 +142,6 @@ export type FormatoImpresion = {
   pdfUrl: string;
   downloadUrl: string;
   activo: boolean;
-  orden?: number | null;
   status: "active" | "inactive" | "deleted";
   createdAt: string;
   createdBy: string;

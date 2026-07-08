@@ -166,6 +166,38 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
   margin-bottom: 16px;
 }
 .barra-filtros .campo { flex: 1; min-width: 160px; }
+.barra-filtros .campo-busqueda-formatos {
+  flex: 0 1 420px;
+}
+.buscador-limpiable {
+  display: flex;
+  align-items: center;
+  max-width: 420px;
+  position: relative;
+}
+.buscador-limpiable input {
+  padding-right: 36px;
+}
+.buscador-limpiable button {
+  position: absolute;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-weight: 700;
+  line-height: 1;
+}
+.buscador-limpiable button:hover {
+  background: #eef2f7;
+  color: var(--color-primary);
+}
 
 .pestanas {
   display: flex;

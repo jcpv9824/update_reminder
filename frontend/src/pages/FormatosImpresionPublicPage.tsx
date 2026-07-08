@@ -69,12 +69,19 @@ export default function FormatosImpresionPublicPage() {
           </aside>
 
           <section className="catalogo-panel catalogo-listado">
-            <input
-              value={busqueda}
-              onChange={(e) => setBusqueda(e.target.value)}
-              placeholder="Buscar por nombre o descripción del formato..."
-              aria-label="Buscar formato"
-            />
+            <div className="buscador-limpiable buscador-formatos-publico">
+              <input
+                value={busqueda}
+                onChange={(e) => setBusqueda(e.target.value)}
+                placeholder="Buscar por nombre o descripción del formato..."
+                aria-label="Buscar formato"
+              />
+              {busqueda && (
+                <button type="button" onClick={() => setBusqueda("")} aria-label="Limpiar busqueda" title="Limpiar busqueda">
+                  x
+                </button>
+              )}
+            </div>
             {cargandoFormatos ? (
               <div className="catalogo-vacio">Cargando formatos...</div>
             ) : formatos.length === 0 ? (

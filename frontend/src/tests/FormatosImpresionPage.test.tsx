@@ -143,6 +143,18 @@ describe("FormatosImpresionPublicPage", () => {
       "/api/public/formatos-impresion/formato_resumido/pdf"
     );
   });
+
+  it("permite limpiar rápidamente la búsqueda pública", async () => {
+    renderWithQuery(<FormatosImpresionPublicPage />);
+    const buscador = await screen.findByLabelText("Buscar formato");
+    await userEvent.type(buscador, "resumido");
+    expect(await screen.findByRole("button", { name: "Limpiar busqueda" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Limpiar busqueda" }));
+
+    await waitFor(() => expect(buscador).toHaveValue(""));
+    expect((await screen.findAllByText("Factura de Venta - Estándar")).length).toBeGreaterThan(0);
+  });
 });
 
 describe("FormatosImpresionAdminPage", () => {
@@ -169,5 +181,19 @@ describe("FormatosImpresionAdminPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
     expect(await screen.findByText("Debe cargar un PDF.")).toBeInTheDocument();
     expect(apiMock.post).not.toHaveBeenCalled();
+  });
+
+  it("permite limpiar rápidamente la búsqueda administrativa", async () => {
+    renderWithQuery(<FormatosImpresionAdminPage />);
+    await screen.findByText("Factura de venta");
+    const buscador = screen.getByPlaceholderText("Buscar por nombre o descripción...");
+
+    await userEvent.type(buscador, "remision");
+    expect(screen.queryByText("Factura de venta")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Limpiar busqueda" }));
+
+    await waitFor(() => expect(buscador).toHaveValue(""));
+    expect(screen.getByText("Factura de venta")).toBeInTheDocument();
   });
 });

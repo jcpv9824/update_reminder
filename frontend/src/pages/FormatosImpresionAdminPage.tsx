@@ -84,22 +84,28 @@ export default function FormatosImpresionAdminPage() {
         <button className={tab === "formatos" ? "activo" : ""} onClick={() => setTab("formatos")}>Formatos</button>
       </div>
       <div className="barra-filtros">
-        <div className="campo">
+        <div className="campo campo-busqueda-formatos">
           <label>Buscar</label>
-          <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar por nombre o descripción..." />
+          <div className="buscador-limpiable">
+            <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar por nombre o descripción..." />
+            {busqueda && (
+              <button type="button" onClick={() => setBusqueda("")} aria-label="Limpiar busqueda" title="Limpiar busqueda">
+                x
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
       {tab === "fuentes" && (
         cargandoFuentes ? <div className="cargando">Cargando Fuentes...</div> : (
           <table>
-            <thead><tr><th>Nombre de la Fuente</th><th>Descripción</th><th>Orden</th><th>Estado</th><th>Acciones</th></tr></thead>
+            <thead><tr><th>Nombre de la Fuente</th><th>Descripción</th><th>Estado</th><th>Acciones</th></tr></thead>
             <tbody>
               {fuentesFiltradas.map((fuente) => (
                 <tr key={fuente.id}>
                   <td>{fuente.nombre}</td>
                   <td>{fuente.descripcion || "-"}</td>
-                  <td>{fuente.orden ?? "-"}</td>
                   <td><EtiquetaEstado estado={fuente.activa ? "active" : "inactive"} /></td>
                   <td className="acciones-tabla">
                     <button onClick={() => setModalFuente(fuente)}>Editar</button>
@@ -107,7 +113,7 @@ export default function FormatosImpresionAdminPage() {
                   </td>
                 </tr>
               ))}
-              {fuentesFiltradas.length === 0 && <tr><td colSpan={5}><div className="vacio">No hay Fuentes para mostrar.</div></td></tr>}
+              {fuentesFiltradas.length === 0 && <tr><td colSpan={4}><div className="vacio">No hay Fuentes para mostrar.</div></td></tr>}
             </tbody>
           </table>
         )
@@ -116,7 +122,7 @@ export default function FormatosImpresionAdminPage() {
       {tab === "formatos" && (
         cargandoFormatos ? <div className="cargando">Cargando formatos...</div> : (
           <table>
-            <thead><tr><th>Nombre del formato</th><th>Fuente</th><th>Descripción</th><th>PDF</th><th>Orden</th><th>Estado</th><th>Acciones</th></tr></thead>
+            <thead><tr><th>Nombre del formato</th><th>Fuente</th><th>Descripción</th><th>PDF</th><th>Estado</th><th>Acciones</th></tr></thead>
             <tbody>
               {formatosFiltrados.map((formato) => (
                 <tr key={formato.id}>
@@ -124,7 +130,6 @@ export default function FormatosImpresionAdminPage() {
                   <td>{formato.fuenteNombre}</td>
                   <td>{formato.descripcion}</td>
                   <td><a href={apiUrl(`/public/formatos-impresion/${formato.id}/pdf`)} target="_blank" rel="noreferrer">Ver PDF</a></td>
-                  <td>{formato.orden ?? "-"}</td>
                   <td><EtiquetaEstado estado={formato.activo ? "active" : "inactive"} /></td>
                   <td className="acciones-tabla">
                     <button onClick={() => setModalFormato(formato)}>Editar</button>
@@ -132,7 +137,7 @@ export default function FormatosImpresionAdminPage() {
                   </td>
                 </tr>
               ))}
-              {formatosFiltrados.length === 0 && <tr><td colSpan={7}><div className="vacio">No hay formatos para mostrar.</div></td></tr>}
+              {formatosFiltrados.length === 0 && <tr><td colSpan={6}><div className="vacio">No hay formatos para mostrar.</div></td></tr>}
             </tbody>
           </table>
         )
@@ -185,13 +190,12 @@ function FormularioFuente({ inicial, cargando, onSubmit }: { inicial?: FuenteFor
   const [nombre, setNombre] = useState(inicial?.nombre ?? "");
   const [descripcion, setDescripcion] = useState(inicial?.descripcion ?? "");
   const [activa, setActiva] = useState(inicial?.activa ?? true);
-  const [orden, setOrden] = useState(inicial?.orden?.toString() ?? "");
   const [error, setError] = useState<string | null>(null);
 
   function submit(e: FormEvent) {
     e.preventDefault();
     if (!nombre.trim()) { setError("El nombre de la Fuente es obligatorio."); return; }
-    onSubmit({ nombre, descripcion, activa, orden: orden.trim() ? Number(orden) : null });
+    onSubmit({ nombre, descripcion, activa });
   }
 
   return (
@@ -199,7 +203,6 @@ function FormularioFuente({ inicial, cargando, onSubmit }: { inicial?: FuenteFor
       {error && <Alerta tipo="error">{error}</Alerta>}
       <div className="fila-formulario"><label>Nombre de la Fuente *</label><input value={nombre} onChange={(e) => setNombre(e.target.value)} /></div>
       <div className="fila-formulario"><label>Descripción</label><textarea value={descripcion} onChange={(e) => setDescripcion(e.target.value)} rows={3} /></div>
-      <div className="fila-formulario"><label>Orden</label><input type="number" min={0} value={orden} onChange={(e) => setOrden(e.target.value)} /></div>
       <div className="fila-formulario"><label><input type="checkbox" checked={activa} onChange={(e) => setActiva(e.target.checked)} style={{ width: "auto", marginRight: 6 }} />Activa</label></div>
       <div className="acciones-formulario"><button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button></div>
     </form>
@@ -211,7 +214,6 @@ function FormularioFormato({ inicial, fuentes, cargando, onSubmit }: { inicial?:
   const [fuenteId, setFuenteId] = useState(inicial?.fuenteId ?? fuentes[0]?.id ?? "");
   const [descripcion, setDescripcion] = useState(inicial?.descripcion ?? "");
   const [activo, setActivo] = useState(inicial?.activo ?? true);
-  const [orden, setOrden] = useState(inicial?.orden?.toString() ?? "");
   const [pdf, setPdf] = useState<PdfPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -246,7 +248,6 @@ function FormularioFormato({ inicial, fuentes, cargando, onSubmit }: { inicial?:
       fuenteId,
       descripcion,
       activo,
-      orden: orden.trim() ? Number(orden) : null,
       ...(pdf ?? {}),
     });
   }
@@ -260,7 +261,6 @@ function FormularioFormato({ inicial, fuentes, cargando, onSubmit }: { inicial?:
       <div className="fila-formulario"><label>PDF {inicial ? "(opcional para reemplazar)" : "*"}</label><input type="file" accept="application/pdf,.pdf" onChange={(e) => cargarPdf(e.target.files?.[0])} /></div>
       {inicial && <p className="texto-ayuda">PDF actual: {inicial.pdfNombreOriginal}</p>}
       {pdf && <p className="texto-ayuda">PDF seleccionado: {pdf.pdfNombreOriginal}</p>}
-      <div className="fila-formulario"><label>Orden</label><input type="number" min={0} value={orden} onChange={(e) => setOrden(e.target.value)} /></div>
       <div className="fila-formulario"><label><input type="checkbox" checked={activo} onChange={(e) => setActivo(e.target.checked)} style={{ width: "auto", marginRight: 6 }} />Activo</label></div>
       <div className="acciones-formulario"><button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button></div>
     </form>

@@ -112,14 +112,14 @@ const ENTITY_SNAPSHOT_SCHEMAS: Record<string, AuditSchema> = {
     deletedAt: "scalar", deletedBy: "scalar",
   },
   fuenteFormato: {
-    id: "scalar", nombre: "scalar", descripcion: "scalar", activa: "scalar", orden: "scalar",
+    id: "scalar", nombre: "scalar", descripcion: "scalar", activa: "scalar",
     status: "scalar", createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
     deletedAt: "scalar", deletedBy: "scalar",
   },
   formatoImpresion: {
     id: "scalar", nombre: "scalar", fuenteId: "scalar", fuenteNombre: "scalar",
     descripcion: "scalar", pdfNombreOriginal: "scalar", pdfMimeType: "scalar", activo: "scalar",
-    orden: "scalar", status: "scalar", createdAt: "scalar", createdBy: "scalar",
+    status: "scalar", createdAt: "scalar", createdBy: "scalar",
     updatedAt: "scalar", updatedBy: "scalar", deletedAt: "scalar", deletedBy: "scalar",
   },
   settings: {

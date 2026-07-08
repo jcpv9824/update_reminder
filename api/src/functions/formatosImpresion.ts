@@ -15,7 +15,6 @@ const FuenteSchema = z.object({
   nombre: z.string().min(1, "El nombre de la Fuente es obligatorio.").max(160),
   descripcion: z.string().max(1000).optional(),
   activa: z.boolean().default(true),
-  orden: z.number().int().min(0).nullable().optional(),
 });
 
 const FuenteUpdateSchema = FuenteSchema.partial();
@@ -30,7 +29,6 @@ const FormatoSchema = z.object({
   fuenteId: z.string().min(1, "La Fuente es obligatoria."),
   descripcion: z.string().min(1, "La descripción es obligatoria.").max(1600),
   activo: z.boolean().default(true),
-  orden: z.number().int().min(0).nullable().optional(),
 }).merge(PdfSchema);
 
 const FormatoUpdateSchema = FormatoSchema.partial();
@@ -46,8 +44,8 @@ function normalize(value: string): string {
   return value.trim().toLocaleLowerCase("es-CO");
 }
 
-function sortByOrdenNombre<T extends { orden?: number | null; nombre: string }>(items: T[]): T[] {
-  return [...items].sort((a, b) => (a.orden ?? 999999) - (b.orden ?? 999999) || a.nombre.localeCompare(b.nombre, "es"));
+function sortByNombre<T extends { nombre: string }>(items: T[]): T[] {
+  return [...items].sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
 }
 
 function sanitizeFuente(record: FuenteFormatoRecord) {
@@ -157,7 +155,7 @@ app.http("adminFuentesFormatosList", {
       const search = req.query.get("search")?.trim().toLowerCase();
       let items = await readFuentes();
       if (search) items = items.filter((item) => `${item.nombre} ${item.descripcion ?? ""}`.toLowerCase().includes(search));
-      items = sortByOrdenNombre(items);
+      items = sortByNombre(items);
       const pagination = getPagination(req);
       if (pagination.enabled) return ok(paginateArray(items.map(sanitizeFuente), pagination.page, pagination.pageSize));
       return ok(items.map(sanitizeFuente));
@@ -184,7 +182,6 @@ app.http("adminFuentesFormatosCreate", {
         nombre: parsed.data.nombre.trim(),
         descripcion: parsed.data.descripcion?.trim() || undefined,
         activa: parsed.data.activa,
-        orden: parsed.data.orden ?? null,
         status: parsed.data.activa ? "active" : "inactive",
         createdAt: now,
         createdBy: user.id,
@@ -246,7 +243,6 @@ app.http("adminFuentesFormatosUpdate", {
         ...(parsed.data.nombre !== undefined ? { nombre: parsed.data.nombre.trim() } : {}),
         ...(parsed.data.descripcion !== undefined ? { descripcion: parsed.data.descripcion.trim() || undefined } : {}),
         ...(parsed.data.activa !== undefined ? { activa: parsed.data.activa, status: parsed.data.activa ? "active" : "inactive" } : {}),
-        ...(parsed.data.orden !== undefined ? { orden: parsed.data.orden ?? null } : {}),
         updatedAt: new Date().toISOString(),
         updatedBy: user.id,
       };
@@ -326,7 +322,7 @@ app.http("adminFormatosImpresionList", {
       let items = await readFormatos();
       if (fuenteId) items = items.filter((item) => item.fuenteId === fuenteId);
       if (search) items = items.filter((item) => `${item.nombre} ${item.descripcion} ${item.fuenteNombre}`.toLowerCase().includes(search));
-      items = sortByOrdenNombre(items);
+      items = sortByNombre(items);
       const pagination = getPagination(req);
       const sanitized = items.map(sanitizeFormato);
       if (pagination.enabled) return ok(paginateArray(sanitized, pagination.page, pagination.pageSize));
@@ -364,7 +360,6 @@ app.http("adminFormatosImpresionCreate", {
         pdfNombreOriginal: sanitizePdfName(parsed.data.pdfNombreOriginal),
         pdfMimeType: "application/pdf",
         activo: parsed.data.activo,
-        orden: parsed.data.orden ?? null,
         status: parsed.data.activo ? "active" : "inactive",
         createdAt: now,
         createdBy: user.id,
@@ -447,7 +442,6 @@ app.http("adminFormatosImpresionUpdate", {
         pdfBase64,
         pdfNombreOriginal,
         ...(parsed.data.activo !== undefined ? { activo: parsed.data.activo, status: parsed.data.activo ? "active" : "inactive" } : {}),
-        ...(parsed.data.orden !== undefined ? { orden: parsed.data.orden ?? null } : {}),
         updatedAt: new Date().toISOString(),
         updatedBy: user.id,
       };
@@ -557,7 +551,7 @@ app.http("publicFuentesFormatosList", {
       const activeFormatos = formatos.filter((formato) => formato.activo && formato.status !== "deleted");
       const counts = new Map<string, number>();
       activeFormatos.forEach((formato) => counts.set(formato.fuenteId, (counts.get(formato.fuenteId) ?? 0) + 1));
-      const items = sortByOrdenNombre(fuentes.filter((fuente) => fuente.activa && (counts.get(fuente.id) ?? 0) > 0))
+      const items = sortByNombre(fuentes.filter((fuente) => fuente.activa && (counts.get(fuente.id) ?? 0) > 0))
         .map((fuente) => ({ ...sanitizeFuente(fuente), formatosActivos: counts.get(fuente.id) ?? 0 }));
       return ok(items);
     } catch (e) {
@@ -578,7 +572,7 @@ app.http("publicFormatosImpresionList", {
       let items = (await readFormatos()).filter((formato) => formato.activo && fuentesActivas.has(formato.fuenteId));
       if (fuenteId) items = items.filter((item) => item.fuenteId === fuenteId);
       if (q) items = items.filter((item) => `${item.nombre} ${item.descripcion}`.toLowerCase().includes(q));
-      items = sortByOrdenNombre(items);
+      items = sortByNombre(items);
       const sanitized = items.map(sanitizeFormato);
       const pagination = getPagination(req);
       if (pagination.enabled) return ok(paginateArray(sanitized, pagination.page, pagination.pageSize));

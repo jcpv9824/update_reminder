@@ -185,7 +185,6 @@ export type FuenteFormatoRecord = {
   nombre: string;
   descripcion?: string;
   activa: boolean;
-  orden?: number | null;
   status: EntityStatus;
   createdAt: string;
   createdBy: string;
@@ -205,7 +204,6 @@ export type FormatoImpresionRecord = {
   pdfNombreOriginal: string;
   pdfMimeType: "application/pdf";
   activo: boolean;
-  orden?: number | null;
   status: EntityStatus;
   createdAt: string;
   createdBy: string;
