@@ -44,7 +44,7 @@ La guard de salida hacia `collecting` exige AMBAS en todos los casos.
 
 ## 2. PLANTILLA C1 — Migración (`migration`, v1)
 
-Fuente primaria: [PROC] §1 (flujo de negocio 14 pasos + paso a paso técnico 16 pasos, fases A–F) + [SQL] §B/C. Fuente confiable: imagen + docx (regla de confianza [PROC] encabezado).
+Fuente primaria: [PROC] §1 (flujo de negocio 14 pasos + paso a paso técnico **17 pasos**, fases A–F) + [SQL] §B/C. Fuente confiable: imagen + docx (regla de confianza [PROC] encabezado).
 
 ### Etapas de negocio
 
@@ -66,7 +66,8 @@ Fuente primaria: [PROC] §1 (flujo de negocio 14 pasos + paso a paso técnico 16
 | `c1.a.correosInvalidos` | A | Query de correos con **formato inválido** (`10 - validacion_formato_correos.sql`, lista blanca + columna Motivo); si hay → cliente corrige. **STOP**. La validación definitiva la hace la importación; el mismo query va como Consulta 3 en los prerrequisitos | ✔ | support | [PROC] §1.B.4 (jul. 2026) |
 | `c1.b.actualizarLibrerias` | B | Actualizar librerías y BD a la última versión (pruebas) — ANTES de los scripts (RN-10) | ✔ | support | [PROC] §1.B.4 |
 | `c1.b.scripts` | B | Correr los **5 scripts** en orden: `a_sag_web → a_sagweb_Menu → a_format_sag_web → a_report_sag_web → sp_migrar_usuarios_permisos_web` (RN-09; usar siempre la última versión) | ✔ | support | [PROC] §1.B.5, [SQL] §B |
-| `c1.b.extraerUsuarios` | B | Extraer usuarios a **CSV** (query `08 - consulta_importacion_usuarios.sql` con NúmeroTelefono, DESPUÉS de los scripts — RN-11; "Guardar resultados de la cuadrícula", nombre `ImportacionUsuarios_{COMPAÑIA}.csv`, sin modificar); **sub-paso:** conteo vs. contratados (`09 - conteo_usuarios_activos.sql`) | ✔ | support | [PROC] §1.B.7 (jul. 2026) |
+| `c1.b.validarScripts` | B | **Validar marcas de versión** (consulta embebida — `03_scripts_web.md` §F): 5 marcas web con valor y FechaUpdate de hoy (vacía = script olvidado → correrlo); `migrar_usuarios` SIN "SOLO" (permisos completos); versión local del mes. Propósito: detectar scripts olvidados | ✔ | support | docx C1 Paso 7 (jul. 2026), [SQL] §F |
+| `c1.b.extraerUsuarios` | B | Extraer usuarios a **CSV** (query de importación (`SQLs Web/Consultas de apoyo/`) con NúmeroTelefono, DESPUÉS de los scripts — RN-11; "Guardar resultados de la cuadrícula", nombre `ImportacionUsuarios_{COMPAÑIA}.csv`, sin modificar); **sub-paso:** conteo vs. contratados (consulta de conteo embebida) | ✔ | support | [PROC] §1.B.7 (jul. 2026) |
 | `c1.c.cadenaConexion` | C | Armar cadena de conexión (`IP,Puerto; Initial Catalog; User ID; Password`) | ✔ | **lead** | [PROC] §1.B.7 |
 | `c1.c.crearCliente` | C | Crear cliente + licenciamiento en SAG Admin (reglas RN-13 en `instructions`) | ✔ | **lead** | [PROC] §1.B.8 |
 | `c1.c.crearCompanias` | C | Crear compañías (NIT limpio, Token=1, Dispositivos=1) | ✔ | **lead** | [PROC] §1.B.9 |
@@ -105,20 +106,21 @@ Fuente: [PROC] §2 + [SQL] §B (cliente nuevo) y §C ter (script de borrado). Fu
 | `c2.a.entregables` | A | Validar datos: usuarios contratados, dominio, cliente/compañías, **correo del admin de CADA compañía (RN-19)**, módulos. **NO aplican queries de correos** (no hay base previa — RN-03/04) | ✔ | support | docx C2 Paso 1 |
 | `c2.b.bdNueva` | B | Confirmar recepción de las BD nuevas — **una por compañía** (clones de `NEW SAG`; las entrega infraestructura, las solicitó Ventas) | ✔ | support | [PROC] §2.B.1, RN-19 |
 | `c2.b.scripts` | B | Correr **4 scripts** (SIN `sp_migrar`): `a_sag_web → a_sagweb_Menu → a_format_sag_web → a_report_sag_web`, en cada BD de compañía (RN-09) | ✔ | support | docx C2 Paso 2, [SQL] §B |
-| `c2.b.actualizarAdmin` | B | **Actualizar el correo del admin** (`a_sagweb_actualizar_admin`) en CADA BD de compañía con el `adminEmail` de esa compañía — DESPUÉS de los scripts; solo UPDATE de `terceros.ss_email` + `usuarios.ss_login_web` (`ka_nl_tercero = 1`); nunca borrar/recrear. Evidencia obligatoria: correos aplicados por BD | ✔ | support | docx C2 Paso 3 (nuevo), [SQL] §C quater, RN-19 |
-| `c2.c.cadenaConexion` | C | Obtener la cadena de conexión a la BD nueva | ✔ | support | docx C2 Paso 4 (responsable: Servicio al Cliente) |
-| `c2.c.crearCliente` | C | Crear cliente + licenciamiento (RN-13) | ✔ | **lead** | docx C2 Paso 5 |
-| `c2.c.crearCompanias` | C | Crear compañías | ✔ | **lead** | docx C2 Paso 6 |
-| `c2.c.usuariosAdmin` | C | Crear **los usuarios administradores (uno por compañía)** con el `adminEmail` de cada una y **contraseña de estándar de compañía** (RN-19; en `instructions`), y asociarlos al cliente. Mismo correo para todas → un solo usuario. Los demás usuarios los crea el CLIENTE en SAG Web (RN-04) | ✔ | **lead** | docx C2 Pasos 7–8, [DEC] jul. 2026 |
-| `c2.d.plesk` | D | Publicar en Plesk (igual C1; RN-14) | ✔ | support | docx C2 Paso 9 |
-| `c2.d.objectStorage` | D | Object storage / Parámetros Web (con el usuario admin) | ✔ | support | docx C2 Paso 10 |
-| `c2.e.validarFinal` | E | Validar login + permisos/menús con el administrador de alguna compañía | ✔ | **lead** | docx C2 Paso 11 (responsable: Líder de Operaciones) |
-| `c2.f.produccion` | F | **Mismo ambiente** (RN-12): borrar datos de prueba con el script de borrado de movimientos (deja la BD en cero, reinicia consecutivos; enlace SharePoint en `instructions`) y **cargar los datos reales** — lo hace el agente de Soporte asignado junto con el cliente (o solo el cliente), manual o con importaciones según el caso | ✔ | **lead** | docx C2 Paso 13, [SQL] §C ter, [DEC] jul. 2026 |
+| `c2.b.validarScripts` | B | **Validar marcas + versión de la plantilla** (por cada BD de compañía): 4 marcas web con FechaUpdate de hoy; `migrar_usuarios` VACÍA = **esperado** (no es olvido); si la clonada de `NEW SAG` muestra versiones viejas → **escalar al Líder de Soporte** (actualizar la plantilla) y correr las versiones recientes | ✔ | support | docx C2 Paso 3 (jul. 2026), [SQL] §F |
+| `c2.b.actualizarAdmin` | B | **Actualizar el correo del admin** (`a_sagweb_actualizar_admin`) en CADA BD de compañía con el `adminEmail` de esa compañía — DESPUÉS de los scripts; solo UPDATE de `terceros.ss_email` + `usuarios.ss_login_web` (`ka_nl_tercero = 1`); nunca borrar/recrear. Evidencia obligatoria: correos aplicados por BD | ✔ | support | docx C2 Paso 4 (jul. 2026), [SQL] §C quater, RN-19 |
+| `c2.c.cadenaConexion` | C | Obtener la cadena de conexión a la BD nueva | ✔ | support | docx C2 Paso 5 (responsable: Servicio al Cliente) |
+| `c2.c.crearCliente` | C | Crear cliente + licenciamiento (RN-13) | ✔ | **lead** | docx C2 Paso 6 |
+| `c2.c.crearCompanias` | C | Crear compañías | ✔ | **lead** | docx C2 Paso 7 |
+| `c2.c.usuariosAdmin` | C | Crear **los usuarios administradores (uno por compañía)** con el `adminEmail` de cada una y **contraseña de estándar de compañía** (RN-19; en `instructions`), y asociarlos al cliente. Mismo correo para todas → un solo usuario. Los demás usuarios los crea el CLIENTE en SAG Web (RN-04) | ✔ | **lead** | docx C2 Pasos 8–9, [DEC] jul. 2026 |
+| `c2.d.plesk` | D | Publicar en Plesk (igual C1; RN-14) | ✔ | support | docx C2 Paso 10 |
+| `c2.d.objectStorage` | D | Object storage / Parámetros Web (con el usuario admin) | ✔ | support | docx C2 Paso 11 |
+| `c2.e.validarFinal` | E | Validar login + permisos/menús con el administrador de alguna compañía | ✔ | **lead** | docx C2 Paso 12 (responsable: Líder de Operaciones) |
+| `c2.f.produccion` | F | **Mismo ambiente** (RN-12): borrar datos de prueba con el script de borrado de movimientos (deja la BD en cero, reinicia consecutivos; enlace SharePoint en `instructions`) y **cargar los datos reales** — lo hace el agente de Soporte asignado junto con el cliente (o solo el cliente), manual o con importaciones según el caso | ✔ | **lead** | docx C2 Paso 14, [SQL] §C ter, [DEC] jul. 2026 |
 
 **Notas de fidelidad:**
 - No existe paso "crear usuarios" (lista) ni "extraer usuarios": el cliente crea los suyos. Lo que SÍ existe (RN-19, supersede [DEC] B.8) es el **admin exclusivo por compañía**: `adminEmail` en el modelo + paso `c2.b.actualizarAdmin` + creación en SAG Admin con contraseña de estándar de compañía. El admin de plantilla jamás se entrega tal cual (hueco multi-tenant corregido).
 - FASE F no crea cliente/compañía nuevos en SAG Admin: es el MISMO ambiente ([PROC] §2.B contraste explícito con migración).
-- El paso a paso definitivo tiene **13 pasos** tras insertar el Paso 3 (actualizar correo del admin).
+- El paso a paso definitivo tiene **14 pasos** (Paso 3 = validación de marcas; Paso 4 = actualizar correo del admin).
 
 ---
 
@@ -147,6 +149,7 @@ Fuente: [PROC] §3 + [SQL] §C bis. Fuente confiable: imagen + co-construcción.
 | `c3.a.correosVacios` | A | Query de correos vacíos. STOP | ✔ | support | [PROC] §3.B |
 | `c3.b.conectividad` | B | Si `hosting=local`: confirmar conectividad a la BD del cliente (IPs de firewall autorizadas). Si nube: `not_applicable` | ✔ | support | [CTX] §3.1, [SQL] §D (error de red) |
 | `c3.b.scripts` | B | Correr **4 scripts generales + `a_sagweb_migrar_login`** (en lugar del SP completo; sin él los usuarios no inician sesión — RN-09) | ✔ | support | [PROC] §3.B, [SQL] §C bis |
+| `c3.b.validarScripts` | B | **Validar marcas de versión**: 4 marcas web con FechaUpdate de hoy + `migrar_usuarios` CON "SOLO migracion de login/emails" (la escribe el script 6; si está vacía, faltó correrlo y los usuarios no podrán iniciar sesión) | ✔ | support | docx C3 Paso 6 (jul. 2026), [SQL] §F |
 | `c3.c.clienteSagAdmin` | C | Cliente en SAG Admin: **reutilizar si existe; crear si no (lo común)** + licenciamiento del módulo | ✔ | **lead** | [PROC] §3.B |
 | `c3.c.companias` | C | Crear/verificar compañías | ✔ | **lead** | [PROC] §3.B (genérico C) |
 | `c3.c.usuariosModulo` | C | Crear los usuarios del módulo (de `moduleUsers` — NO se extraen de la BD) y asociarlos | ✔ | **lead** | [DEC] A ("se usa la lista que da el cliente") |
