@@ -111,6 +111,17 @@ const ENTITY_SNAPSHOT_SCHEMAS: Record<string, AuditSchema> = {
     createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
     deletedAt: "scalar", deletedBy: "scalar",
   },
+  fuenteFormato: {
+    id: "scalar", nombre: "scalar", descripcion: "scalar", activa: "scalar", orden: "scalar",
+    status: "scalar", createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
+    deletedAt: "scalar", deletedBy: "scalar",
+  },
+  formatoImpresion: {
+    id: "scalar", nombre: "scalar", fuenteId: "scalar", fuenteNombre: "scalar",
+    descripcion: "scalar", pdfNombreOriginal: "scalar", pdfMimeType: "scalar", activo: "scalar",
+    orden: "scalar", status: "scalar", createdAt: "scalar", createdBy: "scalar",
+    updatedAt: "scalar", updatedBy: "scalar", deletedAt: "scalar", deletedBy: "scalar",
+  },
   settings: {
     id: "scalar", emailProvider: "scalar", emailEnabled: "scalar", smtpPort: "scalar", smtpSecure: "scalar",
     updaterRemindersEnabled: "scalar", reminderDaysBefore: "scalarArray", reminderTime: "scalar",
@@ -190,6 +201,13 @@ const ACTION_METADATA_SCHEMAS: Record<string, AuditSchema> = {
   rate_limit_exceeded: fields("scope", "keyType", "retryAfterSeconds"),
   account_lockout_triggered: fields("scope", "keyType", "retryAfterSeconds"),
   audit_logs_sanitized: fields("scanned", "updated"),
+  fuente_formato_created: fields(),
+  fuente_formato_updated: fields(),
+  fuente_formato_deleted: fields(),
+  formato_impresion_created: fields("pdfLoaded"),
+  formato_impresion_updated: fields(),
+  formato_impresion_pdf_replaced: fields("previousPdfName", "newPdfName"),
+  formato_impresion_deleted: fields(),
 };
 
 const SECRET_CONTENT_PATTERNS = [

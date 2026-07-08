@@ -35,7 +35,9 @@ export type ContainerName =
   | "appSettings"
   | "emailNotifications"
   | "securityRateLimits"
-  | "authSessions";
+  | "authSessions"
+  | "fuentesFormatos"
+  | "formatosImpresion";
 
 export function getContainer(name: ContainerName): Container {
   return getDatabase().container(name);

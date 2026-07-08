@@ -51,6 +51,10 @@ export function canViewAuditLogs(user: CurrentUser): boolean {
   ]);
 }
 
+export function canManagePrintFormats(user: CurrentUser): boolean {
+  return hasAnyRole(user, ["admin", "formatos_impresion.admin"]);
+}
+
 export function canCompleteDatabaseTask(
   user: CurrentUser,
   task: UpdateTask

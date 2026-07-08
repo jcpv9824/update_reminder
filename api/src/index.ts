@@ -11,6 +11,7 @@ import "./functions/auditLogs";
 import "./functions/setup";
 import "./functions/settings";
 import "./functions/reports";
+import "./functions/formatosImpresion";
 import "./functions/generateDailyUpdateTasks";
 import "./functions/sendScheduledReminders";
 import "./functions/sendOverdueAlerts";

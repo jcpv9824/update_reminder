@@ -4,7 +4,8 @@ export type Role =
   | "client_manager"
   | "database_updater"
   | "domain_updater"
-  | "viewer";
+  | "viewer"
+  | "formatos_impresion.admin";
 
 export type Usuario = {
   id: string;
@@ -115,6 +116,39 @@ export type AsignacionLicencia = {
   active?: boolean;
   createdAt?: string;
   updatedAt?: string;
+};
+
+export type FuenteFormato = {
+  id: string;
+  nombre: string;
+  descripcion?: string;
+  activa: boolean;
+  orden?: number | null;
+  status: "active" | "inactive" | "deleted";
+  formatosActivos?: number;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+};
+
+export type FormatoImpresion = {
+  id: string;
+  nombre: string;
+  fuenteId: string;
+  fuenteNombre: string;
+  descripcion: string;
+  pdfNombreOriginal: string;
+  pdfMimeType: "application/pdf";
+  pdfUrl: string;
+  downloadUrl: string;
+  activo: boolean;
+  orden?: number | null;
+  status: "active" | "inactive" | "deleted";
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
 };
 
 export type Frecuencia = {
@@ -244,6 +278,7 @@ export const ETIQUETAS_ROLES: Record<string, string> = {
   database_updater: "Actualizador de bases de datos",
   domain_updater: "Actualizador de dominios",
   viewer: "Visualizador",
+  "formatos_impresion.admin": "Administrador de formatos de impresión",
 };
 
 export const ETIQUETAS_ESTADO: Record<string, string> = {
@@ -327,4 +362,11 @@ export const ETIQUETAS_ACCION_AUDITORIA: Record<string, string> = {
   license_assignment_created: "Asignación de licencia creada",
   license_assignment_updated: "Asignación de licencia actualizada",
   license_assignment_deleted: "Asignación de licencia eliminada",
+  fuente_formato_created: "Fuente de formato creada",
+  fuente_formato_updated: "Fuente de formato actualizada",
+  fuente_formato_deleted: "Fuente de formato eliminada",
+  formato_impresion_created: "Formato de impresión creado",
+  formato_impresion_updated: "Formato de impresión actualizado",
+  formato_impresion_pdf_replaced: "PDF de formato reemplazado",
+  formato_impresion_deleted: "Formato de impresión eliminado",
 };

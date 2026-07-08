@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api";
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const LEGACY_TOKEN_KEY = "erp_update_token";
 
 let accessToken: string | null = null;
@@ -109,3 +109,7 @@ export const api = {
   put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body),
   del: <T>(path: string) => request<T>("DELETE", path),
 };
+
+export function apiUrl(path: string): string {
+  return `${API_BASE_URL}${path}`;
+}

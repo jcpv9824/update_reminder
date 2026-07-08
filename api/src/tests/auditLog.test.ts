@@ -209,6 +209,69 @@ describe("buildAuditLogEntry", () => {
     expect(AUDIT_DATA_CLASSIFICATION.secret).toContain("nunca");
   });
 
+  it("audita Fuentes de formatos con allowlist de campos operativos", () => {
+    const entry = buildAuditLogEntry({
+      entityType: "fuenteFormato",
+      entityId: "fuente_1",
+      action: "fuente_formato_created",
+      performedBy: "admin",
+      performedByEmail: "admin@empresa.com",
+      after: {
+        id: "fuente_1",
+        nombre: "Factura de venta",
+        descripcion: "Documentos de venta",
+        activa: true,
+        orden: 1,
+        unsafe: "no debe persistir",
+      },
+    });
+    expect(entry.after).toEqual({
+      id: "fuente_1",
+      nombre: "Factura de venta",
+      descripcion: "Documentos de venta",
+      activa: true,
+      orden: 1,
+    });
+    expect(JSON.stringify(entry)).not.toContain("unsafe");
+  });
+
+  it("audita Formatos de Impresión sin guardar el PDF en auditoría", () => {
+    const entry = buildAuditLogEntry({
+      entityType: "formatoImpresion",
+      entityId: "formato_1",
+      action: "formato_impresion_created",
+      performedBy: "admin",
+      performedByEmail: "admin@empresa.com",
+      after: {
+        id: "formato_1",
+        nombre: "Factura estándar",
+        fuenteId: "fuente_1",
+        fuenteNombre: "Factura de venta",
+        descripcion: "Formato con impuestos y totales",
+        pdfBase64: "JVBERi0xLjQKcontenido-pesado",
+        pdfNombreOriginal: "factura.pdf",
+        pdfMimeType: "application/pdf",
+        activo: true,
+      },
+      metadata: { pdfLoaded: true, pdfBase64: "tambien-debe-omitirse" },
+    });
+    expect(entry.after).toEqual({
+      id: "formato_1",
+      nombre: "Factura estándar",
+      fuenteId: "fuente_1",
+      fuenteNombre: "Factura de venta",
+      descripcion: "Formato con impuestos y totales",
+      pdfNombreOriginal: "factura.pdf",
+      pdfMimeType: "application/pdf",
+      activo: true,
+    });
+    expect(entry.metadata).toEqual({ pdfLoaded: true });
+    const json = JSON.stringify(entry);
+    expect(json).not.toContain("pdfBase64");
+    expect(json).not.toContain("contenido-pesado");
+    expect(json).not.toContain("tambien-debe-omitirse");
+  });
+
   it("sanea registros históricos conservando id, fecha y partición", () => {
     const sanitized = sanitizeStoredAuditLogEntry({
       id: "audit_historico",

@@ -5,7 +5,8 @@ export type Role =
   | "client_manager"
   | "database_updater"
   | "domain_updater"
-  | "viewer";
+  | "viewer"
+  | "formatos_impresion.admin";
 
 export type EntityStatus = "active" | "inactive" | "deleted";
 
@@ -175,6 +176,41 @@ export type LicenseAssignmentRecord = {
   createdBy?: string;
   updatedAt?: string;
   updatedBy?: string;
+  deletedAt?: string | null;
+  deletedBy?: string | null;
+};
+
+export type FuenteFormatoRecord = {
+  id: string;
+  nombre: string;
+  descripcion?: string;
+  activa: boolean;
+  orden?: number | null;
+  status: EntityStatus;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+  deletedAt?: string | null;
+  deletedBy?: string | null;
+};
+
+export type FormatoImpresionRecord = {
+  id: string;
+  nombre: string;
+  fuenteId: string;
+  fuenteNombre: string;
+  descripcion: string;
+  pdfBase64: string;
+  pdfNombreOriginal: string;
+  pdfMimeType: "application/pdf";
+  activo: boolean;
+  orden?: number | null;
+  status: EntityStatus;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
   deletedAt?: string | null;
   deletedBy?: string | null;
 };

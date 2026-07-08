@@ -62,7 +62,7 @@ async function getUserOrFail(req: HttpRequest) {
   return profile;
 }
 
-const VALID_ROLES = ["admin", "client_manager", "database_updater", "domain_updater", "viewer"] as const;
+const VALID_ROLES = ["admin", "client_manager", "database_updater", "domain_updater", "viewer", "formatos_impresion.admin"] as const;
 
 const UserCreateSchema = z.object({
   id: z.string().optional(),

@@ -10,6 +10,7 @@ import {
   canCompleteDomainTask,
   canRevealDatabaseSecret,
   canAccessDatabaseTaskConnection,
+  canManagePrintFormats,
 } from "../lib/permissions";
 import { buildDatabaseAccessInfo } from "../lib/databaseAccessInfo";
 import type { CurrentUser, UpdateTask, DatabaseRecord } from "../types/models";
@@ -83,6 +84,13 @@ describe("permissions", () => {
     expect(canManageClients(u)).toBe(false);
     expect(canManageUsers(u)).toBe(false);
     expect(canManageSchedules(u)).toBe(false);
+  });
+
+  it("solo admin o formatos_impresion.admin pueden administrar Formatos de Impresión", () => {
+    expect(canManagePrintFormats(user(["admin"]))).toBe(true);
+    expect(canManagePrintFormats(user(["formatos_impresion.admin"]))).toBe(true);
+    expect(canManagePrintFormats(user(["client_manager"]))).toBe(false);
+    expect(canManagePrintFormats(user(["viewer"]))).toBe(false);
   });
 
   it("database_updater asignado puede completar su tarea de base de datos", () => {

@@ -9,6 +9,7 @@ const ELEMENTOS = [
   { ruta: "/bases-de-datos", etiqueta: "Bases de datos", roles: ["admin", "client_manager", "viewer", "database_updater"] },
   { ruta: "/licenciamiento", etiqueta: "Licenciamiento", roles: ["admin", "client_manager"] },
   { ruta: "/frecuencias", etiqueta: "Actualizaciones programadas", roles: ["admin", "client_manager"] },
+  { ruta: "/admin/formatos-impresion", etiqueta: "Formatos de Impresión", roles: ["admin", "formatos_impresion.admin"] },
   { ruta: "/alertas-correos", etiqueta: "Alertas y correos", roles: ["admin"] },
   { ruta: "/auditoria", etiqueta: "Auditoría", roles: ["admin", "client_manager", "viewer", "database_updater", "domain_updater"] },
   { ruta: "/usuarios", etiqueta: "Usuarios y roles", roles: ["admin"] },

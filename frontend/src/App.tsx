@@ -15,6 +15,8 @@ import AuditoriaPage from "./pages/AuditoriaPage";
 import UsuariosPage from "./pages/UsuariosPage";
 import AlertasCorreosPage from "./pages/AlertasCorreosPage";
 import NoAutorizadoPage from "./pages/NoAutorizadoPage";
+import FormatosImpresionAdminPage from "./pages/FormatosImpresionAdminPage";
+import FormatosImpresionPublicPage from "./pages/FormatosImpresionPublicPage";
 
 function Protegido({ roles, element }: { roles: string[]; element: JSX.Element }) {
   const auth = useAuth();
@@ -33,6 +35,7 @@ function Enrutador() {
       <Route path="/login" element={auth.usuario ? <Navigate to="/tareas" replace /> : <LoginPage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route path="/formatos-impresion" element={<FormatosImpresionPublicPage />} />
       {!auth.usuario ? (
         <Route path="*" element={<Navigate to="/login" replace />} />
       ) : (
@@ -45,6 +48,7 @@ function Enrutador() {
           <Route path="bases-de-datos" element={<Protegido roles={["admin", "client_manager", "viewer", "database_updater"]} element={<BasesDeDatosPage />} />} />
           <Route path="licenciamiento" element={<Protegido roles={["admin", "client_manager"]} element={<LicenciamientoPage />} />} />
           <Route path="frecuencias" element={<Protegido roles={["admin", "client_manager"]} element={<FrecuenciasPage />} />} />
+          <Route path="admin/formatos-impresion" element={<Protegido roles={["admin", "formatos_impresion.admin"]} element={<FormatosImpresionAdminPage />} />} />
           <Route path="alertas-correos" element={<Protegido roles={["admin"]} element={<AlertasCorreosPage />} />} />
           <Route path="auditoria" element={<Protegido roles={["admin", "client_manager", "viewer", "database_updater", "domain_updater"]} element={<AuditoriaPage />} />} />
           <Route path="usuarios" element={<Protegido roles={["admin"]} element={<UsuariosPage />} />} />
