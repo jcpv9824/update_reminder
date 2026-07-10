@@ -44,7 +44,7 @@ La guard de salida hacia `collecting` exige AMBAS en todos los casos.
 
 ## 2. PLANTILLA C1 — Migración (`migration`, v1)
 
-Fuente primaria: [PROC] §1 (flujo de negocio 14 pasos + paso a paso técnico **17 pasos**, fases A–F) + [SQL] §B/C. Fuente confiable: imagen + docx (regla de confianza [PROC] encabezado).
+Fuente primaria: [PROC] §1 (flujo de negocio 14 pasos + paso a paso técnico **14 pasos** con BARRIDO único — rediseño 2026-07-09, fases A–F) + [SQL] §B/C. Fuente confiable: imagen + docx (regla de confianza [PROC] encabezado).
 
 ### Etapas de negocio
 
@@ -61,22 +61,19 @@ Fuente primaria: [PROC] §1 (flujo de negocio 14 pasos + paso a paso técnico **
 | stepKey | Fase | Paso | `blocking` | Rol | Fuente |
 |---|---|---|---|---|---|
 | `c1.a.entregables` | A | Validar que se tienen todos los datos/entregables (incluye activos ≤ contratados — RN-02) | ✔ | support | [PROC] §1.B.1 |
-| `c1.a.correosDuplicados` | A | Query de correos duplicados en usuarios activos; si hay → cliente corrige. **STOP** | ✔ | support | [PROC] §1.B.2 (query en `instructions`) |
-| `c1.a.correosVacios` | A | Query de usuarios activos sin correo; si hay → cliente corrige. **STOP** | ✔ | support | [PROC] §1.B.3 |
-| `c1.a.correosInvalidos` | A | Query de correos con **formato inválido** (`10 - validacion_formato_correos.sql`, lista blanca + columna Motivo); si hay → cliente corrige. **STOP**. La validación definitiva la hace la importación; el mismo query va como Consulta 3 en los prerrequisitos | ✔ | support | [PROC] §1.B.4 (jul. 2026) |
-| `c1.b.actualizarLibrerias` | B | Actualizar librerías y BD a la última versión (pruebas) — ANTES de los scripts (RN-10) | ✔ | support | [PROC] §1.B.4 |
-| `c1.b.scripts` | B | Correr los **5 scripts** en orden: `a_sag_web → a_sagweb_Menu → a_format_sag_web → a_report_sag_web → sp_migrar_usuarios_permisos_web` (RN-09; usar siempre la última versión) | ✔ | support | [PROC] §1.B.5, [SQL] §B |
-| `c1.b.validarScripts` | B | **Validar marcas de versión** (consulta embebida — `03_scripts_web.md` §F): 5 marcas web con valor y FechaUpdate de hoy (vacía = script olvidado → correrlo); `migrar_usuarios` SIN "SOLO" (permisos completos); versión local del mes. Propósito: detectar scripts olvidados | ✔ | support | docx C1 Paso 7 (jul. 2026), [SQL] §F |
-| `c1.b.extraerUsuarios` | B | Extraer usuarios a **CSV** (query de importación (`SQLs Web/Consultas de apoyo/`) con NúmeroTelefono, DESPUÉS de los scripts — RN-11; "Guardar resultados de la cuadrícula", nombre `ImportacionUsuarios_{COMPAÑIA}.csv`, sin modificar); **sub-paso:** conteo vs. contratados (consulta de conteo embebida) | ✔ | support | [PROC] §1.B.7 (jul. 2026) |
-| `c1.c.cadenaConexion` | C | Armar cadena de conexión (`IP,Puerto; Initial Catalog; User ID; Password`) | ✔ | **lead** | [PROC] §1.B.7 |
-| `c1.c.crearCliente` | C | Crear cliente + licenciamiento en SAG Admin (reglas RN-13 en `instructions`) | ✔ | **lead** | [PROC] §1.B.8 |
-| `c1.c.crearCompanias` | C | Crear compañías (NIT limpio, Token=1, Dispositivos=1) | ✔ | **lead** | [PROC] §1.B.9 |
-| `c1.c.importarUsuarios` | C | **Importar usuarios por CSV** (Detalle del cliente → botón de importación → Seleccionar archivo → procesar): crea nuevos (contraseña autogenerada, composición estándar máx. 8), omite existentes e inválidos, asocia todos al cliente; descarga `resultado.xlsx` (Correo\|Contraseña) — insumo de credenciales. Reemplaza la creación/asociación manual | ✔ | **lead** | [PROC] §1.B.11 (jul. 2026), [DEC] importación CSV |
-| `c1.d.plesk` | D | Publicar en Plesk (borrar contenido por defecto, subir paquete `.rar` de Teams, extraer, borrar `.rar`) — DESPUÉS de SAG Admin (RN-14) | ✔ | support | [PROC] §1.B.12 |
-| `c1.d.objectStorage` | D | Parámetros Web → Almacenamiento de Archivos (fila del archivo de buckets) — casi al final (RN-14) | ✔ | support | [PROC] §1.B.13 |
-| `c1.e.validarFinal` | E | Validar: acceder a SAG Web y confirmar permisos migrados de ≥1 usuario | ✔ | support | [PROC] §1.B.14 |
+| `c1.a.barridoUsuarios` | A | **BARRIDO único (RN-21):** por cada BD de compañía: (a) 3 consultas de correos (duplicados, vacíos, formato con Motivo) — se ANOTA, no se detiene por consulta; (b) extracción del CSV (`consulta_importacion_usuarios.sql` por **ss_email** — RN-11 v2); (c) `ConsolidarUsuarios.exe` → **únicos por correo vs. contratados POR CLIENTE**; (d) reporte único → verde = continuar / algo mal = **STOP**: cliente corrige en PRODUCCIÓN → copia fresca → repetir barrido | ✔ | support | [PROC] §1.B.2 (2026-07-09) |
+| `c1.b.actualizarLegado` | B | **Actualizar el SAG Clásico del cliente (librerías y BD) a la última versión** — SOLO con el barrido en verde; sobre la copia de PRUEBAS (producción en FASE F); si llegó copia nueva, repetir (RN-10/RN-21) | ✔ | support | [PROC] §1.B.3 (2026-07-09) |
+| `c1.b.scripts` | B | Correr los **5 scripts** en orden: `a_sag_web → a_sagweb_Menu → a_format_sag_web → a_report_sag_web → sp_migrar_usuarios_permisos_web` (RN-09; usar siempre la última versión) | ✔ | support | [PROC] §1.B.4, [SQL] §B |
+| `c1.b.validarScripts` | B | **Validar marcas de versión** (consulta embebida — `03_scripts_web.md` §F): 5 filas web con valor y FechaUltimaEjecucion de hoy (vacía = script olvidado → correrlo); `migrar_usuarios` SIN "SOLO" (permisos completos); versión local del mes (actualizada en el paso anterior). Propósito: detectar scripts olvidados | ✔ | support | docx C1 Paso 5 (2026-07-09), [SQL] §F |
+| `c1.c.cadenaConexion` | C | Armar cadena de conexión (`IP,Puerto; Initial Catalog; User ID; Password`) | ✔ | **lead** | [PROC] §1.B.6 |
+| `c1.c.crearCliente` | C | Crear cliente + licenciamiento en SAG Admin (reglas RN-13 en `instructions`) | ✔ | **lead** | [PROC] §1.B.7 |
+| `c1.c.crearCompanias` | C | Crear compañías (NIT limpio, Token=1, Dispositivos=1) | ✔ | **lead** | [PROC] §1.B.8 |
+| `c1.c.importarUsuarios` | C | **Importar usuarios por CSV** (Detalle del cliente → botón de importación → Seleccionar archivo → procesar): crea nuevos (contraseña autogenerada, composición estándar máx. 8), omite existentes e inválidos, asocia todos al cliente; descarga `resultado.xlsx` (Correo\|Contraseña) — insumo de credenciales. Reemplaza la creación/asociación manual. **Los CSV son los del barrido** (varias compañías → uno por uno; repetidos se omiten) | ✔ | **lead** | [PROC] §1.B.9 (2026-07-09), [DEC] importación CSV |
+| `c1.d.plesk` | D | Publicar en Plesk (borrar contenido por defecto, subir paquete `.rar` de Teams, extraer, borrar `.rar`) — DESPUÉS de SAG Admin (RN-14) | ✔ | support | [PROC] §1.B.10 |
+| `c1.d.objectStorage` | D | Parámetros Web → Almacenamiento de Archivos (fila del archivo de buckets) — casi al final (RN-14) | ✔ | support | [PROC] §1.B.11 |
+| `c1.e.validarFinal` | E | Validar: acceder a SAG Web y confirmar permisos migrados de ≥1 usuario | ✔ | support | [PROC] §1.B.12 |
 | — | E | *(El envío de credenciales de pruebas NO es un paso del checklist: es la etapa `test_delivery` con el correo 4a — evita doble contabilidad)* | | lead | [PROC] §1.B.15 |
-| `c1.f.prepararProduccion` | F | Preparar la BD de producción: actualizar librerías + correr los 5 scripts (incl. `sp_migrar`) sobre la BD de producción (el acceso ya se tiene desde `solicitudes` — RN-08). Si el cliente agregó usuarios durante las pruebas: repetir extracción + importación (idempotente: los existentes se omiten) | ✔ | support | [PROC] §1.B.16 |
+| `c1.f.prepararProduccion` | F | Preparar la BD de producción: actualizar librerías/BD + correr los 5 scripts (incl. `sp_migrar`) sobre producción (el acceso ya se tiene desde `solicitudes` — RN-08). **NO hay re-extracción ni reimportación de usuarios** (RN-11 v2: viven en SAG Admin; las correcciones siempre fueron en producción) | ✔ | support | [PROC] §1.B.14 (2026-07-09) |
 | `c1.f.repuntarConexion` | F | **Reapuntar la cadena de conexión** de la(s) compañía(s) del cliente EXISTENTE en SAG Admin hacia la BD de producción y **retirar el sufijo "- PRUEBAS"** del nombre si se usó. **NO** se crea cliente/compañía de producción, **NO** se recrean usuarios, **NO** se vuelve a publicar en Plesk ni a configurar object storage (dominio y bucket son los mismos) | ✔ | **lead** | [PROC] §1.B.16 (corregido por Juan Camilo, jul. 2026), [CTX] §6 bis |
 | `c1.f.validarProduccion` | F | Validar acceso en producción (login + permisos) | ✔ | support | [PROC] §1.B.16 |
 | — | F | *(Credenciales de producción = correo 4b en la etapa `production`)* | | lead | [PROC] §1.B.16 |
@@ -144,15 +141,17 @@ Fuente: [PROC] §3 + [SQL] §C bis. Fuente confiable: imagen + co-construcción.
 
 | stepKey | Fase | Paso | `blocking` | Rol | Fuente |
 |---|---|---|---|---|---|
-| `c3.a.entregables` | A | Validar entregables (incluye lista de usuarios del módulo con correo único) | ✔ | support | [PROC] §3.B |
+| `c3.a.entregables` | A | Validar entregables — incluye la(s) **plantilla(s) de usuarios** con el **ADMIN marcado con S** por compañía (RN-22) y el **nombre de BD si es nube** | ✔ | support | [PROC] §3.B |
 | `c3.a.correosDuplicados` | A | Query de correos duplicados — **SÍ aplica** (hay usuarios previos en Clásico — RN-03). STOP | ✔ | support | [PROC] §3.B, [SQL] §D |
 | `c3.a.correosVacios` | A | Query de correos vacíos. STOP | ✔ | support | [PROC] §3.B |
 | `c3.b.conectividad` | B | Si `hosting=local`: confirmar conectividad a la BD del cliente (IPs de firewall autorizadas). Si nube: `not_applicable` | ✔ | support | [CTX] §3.1, [SQL] §D (error de red) |
 | `c3.b.scripts` | B | Correr **4 scripts generales + `a_sagweb_migrar_login`** (en lugar del SP completo; sin él los usuarios no inician sesión — RN-09) | ✔ | support | [PROC] §3.B, [SQL] §C bis |
 | `c3.b.validarScripts` | B | **Validar marcas de versión**: 4 marcas web con FechaUpdate de hoy + `migrar_usuarios` CON "SOLO migracion de login/emails" (la escribe el script 6; si está vacía, faltó correrlo y los usuarios no podrán iniciar sesión) | ✔ | support | docx C3 Paso 6 (jul. 2026), [SQL] §F |
+| `c3.b.permisosAdmin` | B | **Asignar al ADMIN designado los permisos de gestión de usuarios** en la BD de cada compañía (`asignar_permisos_usuarios_sagweb.sql`: CONF/USU/USU2, idempotente; requiere scripts 1–2). Si "no se encontró el usuario": el correo no coincide con Clásico → volver a la plantilla (RN-22) | ✔ | support | docx C3 Paso 7 (2026-07-09) |
+| `c3.b.generarCsv` | B | **Generar el CSV desde la(s) plantilla(s)** con `GenerarCSVUsuarios.exe` (valida, limpia, convierte + reporte; con errores NO genera → devolver al cliente) | ✔ | support | docx C3 Paso 8 (2026-07-09), RN-22 |
 | `c3.c.clienteSagAdmin` | C | Cliente en SAG Admin: **reutilizar si existe; crear si no (lo común)** + licenciamiento del módulo | ✔ | **lead** | [PROC] §3.B |
 | `c3.c.companias` | C | Crear/verificar compañías | ✔ | **lead** | [PROC] §3.B (genérico C) |
-| `c3.c.usuariosModulo` | C | Crear los usuarios del módulo (de `moduleUsers` — NO se extraen de la BD) y asociarlos | ✔ | **lead** | [DEC] A ("se usa la lista que da el cliente") |
+| `c3.c.importarUsuarios` | C | **Importar los usuarios por CSV** en SAG Admin (Detalle del cliente → importación → procesar; `resultado.xlsx` = insumo de credenciales). Supersede la creación manual (`c3.c.usuariosModulo`) | ✔ | **lead** | docx C3 Paso 12 (2026-07-09), RN-22 |
 | `c3.d.plesk` | D | Publicar en Plesk al dominio | ✔ | support | [PROC] §3.B (genérico D) |
 | `c3.d.objectStorage` | D | Object storage / Parámetros Web | ✔ | support | [PROC] §3.B |
 | `c3.e.validarFinal` | E | Validar acceso al módulo con un usuario del módulo | ✔ | support | [PROC] §3.B |
@@ -171,7 +170,7 @@ Fuente: [PROC] §3 + [SQL] §C bis. Fuente confiable: imagen + co-construcción.
 
 - **CA-M3-1:** Crear C3 NO pasa por `screening`; crear C1/C2 sí; en C1/C2 la combinación `options_exist=no` + `hybrid_benefit=no` fuerza `rejected` con motivo.
 - **CA-M3-2:** `collecting → handoff` es imposible con `deliverablesComplete=false` (respuesta 409 con la lista de faltantes).
-- **CA-M3-3:** Con `c1.a.correosDuplicados` en `blocked`, la transición `technical → test_delivery` devuelve 409 aunque el resto esté `done`.
+- **CA-M3-3:** Con `c1.a.barridoUsuarios` en `blocked`, la transición `technical → test_delivery` devuelve 409 aunque el resto esté `done`.
 - **CA-M3-4:** En C3 con `requires_test_env=no`, completar `technical` transiciona a `production` sin pasar por `test_delivery`; con `yes`, exige el correo 4a y la decisión `client_tests_passed=yes`.
 - **CA-M3-5:** "Pruebas no exitosas" registra evento y NO cambia la etapa; el contador de bucles incrementa.
 - **CA-M3-6:** En C1, los pasos de FASE F no pueden completarse antes de `client_tests_passed=yes`.
