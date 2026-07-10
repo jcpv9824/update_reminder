@@ -207,9 +207,10 @@ az cosmosdb sql container create --account-name $cosmosAccount --resource-group 
 az cosmosdb sql container create --account-name $cosmosAccount --resource-group $resourceGroup --database-name $cosmosDatabase --name authSessions --partition-key-path "/id" --ttl -1
 az cosmosdb sql container create --account-name $cosmosAccount --resource-group $resourceGroup --database-name $cosmosDatabase --name fuentesFormatos --partition-key-path "/id"
 az cosmosdb sql container create --account-name $cosmosAccount --resource-group $resourceGroup --database-name $cosmosDatabase --name formatosImpresion --partition-key-path "/id"
+az cosmosdb sql container create --account-name $cosmosAccount --resource-group $resourceGroup --database-name $cosmosDatabase --name publicDownloads --partition-key-path "/id"
 ```
 
-`emailNotifications` se usa para idempotencia de recordatorios administrativos mensuales. `licenseModules` se usa para el maestro de **Licenciamiento** y `clients.licenseModuleIds` guarda las licencias compradas por cada cliente. `licenseAssignments` queda reservado para asignaciones avanzadas futuras y puede existir sin ser usado por la UI normal. `fuentesFormatos` y `formatosImpresion` soportan el catálogo global de Formatos de Impresión. `securityRateLimits` conserva contadores efimeros de abuso y `authSessions` conserva sesiones refresh hasheadas/revocables; ambos expiran automaticamente y no son maestros de negocio. Si un contenedor ya existe, su comando puede omitirse.
+`emailNotifications` se usa para idempotencia de recordatorios administrativos mensuales. `licenseModules` se usa para el maestro de **Licenciamiento** y `clients.licenseModuleIds` guarda las licencias compradas por cada cliente. `licenseAssignments` queda reservado para asignaciones avanzadas futuras y puede existir sin ser usado por la UI normal. `fuentesFormatos` y `formatosImpresion` soportan el catálogo global de Formatos de Impresión. `publicDownloads` soporta el módulo configurable de **Descargas públicas**. `securityRateLimits` conserva contadores efimeros de abuso y `authSessions` conserva sesiones refresh hasheadas/revocables; ambos expiran automaticamente y no son maestros de negocio. Si un contenedor ya existe, su comando puede omitirse.
 
 Genere un secreto HMAC exclusivo para los identificadores de rate limiting. No lo escriba en archivos ni salidas de CI:
 

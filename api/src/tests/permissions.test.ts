@@ -11,6 +11,7 @@ import {
   canRevealDatabaseSecret,
   canAccessDatabaseTaskConnection,
   canManagePrintFormats,
+  canManagePublicDownloads,
 } from "../lib/permissions";
 import { buildDatabaseAccessInfo } from "../lib/databaseAccessInfo";
 import type { CurrentUser, UpdateTask, DatabaseRecord } from "../types/models";
@@ -91,6 +92,13 @@ describe("permissions", () => {
     expect(canManagePrintFormats(user(["formatos_impresion.admin"]))).toBe(true);
     expect(canManagePrintFormats(user(["client_manager"]))).toBe(false);
     expect(canManagePrintFormats(user(["viewer"]))).toBe(false);
+  });
+
+  it("solo admin o public_downloads.admin pueden administrar Descargas públicas", () => {
+    expect(canManagePublicDownloads(user(["admin"]))).toBe(true);
+    expect(canManagePublicDownloads(user(["public_downloads.admin"]))).toBe(true);
+    expect(canManagePublicDownloads(user(["client_manager"]))).toBe(false);
+    expect(canManagePublicDownloads(user(["viewer"]))).toBe(false);
   });
 
   it("database_updater asignado puede completar su tarea de base de datos", () => {

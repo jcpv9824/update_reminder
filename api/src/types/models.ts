@@ -6,7 +6,8 @@ export type Role =
   | "database_updater"
   | "domain_updater"
   | "viewer"
-  | "formatos_impresion.admin";
+  | "formatos_impresion.admin"
+  | "public_downloads.admin";
 
 export type EntityStatus = "active" | "inactive" | "deleted";
 
@@ -209,6 +210,43 @@ export type FormatoImpresionRecord = {
   pdfBase64: string;
   pdfNombreOriginal: string;
   pdfMimeType: "application/pdf";
+  activo: boolean;
+  status: EntityStatus;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+  deletedAt?: string | null;
+  deletedBy?: string | null;
+};
+
+export type PublicDownloadSectionRecord = {
+  id: string;
+  nombre: string;
+  slug: string;
+  descripcion?: string;
+  activa: boolean;
+  status: EntityStatus;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+  deletedAt?: string | null;
+  deletedBy?: string | null;
+};
+
+export type PublicDownloadDocumentRecord = {
+  id: string;
+  sectionId: string;
+  sectionName: string;
+  sectionSlug: string;
+  titulo: string;
+  slug: string;
+  descripcion?: string;
+  archivoNombreOriginal: string;
+  archivoMimeType: string;
+  archivoBase64: string;
+  archivoBytes: number;
   activo: boolean;
   status: EntityStatus;
   createdAt: string;

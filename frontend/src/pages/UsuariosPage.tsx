@@ -15,7 +15,7 @@ type Usuario = {
   mustChangePassword?: boolean;
 };
 
-const ROLES = ["admin", "client_manager", "database_updater", "domain_updater", "viewer"];
+const ROLES = ["admin", "client_manager", "database_updater", "domain_updater", "viewer", "formatos_impresion.admin", "public_downloads.admin"];
 
 export default function UsuariosPage() {
   const qc = useQueryClient();

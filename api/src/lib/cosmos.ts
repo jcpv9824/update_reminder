@@ -37,7 +37,8 @@ export type ContainerName =
   | "securityRateLimits"
   | "authSessions"
   | "fuentesFormatos"
-  | "formatosImpresion";
+  | "formatosImpresion"
+  | "publicDownloads";
 
 export function getContainer(name: ContainerName): Container {
   return getDatabase().container(name);

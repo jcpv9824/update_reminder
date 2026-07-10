@@ -5,7 +5,8 @@ export type Role =
   | "database_updater"
   | "domain_updater"
   | "viewer"
-  | "formatos_impresion.admin";
+  | "formatos_impresion.admin"
+  | "public_downloads.admin";
 
 export type Usuario = {
   id: string;
@@ -155,6 +156,40 @@ export type FormatoImpresion = {
   updatedBy: string;
 };
 
+export type PublicDownloadSection = {
+  id: string;
+  nombre: string;
+  slug: string;
+  descripcion?: string;
+  activa: boolean;
+  status: "active" | "inactive" | "deleted";
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+};
+
+export type PublicDownloadDocument = {
+  id: string;
+  sectionId: string;
+  sectionName: string;
+  sectionSlug: string;
+  titulo: string;
+  slug: string;
+  descripcion?: string;
+  archivoNombreOriginal: string;
+  archivoMimeType: string;
+  archivoBytes: number;
+  downloadUrl: string;
+  legacyDownloadUrl: string;
+  activo: boolean;
+  status: "active" | "inactive" | "deleted";
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+};
+
 export type Frecuencia = {
   id: string;
   name?: string;
@@ -283,6 +318,7 @@ export const ETIQUETAS_ROLES: Record<string, string> = {
   domain_updater: "Actualizador de dominios",
   viewer: "Visualizador",
   "formatos_impresion.admin": "Administrador de formatos de impresión",
+  "public_downloads.admin": "Administrador de descargas públicas",
 };
 
 export const ETIQUETAS_ESTADO: Record<string, string> = {
@@ -373,4 +409,11 @@ export const ETIQUETAS_ACCION_AUDITORIA: Record<string, string> = {
   formato_impresion_updated: "Formato de impresión actualizado",
   formato_impresion_pdf_replaced: "PDF de formato reemplazado",
   formato_impresion_deleted: "Formato de impresión eliminado",
+  public_download_section_created: "Sección de descargas creada",
+  public_download_section_updated: "Sección de descargas actualizada",
+  public_download_section_deleted: "Sección de descargas eliminada",
+  public_download_document_created: "Documento público creado",
+  public_download_document_updated: "Documento público actualizado",
+  public_download_document_file_replaced: "Archivo público reemplazado",
+  public_download_document_deleted: "Documento público eliminado",
 };

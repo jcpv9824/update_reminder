@@ -124,6 +124,18 @@ const ENTITY_SNAPSHOT_SCHEMAS: Record<string, AuditSchema> = {
     status: "scalar", createdAt: "scalar", createdBy: "scalar",
     updatedAt: "scalar", updatedBy: "scalar", deletedAt: "scalar", deletedBy: "scalar",
   },
+  publicDownloadSection: {
+    id: "scalar", nombre: "scalar", slug: "scalar", descripcion: "scalar", activa: "scalar",
+    status: "scalar", createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
+    deletedAt: "scalar", deletedBy: "scalar",
+  },
+  publicDownloadDocument: {
+    id: "scalar", sectionId: "scalar", sectionName: "scalar", sectionSlug: "scalar",
+    titulo: "scalar", slug: "scalar", descripcion: "scalar", archivoNombreOriginal: "scalar",
+    archivoMimeType: "scalar", archivoBytes: "scalar", activo: "scalar", status: "scalar",
+    createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
+    deletedAt: "scalar", deletedBy: "scalar",
+  },
   settings: {
     id: "scalar", emailProvider: "scalar", emailEnabled: "scalar", smtpPort: "scalar", smtpSecure: "scalar",
     updaterRemindersEnabled: "scalar", reminderDaysBefore: "scalarArray", reminderTime: "scalar",
@@ -210,6 +222,13 @@ const ACTION_METADATA_SCHEMAS: Record<string, AuditSchema> = {
   formato_impresion_updated: fields(),
   formato_impresion_pdf_replaced: fields("previousPdfName", "newPdfName"),
   formato_impresion_deleted: fields(),
+  public_download_section_created: fields(),
+  public_download_section_updated: fields(),
+  public_download_section_deleted: fields(),
+  public_download_document_created: fields("fileLoaded"),
+  public_download_document_updated: fields(),
+  public_download_document_file_replaced: fields("previousFileName", "newFileName"),
+  public_download_document_deleted: fields(),
 };
 
 const SECRET_CONTENT_PATTERNS = [

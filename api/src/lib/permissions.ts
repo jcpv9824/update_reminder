@@ -55,6 +55,10 @@ export function canManagePrintFormats(user: CurrentUser): boolean {
   return hasAnyRole(user, ["admin", "formatos_impresion.admin"]);
 }
 
+export function canManagePublicDownloads(user: CurrentUser): boolean {
+  return hasAnyRole(user, ["admin", "public_downloads.admin"]);
+}
+
 export function canCompleteDatabaseTask(
   user: CurrentUser,
   task: UpdateTask

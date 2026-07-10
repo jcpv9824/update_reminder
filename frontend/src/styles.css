@@ -262,6 +262,10 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
   max-width: min(95vw, 1400px);
   max-height: 90vh;
 }
+.modal-descarga-publica {
+  width: min(92vw, 760px);
+  max-width: min(92vw, 760px);
+}
 .modal-detalle-tareas .modal-body {
   overflow: auto;
 }
@@ -364,6 +368,12 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
 
 .acciones-tabla { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
 .acciones-tabla button { padding: 4px 8px; font-size: 12px; }
+.acciones-tabla a {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  font-size: 12px;
+}
 .columna-acciones,
 th:last-child { text-align: right; }
 td.celda-acciones,
@@ -409,6 +419,16 @@ td:last-child:has(.acciones-tabla) { text-align: right; }
   background: transparent;
   color: inherit;
   line-height: 1;
+}
+.endpoint-publico {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+.endpoint-publico code {
+  overflow-wrap: anywhere;
+  font-size: 12px;
 }
 
 .login-pantalla {

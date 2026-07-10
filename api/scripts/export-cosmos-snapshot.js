@@ -16,6 +16,11 @@ const DEFAULT_CONTAINERS = [
   "auditLogs",
   "appSettings",
   "emailNotifications",
+  "securityRateLimits",
+  "authSessions",
+  "fuentesFormatos",
+  "formatosImpresion",
+  "publicDownloads",
 ];
 
 function usage() {
