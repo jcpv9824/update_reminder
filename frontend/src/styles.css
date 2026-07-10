@@ -101,13 +101,13 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 58px;
+  min-height: 84px;
   padding: 4px 4px 10px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
 }
 .marca-portal-logo {
-  width: 46px;
-  height: 46px;
+  width: 58px;
+  height: 70px;
   object-fit: contain;
   flex-shrink: 0;
 }
@@ -232,7 +232,7 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
 }
 .usuario-sidebar-logo {
   width: 34px;
-  height: 34px;
+  height: 42px;
   object-fit: contain;
   opacity: 0.88;
 }

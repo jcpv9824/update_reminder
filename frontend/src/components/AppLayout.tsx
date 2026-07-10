@@ -115,7 +115,7 @@ export default function AppLayout() {
       <aside className="barra-lateral">
         <div className="barra-lateral-contenido">
           <header className="marca-portal">
-            <img src="/brand/sag-symbol.png" alt="SAG" className="marca-portal-logo" />
+            <img src="/brand/sag-white-vertical.png" alt="SAG" className="marca-portal-logo" />
             <div className="marca-portal-texto" aria-label="PORTAL SAG WEB">
               <span>PORTAL</span>
               <strong>SAG WEB</strong>
@@ -154,7 +154,7 @@ export default function AppLayout() {
           </nav>
 
           <footer className="usuario-sidebar">
-            <img src="/brand/sag-symbol.png" alt="" aria-hidden="true" className="usuario-sidebar-logo" />
+            <img src="/brand/sag-white-vertical.png" alt="" aria-hidden="true" className="usuario-sidebar-logo" />
             <div className="usuario-sidebar-datos">
               <strong>{usuario.displayName}</strong>
               <span>{usuario.email}</span>
