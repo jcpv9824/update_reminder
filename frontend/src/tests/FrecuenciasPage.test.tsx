@@ -82,9 +82,9 @@ beforeEach(() => {
 });
 
 describe("FrecuenciasPage", () => {
-  it("muestra titulo, explicacion y estado vacio de Actualizaciones programadas", async () => {
+  it("muestra titulo, explicacion y estado vacio de Programar Actualizaciones", async () => {
     renderPagina();
-    expect(await screen.findByRole("heading", { name: "Actualizaciones programadas" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Programar Actualizaciones" })).toBeInTheDocument();
     expect(screen.getByText(/Defina actualizaciones recurrentes o únicas/i)).toBeInTheDocument();
     expect(await screen.findByText("No hay actualizaciones programadas configuradas.")).toBeInTheDocument();
     expect(screen.getByText(/programar dominios, bases o ambos con alcance explícito/i)).toBeInTheDocument();

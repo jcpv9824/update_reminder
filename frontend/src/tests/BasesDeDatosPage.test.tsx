@@ -73,14 +73,14 @@ beforeEach(() => {
 });
 
 describe("BasesDeDatosPage", () => {
-  it("Nueva base de datos indica que se programa desde Actualizaciones programadas", async () => {
+  it("Nueva base de datos indica que se programa desde Programar Actualizaciones", async () => {
     mockGets();
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Nueva base de datos/i }));
     seleccionar(/Cliente \*/i, /Cliente Uno/i);
     seleccionar(/Dominio \*/i, /cliente.pya.com.co/i);
     expect(await screen.findByText(/Las tareas de esta base de datos se generan desde/i)).toBeInTheDocument();
-    expect(screen.getByText(/Actualizaciones programadas/i)).toBeInTheDocument();
+    expect(screen.getByText(/Programar Actualizaciones/i)).toBeInTheDocument();
     expect(screen.queryByText(/Frecuencia individual avanzada/i)).toBeNull();
     expect(screen.queryByText(/Crear frecuencia automática específica/i)).toBeNull();
     expect(screen.getByRole("button", { name: /Guardar y crear nueva base de datos/i })).toBeInTheDocument();

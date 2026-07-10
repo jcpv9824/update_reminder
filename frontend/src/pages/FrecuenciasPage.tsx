@@ -70,7 +70,7 @@ export default function FrecuenciasPage() {
   return (
     <>
       <div className="encabezado-pagina">
-        <h2>Actualizaciones programadas</h2>
+        <h2>Programar Actualizaciones</h2>
         <button className="primario" onClick={() => setModalAbierto(true)}>Nueva actualización programada</button>
       </div>
       {exito && <Alerta tipo="exito">{exito}</Alerta>}

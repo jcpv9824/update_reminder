@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import AppLayout from "../components/AppLayout";
 
@@ -26,10 +26,33 @@ describe("AppLayout", () => {
     authState.roles = ["admin"];
   });
 
-  it("muestra Actualizaciones programadas en el menu lateral", () => {
+  it("muestra Programar Actualizaciones en el menu lateral", () => {
     renderLayout();
-    expect(screen.getByRole("link", { name: "Actualizaciones programadas" })).toBeInTheDocument();
+    expect(screen.getByText("Actualizaciones")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Programar Actualizaciones" })).toBeInTheDocument();
     expect(screen.queryByText("Frecuencias especiales")).toBeNull();
+  });
+
+  it("mantiene Tablero con su nombre actual", () => {
+    renderLayout();
+    expect(screen.getByRole("link", { name: "Tablero" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Dashboard" })).toBeNull();
+  });
+
+  it("ubica Descargas Publicas en Implementacion y Formatos de Impresion en Configuracion", () => {
+    renderLayout();
+    expect(screen.getByText("Implementación")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Descargas Públicas" })).toBeInTheDocument();
+    expect(screen.getByText("Configuración")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Formatos de Impresión" })).toBeInTheDocument();
+  });
+
+  it("filtra opciones del menu lateral con el buscador", () => {
+    renderLayout();
+    fireEvent.change(screen.getByPlaceholderText("Buscar Opción"), { target: { value: "tablero" } });
+
+    expect(screen.getByRole("link", { name: "Tablero" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Clientes" })).toBeNull();
   });
 
   it("muestra Licenciamiento para Administrador", () => {

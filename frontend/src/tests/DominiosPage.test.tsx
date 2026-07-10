@@ -46,7 +46,7 @@ describe("DominiosPage", () => {
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Nuevo dominio/i }));
     expect(screen.getByText(/Programación de actualizaciones/i)).toBeInTheDocument();
-    expect(screen.getByText(/Actualizaciones programadas/i)).toBeInTheDocument();
+    expect(screen.getByText(/Programar Actualizaciones/i)).toBeInTheDocument();
     expect(screen.queryByText(/Rol responsable/i)).toBeNull();
     expect(screen.queryByLabelText(/Activar frecuencia automática/i)).toBeNull();
     expect(screen.getByRole("button", { name: /^Guardar$/i })).toBeInTheDocument();

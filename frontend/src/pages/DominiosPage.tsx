@@ -300,7 +300,7 @@ function FormularioDominio({ inicial, clienteInicialId = "", clientes, onSubmit,
 
       <h4>Programación de actualizaciones</h4>
       <Alerta tipo="info">
-        Las actualizaciones de este dominio y sus bases se configuran desde <strong>Actualizaciones programadas</strong>. Allí puede elegir este dominio, incluir todas sus bases activas o seleccionar bases puntuales.
+        Las actualizaciones de este dominio y sus bases se configuran desde <strong>Programar Actualizaciones</strong>. Allí puede elegir este dominio, incluir todas sus bases activas o seleccionar bases puntuales.
       </Alerta>
 
       <div className="acciones-formulario">

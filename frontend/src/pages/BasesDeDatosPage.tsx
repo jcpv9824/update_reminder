@@ -352,7 +352,7 @@ function FormularioBd({ inicial, clientes, dominios, frecuencias, clienteInicial
 
       <h4>Programación de actualizaciones</h4>
       <Alerta tipo="info">
-        Las tareas de esta base de datos se generan desde <strong>Actualizaciones programadas</strong>. Allí puede seleccionarla de forma puntual o incluir todas las bases activas de su dominio.
+        Las tareas de esta base de datos se generan desde <strong>Programar Actualizaciones</strong>. Allí puede seleccionarla de forma puntual o incluir todas las bases activas de su dominio.
       </Alerta>
 
       <div className="acciones-formulario">
