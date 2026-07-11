@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { CurrentUser, RemindersConfig, UpdateSchedule, Weekday } from "../types/models";
+import { eligibleRolesForTaskAssignment, type RoleDefinition } from "./permissionModel";
 
 // Entrada parcial de frecuencia que pueden enviar las pantallas de
 // "Nuevo dominio" o "Nueva base de datos" para crear la frecuencia
@@ -78,6 +79,37 @@ export function validateFrequency(input: FrequencyInput): void {
 
 export function inferScheduleRole(targetType: "domain" | "database"): string {
   return targetType === "domain" ? "domain_updater" : "database_updater";
+}
+
+export function validateScheduleRoleAssignments(
+  input: Pick<FrequencyInput, "assignmentMode" | "assignedRole" | "domainAssignedRole" | "databaseAssignedRole" | "selectionMode" | "manualTargetTypes" | "licensingScope"> & { targetType?: "domain" | "database" },
+  roleDefinitions: RoleDefinition[]
+): string | null {
+  if (input.assignmentMode === "users") return null;
+
+  const scopeTargetTypes = input.selectionMode === "licensing"
+    ? input.licensingScope?.targetTypes
+    : input.manualTargetTypes;
+  const targetTypes: Array<"domain" | "database"> = scopeTargetTypes === "domains_only"
+    ? ["domain"]
+    : scopeTargetTypes === "databases_only"
+      ? ["database"]
+      : scopeTargetTypes === "domains_and_databases"
+        ? ["domain", "database"]
+        : [input.targetType ?? "domain"];
+
+  for (const targetType of targetTypes) {
+    const roleId = targetType === "domain"
+      ? input.domainAssignedRole ?? input.assignedRole ?? inferScheduleRole("domain")
+      : input.databaseAssignedRole ?? inferScheduleRole("database");
+    const eligible = eligibleRolesForTaskAssignment(roleDefinitions, targetType);
+    if (!eligible.some((role) => role.id === roleId)) {
+      const label = targetType === "domain" ? "dominios" : "bases de datos";
+      return `El rol seleccionado para tareas de ${label} debe estar activo, tener acceso a Tareas y visibilidad para ese tipo de tarea.`;
+    }
+  }
+
+  return null;
 }
 
 const ETIQUETA_FRECUENCIA: Record<string, string> = {

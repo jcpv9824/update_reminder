@@ -1,10 +1,12 @@
 // Tipos compartidos del frontend (espejo del backend).
 export type Role =
+  | "super_admin"
   | "admin"
   | "client_manager"
   | "database_updater"
   | "domain_updater"
   | "viewer"
+  | "print_formats_admin"
   | "formatos_impresion.admin"
   | "public_downloads.admin";
 
@@ -312,11 +314,13 @@ export type RegistroAuditoria = {
 };
 
 export const ETIQUETAS_ROLES: Record<string, string> = {
+  super_admin: "Super Administrador",
   admin: "Administrador",
   client_manager: "Administrador de clientes",
-  database_updater: "Actualizador de bases de datos",
-  domain_updater: "Actualizador de dominios",
+  database_updater: "Actualizador de Bases de Datos",
+  domain_updater: "Actualizador de Dominios",
   viewer: "Visualizador",
+  print_formats_admin: "Administrador de Formatos de Impresión",
   "formatos_impresion.admin": "Administrador de formatos de impresión",
   "public_downloads.admin": "Administrador de descargas públicas",
 };

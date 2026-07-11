@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { Alerta } from "../components/Comunes";
 import { ETIQUETAS_ROLES, DIAS_SEMANA } from "../types";
+import { DEFAULT_ROLE_DEFINITIONS, type RoleDefinition } from "../permissionModel";
 
 type Settings = {
   emailProvider: "mock" | "smtp" | "sendgrid" | "acs";
@@ -120,12 +121,35 @@ function alternar(lista: string[] = [], valor: string): string[] {
   return lista.includes(valor) ? lista.filter((x) => x !== valor) : [...lista, valor];
 }
 
+function normalizarRolesDestinatarios(roles: string[] = []): string[] {
+  return Array.from(new Set(roles.map((rol) => {
+    if (rol === "admin") return "super_admin";
+    if (rol === "formatos_impresion.admin") return "print_formats_admin";
+    return rol;
+  })));
+}
+
+function rolesParaDestinatarios(roles: RoleDefinition[]): RoleDefinition[] {
+  const ids = new Set(roles.map((rol) => rol.id));
+  return roles
+    .filter((rol) => rol.active !== false)
+    .filter((rol) => !(rol.id === "admin" && ids.has("super_admin")))
+    .filter((rol) => !(rol.id === "formatos_impresion.admin" && ids.has("print_formats_admin")));
+}
+
 export default function AlertasCorreosPage() {
   const qc = useQueryClient();
   const { data, isLoading } = useQuery({
     queryKey: ["settings-email-alerts"],
     queryFn: () => api.get<Settings>(RUTA),
   });
+  const { data: rolesRespuesta } = useQuery({
+    queryKey: ["roles"],
+    queryFn: () => api.get<RoleDefinition[]>("/roles"),
+  });
+  const rolesDisponibles = rolesParaDestinatarios(
+    Array.isArray(rolesRespuesta) && rolesRespuesta.length > 0 ? rolesRespuesta : DEFAULT_ROLE_DEFINITIONS
+  );
 
   const [form, setForm] = useState<Settings | null>(null);
   const [smtpPassword, setSmtpPassword] = useState("");
@@ -143,12 +167,12 @@ export default function AlertasCorreosPage() {
       setForm({
         ...PYA_DEFAULTS,
         ...data,
-        overdueAlertRecipientRoleIds: data.overdueAlertRecipientRoleIds ?? ["admin"],
+        overdueAlertRecipientRoleIds: normalizarRolesDestinatarios(data.overdueAlertRecipientRoleIds ?? ["super_admin"]),
         overdueAlertCustomEmails: data.overdueAlertCustomEmails ?? data.customAdminAlertEmails ?? [],
         overdueAlertFrequency: data.overdueAlertFrequency ?? "daily",
         overdueAlertWeekdays: data.overdueAlertWeekdays ?? ["MONDAY"],
         blockedAlertsEnabled: data.blockedAlertsEnabled ?? true,
-        blockedAlertRecipientRoleIds: data.blockedAlertRecipientRoleIds ?? ["admin"],
+        blockedAlertRecipientRoleIds: normalizarRolesDestinatarios(data.blockedAlertRecipientRoleIds ?? ["super_admin"]),
         blockedAlertCustomEmails: data.blockedAlertCustomEmails ?? [],
         blockedAlertSendImmediately: data.blockedAlertSendImmediately ?? true,
         blockedReminderEnabled: data.blockedReminderEnabled ?? false,
@@ -450,7 +474,7 @@ export default function AlertasCorreosPage() {
               <p className="texto-ayuda">Zona usada para calcular las alertas de vencidos. <Tooltip texto="Use America/Bogota para operar con hora Colombia." /></p>
               <input value={form.overdueAlertTimezone} onChange={(e) => actualizar("overdueAlertTimezone", e.target.value)} /></div>
             <h4>Destinatarios de alertas</h4>
-            <RolesChecklist label="Roles destinatarios" valores={form.overdueAlertRecipientRoleIds ?? []} onChange={(v) => actualizar("overdueAlertRecipientRoleIds", v)} />
+            <RolesChecklist label="Roles destinatarios" valores={form.overdueAlertRecipientRoleIds ?? []} roles={rolesDisponibles} onChange={(v) => actualizar("overdueAlertRecipientRoleIds", v)} />
             <div className="fila-formulario"><label>Correos adicionales <Tooltip texto="Separe varios correos con punto y coma. Los duplicados se eliminan al enviar." /></label>
               <input placeholder="vencidos1@empresa.com; vencidos2@empresa.com" value={(form.overdueAlertCustomEmails ?? []).join("; ")}
                 onChange={(e) => actualizar("overdueAlertCustomEmails", parseCorreos(e.target.value))} /></div>
@@ -463,7 +487,7 @@ export default function AlertasCorreosPage() {
           <input type="checkbox" style={{ width: "auto", marginRight: 6 }} checked={form.blockedAlertsEnabled ?? true} onChange={(e) => actualizar("blockedAlertsEnabled", e.target.checked)} />
           Activar alertas de bloqueos <Tooltip texto="Una tarea bloqueada representa un error de actualización o un bloqueo operativo." />
         </label></div>
-        <RolesChecklist label="Roles destinatarios" valores={form.blockedAlertRecipientRoleIds ?? []} onChange={(v) => actualizar("blockedAlertRecipientRoleIds", v)} />
+        <RolesChecklist label="Roles destinatarios" valores={form.blockedAlertRecipientRoleIds ?? []} roles={rolesDisponibles} onChange={(v) => actualizar("blockedAlertRecipientRoleIds", v)} />
         <div className="fila-formulario"><label>Correos adicionales</label>
           <input placeholder="bloqueos1@empresa.com; bloqueos2@empresa.com" value={(form.blockedAlertCustomEmails ?? []).join("; ")}
             onChange={(e) => actualizar("blockedAlertCustomEmails", parseCorreos(e.target.value))} /></div>
@@ -545,13 +569,13 @@ export default function AlertasCorreosPage() {
   );
 }
 
-function RolesChecklist({ label, valores, onChange }: { label: string; valores: string[]; onChange: (v: string[]) => void }) {
+function RolesChecklist({ label, valores, roles, onChange }: { label: string; valores: string[]; roles: RoleDefinition[]; onChange: (v: string[]) => void }) {
   return (
     <div className="fila-formulario"><label>{label} <Tooltip texto="Se resolverán los usuarios activos con estos roles y se deduplicarán con los correos manuales." /></label>
-      {Object.entries(ETIQUETAS_ROLES).map(([k, v]) => (
-        <label key={k} style={{ display: "inline-flex", alignItems: "center", marginRight: 12, fontWeight: 400 }}>
-          <input type="checkbox" style={{ width: "auto", marginRight: 4 }} checked={valores.includes(k)} onChange={() => onChange(alternar(valores, k))} />
-          {v}
+      {roles.map((rol) => (
+        <label key={rol.id} style={{ display: "inline-flex", alignItems: "center", marginRight: 12, fontWeight: 400 }}>
+          <input type="checkbox" style={{ width: "auto", marginRight: 4 }} checked={valores.includes(rol.id)} onChange={() => onChange(alternar(valores, rol.id))} />
+          {rol.name || ETIQUETAS_ROLES[rol.id] || rol.id}
         </label>
       ))}
     </div>

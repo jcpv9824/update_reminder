@@ -46,7 +46,7 @@ describe("auth security", () => {
     }))).rejects.toMatchObject({ message: "No autenticado.", status: 401 });
   });
 
-  it("conserva autenticacion por JWT valido", async () => {
+  it("removes retired compatibility roles from a valid JWT session", async () => {
     const token = signJwt({
       id: "user_1",
       email: "usuario@empresa.com",
@@ -93,7 +93,7 @@ describe("auth security", () => {
       id: "user_1",
       email: "usuario@empresa.com",
       displayName: "Usuario",
-      roles: ["client_manager"],
+      roles: [],
     });
   });
 
@@ -102,7 +102,7 @@ describe("auth security", () => {
     const persisted: UserRecord = { id: "user_1", email: "u@x.com", displayName: "U", roles: ["admin"], active: true, tokenVersion: 0, createdAt: "2026-01-01T00:00:00Z", createdBy: "system", updatedAt: "2026-01-01T00:00:00Z", updatedBy: "system" };
     const session: AuthSessionRecord = { id: "session_1", userId: "user_1", refreshTokenHash: "hash", tokenVersion: 0, createdAt: "2026-01-01T00:00:00Z", lastUsedAt: "2026-01-01T00:00:00Z", expiresAt: "2099-01-01T00:00:00Z", ttl: 3600 };
     const store = { read: async () => session, create: async () => undefined, replace: async () => undefined, listByUser: async () => [session] };
-    expect(await getCurrentUser(requestWithHeaders({ authorization: `Bearer ${token}` }), { store, loadUser: async () => persisted })).toMatchObject({ id: "user_1", roles: ["admin"] });
+    expect(await getCurrentUser(requestWithHeaders({ authorization: `Bearer ${token}` }), { store, loadUser: async () => persisted })).toMatchObject({ id: "user_1", roles: ["super_admin"] });
   });
 
   it("solo acepta headers de desarrollo cuando DEV_AUTH_ENABLED=true", async () => {
@@ -118,7 +118,7 @@ describe("auth security", () => {
     expect(await getCurrentUser(req)).toMatchObject({
       id: "dev_1",
       email: "dev@local",
-      roles: ["admin"],
+      roles: ["super_admin"],
     });
   });
 });

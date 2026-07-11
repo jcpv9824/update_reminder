@@ -396,11 +396,13 @@ app.http("generateDailyUpdateTasksManual", {
   handler: async (req, ctx) => {
     try {
       const { requireUser, loadUserProfile } = await import("../lib/auth");
-      const { canGenerateTasks } = await import("../lib/permissions");
+      const { canGenerateScheduleTasks } = await import("../lib/managementAccess");
+      const { loadRoleDefinitions } = await import("../lib/roleDefinitionStore");
       const auth = await requireUser(req);
       const profile = await loadUserProfile(auth);
-      if (!profile || !canGenerateTasks(profile)) {
-        return { status: 403, jsonBody: { error: "Solo administradores y administradores de clientes." } };
+      const roleDefinitions = profile ? await loadRoleDefinitions() : [];
+      if (!profile || !canGenerateScheduleTasks(profile, roleDefinitions)) {
+        return { status: 403, jsonBody: { error: "No tiene permisos para generar tareas." } };
       }
       const body = (await req.json().catch(() => ({}))) as any;
       const date = typeof body.date === "string" ? body.date : todayInBogotaIso();
@@ -430,11 +432,13 @@ app.http("refreshUpdateTasksManual", {
   handler: async (req, ctx) => {
     try {
       const { requireUser, loadUserProfile } = await import("../lib/auth");
-      const { canGenerateTasks } = await import("../lib/permissions");
+      const { canGenerateScheduleTasks } = await import("../lib/managementAccess");
+      const { loadRoleDefinitions } = await import("../lib/roleDefinitionStore");
       const auth = await requireUser(req);
       const profile = await loadUserProfile(auth);
-      if (!profile || !canGenerateTasks(profile)) {
-        return { status: 403, jsonBody: { error: "Solo administradores y administradores de clientes." } };
+      const roleDefinitions = profile ? await loadRoleDefinitions() : [];
+      if (!profile || !canGenerateScheduleTasks(profile, roleDefinitions)) {
+        return { status: 403, jsonBody: { error: "No tiene permisos para generar tareas." } };
       }
       const body = (await req.json().catch(() => ({}))) as any;
       const date = typeof body.date === "string" ? body.date : todayInBogotaIso();

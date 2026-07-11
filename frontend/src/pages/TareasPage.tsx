@@ -4,6 +4,8 @@ import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import type { Frecuencia, Tarea, Usuario } from "../types";
 import { ETIQUETAS_ROLES } from "../types";
+import { DEFAULT_ROLE_DEFINITIONS, type RoleDefinition } from "../permissionModel";
+import { hasPermissionForRoleIds, migrateLegacyRoleId, resolveTaskVisibilityForRoleIds } from "../permissionAccess";
 import { Alerta, EtiquetaEstado, Modal } from "../components/Comunes";
 import { hoyEnBogotaIso, sumarDiasIso, clasificarTareaPorFecha, type ClasificacionTarea } from "../utils/fechas";
 import { formatDomainForPublishing } from "../utils/dominio";
@@ -44,6 +46,13 @@ type ConexionInfo = {
   hasPassword: boolean;
 };
 
+const TASK_ACTION_PERMISSIONS: Record<AccionTarea, string> = {
+  complete: "updates.tasks.complete",
+  block: "updates.tasks.block",
+  reopen: "updates.tasks.reopen",
+  "resolve-block": "updates.tasks.resolve_block",
+};
+
 function normalizarBusqueda(valor: string | null | undefined): string {
   return (valor ?? "")
     .normalize("NFD")
@@ -80,13 +89,40 @@ function etiquetaEstadoGrupo(estado: GrupoResumen["estadoAgregado"]): string {
   } as const)[estado];
 }
 
-export function puedeCambiarTarea(usuario: Usuario | null, tarea: Tarea): boolean {
-  const roles = usuario?.roles ?? [];
-  if (roles.includes("admin")) return true;
-  const rolNecesario = tarea.targetType === "domain" ? "domain_updater" : "database_updater";
-  if (!roles.includes(rolNecesario)) return false;
-  if (tarea.assignedUserIds.length === 0) return true;
-  return !!usuario && tarea.assignedUserIds.includes(usuario.id);
+function usuarioEsSuperAdmin(usuario: Usuario | null): boolean {
+  return (usuario?.roles ?? []).map(migrateLegacyRoleId).includes("super_admin");
+}
+
+function rolAsignadoAlUsuario(usuario: Usuario | null, tarea: Tarea): boolean {
+  const rolesUsuario = new Set((usuario?.roles ?? []).map(migrateLegacyRoleId));
+  return rolesUsuario.has(migrateLegacyRoleId(tarea.assignedRole));
+}
+
+function puedeVerTarea(usuario: Usuario | null, tarea: Tarea, definicionesRoles: RoleDefinition[] = DEFAULT_ROLE_DEFINITIONS): boolean {
+  if (!usuario) return false;
+  if (usuarioEsSuperAdmin(usuario)) return true;
+  if (!hasPermissionForRoleIds(usuario.roles, "updates.tasks.view", definicionesRoles)) return false;
+  const visibilidad = resolveTaskVisibilityForRoleIds(usuario.roles, definicionesRoles)[tarea.targetType];
+  if (visibilidad === "none") return false;
+  if (visibilidad === "all") return true;
+  if (tarea.assignedUserIds.length > 0) return tarea.assignedUserIds.includes(usuario.id);
+  return rolAsignadoAlUsuario(usuario, tarea);
+}
+
+function rolPuedeAtenderTarea(usuario: Usuario | null, tarea: Tarea, definicionesRoles: RoleDefinition[] = DEFAULT_ROLE_DEFINITIONS): boolean {
+  if (!usuario || tarea.assignedUserIds.length > 0) return false;
+  return rolAsignadoAlUsuario(usuario, tarea) && puedeVerTarea(usuario, tarea, definicionesRoles);
+}
+
+export function puedeCambiarTarea(
+  usuario: Usuario | null,
+  tarea: Tarea,
+  definicionesRoles: RoleDefinition[] = DEFAULT_ROLE_DEFINITIONS,
+  permiso = "updates.tasks.complete"
+): boolean {
+  if (!usuario) return false;
+  if (!hasPermissionForRoleIds(usuario.roles, permiso, definicionesRoles)) return false;
+  return puedeVerTarea(usuario, tarea, definicionesRoles);
 }
 
 function estadoDespuesDeAccion(accion: AccionTarea): Tarea["status"] {
@@ -148,15 +184,23 @@ export default function TareasPage() {
   const auth = useAuth();
   const usuario = auth.cargando || !auth.usuario ? null : auth.usuario;
   const roles = usuario?.roles ?? [];
-  const puedeGenerar = roles.includes("admin") || roles.includes("client_manager");
-  const verDominios = puedeGenerar || roles.includes("domain_updater") || roles.includes("viewer");
-  const verBd = puedeGenerar || roles.includes("database_updater") || roles.includes("viewer");
+  const { data: rolesRespuesta } = useQuery({
+    queryKey: ["roles"],
+    queryFn: () => api.get<RoleDefinition[]>("/roles"),
+    enabled: !!usuario,
+  });
+  const definicionesRoles = Array.isArray(rolesRespuesta) && rolesRespuesta.length > 0 ? rolesRespuesta : DEFAULT_ROLE_DEFINITIONS;
+  const puedeVerTareas = hasPermissionForRoleIds(roles, "updates.tasks.view", definicionesRoles);
+  const visibilidadTareas = resolveTaskVisibilityForRoleIds(roles, definicionesRoles);
+  const verDominios = puedeVerTareas && visibilidadTareas.domain !== "none";
+  const verBd = puedeVerTareas && visibilidadTareas.database !== "none";
+  const puedeCargarUsuarios = hasPermissionForRoleIds(roles, "configuration.users.view", definicionesRoles);
 
-  // Cargar nombres de los usuarios cuando el actual puede gestionar (admin / client_manager).
+  // Cargar nombres completos solo cuando el rol actual puede consultar usuarios.
   const { data: usuarios = [] } = useQuery({
     queryKey: ["usuarios-tareas"],
     queryFn: () => api.get<Array<{ id: string; displayName: string; email: string }>>("/users"),
-    enabled: puedeGenerar,
+    enabled: puedeCargarUsuarios,
   });
   const usuariosMap = useMemo(() => {
     const m = new Map<string, string>();
@@ -171,15 +215,15 @@ export default function TareasPage() {
       </div>
       <Alerta tipo="info">Vista operativa: vencidas abiertas, hoy, próximas 4 días y completadas recientes.</Alerta>
       <div className="tareas-grid">
-        {verDominios && <ColumnaTareas titulo="Tareas de dominios" targetType="domain" usuario={usuario} usuariosMap={usuariosMap} />}
-        {verBd && <ColumnaTareas titulo="Tareas de bases de datos" targetType="database" usuario={usuario} usuariosMap={usuariosMap} />}
+        {verDominios && <ColumnaTareas titulo="Tareas de dominios" targetType="domain" usuario={usuario} usuariosMap={usuariosMap} definicionesRoles={definicionesRoles} />}
+        {verBd && <ColumnaTareas titulo="Tareas de bases de datos" targetType="database" usuario={usuario} usuariosMap={usuariosMap} definicionesRoles={definicionesRoles} />}
         {!verDominios && !verBd && <Alerta tipo="info">No tienes tareas asignadas.</Alerta>}
       </div>
     </>
   );
 }
 
-function ColumnaTareas({ titulo, targetType, usuario, usuariosMap }: { titulo: string; targetType: "domain" | "database"; usuario: Usuario | null; usuariosMap: Map<string, string> }) {
+function ColumnaTareas({ titulo, targetType, usuario, usuariosMap, definicionesRoles }: { titulo: string; targetType: "domain" | "database"; usuario: Usuario | null; usuariosMap: Map<string, string>; definicionesRoles: RoleDefinition[] }) {
   const qc = useQueryClient();
   const [grupoActivo, setGrupoActivo] = useState<GrupoResumen | null>(null);
   const [confirmando, setConfirmando] = useState<{ tarea: Tarea } | null>(null);
@@ -232,7 +276,7 @@ function ColumnaTareas({ titulo, targetType, usuario, usuariosMap }: { titulo: s
   });
 
   const tareasVisibles = useMemo(() => tareas.filter((t) => t.status !== "cancelled"), [tareas]);
-  const grupos = useMemo(() => agruparTareas(tareasVisibles, targetType, usuario, usuariosMap, nombresProgramacion), [tareasVisibles, targetType, usuario, usuariosMap, nombresProgramacion]);
+  const grupos = useMemo(() => agruparTareas(tareasVisibles, targetType, usuario, usuariosMap, nombresProgramacion, definicionesRoles), [tareasVisibles, targetType, usuario, usuariosMap, nombresProgramacion, definicionesRoles]);
 
   // Clasificación por zona Bogotá: hoy / próximas / vencidas / completadas.
   const seccionado = useMemo(() => {
@@ -275,6 +319,7 @@ function ColumnaTareas({ titulo, targetType, usuario, usuariosMap }: { titulo: s
           <DetalleGrupo
             grupo={grupos.find((g) => g.id === grupoActivo.id) ?? grupoActivo}
             usuario={usuario}
+            definicionesRoles={definicionesRoles}
             guardado={guardado}
             onSolicitarCompletar={(tarea) => setConfirmando({ tarea })}
             onAccion={accionar}
@@ -302,7 +347,14 @@ function rootScheduleIdTarea(tarea: Tarea): string {
   return tarea.scheduleId.split("__")[0] || tarea.scheduleId;
 }
 
-function agruparTareas(tareas: Tarea[], targetType: "domain" | "database", usuario: Usuario | null, usuariosMap: Map<string, string>, nombresProgramacion: Map<string, string>): GrupoResumen[] {
+function agruparTareas(
+  tareas: Tarea[],
+  targetType: "domain" | "database",
+  usuario: Usuario | null,
+  usuariosMap: Map<string, string>,
+  nombresProgramacion: Map<string, string>,
+  definicionesRoles: RoleDefinition[]
+): GrupoResumen[] {
   const sep = "\u001f";
   const mapa = new Map<string, Tarea[]>();
   for (const tarea of tareas) {
@@ -320,8 +372,7 @@ function agruparTareas(tareas: Tarea[], targetType: "domain" | "database", usuar
     const { etiqueta, esRolFallback } = etiquetaResponsableDeGrupo(items, usuariosMap, usuario);
     const ids = items[0].assignedUserIds ?? [];
     const asignadoAlActual = !!usuario && ids.includes(usuario.id);
-    const rolNecesario = items[0].targetType === "domain" ? "domain_updater" : "database_updater";
-    const rolHabilitaActual = !!usuario && (usuario.roles ?? []).includes(rolNecesario) && ids.length === 0;
+    const rolHabilitaActual = rolPuedeAtenderTarea(usuario, items[0], definicionesRoles);
     return {
       id: key,
       fecha,
@@ -393,9 +444,10 @@ function GrupoResumenSeccion({ titulo, grupos, onAbrir }: { titulo: string; grup
   );
 }
 
-function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion }: {
+function DetalleGrupo({ grupo, usuario, definicionesRoles, guardado, onSolicitarCompletar, onAccion }: {
   grupo: GrupoResumen;
   usuario: Usuario | null;
+  definicionesRoles: RoleDefinition[];
   guardado: Record<string, { estado: EstadoGuardado; mensaje?: string; reintento?: { accion: AccionTarea; body?: any } }>;
   onSolicitarCompletar: (t: Tarea) => void;
   onAccion: (id: string, accion: AccionTarea, body?: any) => void;
@@ -536,7 +588,11 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
             </tr>
           ) : tareasFiltradas.map((tarea) => {
             const estado = guardado[tarea.id];
-            const puedeCambiar = puedeCambiarTarea(usuario, tarea);
+            const puedeCompletar = puedeCambiarTarea(usuario, tarea, definicionesRoles, TASK_ACTION_PERMISSIONS.complete);
+            const puedeBloquear = puedeCambiarTarea(usuario, tarea, definicionesRoles, TASK_ACTION_PERMISSIONS.block);
+            const puedeResolverBloqueo = puedeCambiarTarea(usuario, tarea, definicionesRoles, TASK_ACTION_PERMISSIONS["resolve-block"]);
+            const puedeReabrir = puedeCambiarTarea(usuario, tarea, definicionesRoles, TASK_ACTION_PERMISSIONS.reopen);
+            const tieneAccionDisponible = puedeCompletar || puedeBloquear || puedeResolverBloqueo || puedeReabrir;
             const notaMostrada = tarea.completedWithProblems
               ? `Con problemas: ${tarea.problemNote || "Reportó problema"}`
               : (tarea.completionNote || tarea.notes || "-");
@@ -553,7 +609,7 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
                   <>
                     <td style={{ fontFamily: "monospace" }}>{dominioPublicable}</td>
                     <td>
-                      <ConexionBaseCelda tarea={tarea} usuario={usuario} onConexionCargada={registrarConexion} />
+                      <ConexionBaseCelda tarea={tarea} usuario={usuario} definicionesRoles={definicionesRoles} onConexionCargada={registrarConexion} />
                     </td>
                   </>
                 )}
@@ -583,19 +639,19 @@ function DetalleGrupo({ grupo, usuario, guardado, onSolicitarCompletar, onAccion
                   ) : (
                     null
                   )}
-                  {puedeCambiar && tarea.status !== "completed" && tarea.status !== "cancelled" && (
+                  {puedeCompletar && tarea.status !== "completed" && tarea.status !== "cancelled" && (
                     <button type="button" className="exito" onClick={() => onSolicitarCompletar(tarea)}>Completar</button>
                   )}
-                  {puedeCambiar && tarea.status !== "completed" && tarea.status !== "cancelled" && tarea.status !== "blocked" && (
+                  {puedeBloquear && tarea.status !== "completed" && tarea.status !== "cancelled" && tarea.status !== "blocked" && (
                     <button type="button" className="advertencia" onClick={() => setBloqueo(tarea)}>Bloquear</button>
                   )}
-                  {puedeCambiar && tarea.status === "blocked" && (
+                  {puedeResolverBloqueo && tarea.status === "blocked" && (
                     <button type="button" className="primario" onClick={() => setResolver(tarea)}>Resolver bloqueo</button>
                   )}
-                  {puedeCambiar && tarea.status === "completed" && (
+                  {puedeReabrir && tarea.status === "completed" && (
                     <button type="button" onClick={() => setReabrir(tarea)}>Reabrir</button>
                   )}
-                  {!puedeCambiar && <span className="texto-ayuda">Sin permiso</span>}
+                  {!tieneAccionDisponible && <span className="texto-ayuda">Sin permiso</span>}
                 </td>
               </tr>
             );
@@ -708,9 +764,10 @@ function ModalReabrirTarea({ tarea, onCerrar, onConfirmar }: {
   );
 }
 
-function ConexionBaseCelda({ tarea, usuario, onConexionCargada }: {
+function ConexionBaseCelda({ tarea, usuario, definicionesRoles, onConexionCargada }: {
   tarea: Tarea;
   usuario: Usuario | null;
+  definicionesRoles: RoleDefinition[];
   onConexionCargada?: (taskId: string, info: ConexionInfo) => void;
 }) {
   const [passwordVisible, setPasswordVisible] = useState<string | null>(null);
@@ -718,7 +775,7 @@ function ConexionBaseCelda({ tarea, usuario, onConexionCargada }: {
   const [errorPwd, setErrorPwd] = useState<string | null>(null);
   const [mensajePwd, setMensajePwd] = useState<string | null>(null);
   const ocultarTimer = useRef<number | null>(null);
-  const puedeVerPassword = puedeCambiarTarea(usuario, tarea);
+  const puedeVerPassword = puedeCambiarTarea(usuario, tarea, definicionesRoles, "updates.tasks.reveal_database_password");
   const conexion = useQuery({
     queryKey: ["conexion-db-tarea", tarea.targetId, tarea.id],
     queryFn: () => api.get<ConexionInfo>(`/databases/${tarea.targetId}/access-info?taskId=${encodeURIComponent(tarea.id)}`),

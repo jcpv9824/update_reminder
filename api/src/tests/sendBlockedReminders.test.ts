@@ -24,7 +24,7 @@ vi.mock("../lib/settingsService", () => ({
     blockedReminderEnabled: true,
     blockedReminderTime: "08:00",
     blockedReminderDaysAfter: [1],
-    blockedAlertRecipientRoleIds: ["admin"],
+    blockedAlertRecipientRoleIds: ["super_admin"],
     blockedAlertCustomEmails: [],
     frontendBaseUrl: "https://app.example.com",
   })),

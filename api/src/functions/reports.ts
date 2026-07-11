@@ -1,7 +1,7 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
-import { canSendMastersReport } from "../lib/permissions";
+import { canSendConfiguredReport } from "../lib/managementAccess";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { sendEmail } from "../lib/emailService";
@@ -9,13 +9,14 @@ import { badRequest, forbidden, ok, serverError } from "../lib/http";
 import { buildMastersReportEmail, parseSemicolonEmails } from "../lib/reportsService";
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseAssignmentRecord, LicenseModuleRecord, UpdateSchedule } from "../types/models";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
+import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 
 async function getAllowedUser(req: HttpRequest) {
   const auth = await requireUser(req);
   const profile = await loadUserProfile(auth);
   if (!profile) throw Object.assign(new Error("Usuario no registrado."), { status: 403 });
-  if (!canSendMastersReport(profile)) {
-    throw Object.assign(new Error("Solo administradores y administradores de clientes."), { status: 403 });
+  if (!canSendConfiguredReport(profile, await loadRoleDefinitions())) {
+    throw Object.assign(new Error("No tiene permisos para enviar este reporte."), { status: 403 });
   }
   return profile;
 }

@@ -6,6 +6,7 @@ import { signJwt } from "../lib/jwt";
 import { writeAuditLog } from "../lib/audit";
 import { ok } from "../lib/http";
 import type { UserRecord } from "../types/models";
+import { migrateLegacyRoleIds } from "../lib/permissionModel";
 import {
   clearRefreshCookie,
   createAuthSession,
@@ -35,7 +36,7 @@ const MENSAJE_LOGIN_GENERICO = "Correo o contraseña incorrectos.";
 function sanitize(u: UserRecord) {
   const { passwordHash, passwordResetTokenHash, passwordResetExpiresAt, passwordResetUsedAt, tokenVersion,
     mfaEnabled, mfaSecretName, mfaEnrolledAt, mfaLastTimeStep, mfaRecoveryCodeHashes, ...rest } = u;
-  return rest;
+  return { ...rest, roles: migrateLegacyRoleIds(rest.roles ?? []) };
 }
 
 app.http("authLogin", {
@@ -118,7 +119,7 @@ app.http("authLogin", {
       }
       const { session, refreshToken } = createdSession;
       const token = signJwt(
-        { id: user.id, email: user.email, displayName: user.displayName, roles: user.roles ?? [] },
+        { id: user.id, email: user.email, displayName: user.displayName, roles: migrateLegacyRoleIds(user.roles ?? []) },
         { id: session.id, tokenVersion: session.tokenVersion }
       );
       await writeAuditLog({
@@ -170,7 +171,7 @@ app.http("authRefresh", {
       const rotated = await rotateAuthSession(currentToken);
       if (!rotated) throw new Error("invalid_refresh_token");
       const token = signJwt(
-        { id: rotated.user.id, email: rotated.user.email, displayName: rotated.user.displayName, roles: rotated.user.roles ?? [] },
+        { id: rotated.user.id, email: rotated.user.email, displayName: rotated.user.displayName, roles: migrateLegacyRoleIds(rotated.user.roles ?? []) },
         { id: rotated.session.id, tokenVersion: rotated.session.tokenVersion }
       );
       return {

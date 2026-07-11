@@ -1,9 +1,10 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { requireUser, loadUserProfile } from "../lib/auth";
-import { canViewAuditLogs } from "../lib/permissions";
+import { canViewAuditLogs } from "../lib/managementAccess";
 import { getContainer } from "../lib/cosmos";
 import { forbidden, ok, serverError } from "../lib/http";
 import { getPagination } from "../lib/pagination";
+import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import type { AuditLog } from "../types/models";
 
 app.http("auditLogsList", {
@@ -15,7 +16,7 @@ app.http("auditLogsList", {
       const auth = await requireUser(req);
       const user = await loadUserProfile(auth);
       if (!user) return forbidden();
-      if (!canViewAuditLogs(user)) return forbidden();
+      if (!canViewAuditLogs(user, await loadRoleDefinitions())) return forbidden();
 
       const conditions: string[] = [];
       const parameters: { name: string; value: any }[] = [];

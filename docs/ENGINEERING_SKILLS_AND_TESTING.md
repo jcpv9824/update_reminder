@@ -79,6 +79,7 @@ Before editing code, identify the smallest test set that can catch the expected 
 | Backend endpoint behavior | Function or service tests closest to the endpoint; add service tests when possible |
 | Schedule/task generation | `cd api && npm test -- scheduleEngine taskGeneration completionFlow windowGeneration` |
 | Task visibility/authorization | `cd api && npm test -- taskVisibility objectAuthorization permissions` plus impacted frontend page tests |
+| Role/permission model | Read `docs/PERMISSIONS_AND_TASK_VISIBILITY_DESIGN.md` first; add resolver, migration, role editor, and task visibility tests before implementation |
 | Authentication, sessions, passwords, rate limits | `cd api && npm test -- authSecurity authSessions password jwt rateLimit resetTokens` |
 | Email/reminder behavior | `cd api && npm test -- emailTemplates emailService reminderLogic sendOverdueAlerts sendBlockedReminders taskNotifications` |
 | Audit logging/sanitization | `cd api && npm test -- auditLog` and any sanitization script checks related to the change |

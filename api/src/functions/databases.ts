@@ -1,7 +1,6 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
-import { canManageClients, canEditDatabaseLimited } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { cancelPendingTasksForDatabase } from "../lib/taskCleanup";
@@ -10,16 +9,23 @@ import { buildDatabaseRecordFromInput } from "../lib/databaseService";
 import { buildDatabaseAccessInfo } from "../lib/databaseAccessInfo";
 import { parseDbAccessString } from "../lib/dbAccessParser";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
+import {
+  canCopyDatabaseConnectionPart,
+  canCreateDatabase,
+  canDeactivateDatabase,
+  canDeleteDatabase,
+  canEditDatabase,
+  canReactivateDatabase,
+  canRevealDatabasePassword,
+  canViewDatabaseConnection,
+  canViewDatabases,
+} from "../lib/managementAccess";
 import { getPagination, paginateArray } from "../lib/pagination";
 import { matchesDatabaseSearch } from "../lib/listSearch";
 import { hasDuplicateDatabaseConnection } from "../lib/duplicateValidation";
 import { isAllowedEnvironment } from "../lib/environments";
-import {
-  canReadDatabase,
-  canReadDatabaseConnection,
-  canReadDatabasePassword,
-  filterDatabasesForUser,
-} from "../lib/objectAuthorization";
+import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
+import { canPerformTaskActionWithRoleDefinitions } from "../lib/taskAccess";
 import { toPublicDatabase } from "../lib/publicDtos";
 import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
@@ -49,6 +55,8 @@ app.http("databasesList", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canViewDatabases(user, roleDefinitions)) return forbidden();
       const container = getContainer("databases");
       const clientId = req.query.get("clientId");
       const domainId = req.query.get("domainId");
@@ -56,15 +64,12 @@ app.http("databasesList", {
         ? { query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: clientId }] }
         : { query: "SELECT * FROM c" };
       const { resources } = await container.items.query<DatabaseRecord>(querySpec).fetchAll();
-      const { resources: scopeTasks } = canManageClients(user) || user.roles.includes("viewer")
-        ? { resources: [] as UpdateTask[] }
-        : await getContainer("updateTasks").items.readAll<UpdateTask>().fetchAll();
       const status = req.query.get("status");
       const env = req.query.get("environment");
       const search = req.query.get("search");
       const includeDeleted = req.query.get("includeDeleted") === "true";
-      let items = filterDatabasesForUser(user, resources, scopeTasks);
-      const canReadDeleted = canManageClients(user);
+      let items = resources;
+      const canReadDeleted = canDeleteDatabase(user, roleDefinitions) || canReactivateDatabase(user, roleDefinitions);
       if (!canReadDeleted) items = items.filter((d) => d.status !== "deleted");
       if (!includeDeleted && !status) items = items.filter((d) => d.status !== "deleted");
       if (domainId) items = items.filter((d) => d.domainId === domainId);
@@ -88,7 +93,8 @@ app.http("databasesCreate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManageClients(user)) return forbidden();
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canCreateDatabase(user, roleDefinitions)) return forbidden();
       const body = await req.json();
       const parsed = DbCreateSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
@@ -172,6 +178,19 @@ async function findTask(id: string): Promise<UpdateTask | null> {
   return resources[0] ?? null;
 }
 
+function canUseDatabaseTaskAction(
+  user: Awaited<ReturnType<typeof getUserOrFail>>,
+  db: DatabaseRecord,
+  task: UpdateTask | null,
+  actionId: "view_database_connection" | "copy_database_connection_part" | "reveal_database_password",
+  roleDefinitions: Parameters<typeof canPerformTaskActionWithRoleDefinitions>[3]
+): boolean {
+  return !!task
+    && task.targetType === "database"
+    && task.targetId === db.id
+    && canPerformTaskActionWithRoleDefinitions(user, task, actionId, roleDefinitions);
+}
+
 app.http("databasesAccessInfo", {
   route: "databases/{id}/access-info",
   methods: ["GET"],
@@ -179,6 +198,7 @@ app.http("databasesAccessInfo", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
       const db = await findDatabase(req.params.id);
       if (!db) return notFound("Base de datos no encontrada.");
 
@@ -187,7 +207,7 @@ app.http("databasesAccessInfo", {
       if (taskId) {
         task = await findTask(taskId);
       }
-      if (!canReadDatabaseConnection(user, db, task)) {
+      if (!canViewDatabaseConnection(user, roleDefinitions) && !canUseDatabaseTaskAction(user, db, task, "view_database_connection", roleDefinitions)) {
         return forbidden("No tienes permiso para ver esta conexión.");
       }
       return ok(buildDatabaseAccessInfo(db));
@@ -204,14 +224,11 @@ app.http("databasesGet", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canViewDatabases(user, roleDefinitions)) return forbidden();
       const db = await findDatabase(req.params.id);
       if (!db) return notFound("Base de datos no encontrada.");
-      const { resources: relatedTasks } = await getContainer("updateTasks").items.query<UpdateTask>({
-        query: "SELECT * FROM c WHERE c.targetType = 'database' AND c.targetId = @id",
-        parameters: [{ name: "@id", value: db.id }],
-      }).fetchAll();
-      if (!canReadDatabase(user, db, relatedTasks)) return forbidden("No tiene permisos para consultar esta base de datos.");
-      if (db.status === "deleted" && !canManageClients(user)) return forbidden("No tiene permisos para consultar esta base de datos.");
+      if (db.status === "deleted" && !canDeleteDatabase(user, roleDefinitions) && !canReactivateDatabase(user, roleDefinitions)) return forbidden("No tiene permisos para consultar esta base de datos.");
       return ok(toPublicDatabase(db));
     } catch (e) {
       return serverError(e);
@@ -226,12 +243,13 @@ app.http("databasesUpdate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canEditDatabase(user, roleDefinitions)) return forbidden();
       const db = await findDatabase(req.params.id);
       if (!db) return notFound("Base de datos no encontrada.");
-      if (!canEditDatabaseLimited(user, db)) return forbidden();
       const body = await req.json() as any;
       if (typeof body.environment === "string" && !isAllowedEnvironment(body.environment)) return badRequest("El ambiente debe ser Producción, Pruebas o Demo.");
-      if (typeof body.rawDbAccess === "string" && body.rawDbAccess.trim() && canManageClients(user)) {
+      if (typeof body.rawDbAccess === "string" && body.rawDbAccess.trim()) {
         const { resources: existingDatabases } = await getContainer("databases").items.readAll<DatabaseRecord>().fetchAll();
         if (hasDuplicateDatabaseConnection(existingDatabases, body.rawDbAccess, db.id)) return conflict("Ya existe una base de datos con esta cadena de conexión.");
       }
@@ -246,7 +264,7 @@ app.http("databasesUpdate", {
         updatedAt: new Date().toISOString(),
         updatedBy: user.id,
       };
-      if (typeof body.rawDbAccess === "string" && body.rawDbAccess.trim() && canManageClients(user)) {
+      if (typeof body.rawDbAccess === "string" && body.rawDbAccess.trim()) {
         const parsed = parseDbAccessString(body.rawDbAccess);
         updated.dbAccess = { ...updated.dbAccess, serverHostPort: parsed.serverHostPort, initialCatalog: parsed.initialCatalog, userId: parsed.userId };
         await keyVault.setSecret(updated.dbAccess.passwordSecretName, parsed.password);
@@ -275,7 +293,9 @@ app.http("databasesUpdate", {
 
 async function setDbStatus(req: HttpRequest, action: "database_deactivated" | "database_reactivated", status: "inactive" | "active"): Promise<HttpResponseInit> {
   const user = await getUserOrFail(req);
-  if (!canManageClients(user)) return forbidden();
+  const roleDefinitions = await loadRoleDefinitions();
+  const allowed = status === "active" ? canReactivateDatabase(user, roleDefinitions) : canDeactivateDatabase(user, roleDefinitions);
+  if (!allowed) return forbidden();
   const db = await findDatabase(req.params.id);
   if (!db) return notFound("Base de datos no encontrada.");
   db.status = status;
@@ -305,7 +325,8 @@ app.http("databasesDelete", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManageClients(user)) return forbidden();
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canDeleteDatabase(user, roleDefinitions)) return forbidden();
       const db = await findDatabase(req.params.id);
       if (!db) return notFound("Base de datos no encontrada.");
       const cascade = req.query.get("cascade") === "true";
@@ -367,6 +388,7 @@ app.http("databasesCopyAccessPart", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
       const db = await findDatabase(req.params.id);
       if (!db) return notFound("Base de datos no encontrada.");
       const body = await req.json() as any;
@@ -376,10 +398,11 @@ app.http("databasesCopyAccessPart", {
 
       const taskId = typeof body.taskId === "string" ? body.taskId.trim() : "";
       const task = taskId ? await findTask(taskId) : null;
-      if (!canReadDatabaseConnection(user, db, task)) return forbidden("No tiene permisos para acceder a esta conexión.");
+      const canCopyFromTask = canUseDatabaseTaskAction(user, db, task, "copy_database_connection_part", roleDefinitions);
+      const canRevealFromTask = canUseDatabaseTaskAction(user, db, task, "reveal_database_password", roleDefinitions);
 
       if (part === "password") {
-        if (!canReadDatabasePassword(user, db, task)) return forbidden("No tiene permisos para acceder a la contraseña.");
+        if (!canRevealDatabasePassword(user, roleDefinitions) && !canRevealFromTask) return forbidden("No tiene permisos para acceder a la contraseña.");
         const value = await keyVault.getSecret(db.dbAccess.passwordSecretName);
         await writeAuditLog({
           entityType: "database",
@@ -395,6 +418,7 @@ app.http("databasesCopyAccessPart", {
         });
         return ok({ part, value });
       }
+      if (!canCopyDatabaseConnectionPart(user, roleDefinitions) && !canCopyFromTask) return forbidden("No tiene permisos para acceder a esta conexión.");
 
       const value = (db.dbAccess as any)[part] as string;
       await writeAuditLog({
@@ -424,6 +448,7 @@ app.http("databasesRevealPassword", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
       const db = await findDatabase(req.params.id);
       if (!db) return notFound("Base de datos no encontrada.");
       const body = (await req.json().catch(() => ({}))) as any;
@@ -434,7 +459,7 @@ app.http("databasesRevealPassword", {
         taskId = requestedTaskId;
         task = await findTask(requestedTaskId);
       }
-      if (!canReadDatabasePassword(user, db, task)) return forbidden("No tiene permisos para acceder a la contraseña.");
+      if (!canRevealDatabasePassword(user, roleDefinitions) && !canUseDatabaseTaskAction(user, db, task, "reveal_database_password", roleDefinitions)) return forbidden("No tiene permisos para acceder a la contraseña.");
       const value = await keyVault.getSecret(db.dbAccess.passwordSecretName);
       const metadata: Record<string, string> = { databaseId: db.id, reason: typeof body.reason === "string" ? body.reason : "manual" };
       if (taskId) metadata.taskId = taskId;

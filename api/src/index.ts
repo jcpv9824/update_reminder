@@ -1,6 +1,7 @@
 import "./functions/me";
 import "./functions/auth";
 import "./functions/users";
+import "./functions/roles";
 import "./functions/clients";
 import "./functions/domains";
 import "./functions/databases";

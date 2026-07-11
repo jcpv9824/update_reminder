@@ -172,7 +172,7 @@ export function renderResetPasswordEmail(args: {
   resetUrl: string;
   expiresInMinutes: number;
 }): { subject: string; html: string; text: string } {
-  const subject = "Restablecer contraseña — Programador de Actualizaciones ERP";
+  const subject = "Restablecer contraseña — Portal SAG Web";
   const nombre = escapeHtml(args.displayName);
   const correo = escapeHtml(args.email);
   // El URL puede contener el token — no se loguea, solo se envía al destinatario.
@@ -198,7 +198,7 @@ export function renderUserPasswordEmail(args: {
 }): { subject: string; html: string; text: string } {
   const subject = args.isReset
     ? "Tu contraseña fue restablecida"
-    : "Bienvenido al Programador de Actualizaciones";
+    : "Bienvenido a Portal SAG Web";
   const enlace = args.appUrl ? `<p><a href="${args.appUrl}">Iniciar sesión</a></p>` : "";
   const incluyePwd = !!args.temporaryPassword;
   const detallePwd = incluyePwd

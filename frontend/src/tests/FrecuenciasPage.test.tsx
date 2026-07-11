@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import FrecuenciasPage from "../pages/FrecuenciasPage";
 import type { Frecuencia } from "../types";
+import type { RoleDefinition } from "../permissionModel";
 
 const apiMock = vi.hoisted(() => ({
   get: vi.fn(),
@@ -26,6 +27,12 @@ const base1 = {
 const base2 = { ...base1, id: "db_2", companyName: "Empresa Dos", dbAccess: { ...base1.dbAccess, initialCatalog: "EMPRESA_DOS" } };
 const modulo = { id: "module_mobile", name: "Mobile App", code: "MOBILE", status: "active" };
 const moduloInactivo = { id: "module_old", name: "Licencia vieja", code: "OLD", status: "inactive" };
+const rolesProgramables: RoleDefinition[] = [
+  { id: "domain_updater", name: "Actualizador de Dominios", permissions: ["updates.tasks.view"], taskVisibility: { domain: "assigned", database: "none" }, system: true, active: true },
+  { id: "database_updater", name: "Actualizador de Bases de Datos", permissions: ["updates.tasks.view"], taskVisibility: { domain: "none", database: "assigned" }, system: true, active: true },
+  { id: "domain_specialist", name: "Especialista de Dominios", permissions: ["updates.tasks.view"], taskVisibility: { domain: "all", database: "none" }, system: false, active: true },
+  { id: "tasks_without_visibility", name: "Sin visibilidad", permissions: ["updates.tasks.view"], taskVisibility: { domain: "none", database: "none" }, system: false, active: true },
+];
 
 function renderPagina() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -75,6 +82,7 @@ beforeEach(() => {
     if (path === "/domains") return Promise.resolve([dominio, dominio2]);
     if (path === "/databases") return Promise.resolve([base1, base2]);
     if (path === "/license-modules") return Promise.resolve([modulo, moduloInactivo]);
+    if (path === "/roles") return Promise.resolve(rolesProgramables);
     if (path === "/settings/email-alerts") return Promise.resolve({ remindersEnabled: true, defaultReminderDaysBefore: [3, 1, 0], defaultReminderTime: "08:00", defaultTimezone: "America/Bogota" });
     if (path.startsWith("/schedules?origin=special")) return Promise.resolve({ items: [], page: 1, pageSize: 10, total: 0 });
     return Promise.resolve([]);
@@ -146,6 +154,31 @@ describe("FrecuenciasPage", () => {
       origin: "special",
       scopeGroups: expect.arrayContaining([expect.objectContaining({ clientId: "client_1", includeAllDomains: true })]),
     }));
+  });
+
+  it("permite asignar roles personalizados aptos para las tareas y excluye roles sin visibilidad", async () => {
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Nueva actualización programada/i }));
+
+    const rolDominios = select("Rol para tareas de dominios");
+    const rolBases = select("Rol para tareas de bases de datos");
+    expect(within(rolDominios).getByRole("option", { name: "Especialista de Dominios" })).toBeInTheDocument();
+    expect(within(rolDominios).queryByRole("option", { name: "Sin visibilidad" })).toBeNull();
+    fireEvent.change(rolDominios, { target: { value: "domain_specialist" } });
+
+    expect(within(rolBases).getByRole("option", { name: "Actualizador de Bases de Datos" })).toBeInTheDocument();
+    expect(within(rolBases).queryByRole("option", { name: "Especialista de Dominios" })).toBeNull();
+
+    fireEvent.focus(screen.getByPlaceholderText("Buscar cliente..."));
+    fireEvent.mouseDown(await screen.findByRole("option", { name: "Cliente Uno" }));
+    fireEvent.click(screen.getByLabelText(/Incluir todos los dominios activos/i));
+    fireEvent.click(screen.getByRole("button", { name: /^Guardar$/i }));
+
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/schedules", expect.objectContaining({
+      assignmentMode: "role",
+      domainAssignedRole: "domain_specialist",
+      databaseAssignedRole: "database_updater",
+    })));
   });
 
   it("permite objetivo manual solo bases y guarda bases sin crear selección obligatoria de dominio", async () => {

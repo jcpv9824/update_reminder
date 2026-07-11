@@ -6,7 +6,17 @@ import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import { getPagination, paginateArray } from "../lib/pagination";
-import { canManagePrintFormats } from "../lib/permissions";
+import {
+  canCreatePrintFormat,
+  canCreatePrintFormatSource,
+  canDeletePrintFormat,
+  canDeletePrintFormatSource,
+  canEditPrintFormat,
+  canEditPrintFormatSource,
+  canReplacePrintFormatPdf,
+  canViewPrintFormats,
+} from "../lib/managementAccess";
+import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import type { FormatoImpresionRecord, FuenteFormatoRecord, LicenseModuleRecord } from "../types/models";
 
 const MAX_PDF_BYTES = 1_500_000;
@@ -191,7 +201,7 @@ app.http("adminFuentesFormatosList", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePrintFormats(user)) return forbidden();
+      if (!canViewPrintFormats(user, await loadRoleDefinitions())) return forbidden();
       const search = req.query.get("search")?.trim().toLowerCase();
       let items = await readFuentes();
       if (search) items = items.filter((item) => `${item.nombre} ${item.descripcion ?? ""}`.toLowerCase().includes(search));
@@ -212,7 +222,7 @@ app.http("adminFuentesFormatosCreate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePrintFormats(user)) return forbidden();
+      if (!canCreatePrintFormatSource(user, await loadRoleDefinitions())) return forbidden();
       const parsed = FuenteSchema.safeParse(await req.json());
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       if (await hasDuplicateFuenteName(parsed.data.nombre)) return conflict("Ya existe un tipo de fuente con este nombre.");
@@ -251,7 +261,7 @@ app.http("adminFuentesFormatosGet", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePrintFormats(user)) return forbidden();
+      if (!canViewPrintFormats(user, await loadRoleDefinitions())) return forbidden();
       const record = await readFuente(req.params.id);
       if (!record) return notFound("Tipo de fuente no encontrado.");
       return ok(sanitizeFuente(record));
@@ -268,7 +278,7 @@ app.http("adminFuentesFormatosUpdate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePrintFormats(user)) return forbidden();
+      if (!canEditPrintFormatSource(user, await loadRoleDefinitions())) return forbidden();
       const id = req.params.id;
       const parsed = FuenteUpdateSchema.safeParse(await req.json());
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
@@ -316,7 +326,7 @@ app.http("adminFuentesFormatosDelete", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePrintFormats(user)) return forbidden();
+      if (!canDeletePrintFormatSource(user, await loadRoleDefinitions())) return forbidden();
       const id = req.params.id;
       const current = await readFuente(id);
       if (!current) return notFound("Tipo de fuente no encontrado.");
@@ -356,7 +366,7 @@ app.http("adminFormatosImpresionList", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePrintFormats(user)) return forbidden();
+      if (!canViewPrintFormats(user, await loadRoleDefinitions())) return forbidden();
       const search = req.query.get("search")?.trim().toLowerCase();
       const fuenteId = req.query.get("fuente_id") ?? req.query.get("fuenteId");
       let items = await readFormatos();
@@ -380,7 +390,7 @@ app.http("adminFormatosImpresionCreate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePrintFormats(user)) return forbidden();
+      if (!canCreatePrintFormat(user, await loadRoleDefinitions())) return forbidden();
       const parsed = FormatoSchema.safeParse(await req.json());
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const pdf = validatePdf(parsed.data);
@@ -437,7 +447,7 @@ app.http("adminFormatosImpresionGet", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePrintFormats(user)) return forbidden();
+      if (!canViewPrintFormats(user, await loadRoleDefinitions())) return forbidden();
       const record = await readFormato(req.params.id);
       if (!record) return notFound("Formato no encontrado.");
       return ok(sanitizeFormato(record));
@@ -454,9 +464,13 @@ app.http("adminFormatosImpresionUpdate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePrintFormats(user)) return forbidden();
+      const roleDefinitions = await loadRoleDefinitions();
       const id = req.params.id;
-      const parsed = FormatoUpdateSchema.safeParse(await req.json());
+      const body = await req.json() as any;
+      const replacingPdfInput = body && (body.pdfBase64 !== undefined || body.pdfNombreOriginal !== undefined);
+      if (!canEditPrintFormat(user, roleDefinitions)) return forbidden();
+      if (replacingPdfInput && !canReplacePrintFormatPdf(user, roleDefinitions)) return forbidden();
+      const parsed = FormatoUpdateSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const current = await readFormato(id);
       if (!current) return notFound("Formato no encontrado.");
@@ -524,7 +538,7 @@ app.http("adminFormatosImpresionReplacePdf", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePrintFormats(user)) return forbidden();
+      if (!canReplacePrintFormatPdf(user, await loadRoleDefinitions())) return forbidden();
       const id = req.params.id;
       const parsed = PdfSchema.safeParse(await req.json());
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
@@ -565,7 +579,7 @@ app.http("adminFormatosImpresionDelete", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePrintFormats(user)) return forbidden();
+      if (!canDeletePrintFormat(user, await loadRoleDefinitions())) return forbidden();
       const id = req.params.id;
       const current = await readFormato(id);
       if (!current) return notFound("Formato no encontrado.");

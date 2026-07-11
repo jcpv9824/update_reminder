@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { BaseDeDatos, Tarea } from "../types";
+import type { RoleDefinition } from "../permissionModel";
 import { hoyEnBogotaIso, sumarDiasIso } from "../utils/fechas";
 
 const apiMock = vi.hoisted(() => ({
@@ -95,8 +96,21 @@ function bd(id: string, overrides: Partial<BaseDetallePrueba> = {}): BaseDetalle
   };
 }
 
-function mockTareas({ dominios = [], bases = [], basesDetalle = [], usuarios = [] }: { dominios?: Tarea[]; bases?: Tarea[]; basesDetalle?: BaseDetallePrueba[]; usuarios?: any[] }) {
+function mockTareas({
+  dominios = [],
+  bases = [],
+  basesDetalle = [],
+  usuarios = [],
+  roles = [],
+}: {
+  dominios?: Tarea[];
+  bases?: Tarea[];
+  basesDetalle?: BaseDetallePrueba[];
+  usuarios?: any[];
+  roles?: RoleDefinition[];
+}) {
   apiMock.get.mockImplementation((path = "") => {
+    if (path === "/roles") return Promise.resolve(roles);
     if (path === "/users") return Promise.resolve(usuarios);
     if (path === "/schedules") return Promise.resolve([{ id: "schedule_1", name: "Actualización mensual" }]);
     if (path.includes("targetType=domain")) return Promise.resolve(dominios);
@@ -128,12 +142,6 @@ describe("TareasPage (vista unificada)", () => {
     expect(screen.queryByRole("button", { name: /Refrescar/i })).toBeNull();
   });
 
-  it("client_manager no ve botón Refrescar porque las tareas se generan al guardar actualizaciones programadas", () => {
-    usuarioMock.roles = ["client_manager"];
-    renderPagina();
-    expect(screen.queryByRole("button", { name: /Refrescar/i })).toBeNull();
-  });
-
   it("actualizador de dominios no ve el botón de generación manual", () => {
     usuarioMock.roles = ["domain_updater"];
     renderPagina();
@@ -150,10 +158,69 @@ describe("TareasPage (vista unificada)", () => {
     expect(screen.getByText(/Tareas de bases de datos/i)).toBeInTheDocument();
   });
 
-  it("visualizador no ve el botón de generación manual", () => {
-    usuarioMock.roles = ["viewer"];
+  it("usa permisos y visibilidad de tareas de roles personalizados para mostrar columnas", async () => {
+    usuarioMock.roles = ["custom_database_worker"];
+    mockTareas({
+      roles: [{
+        id: "custom_database_worker",
+        name: "Operador de Bases",
+        permissions: ["updates.tasks.view", "updates.tasks.complete"],
+        taskVisibility: { domain: "none", database: "assigned" },
+        system: false,
+        active: true,
+      }],
+    });
     renderPagina();
-    expect(screen.queryByRole("button", { name: /Refrescar/i })).toBeNull();
+    expect(screen.queryByText(/Tareas de dominios/i)).toBeNull();
+    expect(await screen.findByText(/Tareas de bases de datos/i)).toBeInTheDocument();
+  });
+
+  it("respeta permisos granulares de acción en tareas para roles personalizados", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["custom_database_worker"];
+    mockTareas({
+      roles: [{
+        id: "custom_database_worker",
+        name: "Operador de Bases",
+        permissions: ["updates.tasks.view", "updates.tasks.complete", "updates.tasks.reveal_database_password"],
+        taskVisibility: { domain: "none", database: "assigned" },
+        system: false,
+        active: true,
+      }],
+      bases: [tarea({
+        id: "b_custom",
+        targetType: "database",
+        targetId: "db_custom",
+        targetName: "BD_CUSTOM",
+        assignedRole: "custom_database_worker",
+        assignedUserIds: [],
+      })],
+      basesDetalle: [bd("db_custom")],
+    });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    const accionesFila = within(screen.getByTestId("acciones-tarea-b_custom"));
+    expect(accionesFila.getByRole("button", { name: /^Completar$/i })).toBeInTheDocument();
+    expect(accionesFila.queryByRole("button", { name: /^Bloquear$/i })).toBeNull();
+    expect(await screen.findByRole("button", { name: /^Ver$/i })).toBeInTheDocument();
+  });
+
+  it("oculta columnas cuando el rol puede abrir tareas pero no tiene visibilidad de registros", () => {
+    usuarioMock.roles = ["task_page_only"];
+    mockTareas({
+      roles: [{
+        id: "task_page_only",
+        name: "Solo Página de Tareas",
+        permissions: ["updates.tasks.view"],
+        taskVisibility: { domain: "none", database: "none" },
+        system: false,
+        active: true,
+      }],
+    });
+    renderPagina();
+    expect(screen.queryByText(/Tareas de dominios/i)).toBeNull();
+    expect(screen.queryByText(/Tareas de bases de datos/i)).toBeNull();
+    expect(screen.getByText(/No tienes tareas asignadas/i)).toBeInTheDocument();
   });
 
   it("muestra tareas futuras ya generadas en Próximas", async () => {

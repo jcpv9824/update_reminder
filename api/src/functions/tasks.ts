@@ -1,11 +1,16 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { requireUser, loadUserProfile } from "../lib/auth";
-import { canCompleteDatabaseTask, canCompleteDomainTask, hasRole } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { badRequest, forbidden, notFound, ok, serverError } from "../lib/http";
 import { filterTasksForOperationalView } from "../lib/taskVisibility";
-import { canReadTask, filterTasksForUser, isTaskAssignedToUser } from "../lib/objectAuthorization";
+import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
+import {
+  canPerformTaskActionWithRoleDefinitions,
+  canViewTaskWithRoleDefinitions,
+  filterTasksWithRoleDefinitions,
+  isTaskAssignedToUserWithRoleDefinitions,
+} from "../lib/taskAccess";
 import { toPublicTask } from "../lib/publicDtos";
 import type { DatabaseRecord, DomainRecord, UpdateTask } from "../types/models";
 
@@ -21,6 +26,19 @@ async function findTask(id: string): Promise<UpdateTask | null> {
     .items.query<UpdateTask>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })
     .fetchAll();
   return resources[0] ?? null;
+}
+
+function actionIdForAuditAction(auditAction: string): string {
+  const map: Record<string, string> = {
+    task_started: "start",
+    task_completed: "complete",
+    task_failed: "fail",
+    task_blocked: "block",
+    task_reopened: "reopen",
+    task_cancelled: "cancel",
+    task_block_resolved: "resolve_block",
+  };
+  return map[auditAction] ?? auditAction;
 }
 
 app.http("tasksList", {
@@ -98,8 +116,9 @@ app.http("tasksList", {
         schedules.filter((schedule) => schedule.active !== false).map((schedule) => schedule.id)
       );
       items = filterTasksForOperationalView(items, { activeScheduleIds, existingScheduleIds });
-      items = filterTasksForUser(user, items);
-      if (assignedToMe) items = items.filter((t) => isTaskAssignedToUser(user, t));
+      const roleDefinitions = await loadRoleDefinitions();
+      items = filterTasksWithRoleDefinitions(user, items, roleDefinitions);
+      if (assignedToMe) items = items.filter((t) => isTaskAssignedToUserWithRoleDefinitions(user, t));
       return ok(items.map(toPublicTask));
     } catch (e) {
       return serverError(e);
@@ -116,7 +135,9 @@ app.http("tasksGet", {
       const user = await getUserOrFail(req);
       const t = await findTask(req.params.id);
       if (!t) return notFound("Tarea no encontrada.");
-      if (!canReadTask(user, t)) return forbidden("No tiene permisos para consultar esta tarea.");
+      if (!canViewTaskWithRoleDefinitions(user, t, await loadRoleDefinitions())) {
+        return forbidden("No tiene permisos para consultar esta tarea.");
+      }
       return ok(toPublicTask(t));
     } catch (e) { return serverError(e); }
   },
@@ -130,7 +151,7 @@ async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string):
     const { resolveConfiguredRecipients } = await import("../lib/emailRecipients");
     const settings = await loadEmailAlertsSettings();
     const destinatarios = await resolveConfiguredRecipients(
-      settings.blockedAlertRecipientRoleIds?.length ? settings.blockedAlertRecipientRoleIds : ["admin"],
+      settings.blockedAlertRecipientRoleIds?.length ? settings.blockedAlertRecipientRoleIds : ["super_admin"],
       settings.blockedAlertCustomEmails ?? []
     );
     if (destinatarios.length === 0) {
@@ -193,7 +214,7 @@ async function notificarCompletadaConExito(t: UpdateTask, performedByEmail: stri
     const { resolveConfiguredRecipients } = await import("../lib/emailRecipients");
     const settings = await loadEmailAlertsSettings();
     const destinatarios = await resolveConfiguredRecipients(
-      settings.overdueAlertRecipientRoleIds?.length ? settings.overdueAlertRecipientRoleIds : ["admin"],
+      settings.overdueAlertRecipientRoleIds?.length ? settings.overdueAlertRecipientRoleIds : ["super_admin"],
       settings.overdueAlertCustomEmails ?? []
     );
     if (destinatarios.length === 0) return;
@@ -238,11 +259,9 @@ async function changeTaskStatus(
     const t = await findTask(req.params.id);
     if (!t) return notFound("Tarea no encontrada.");
 
-    const allowed = t.targetType === "database"
-      ? canCompleteDatabaseTask(user, t)
-      : canCompleteDomainTask(user, t);
-    const isAdmin = hasRole(user, "admin");
-    if (!allowed && !isAdmin) return forbidden("No puede cambiar el estado de esta tarea.");
+    const roleDefinitions = await loadRoleDefinitions();
+    const allowed = canPerformTaskActionWithRoleDefinitions(user, t, actionIdForAuditAction(auditAction), roleDefinitions);
+    if (!allowed) return forbidden("No puede cambiar el estado de esta tarea.");
 
     const body = providedBody ?? ((await req.json().catch(() => ({}))) as any);
     const before = { ...t };

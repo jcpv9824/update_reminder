@@ -21,7 +21,11 @@ describe("LoginPage seguro", () => {
 
   it("inicia con correo y contraseña y no muestra login Microsoft", async () => {
     entrarMock.mockResolvedValue({ authenticated: true });
-    renderPage(); credentials();
+    renderPage();
+    expect(screen.getByAltText("SAG")).toHaveAttribute("src", "/brand/sag-white-icon.png");
+    expect(screen.getByText("PORTAL")).toBeInTheDocument();
+    expect(screen.getByText("SAG WEB")).toBeInTheDocument();
+    credentials();
     await waitFor(() => expect(entrarMock).toHaveBeenCalledWith("user@x.com", "Temporal muy segura 2026", {}));
     expect(screen.queryByText(/Microsoft/i)).toBeNull();
     expect(screen.queryByText(/MFA|autenticador|código de recuperación/i)).toBeNull();

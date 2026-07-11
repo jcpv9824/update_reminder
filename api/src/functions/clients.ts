@@ -2,13 +2,22 @@ import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
-import { canManageClients } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
+import {
+  canAssignClientLicenses,
+  canCreateClient,
+  canDeactivateClient,
+  canDeleteClient,
+  canEditClient,
+  canReactivateClient,
+  canViewClientRelated,
+  canViewClients,
+} from "../lib/managementAccess";
 import { getPagination, paginateArray } from "../lib/pagination";
 import { hasDuplicateClientExternalId, hasDuplicateClientName } from "../lib/duplicateValidation";
-import { canReadAllOperationalData, filterClientIdsForUser } from "../lib/objectAuthorization";
+import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import { toPublicDatabase } from "../lib/publicDtos";
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
@@ -60,22 +69,15 @@ app.http("clientsList", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canViewClients(user, roleDefinitions)) return forbidden();
       const container = getContainer("clients");
       const { resources } = await container.items.readAll<ClientRecord>().fetchAll();
       const search = req.query.get("search")?.trim().toLowerCase();
       const status = req.query.get("status");
       const includeDeleted = req.query.get("includeDeleted") === "true";
       let items = resources;
-      if (!canReadAllOperationalData(user)) {
-        const [{ resources: domains }, { resources: databases }, { resources: tasks }] = await Promise.all([
-          getContainer("domains").items.readAll<DomainRecord>().fetchAll(),
-          getContainer("databases").items.readAll<DatabaseRecord>().fetchAll(),
-          getContainer("updateTasks").items.readAll<UpdateTask>().fetchAll(),
-        ]);
-        const allowedClientIds = filterClientIdsForUser(user, domains, databases, tasks) ?? new Set<string>();
-        items = items.filter((client) => allowedClientIds.has(client.id));
-      }
-      if (!canManageClients(user)) items = items.filter((client) => client.status !== "deleted");
+      if (!canDeleteClient(user, roleDefinitions) && !canReactivateClient(user, roleDefinitions)) items = items.filter((client) => client.status !== "deleted");
       if (!includeDeleted && !status) items = items.filter((c) => c.status !== "deleted");
       if (search) items = items.filter((c) => `${c.externalId ?? ""} ${c.name} ${c.status} ${c.notes ?? ""}`.toLowerCase().includes(search));
       if (status) items = items.filter((c) => c.status === status);
@@ -95,10 +97,12 @@ app.http("clientsCreate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManageClients(user)) return forbidden();
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canCreateClient(user, roleDefinitions)) return forbidden();
       const body = await req.json();
       const parsed = ClientSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      if ((parsed.data.licenseModuleIds ?? []).length > 0 && !canAssignClientLicenses(user, roleDefinitions)) return forbidden();
       const container = getContainer("clients");
       const { resources: existingClients } = await container.items.readAll<ClientRecord>().fetchAll();
       if (hasDuplicateClientName(existingClients, parsed.data.name)) return conflict("Ya existe un cliente con este nombre.");
@@ -144,19 +148,12 @@ app.http("clientsGet", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canViewClients(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
       const { resource } = await getContainer("clients").item(id, id).read<ClientRecord>();
       if (!resource) return notFound("Cliente no encontrado.");
-      if (resource.status === "deleted" && !canManageClients(user)) return forbidden("No tiene permisos para consultar este cliente.");
-      if (!canReadAllOperationalData(user)) {
-        const [{ resources: domains }, { resources: databases }, { resources: tasks }] = await Promise.all([
-          getContainer("domains").items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: id }] }).fetchAll(),
-          getContainer("databases").items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: id }] }).fetchAll(),
-          getContainer("updateTasks").items.query<UpdateTask>({ query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: id }] }).fetchAll(),
-        ]);
-        const allowedClientIds = filterClientIdsForUser(user, domains, databases, tasks) ?? new Set<string>();
-        if (!allowedClientIds.has(id)) return forbidden("No tiene permisos para consultar este cliente.");
-      }
+      if (resource.status === "deleted" && !canDeleteClient(user, roleDefinitions) && !canReactivateClient(user, roleDefinitions)) return forbidden("No tiene permisos para consultar este cliente.");
       return ok(resource);
     } catch (e) {
       return serverError(e);
@@ -171,7 +168,8 @@ app.http("clientsTree", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canReadAllOperationalData(user)) return forbidden();
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canViewClientRelated(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
       const { resource: client } = await getContainer("clients").item(id, id).read<ClientRecord>();
       if (!client || client.status === "deleted") return notFound("Cliente no encontrado.");
@@ -205,14 +203,19 @@ app.http("clientsUpdate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManageClients(user)) return forbidden();
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canEditClient(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
       const body = await req.json();
       const parsed = ClientSchema.partial().safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      if (parsed.data.licenseModuleIds !== undefined && !canAssignClientLicenses(user, roleDefinitions)) return forbidden();
       const container = getContainer("clients");
       const { resource } = await container.item(id, id).read<ClientRecord>();
       if (!resource) return notFound("Cliente no encontrado.");
+      if (parsed.data.status === "inactive" && resource.status !== "inactive" && !canDeactivateClient(user, roleDefinitions)) return forbidden();
+      if (parsed.data.status === "active" && resource.status !== "active" && !canReactivateClient(user, roleDefinitions)) return forbidden();
+      if (parsed.data.status === "deleted" && resource.status !== "deleted" && !canDeleteClient(user, roleDefinitions)) return forbidden();
       if (typeof parsed.data.name === "string") {
         const { resources: existingClients } = await container.items.readAll<ClientRecord>().fetchAll();
         if (hasDuplicateClientName(existingClients, parsed.data.name, id)) return conflict("Ya existe un cliente con este nombre.");
@@ -262,7 +265,8 @@ app.http("clientsDeactivate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManageClients(user)) return forbidden();
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canDeactivateClient(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
       const container = getContainer("clients");
       const { resource } = await container.item(id, id).read<ClientRecord>();
@@ -295,7 +299,8 @@ app.http("clientsReactivate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManageClients(user)) return forbidden();
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canReactivateClient(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
       const container = getContainer("clients");
       const { resource } = await container.item(id, id).read<ClientRecord>();
@@ -328,7 +333,8 @@ app.http("clientsDelete", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManageClients(user)) return forbidden();
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canDeleteClient(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
       const cascade = req.query.get("cascade") === "true";
       const container = getContainer("clients");

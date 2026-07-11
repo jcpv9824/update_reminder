@@ -2,13 +2,22 @@ import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
-import { canManageSchedules } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
+import {
+  canCreateSchedule,
+  canDeactivateSchedule,
+  canDeleteSchedule,
+  canEditSchedule,
+  canPreviewScheduleScope,
+  canReactivateSchedule,
+  canViewSchedules,
+} from "../lib/managementAccess";
 import { getPagination, paginateArray } from "../lib/pagination";
 import { matchesScheduleSearch } from "../lib/listSearch";
-import { generateGenericScheduleName, inferScheduleRole, normalizeFrequencyResponsibility, validateFrequency } from "../lib/scheduleService";
+import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
+import { generateGenericScheduleName, inferScheduleRole, normalizeFrequencyResponsibility, validateFrequency, validateScheduleRoleAssignments } from "../lib/scheduleService";
 import { filterSchedulesByOrigin } from "../lib/scheduleFilters";
 import { previewLicensingScope } from "../lib/licensingScope";
 import { markTaskCancelledForOneTimeReschedule, shouldCancelTaskForOneTimeReschedule } from "../lib/scheduleReschedule";
@@ -291,7 +300,9 @@ app.http("schedulesList", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      await getUserOrFail(req);
+      const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canViewSchedules(user, roleDefinitions)) return forbidden();
       const clientId = req.query.get("clientId");
       const origin = req.query.get("origin");
       const search = req.query.get("search");
@@ -325,7 +336,8 @@ app.http("schedulesCreate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManageSchedules(user)) return forbidden();
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canCreateSchedule(user, roleDefinitions)) return forbidden();
       const body = await req.json();
       const parsed = ScheduleSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
@@ -339,6 +351,8 @@ app.http("schedulesCreate", {
         if (exceptionError) return badRequest(exceptionError);
       }
       const normalized = normalizeFrequencyResponsibility(parsed.data as any);
+      const roleAssignmentError = validateScheduleRoleAssignments({ ...normalized, targetType: parsed.data.targetType }, roleDefinitions);
+      if (roleAssignmentError) return badRequest(roleAssignmentError);
       try {
         validateFrequency(normalized as any);
       } catch (e: any) {
@@ -423,7 +437,9 @@ app.http("schedulesGet", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      await getUserOrFail(req);
+      const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canViewSchedules(user, roleDefinitions)) return forbidden();
       const s = await findSchedule(req.params.id);
       if (!s) return notFound();
       return ok(s);
@@ -438,10 +454,13 @@ app.http("schedulesUpdate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManageSchedules(user)) return forbidden();
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canEditSchedule(user, roleDefinitions)) return forbidden();
       const existing = await findSchedule(req.params.id);
       if (!existing) return notFound();
       const body = await req.json() as any;
+      if (body.active === false && existing.active !== false && !canDeactivateSchedule(user, roleDefinitions)) return forbidden();
+      if (body.active === true && existing.active === false && !canReactivateSchedule(user, roleDefinitions)) return forbidden();
       if (body.selectionMode === "licensing") {
         const missing = validateLicensingScope(body.licensingScope);
         if (missing) return badRequest(missing);
@@ -452,13 +471,15 @@ app.http("schedulesUpdate", {
         if (exceptionError) return badRequest(exceptionError);
       }
       const normalized = normalizeFrequencyResponsibility({ ...body });
+      const targetType = body.targetType === "domain" || body.targetType === "database" ? body.targetType : existing.targetType;
+      const roleAssignmentError = validateScheduleRoleAssignments({ ...existing, ...normalized, targetType }, roleDefinitions);
+      if (roleAssignmentError) return badRequest(roleAssignmentError);
       try {
         validateFrequency(normalized as any);
       } catch (e: any) {
         return badRequest(e?.message ?? "Frecuencia inválida.");
       }
       const before = { ...existing };
-      const targetType = body.targetType === "domain" || body.targetType === "database" ? body.targetType : existing.targetType;
       // Nombre: si el usuario envía uno, se respeta; si lo vacía, se regenera
       // un genérico; si no toca el campo, se conserva el actual.
       const nextName = typeof body.name === "string"
@@ -529,7 +550,8 @@ app.http("previewLicensingScope", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManageSchedules(user)) return forbidden();
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canPreviewScheduleScope(user, roleDefinitions)) return forbidden();
       const parsed = LicensingPreviewSchema.safeParse(await req.json().catch(() => ({})));
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const scope = normalizeScopeIds("licensingScope" in parsed.data ? parsed.data.licensingScope : parsed.data);
@@ -545,7 +567,9 @@ app.http("previewLicensingScope", {
 
 async function setScheduleStatus(req: HttpRequest, action: string, active: boolean): Promise<HttpResponseInit> {
   const user = await getUserOrFail(req);
-  if (!canManageSchedules(user)) return forbidden();
+  const roleDefinitions = await loadRoleDefinitions();
+  const allowed = active ? canReactivateSchedule(user, roleDefinitions) : canDeactivateSchedule(user, roleDefinitions);
+  if (!allowed) return forbidden();
   const s = await findSchedule(req.params.id);
   if (!s) return notFound();
   s.active = active;
@@ -575,7 +599,8 @@ app.http("schedulesDelete", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManageSchedules(user)) return forbidden();
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canDeleteSchedule(user, roleDefinitions)) return forbidden();
       const s = await findSchedule(req.params.id);
       if (!s) return notFound();
       // Cancelar tareas abiertas antes de eliminar la programación.

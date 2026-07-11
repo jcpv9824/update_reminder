@@ -36,6 +36,7 @@ export type ContainerName =
   | "emailNotifications"
   | "securityRateLimits"
   | "authSessions"
+  | "roles"
   | "fuentesFormatos"
   | "formatosImpresion"
   | "publicDownloads";

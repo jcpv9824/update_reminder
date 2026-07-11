@@ -5,8 +5,10 @@ import {
   generateGenericScheduleName,
   isDomainDefaultScheduleForDomain,
   normalizeFrequencyResponsibility,
+  validateScheduleRoleAssignments,
   validateFrequency,
 } from "../lib/scheduleService";
+import type { RoleDefinition } from "../lib/permissionModel";
 import { filterSchedulesByOrigin } from "../lib/scheduleFilters";
 
 const user = { id: "u1", email: "u@x", displayName: "U", roles: ["admin"] };
@@ -53,6 +55,29 @@ describe("validateFrequency", () => {
   it("permite frecuencia sin rol manual y valida fecha de fin opcional", () => {
     expect(() => validateFrequency({ frequencyType: "weekly", weekdays: ["FRIDAY"], startDate: "2026-05-01", endDate: "2026-05-31" })).not.toThrow();
     expect(() => validateFrequency({ frequencyType: "weekly", weekdays: ["FRIDAY"], startDate: "2026-05-31", endDate: "2026-05-01" })).toThrow(/fecha de fin/i);
+  });
+});
+
+describe("validateScheduleRoleAssignments", () => {
+  const roles: RoleDefinition[] = [
+    { id: "domain_specialist", name: "Especialista de Dominios", permissions: ["updates.tasks.view"], taskVisibility: { domain: "assigned", database: "none" }, system: false, active: true },
+    { id: "database_specialist", name: "Especialista de Bases", permissions: ["updates.tasks.view"], taskVisibility: { domain: "none", database: "all" }, system: false, active: true },
+    { id: "no_visibility", name: "Sin visibilidad", permissions: ["updates.tasks.view"], taskVisibility: { domain: "none", database: "none" }, system: false, active: true },
+  ];
+
+  it("accepts eligible custom roles and rejects roles without matching task visibility", () => {
+    expect(validateScheduleRoleAssignments({
+      assignmentMode: "role",
+      manualTargetTypes: "domains_and_databases",
+      domainAssignedRole: "domain_specialist",
+      databaseAssignedRole: "database_specialist",
+    }, roles)).toBeNull();
+
+    expect(validateScheduleRoleAssignments({
+      assignmentMode: "role",
+      manualTargetTypes: "domains_only",
+      domainAssignedRole: "no_visibility",
+    }, roles)).toMatch(/debe estar activo/i);
   });
 });
 

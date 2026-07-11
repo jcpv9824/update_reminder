@@ -2,18 +2,25 @@ import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
-import { canManageClients, canEditDomainLimited } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { cancelPendingTasksForDomain } from "../lib/taskCleanup";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
+import {
+  canCreateDomain,
+  canDeactivateDomain,
+  canDeleteDomain,
+  canEditDomain,
+  canReactivateDomain,
+  canViewDomains,
+  canViewRelatedDomainDatabases,
+} from "../lib/managementAccess";
 import { getPagination, paginateArray } from "../lib/pagination";
 import { matchesDomainSearch } from "../lib/listSearch";
 import { hasDuplicateDomainUrl } from "../lib/duplicateValidation";
 import { isAllowedEnvironment } from "../lib/environments";
 import { isValidHttpsDomain } from "../lib/inputValidation";
-import { isDomainDefaultScheduleForDomain } from "../lib/scheduleService";
-import { canReadDatabaseInDomain, canReadDomain, filterDomainsForUser } from "../lib/objectAuthorization";
+import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import { toPublicDatabase } from "../lib/publicDtos";
 import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
@@ -41,6 +48,8 @@ app.http("domainsList", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canViewDomains(user, roleDefinitions)) return forbidden();
       const container = getContainer("domains");
       const clientId = req.query.get("clientId");
       const status = req.query.get("status");
@@ -52,13 +61,9 @@ app.http("domainsList", {
         ? { query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: clientId }] }
         : { query: "SELECT * FROM c" };
       const { resources } = await container.items.query<DomainRecord>(querySpec).fetchAll();
-      const { resources: scopeDatabases } = await getContainer("databases").items.readAll<DatabaseRecord>().fetchAll();
-      const { resources: scopeTasks } = canManageClients(user) || user.roles.includes("viewer")
-        ? { resources: [] as UpdateTask[] }
-        : await getContainer("updateTasks").items.readAll<UpdateTask>().fetchAll();
       const includeDeleted = req.query.get("includeDeleted") === "true";
-      let items = filterDomainsForUser(user, resources, scopeDatabases, scopeTasks);
-      if (!canManageClients(user)) items = items.filter((domain) => domain.status !== "deleted");
+      let items = resources;
+      if (!canDeleteDomain(user, roleDefinitions) && !canReactivateDomain(user, roleDefinitions)) items = items.filter((domain) => domain.status !== "deleted");
       if (!includeDeleted && !status) items = items.filter((d) => d.status !== "deleted");
       if (status) items = items.filter((d) => d.status === status);
       if (environment) items = items.filter((d) => d.environment === environment);
@@ -91,7 +96,8 @@ app.http("domainsCreate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManageClients(user)) return forbidden();
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canCreateDomain(user, roleDefinitions)) return forbidden();
       const body = await req.json();
       const parsed = DomainSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
@@ -148,19 +154,14 @@ app.http("domainsGet", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canViewDomains(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
       const { resources } = await getContainer("domains")
         .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })
         .fetchAll();
       if (!resources.length) return notFound("Dominio no encontrado.");
-      if (resources[0].status === "deleted" && !canManageClients(user)) return forbidden("No tiene permisos para consultar este dominio.");
-      const { resources: databases } = await getContainer("databases").items
-        .query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.domainId = @d", parameters: [{ name: "@d", value: id }] })
-        .fetchAll();
-      const { resources: tasks } = await getContainer("updateTasks").items
-        .query<UpdateTask>({ query: "SELECT * FROM c WHERE c.domainId = @d", parameters: [{ name: "@d", value: id }] })
-        .fetchAll();
-      if (!canReadDomain(user, resources[0], databases, tasks)) return forbidden("No tiene permisos para consultar este dominio.");
+      if (resources[0].status === "deleted" && !canDeleteDomain(user, roleDefinitions) && !canReactivateDomain(user, roleDefinitions)) return forbidden("No tiene permisos para consultar este dominio.");
       return ok(resources[0]);
     } catch (e) {
       return serverError(e);
@@ -175,8 +176,10 @@ app.http("domainsDatabases", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canViewRelatedDomainDatabases(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
-      const includeDeleted = req.query.get("includeDeleted") === "true" && canManageClients(user);
+      const includeDeleted = req.query.get("includeDeleted") === "true" && (canDeleteDomain(user, roleDefinitions) || canReactivateDomain(user, roleDefinitions));
       const { resources: domains } = await getContainer("domains")
         .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })
         .fetchAll();
@@ -190,12 +193,7 @@ app.http("domainsDatabases", {
           parameters: [{ name: "@d", value: id }],
         })
         .fetchAll();
-      const { resources: tasks } = await getContainer("updateTasks").items
-        .query<UpdateTask>({ query: "SELECT * FROM c WHERE c.domainId = @d", parameters: [{ name: "@d", value: id }] })
-        .fetchAll();
-      if (!canReadDomain(user, domain, resources, tasks)) return forbidden("No tiene permisos para consultar este dominio.");
       return ok(resources
-        .filter((database) => canReadDatabaseInDomain(user, database, domain, tasks))
         .map(toPublicDatabase));
     } catch (e) {
       return serverError(e);
@@ -210,6 +208,8 @@ app.http("domainsUpdate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canEditDomain(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
       const container = getContainer("domains");
       const { resources } = await container
@@ -217,7 +217,6 @@ app.http("domainsUpdate", {
         .fetchAll();
       if (!resources.length) return notFound("Dominio no encontrado.");
       const existing = resources[0];
-      if (!canEditDomainLimited(user, existing)) return forbidden();
       const body = await req.json() as any;
       if (typeof body.environment === "string" && !isAllowedEnvironment(body.environment)) return badRequest("El ambiente debe ser Producción, Pruebas o Demo.");
       if (typeof body.domainName === "string") {
@@ -262,7 +261,9 @@ app.http("domainsUpdate", {
 
 async function setDomainStatus(req: HttpRequest, action: "domain_deactivated" | "domain_reactivated", status: "inactive" | "active"): Promise<HttpResponseInit> {
   const user = await getUserOrFail(req);
-  if (!canManageClients(user)) return forbidden();
+  const roleDefinitions = await loadRoleDefinitions();
+  const allowed = status === "active" ? canReactivateDomain(user, roleDefinitions) : canDeactivateDomain(user, roleDefinitions);
+  if (!allowed) return forbidden();
   const id = req.params.id;
   const container = getContainer("domains");
   const { resources } = await container
@@ -296,7 +297,8 @@ app.http("domainsDelete", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManageClients(user)) return forbidden();
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canDeleteDomain(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
       const cascade = req.query.get("cascade") === "true";
       const container = getContainer("domains");

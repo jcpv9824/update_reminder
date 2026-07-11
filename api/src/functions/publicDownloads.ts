@@ -5,7 +5,17 @@ import { requireUser, loadUserProfile } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
-import { canManagePublicDownloads } from "../lib/permissions";
+import {
+  canCreatePublicDownloadDocument,
+  canCreatePublicDownloadSection,
+  canDeletePublicDownloadDocument,
+  canDeletePublicDownloadSection,
+  canEditPublicDownloadDocument,
+  canEditPublicDownloadSection,
+  canReplacePublicDownloadFile,
+  canViewPublicDownloadsAdmin,
+} from "../lib/managementAccess";
+import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import type { PublicDownloadDocumentRecord, PublicDownloadSectionRecord } from "../types/models";
 
 const MAX_FILE_BYTES = 8_000_000;
@@ -219,7 +229,7 @@ app.http("adminPublicDownloadSectionsList", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePublicDownloads(user)) return forbidden();
+      if (!canViewPublicDownloadsAdmin(user, await loadRoleDefinitions())) return forbidden();
       return ok((await readSections()).map(sanitizeSection));
     } catch (e) {
       return serverError(e);
@@ -234,7 +244,7 @@ app.http("adminPublicDownloadSectionsCreate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePublicDownloads(user)) return forbidden();
+      if (!canCreatePublicDownloadSection(user, await loadRoleDefinitions())) return forbidden();
       const parsed = SectionSchema.safeParse(await req.json());
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const slug = slugify(parsed.data.slug || parsed.data.nombre);
@@ -269,7 +279,7 @@ app.http("adminPublicDownloadSectionsUpdate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePublicDownloads(user)) return forbidden();
+      if (!canEditPublicDownloadSection(user, await loadRoleDefinitions())) return forbidden();
       const current = await readSection(req.params.id);
       if (!current) return notFound("Sección no encontrada.");
       const parsed = SectionUpdateSchema.safeParse(await req.json());
@@ -305,7 +315,7 @@ app.http("adminPublicDownloadSectionsDelete", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePublicDownloads(user)) return forbidden();
+      if (!canDeletePublicDownloadSection(user, await loadRoleDefinitions())) return forbidden();
       const current = await readSection(req.params.id);
       if (!current) return notFound("Sección no encontrada.");
       const docs = (await readDocuments()).filter((doc) => doc.sectionId === current.id);
@@ -327,7 +337,7 @@ app.http("adminPublicDownloadDocumentsList", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePublicDownloads(user)) return forbidden();
+      if (!canViewPublicDownloadsAdmin(user, await loadRoleDefinitions())) return forbidden();
       return ok((await readDocuments()).map(sanitizeDocument));
     } catch (e) {
       return serverError(e);
@@ -342,7 +352,7 @@ app.http("adminPublicDownloadDocumentsCreate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePublicDownloads(user)) return forbidden();
+      if (!canCreatePublicDownloadDocument(user, await loadRoleDefinitions())) return forbidden();
       const parsed = DocumentSchema.safeParse(await req.json());
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const section = await readSection(parsed.data.sectionId);
@@ -389,10 +399,14 @@ app.http("adminPublicDownloadDocumentsUpdate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePublicDownloads(user)) return forbidden();
+      const roleDefinitions = await loadRoleDefinitions();
+      const body = await req.json() as any;
+      const replacingFile = body && (body.archivoBase64 !== undefined || body.archivoNombreOriginal !== undefined || body.archivoMimeType !== undefined);
+      if (!canEditPublicDownloadDocument(user, roleDefinitions)) return forbidden();
+      if (replacingFile && !canReplacePublicDownloadFile(user, roleDefinitions)) return forbidden();
       const current = await readDocument(req.params.id);
       if (!current) return notFound("Documento no encontrado.");
-      const parsed = DocumentUpdateSchema.safeParse(await req.json());
+      const parsed = DocumentUpdateSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const section = parsed.data.sectionId ? await readSection(parsed.data.sectionId) : await readSection(current.sectionId);
       if (!section) return badRequest("La sección seleccionada no existe.");
@@ -458,7 +472,7 @@ app.http("adminPublicDownloadDocumentsDelete", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
-      if (!canManagePublicDownloads(user)) return forbidden();
+      if (!canDeletePublicDownloadDocument(user, await loadRoleDefinitions())) return forbidden();
       const current = await readDocument(req.params.id);
       if (!current) return notFound("Documento no encontrado.");
       const deleted = { ...(current as PublicDownloadDocumentRecord & { type: "document" }), activo: false, status: "deleted" as const, deletedAt: new Date().toISOString(), deletedBy: user.id, updatedAt: new Date().toISOString(), updatedBy: user.id };

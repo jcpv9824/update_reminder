@@ -47,7 +47,7 @@ export async function ejecutarRecordatoriosBloqueos(log: (message: string) => vo
   if (hhmm < (settings.blockedReminderTime ?? "08:00")) return { enviados: 0 };
   const days = settings.blockedReminderDaysAfter ?? [];
   if (days.length === 0) return { enviados: 0 };
-  const recipients = await resolveConfiguredRecipients(settings.blockedAlertRecipientRoleIds ?? ["admin"], settings.blockedAlertCustomEmails ?? []);
+  const recipients = await resolveConfiguredRecipients(settings.blockedAlertRecipientRoleIds ?? ["super_admin"], settings.blockedAlertCustomEmails ?? []);
   if (recipients.length === 0) {
     log("Recordatorios de bloqueos omitidos: sin destinatarios.");
     return { enviados: 0 };

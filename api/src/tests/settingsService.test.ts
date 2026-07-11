@@ -37,7 +37,7 @@ describe("settingsService", () => {
     expect(s.id).toBe("email-alerts");
     expect(s.emailProvider).toBeDefined();
     expect(s.emailFrom).toBe("info@pya.com.co");
-    expect(s.emailFromName).toBe("Programador de Actualizaciones");
+    expect(s.emailFromName).toBe("Portal SAG Web");
     expect(s.frontendBaseUrl).toBe("https://agreeable-wave-07469d50f.7.azurestaticapps.net");
     expect(s.smtpHost).toBe("smtp.office365.com");
     expect(s.smtpPort).toBe(587);

@@ -1,5 +1,4 @@
-import type { CurrentUser, LicenseModuleRecord } from "../types/models";
-import { hasAnyRole, hasRole } from "./permissions";
+import type { LicenseModuleRecord } from "../types/models";
 
 export type LicenseAssignmentInput = {
   targetType?: "client" | "domain" | "database";
@@ -64,16 +63,4 @@ export function validateLicenseAssignmentRequirements(input: LicenseAssignmentIn
     return "Seleccione una base de datos.";
   }
   return null;
-}
-
-export function canViewLicensing(user: CurrentUser): boolean {
-  return hasAnyRole(user, ["admin", "client_manager"]);
-}
-
-export function canManageLicenseModules(user: CurrentUser): boolean {
-  return hasRole(user, "admin");
-}
-
-export function canManageLicenseAssignments(user: CurrentUser): boolean {
-  return hasAnyRole(user, ["admin", "client_manager"]);
 }

@@ -7,9 +7,10 @@ import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { administrativeReminderDueToday, type AdministrativeReminderDue } from "../lib/administrativeReminderSchedule";
 import { requireUser, loadUserProfile } from "../lib/auth";
-import { hasRole } from "../lib/permissions";
 import { badRequest, forbidden, ok, serverError } from "../lib/http";
+import { canSendAdministrativeReminderTest } from "../lib/managementAccess";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
+import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import type { AdministrativeReminderSettings } from "../types/models";
 
 type ReminderKey = "sag-web-version" | "whats-new";
@@ -110,7 +111,8 @@ app.http("settingsEmailAlertsAdministrativeReminderTest", {
     try {
       const auth = await requireUser(req);
       const profile = await loadUserProfile(auth);
-      if (!profile || !hasRole(profile, "admin")) return forbidden("Solo administradores.");
+      const roleDefinitions = profile ? await loadRoleDefinitions() : [];
+      if (!profile || !canSendAdministrativeReminderTest(profile, roleDefinitions)) return forbidden("No tiene permisos para probar recordatorios administrativos.");
       const keyParam = req.params.key;
       const key: ReminderKey | null = keyParam === "sag-web-version" || keyParam === "whats-new" ? keyParam : null;
       if (!key) return badRequest("Recordatorio no válido.");

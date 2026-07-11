@@ -6,12 +6,17 @@ import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { summarizeLicenseDeleteDependencies } from "../lib/licenseDeletion";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
+import {
+  canCreateLicense,
+  canDeactivateLicense,
+  canDeleteLicense,
+  canEditLicense,
+  canReactivateLicense,
+  canViewLicensingOption,
+} from "../lib/managementAccess";
 import { getPagination, paginateArray } from "../lib/pagination";
 import { matchesLicenseModuleSearch } from "../lib/listSearch";
 import {
-  canManageLicenseAssignments,
-  canManageLicenseModules,
-  canViewLicensing,
   buildUniqueLicenseCode,
   generateLicenseCodeFromName,
   hasDuplicateLicenseCode,
@@ -19,6 +24,7 @@ import {
   normalizeLicenseCode,
   validateLicenseAssignmentRequirements,
 } from "../lib/licenseRules";
+import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import type {
   ClientRecord,
   CurrentUser,
@@ -50,24 +56,6 @@ async function getUserOrFail(req: HttpRequest): Promise<CurrentUser> {
   const profile = await loadUserProfile(auth);
   if (!profile) throw Object.assign(new Error("Usuario no registrado."), { status: 403 });
   return profile;
-}
-
-async function getLicensingViewer(req: HttpRequest): Promise<CurrentUser> {
-  const user = await getUserOrFail(req);
-  if (!canViewLicensing(user)) throw Object.assign(new Error("No tiene permisos para ver licenciamiento."), { status: 403 });
-  return user;
-}
-
-async function getAssignmentManager(req: HttpRequest): Promise<CurrentUser> {
-  const user = await getLicensingViewer(req);
-  if (!canManageLicenseAssignments(user)) throw Object.assign(new Error("No tiene permisos para administrar asignaciones."), { status: 403 });
-  return user;
-}
-
-async function getModuleManager(req: HttpRequest): Promise<CurrentUser> {
-  const user = await getUserOrFail(req);
-  if (!canManageLicenseModules(user)) throw Object.assign(new Error("Solo administradores pueden administrar módulos de licencia."), { status: 403 });
-  return user;
 }
 
 async function nextModuleCode(name: string, code?: string, excludeId?: string): Promise<string | HttpResponseInit> {
@@ -165,7 +153,9 @@ app.http("licenseModulesList", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      await getLicensingViewer(req);
+      const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canViewLicensingOption(user, roleDefinitions)) return forbidden("No tiene permisos para ver licenciamiento.");
       const includeDeleted = req.query.get("includeDeleted") === "true";
       const search = req.query.get("search");
       const { resources } = await getContainer("licenseModules").items.readAll<LicenseModuleRecord>().fetchAll();
@@ -188,7 +178,9 @@ app.http("licenseModulesCreate", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      const user = await getModuleManager(req);
+      const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canCreateLicense(user, roleDefinitions)) return forbidden("No tiene permisos para crear licencias.");
       const parsed = ModuleSchema.safeParse(await req.json().catch(() => ({})));
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const duplicateName = await ensureUniqueModuleName(parsed.data.name);
@@ -224,12 +216,16 @@ app.http("licenseModulesUpdate", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      const user = await getModuleManager(req);
+      const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canEditLicense(user, roleDefinitions)) return forbidden("No tiene permisos para editar licencias.");
       const id = req.params.id;
       const current = await findModule(id);
       if (!current || current.status === "deleted" || current.deletedAt) return notFound("Licencia o módulo no encontrado.");
       const parsed = ModuleSchema.partial().safeParse(await req.json().catch(() => ({})));
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      if (parsed.data.status === "inactive" && current.status !== "inactive" && !canDeactivateLicense(user, roleDefinitions)) return forbidden("No tiene permisos para desactivar licencias.");
+      if (parsed.data.status === "active" && current.status !== "active" && !canReactivateLicense(user, roleDefinitions)) return forbidden("No tiene permisos para reactivar licencias.");
       if (parsed.data.name !== undefined) {
         const duplicateName = await ensureUniqueModuleName(parsed.data.name, id);
         if (duplicateName) return duplicateName;
@@ -264,7 +260,9 @@ app.http("licenseModulesDelete", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      const user = await getModuleManager(req);
+      const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canDeleteLicense(user, roleDefinitions)) return forbidden("No tiene permisos para eliminar licencias.");
       const id = req.params.id;
       const moduleContainer = getContainer("licenseModules");
       const resource = await findModule(id);
@@ -318,7 +316,9 @@ app.http("licenseAssignmentsList", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      await getLicensingViewer(req);
+      const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canViewLicensingOption(user, roleDefinitions)) return forbidden("No tiene permisos para ver licenciamiento.");
       const includeDeleted = req.query.get("includeDeleted") === "true";
       const { resources } = await getContainer("licenseAssignments").items.readAll<LicenseAssignmentRecord>().fetchAll();
       const items = includeDeleted ? resources : resources.filter((assignment) => assignment.status !== "deleted" && !assignment.deletedAt);
@@ -338,7 +338,9 @@ app.http("licenseAssignmentsCreate", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      const user = await getAssignmentManager(req);
+      const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canCreateLicense(user, roleDefinitions)) return forbidden("No tiene permisos para crear asignaciones.");
       const parsed = AssignmentSchema.safeParse(await req.json().catch(() => ({})));
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const built = await buildAssignment(parsed.data);
@@ -361,12 +363,16 @@ app.http("licenseAssignmentsUpdate", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      const user = await getAssignmentManager(req);
+      const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canEditLicense(user, roleDefinitions)) return forbidden("No tiene permisos para editar asignaciones.");
       const id = req.params.id;
       const current = await findAssignment(id);
       if (!current || current.status === "deleted" || current.deletedAt) return notFound("Asignación no encontrada.");
       const parsed = AssignmentSchema.partial().safeParse(await req.json().catch(() => ({})));
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      if (parsed.data.status === "inactive" && current.status !== "inactive" && !canDeactivateLicense(user, roleDefinitions)) return forbidden("No tiene permisos para desactivar asignaciones.");
+      if (parsed.data.status === "active" && current.status !== "active" && !canReactivateLicense(user, roleDefinitions)) return forbidden("No tiene permisos para reactivar asignaciones.");
       const merged = {
         moduleId: parsed.data.moduleId ?? current.moduleId,
         targetType: parsed.data.targetType ?? current.targetType ?? "client",
@@ -409,7 +415,9 @@ app.http("licenseAssignmentsDelete", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      const user = await getAssignmentManager(req);
+      const user = await getUserOrFail(req);
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canDeleteLicense(user, roleDefinitions)) return forbidden("No tiene permisos para eliminar asignaciones.");
       const current = await findAssignment(req.params.id);
       if (!current || current.status === "deleted" || current.deletedAt) return notFound("Asignación no encontrada.");
       const before = { ...current };

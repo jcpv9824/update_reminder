@@ -5,6 +5,8 @@ import { useAuth } from "../auth/AuthContext";
 import { Alerta, DialogoConfirmar, EtiquetaEstado, Modal, Paginacion } from "../components/Comunes";
 import type { AsignacionLicencia, BaseDeDatos, Cliente, Dominio, ModuloLicencia, NivelAsignacionLicencia, RespuestaPaginada } from "../types";
 import { ETIQUETAS_AMBIENTE } from "../types";
+import { DEFAULT_ROLE_DEFINITIONS, type RoleDefinition } from "../permissionModel";
+import { hasPermissionForRoleIds } from "../permissionAccess";
 
 type Tab = "modulos" | "asignaciones";
 type Estado = "active" | "inactive";
@@ -30,8 +32,13 @@ export default function LicenciamientoPage() {
   const qc = useQueryClient();
   const auth = useAuth();
   const roles = auth.cargando ? [] : auth.usuario?.roles ?? [];
-  const puedeAdministrarModulos = roles.includes("admin");
-  const puedeAdministrarAsignaciones = roles.includes("admin") || roles.includes("client_manager");
+  const rolesQuery = useQuery({ queryKey: ["roles"], queryFn: () => api.get<RoleDefinition[]>("/roles") });
+  const definicionesRoles = Array.isArray(rolesQuery.data) && rolesQuery.data.length > 0 ? rolesQuery.data : DEFAULT_ROLE_DEFINITIONS;
+  const puedeCrearLicencias = hasPermissionForRoleIds(roles, "clients.licensing.create", definicionesRoles);
+  const puedeEditarLicencias = hasPermissionForRoleIds(roles, "clients.licensing.edit", definicionesRoles);
+  const puedeEliminarLicencias = hasPermissionForRoleIds(roles, "clients.licensing.delete", definicionesRoles);
+  const puedeDesactivarLicencias = hasPermissionForRoleIds(roles, "clients.licensing.deactivate", definicionesRoles);
+  const puedeReactivarLicencias = hasPermissionForRoleIds(roles, "clients.licensing.reactivate", definicionesRoles);
   const [tab, setTab] = useState<Tab>("modulos");
   const [modalModulo, setModalModulo] = useState<ModuloLicencia | "nuevo" | null>(null);
   const [modalAsignacion, setModalAsignacion] = useState<AsignacionLicencia | "nuevo" | null>(null);
@@ -138,10 +145,10 @@ export default function LicenciamientoPage() {
           <h2>Licenciamiento</h2>
           <p className="texto-ayuda">Gestione los módulos licenciados que pueden ser asignados a los clientes.</p>
         </div>
-        {tab === "modulos" && puedeAdministrarModulos && (
+        {tab === "modulos" && puedeCrearLicencias && (
           <button className="primario" onClick={() => setModalModulo("nuevo")}>Nuevo módulo</button>
         )}
-        {tab === "asignaciones" && puedeAdministrarAsignaciones && (
+        {tab === "asignaciones" && puedeCrearLicencias && (
           <button className="primario" onClick={() => setModalAsignacion("nuevo")}>Nueva asignación</button>
         )}
       </div>
@@ -167,7 +174,10 @@ export default function LicenciamientoPage() {
         !MOSTRAR_ASIGNACIONES_AVANZADAS || tab === "modulos" ? (
           <TablaModulos
             modulos={modulosItems}
-            puedeAdministrar={puedeAdministrarModulos}
+            puedeEditar={puedeEditarLicencias}
+            puedeEliminar={puedeEliminarLicencias}
+            puedeDesactivar={puedeDesactivarLicencias}
+            puedeReactivar={puedeReactivarLicencias}
             onEditar={setModalModulo}
             onCambiarEstado={cambiarEstadoModulo}
             onEliminar={setEliminarModulo}
@@ -175,7 +185,10 @@ export default function LicenciamientoPage() {
         ) : (
           <TablaAsignaciones
             asignaciones={asignaciones.data ?? []}
-            puedeAdministrar={puedeAdministrarAsignaciones}
+            puedeEditar={puedeEditarLicencias}
+            puedeEliminar={puedeEliminarLicencias}
+            puedeDesactivar={puedeDesactivarLicencias}
+            puedeReactivar={puedeReactivarLicencias}
             onEditar={setModalAsignacion}
             onCambiarEstado={cambiarEstadoAsignacion}
             onEliminar={setEliminarAsignacion}
@@ -245,13 +258,19 @@ export default function LicenciamientoPage() {
 
 function TablaModulos({
   modulos,
-  puedeAdministrar,
+  puedeEditar,
+  puedeEliminar,
+  puedeDesactivar,
+  puedeReactivar,
   onEditar,
   onCambiarEstado,
   onEliminar,
 }: {
   modulos: ModuloLicencia[];
-  puedeAdministrar: boolean;
+  puedeEditar: boolean;
+  puedeEliminar: boolean;
+  puedeDesactivar: boolean;
+  puedeReactivar: boolean;
   onEditar: (m: ModuloLicencia) => void;
   onCambiarEstado: (m: ModuloLicencia) => void;
   onEliminar: (m: ModuloLicencia) => void;
@@ -277,11 +296,11 @@ function TablaModulos({
             <td>{modulo.description}</td>
             <td><EtiquetaEstado estado={modulo.status} /></td>
             <td className="acciones-tabla">
-              <button onClick={() => onEditar(modulo)} disabled={!puedeAdministrar}>Editar</button>
-              <button className="advertencia" onClick={() => onCambiarEstado(modulo)} disabled={!puedeAdministrar}>
+              <button onClick={() => onEditar(modulo)} disabled={!puedeEditar}>Editar</button>
+              <button className="advertencia" onClick={() => onCambiarEstado(modulo)} disabled={modulo.status === "active" ? !puedeDesactivar : !puedeReactivar}>
                 {modulo.status === "active" ? "Desactivar" : "Activar"}
               </button>
-              <button className="peligro" onClick={() => onEliminar(modulo)} disabled={!puedeAdministrar}>Eliminar</button>
+              <button className="peligro" onClick={() => onEliminar(modulo)} disabled={!puedeEliminar}>Eliminar</button>
             </td>
           </tr>
         ))}
@@ -292,13 +311,19 @@ function TablaModulos({
 
 function TablaAsignaciones({
   asignaciones,
-  puedeAdministrar,
+  puedeEditar,
+  puedeEliminar,
+  puedeDesactivar,
+  puedeReactivar,
   onEditar,
   onCambiarEstado,
   onEliminar,
 }: {
   asignaciones: AsignacionLicencia[];
-  puedeAdministrar: boolean;
+  puedeEditar: boolean;
+  puedeEliminar: boolean;
+  puedeDesactivar: boolean;
+  puedeReactivar: boolean;
   onEditar: (a: AsignacionLicencia) => void;
   onCambiarEstado: (a: AsignacionLicencia) => void;
   onEliminar: (a: AsignacionLicencia) => void;
@@ -328,11 +353,11 @@ function TablaAsignaciones({
             <td>{ambienteTexto(asignacion.environment)}</td>
             <td><EtiquetaEstado estado={asignacion.status} /></td>
             <td className="acciones-tabla">
-              <button onClick={() => onEditar(asignacion)} disabled={!puedeAdministrar}>Editar</button>
-              <button className="advertencia" onClick={() => onCambiarEstado(asignacion)} disabled={!puedeAdministrar}>
+              <button onClick={() => onEditar(asignacion)} disabled={!puedeEditar}>Editar</button>
+              <button className="advertencia" onClick={() => onCambiarEstado(asignacion)} disabled={asignacion.status === "active" ? !puedeDesactivar : !puedeReactivar}>
                 {asignacion.status === "active" ? "Desactivar" : "Activar"}
               </button>
-              <button className="peligro" onClick={() => onEliminar(asignacion)} disabled={!puedeAdministrar}>Eliminar</button>
+              <button className="peligro" onClick={() => onEliminar(asignacion)} disabled={!puedeEliminar}>Eliminar</button>
             </td>
           </tr>
         ))}

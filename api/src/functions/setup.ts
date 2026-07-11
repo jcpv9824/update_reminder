@@ -3,10 +3,12 @@ import { z } from "zod";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { hashPassword, normalizeEmail, passwordExpirationIso, validatePasswordPolicy } from "../lib/password";
-import { badRequest, created, forbidden, ok, serverError } from "../lib/http";
-import type { UserRecord } from "../types/models";
+import { badRequest, conflict, created, forbidden, ok, serverError } from "../lib/http";
+import type { EmailAlertsSettings, UpdateSchedule, UpdateTask, UserRecord } from "../types/models";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
 import { revokeAllUserSessions } from "../lib/authSessions";
+import { LEGACY_COMPATIBILITY_MIGRATION_ROLES, migrateLegacyRoleIds, RETIRED_COMPATIBILITY_ROLE_IDS } from "../lib/permissionModel";
+import { roleUsageMessage, roleUsageSummary } from "../lib/roleLifecycle";
 
 function sanitize(u: UserRecord) {
   const { passwordHash, passwordResetTokenHash, passwordResetExpiresAt, passwordResetUsedAt, tokenVersion,
@@ -50,7 +52,7 @@ app.http("setupFirstAdmin", {
         id: parsed.data.id,
         displayName: parsed.data.displayName,
         email,
-        roles: ["admin"],
+        roles: ["super_admin"],
         active: true,
         createdAt: now,
         createdBy: "system",
@@ -69,7 +71,7 @@ app.http("setupFirstAdmin", {
         if (e?.code === 409) {
           const { resource } = await container.item(record.id, record.id).read<UserRecord>();
           if (resource) {
-            const roles = Array.from(new Set([...(resource.roles ?? []), "admin"]));
+            const roles = Array.from(new Set([...migrateLegacyRoleIds(resource.roles ?? []), "super_admin"]));
             const updated: UserRecord = {
               ...resource,
               roles,
@@ -113,8 +115,98 @@ const SetAdminPwdSchema = z.object({
   password: z.string().min(14, "La contraseña debe tener al menos 14 caracteres."),
 });
 
+const RoleMigrationSchema = z.object({
+  setupSecret: z.string().min(8),
+});
+
+const LEGACY_ROLE_DEFINITION_IDS = new Set([
+  "admin",
+  "formatos_impresion.admin",
+  ...RETIRED_COMPATIBILITY_ROLE_IDS,
+]);
+
+function migrateRecipientRoles(settings: EmailAlertsSettings): EmailAlertsSettings {
+  return {
+    ...settings,
+    overdueAlertRecipientRoleIds: migrateLegacyRoleIds(settings.overdueAlertRecipientRoleIds ?? []),
+    blockedAlertRecipientRoleIds: migrateLegacyRoleIds(settings.blockedAlertRecipientRoleIds ?? []),
+  };
+}
+
+app.http("setupMigrateRoleIds", {
+  route: "setup/migrate-role-ids",
+  methods: ["POST"],
+  authLevel: "anonymous",
+  handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
+    try {
+      const expected = process.env.SETUP_SECRET;
+      if (!expected) return forbidden("La inicialización está deshabilitada.");
+      const parsed = RoleMigrationSchema.safeParse(await req.json());
+      if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      if (parsed.data.setupSecret !== expected) return forbidden("Clave de inicialización incorrecta.");
+
+      const [usersResult, schedulesResult, tasksResult, rolesResult, settingsResult] = await Promise.all([
+        getContainer("users").items.readAll<UserRecord>().fetchAll(),
+        getContainer("updateSchedules").items.readAll<UpdateSchedule>().fetchAll(),
+        getContainer("updateTasks").items.readAll<UpdateTask>().fetchAll(),
+        getContainer("roles").items.readAll<{ id: string }>().fetchAll(),
+        getContainer("appSettings").item("email-alerts", "email-alerts").read<EmailAlertsSettings>().catch(() => ({ resource: undefined })),
+      ]);
+
+      for (const roleId of RETIRED_COMPATIBILITY_ROLE_IDS) {
+        const usage = roleUsageSummary(roleId, usersResult.resources, schedulesResult.resources, tasksResult.resources);
+        if (usage.activeSchedules > 0 || usage.openTasks > 0) return conflict(roleUsageMessage(usage), { roleId, ...usage });
+      }
+
+      const now = new Date().toISOString();
+      const migrationRoles = LEGACY_COMPATIBILITY_MIGRATION_ROLES.filter((role) =>
+        usersResult.resources.some((user) => migrateLegacyRoleIds(user.roles ?? []).includes(role.id))
+      );
+      for (const role of migrationRoles) {
+        if (rolesResult.resources.some((stored) => stored.id === role.id)) continue;
+        await getContainer("roles").items.create({ ...role, active: true, createdAt: now, createdBy: "system", updatedAt: now, updatedBy: "system" });
+      }
+      let migratedUsers = 0;
+      for (const user of usersResult.resources) {
+        const roles = migrateLegacyRoleIds(user.roles ?? []);
+        if (JSON.stringify(roles) === JSON.stringify(user.roles ?? [])) continue;
+        const updated = { ...user, roles, updatedAt: now, updatedBy: "system" };
+        await getContainer("users").item(user.id, user.id).replace(updated);
+        await revokeAllUserSessions(user.id, "role_compatibility_migrated");
+        migratedUsers += 1;
+      }
+
+      const rolesToDelete = rolesResult.resources.filter((role) => LEGACY_ROLE_DEFINITION_IDS.has(role.id));
+      for (const role of rolesToDelete) {
+        await getContainer("roles").item(role.id, role.id).delete();
+      }
+
+      let migratedSettings = false;
+      if (settingsResult.resource) {
+        const migrated = migrateRecipientRoles(settingsResult.resource);
+        if (JSON.stringify(migrated) !== JSON.stringify(settingsResult.resource)) {
+          await getContainer("appSettings").items.upsert({ ...migrated, updatedAt: now, updatedBy: "system" });
+          migratedSettings = true;
+        }
+      }
+
+      await writeAuditLog({
+        entityType: "role",
+        entityId: "compatibility-migration",
+        action: "role_compatibility_migrated",
+        performedBy: "system",
+        performedByEmail: "system",
+        metadata: { migratedUsers, deletedRoleDefinitions: rolesToDelete.map((role) => role.id), migratedSettings },
+      });
+      return ok({ migratedUsers, deletedRoleDefinitions: rolesToDelete.map((role) => role.id), migratedSettings });
+    } catch (e) {
+      return serverError(e);
+    }
+  },
+});
+
 // Endpoint temporal para asignar/cambiar la contraseña de un usuario existente
-// (típicamente el admin original creado sin contraseña). Después de usarlo se
+// (típicamente el super_admin original creado sin contraseña). Después de usarlo se
 // debe vaciar SETUP_SECRET.
 app.http("setupSetAdminPassword", {
   route: "setup/set-admin-password",
@@ -148,6 +240,7 @@ app.http("setupSetAdminPassword", {
       user.passwordUpdatedAt = now;
       user.passwordExpiresAt = passwordExpirationIso();
       user.mustChangePassword = false;
+      user.roles = migrateLegacyRoleIds(user.roles ?? []);
       user.tokenVersion = (user.tokenVersion ?? 0) + 1;
       user.updatedAt = now;
       user.updatedBy = "system";

@@ -12,21 +12,29 @@ import {
   Gauge,
   KeyRound,
   LogOut,
+  ChevronDown,
+  ChevronRight,
   Search,
   Server,
   Settings,
   ShieldCheck,
+  UserCircle,
   Users,
   type LucideIcon,
 } from "lucide-react";
 import { NavLink, Outlet } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { ETIQUETAS_ROLES } from "../types";
+import { DEFAULT_ROLE_DEFINITIONS, type RoleDefinition } from "../permissionModel";
+import { hasPermissionForRoleIds } from "../permissionAccess";
 
 type ElementoMenu = {
   ruta: string;
   etiqueta: string;
-  roles: string[];
+  permiso?: string;
+  permisos?: string[];
   Icono: LucideIcon;
 };
 
@@ -41,42 +49,42 @@ const MODULOS: ModuloMenu[] = [
     etiqueta: "Clientes",
     Icono: BriefcaseBusiness,
     elementos: [
-      { ruta: "/clientes", etiqueta: "Clientes", roles: ["admin", "client_manager", "viewer"], Icono: Users },
-      { ruta: "/dominios", etiqueta: "Dominios", roles: ["admin", "client_manager", "viewer", "domain_updater"], Icono: Server },
-      { ruta: "/bases-de-datos", etiqueta: "Bases de Datos", roles: ["admin", "client_manager", "viewer", "database_updater"], Icono: Database },
-      { ruta: "/licenciamiento", etiqueta: "Licenciamiento", roles: ["admin", "client_manager"], Icono: KeyRound },
+      { ruta: "/clientes", etiqueta: "Clientes", permiso: "clients.clients.view", Icono: Users },
+      { ruta: "/dominios", etiqueta: "Dominios", permiso: "clients.domains.view", Icono: Server },
+      { ruta: "/bases-de-datos", etiqueta: "Bases de Datos", permiso: "clients.databases.view", Icono: Database },
+      { ruta: "/licenciamiento", etiqueta: "Licenciamiento", permiso: "clients.licensing.view", Icono: KeyRound },
     ],
   },
   {
     etiqueta: "Actualizaciones",
     Icono: ClipboardList,
     elementos: [
-      { ruta: "/tareas", etiqueta: "Tareas", roles: ["admin", "client_manager", "database_updater", "domain_updater", "viewer"], Icono: BookOpenCheck },
-      { ruta: "/frecuencias", etiqueta: "Programar Actualizaciones", roles: ["admin", "client_manager"], Icono: CalendarPlus },
+      { ruta: "/tareas", etiqueta: "Tareas", permiso: "updates.tasks.view", Icono: BookOpenCheck },
+      { ruta: "/frecuencias", etiqueta: "Programar Actualizaciones", permiso: "updates.schedules.view", Icono: CalendarPlus },
     ],
   },
   {
     etiqueta: "Implementación",
     Icono: ShieldCheck,
     elementos: [
-      { ruta: "/admin/descargas-publicas", etiqueta: "Descargas Públicas", roles: ["admin", "public_downloads.admin"], Icono: DownloadCloud },
+      { ruta: "/admin/descargas-publicas", etiqueta: "Descargas Públicas", permiso: "implementation.public_downloads.view", Icono: DownloadCloud },
     ],
   },
   {
     etiqueta: "Configuración",
     Icono: Settings,
     elementos: [
-      { ruta: "/alertas-correos", etiqueta: "Alertas y Correos", roles: ["admin"], Icono: BellRing },
-      { ruta: "/usuarios", etiqueta: "Usuarios y Roles", roles: ["admin"], Icono: Users },
-      { ruta: "/admin/formatos-impresion", etiqueta: "Formatos de Impresión", roles: ["admin", "formatos_impresion.admin"], Icono: FileText },
+      { ruta: "/alertas-correos", etiqueta: "Alertas y Correos", permiso: "configuration.alerts.view", Icono: BellRing },
+      { ruta: "/usuarios", etiqueta: "Usuarios y Roles", permisos: ["configuration.users.view", "configuration.roles.view"], Icono: Users },
+      { ruta: "/admin/formatos-impresion", etiqueta: "Formatos de Impresión", permiso: "configuration.print_formats.view", Icono: FileText },
     ],
   },
   {
     etiqueta: "Auditoría y Visibilidad",
     Icono: Eye,
     elementos: [
-      { ruta: "/auditoria", etiqueta: "Auditoría", roles: ["admin", "client_manager", "viewer", "database_updater", "domain_updater"], Icono: ShieldCheck },
-      { ruta: "/tablero", etiqueta: "Tablero", roles: ["admin", "client_manager", "viewer"], Icono: Gauge },
+      { ruta: "/auditoria", etiqueta: "Auditoría", permiso: "visibility.audit.view", Icono: ShieldCheck },
+      { ruta: "/tablero", etiqueta: "Tablero", permiso: "visibility.dashboard.view", Icono: Gauge },
     ],
   },
 ];
@@ -91,31 +99,49 @@ function normalizarBusqueda(texto: string) {
 export default function AppLayout() {
   const auth = useAuth();
   const [busqueda, setBusqueda] = useState("");
+  const [modulosContraidos, setModulosContraidos] = useState<Set<string>>(() => new Set());
   const usuario = auth.cargando ? null : auth.usuario;
   const rolesUsuario = usuario?.roles ?? [];
+  const { data: rolesRespuesta } = useQuery({
+    queryKey: ["roles"],
+    queryFn: () => api.get<RoleDefinition[]>("/roles"),
+    enabled: !!usuario,
+  });
+  const definicionesRoles = Array.isArray(rolesRespuesta) && rolesRespuesta.length > 0
+    ? rolesRespuesta
+    : DEFAULT_ROLE_DEFINITIONS;
   const terminoBusqueda = normalizarBusqueda(busqueda.trim());
   const modulosVisibles = useMemo(
     () =>
       MODULOS.map((modulo) => {
         const moduloCoincide = normalizarBusqueda(modulo.etiqueta).includes(terminoBusqueda);
         const elementos = modulo.elementos.filter((elemento) => {
-          const tienePermiso = elemento.roles.some((r) => rolesUsuario.includes(r));
+          const permisos = elemento.permisos ?? (elemento.permiso ? [elemento.permiso] : []);
+          const tienePermiso = permisos.some((permiso) => hasPermissionForRoleIds(rolesUsuario, permiso, definicionesRoles));
           const elementoCoincide = normalizarBusqueda(elemento.etiqueta).includes(terminoBusqueda);
           return tienePermiso && (!terminoBusqueda || moduloCoincide || elementoCoincide);
         });
         return { ...modulo, elementos };
       }).filter((modulo) => modulo.elementos.length > 0),
-    [terminoBusqueda, rolesUsuario]
+    [definicionesRoles, terminoBusqueda, rolesUsuario]
   );
 
   if (!usuario) return null;
+  function alternarModulo(etiqueta: string) {
+    setModulosContraidos((actual) => {
+      const siguiente = new Set(actual);
+      if (siguiente.has(etiqueta)) siguiente.delete(etiqueta);
+      else siguiente.add(etiqueta);
+      return siguiente;
+    });
+  }
 
   return (
     <div className="contenedor-app">
       <aside className="barra-lateral">
         <div className="barra-lateral-contenido">
           <header className="marca-portal">
-            <img src="/brand/sag-white-vertical.png" alt="SAG" className="marca-portal-logo" />
+            <img src="/brand/sag-white-icon.png" alt="SAG" className="marca-portal-logo" />
             <div className="marca-portal-texto" aria-label="PORTAL SAG WEB">
               <span>PORTAL</span>
               <strong>SAG WEB</strong>
@@ -136,25 +162,36 @@ export default function AppLayout() {
           <nav className="menu-modulos" aria-label="Navegación principal">
             {modulosVisibles.map((modulo) => (
               <section key={modulo.etiqueta} className="menu-modulo">
-                <div className="menu-modulo-titulo">
+                <button
+                  type="button"
+                  className="menu-modulo-titulo"
+                  aria-expanded={terminoBusqueda ? true : !modulosContraidos.has(modulo.etiqueta)}
+                  aria-label={`${terminoBusqueda || !modulosContraidos.has(modulo.etiqueta) ? "Contraer" : "Expandir"} ${modulo.etiqueta}`}
+                  onClick={() => alternarModulo(modulo.etiqueta)}
+                >
                   <modulo.Icono size={16} aria-hidden="true" />
                   <span>{modulo.etiqueta}</span>
-                </div>
-                <div className="menu-modulo-opciones">
-                  {modulo.elementos.map((elemento) => (
-                    <NavLink key={elemento.ruta} to={elemento.ruta} className={({ isActive }) => (isActive ? "activo" : "")}>
-                      <elemento.Icono size={16} aria-hidden="true" />
-                      <span>{elemento.etiqueta}</span>
-                    </NavLink>
-                  ))}
-                </div>
+                  {terminoBusqueda || !modulosContraidos.has(modulo.etiqueta)
+                    ? <ChevronDown size={16} aria-hidden="true" />
+                    : <ChevronRight size={16} aria-hidden="true" />}
+                </button>
+                {(terminoBusqueda || !modulosContraidos.has(modulo.etiqueta)) && (
+                  <div className="menu-modulo-opciones">
+                    {modulo.elementos.map((elemento) => (
+                      <NavLink key={elemento.ruta} to={elemento.ruta} className={({ isActive }) => (isActive ? "activo" : "")}>
+                        <elemento.Icono size={16} aria-hidden="true" />
+                        <span>{elemento.etiqueta}</span>
+                      </NavLink>
+                    ))}
+                  </div>
+                )}
               </section>
             ))}
             {modulosVisibles.length === 0 ? <p className="menu-sin-resultados">No hay opciones visibles.</p> : null}
           </nav>
 
           <footer className="usuario-sidebar">
-            <img src="/brand/sag-white-vertical.png" alt="" aria-hidden="true" className="usuario-sidebar-logo" />
+            <UserCircle size={34} aria-hidden="true" className="usuario-sidebar-icono" data-testid="usuario-sidebar-icon" />
             <div className="usuario-sidebar-datos">
               <strong>{usuario.displayName}</strong>
               <span>{usuario.email}</span>

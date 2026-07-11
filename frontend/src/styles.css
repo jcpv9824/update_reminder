@@ -101,13 +101,13 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 84px;
+  min-height: 64px;
   padding: 4px 4px 10px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
 }
 .marca-portal-logo {
-  width: 58px;
-  height: 70px;
+  width: 46px;
+  height: 46px;
   object-fit: contain;
   flex-shrink: 0;
 }
@@ -181,13 +181,24 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
 .menu-modulo-titulo {
   display: flex;
   align-items: center;
+  width: 100%;
   gap: 8px;
-  padding: 0 6px;
+  padding: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: #d3c193;
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  text-align: left;
+}
+.menu-modulo-titulo:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.menu-modulo-titulo span {
+  flex: 1;
 }
 .menu-modulo-opciones {
   display: grid;
@@ -230,11 +241,9 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
   margin-top: auto;
   border-top: 1px solid rgba(255, 255, 255, 0.12);
 }
-.usuario-sidebar-logo {
-  width: 34px;
-  height: 42px;
-  object-fit: contain;
-  opacity: 0.88;
+.usuario-sidebar-icono {
+  color: #d9e3ee;
+  margin-top: 2px;
 }
 .usuario-sidebar-datos {
   min-width: 0;
@@ -457,6 +466,10 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
   width: min(92vw, 760px);
   max-width: min(92vw, 760px);
 }
+.modal-rol {
+  width: min(92vw, 980px);
+  max-width: min(92vw, 980px);
+}
 .modal-detalle-tareas .modal-body {
   overflow: auto;
 }
@@ -506,6 +519,62 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
 
 .fila-formulario { margin-bottom: 12px; }
 .acciones-formulario { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.visibilidad-tareas-rol {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.visibilidad-tareas-rol label,
+.modulo-permisos-titulo,
+.opcion-permisos-titulo,
+.acciones-permisos-rol label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.visibilidad-tareas-rol label {
+  flex-direction: column;
+  align-items: stretch;
+  font-weight: 600;
+}
+.permisos-rol {
+  display: grid;
+  gap: 12px;
+  max-height: 48vh;
+  overflow: auto;
+  padding-right: 4px;
+}
+.modulo-permisos-rol {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff;
+}
+.modulo-permisos-titulo {
+  color: var(--color-primary);
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.opcion-permisos-rol {
+  border-top: 1px solid var(--color-border);
+  padding-top: 10px;
+  margin-top: 10px;
+}
+.opcion-permisos-titulo {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.acciones-permisos-rol {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 6px 10px;
+  font-size: 13px;
+}
+.acciones-permisos-rol input,
+.modulo-permisos-titulo input,
+.opcion-permisos-titulo input {
+  width: auto;
+}
 .paginacion {
   display: flex;
   justify-content: flex-end;
@@ -635,7 +704,37 @@ td:last-child:has(.acciones-tabla) { text-align: right; }
   box-shadow: 0 10px 25px rgba(0,0,0,0.2);
   border-top: 4px solid var(--color-accent);
 }
-.login-tarjeta h1 { margin-top: 0; text-align: center; color: var(--color-primary); }
+.login-marca {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.login-marca img {
+  width: 76px;
+  height: 76px;
+  object-fit: contain;
+  padding: 10px;
+  border-radius: 50%;
+  background: var(--color-primary);
+}
+.login-marca-texto {
+  display: grid;
+  gap: 3px;
+  text-align: center;
+  line-height: 1;
+}
+.login-marca-texto span {
+  color: var(--color-accent);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+.login-marca-texto strong {
+  color: var(--color-primary);
+  font-size: 26px;
+  letter-spacing: 0.04em;
+}
 
 .cargando { text-align: center; padding: 24px; color: var(--color-text-muted); }
 .vacio { text-align: center; padding: 24px; color: var(--color-text-muted); }

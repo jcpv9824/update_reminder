@@ -188,7 +188,7 @@ function layout(args: {
       <tr><td align="center" style="padding:0 12px;">
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:700px; background:#ffffff; border:1px solid ${COLORS.neutral}; border-radius:10px; overflow:hidden;">
           <tr><td style="background:${headerColor}; padding:22px 26px; border-bottom:4px solid ${COLORS.accent};">
-            <div style="font-size:13px; color:#ffffff; font-weight:700;">Programador de Actualizaciones ERP</div>
+            <div style="font-size:13px; color:#ffffff; font-weight:700;">Portal SAG Web</div>
             <h1 style="margin:6px 0 0; color:#ffffff; font-size:23px; line-height:30px;">${escapeHtml(args.title)}</h1>
           </td></tr>
           <tr><td style="padding:24px 26px;">
@@ -197,7 +197,7 @@ function layout(args: {
             ${args.cta && args.ctaHref ? button(args.cta, args.ctaHref) : ""}
           </td></tr>
           <tr><td style="background:#f8fafc; padding:16px 26px; border-top:1px solid ${COLORS.neutral}; font-size:12px; line-height:18px; color:${COLORS.muted};">
-            ${escapeHtml(args.footerNote || "Correo generado automaticamente por el Programador de Actualizaciones ERP. No incluye credenciales ni valores sensibles.")}
+            ${escapeHtml(args.footerNote || "Correo generado automaticamente por Portal SAG Web. No incluye credenciales ni valores sensibles.")}
           </td></tr>
         </table>
       </td></tr>
@@ -427,13 +427,14 @@ export function buildTestEmail(input: {
     <p style="margin:6px 0 0; font-size:14px; line-height:21px;">Fecha y hora de la prueba: <strong>${escapeHtml(sentAt)}</strong></p>
     <p style="margin:8px 0 0; font-size:14px; line-height:21px;">URL de la aplicación: ${escapeHtml(baseUrl)}</p>`;
   return {
-    subject: "Correo de prueba — Programador de Actualizaciones ERP",
+    subject: "Correo de prueba — Portal SAG Web",
     html: layout({ title: "Correo de prueba", intro, preheader: intro, body, cta: "Abrir configuración de alertas", ctaHref: `${baseUrl}/alertas-correos` }),
     text: `${intro}\nProveedor actual: ${input.provider || "mock"}\nCorreo remitente: ${input.emailFrom || "-"}\nFecha y hora de la prueba: ${sentAt}\nURL de la aplicación: ${baseUrl}\nAbrir configuración de alertas: ${baseUrl}/alertas-correos`,
   };
 }
 
 const ROLE_LABELS: Record<string, string> = {
+  super_admin: "Super Administrador",
   admin: "Administrador",
   client_manager: "Administrador de clientes",
   database_updater: "Actualizador de bases de datos",
@@ -472,8 +473,8 @@ export function buildWelcomeUserEmail(input: {
   frontendBaseUrl?: string;
 }): EmailBuildResult {
   const baseUrl = normalizeBaseUrl(input.frontendBaseUrl);
-  const subject = "Bienvenido al Programador de Actualizaciones ERP";
-  const intro = `Hola ${input.displayName}, tu cuenta fue creada en el Programador de Actualizaciones ERP. A continuación encontrarás tus datos de acceso.`;
+  const subject = "Bienvenido a Portal SAG Web";
+  const intro = `Hola ${input.displayName}, tu cuenta fue creada en Portal SAG Web. A continuación encontrarás tus datos de acceso.`;
   const nota = input.temporaryPassword
     ? `<p style="margin:10px 0 0; font-size:13px; line-height:19px; color:${COLORS.muted};">Por seguridad, te recomendamos cambiar tu contraseña después de iniciar sesión por primera vez.</p>`
     : `<p style="margin:10px 0 0; font-size:13px; line-height:19px; color:${COLORS.muted};">Solicita tu contraseña al administrador o usa la opción de inicio de sesión.</p>`;
@@ -489,7 +490,7 @@ export function buildWelcomeUserEmail(input: {
   ].join("\n");
   return {
     subject,
-    html: layout({ title: "Bienvenido", intro, preheader: intro, body, cta: "Iniciar sesión", ctaHref: `${baseUrl}/login`, footerNote: "Correo generado automáticamente por el Programador de Actualizaciones ERP. Si no esperabas este correo, contacta al administrador." }),
+    html: layout({ title: "Bienvenido", intro, preheader: intro, body, cta: "Iniciar sesión", ctaHref: `${baseUrl}/login`, footerNote: "Correo generado automáticamente por Portal SAG Web. Si no esperabas este correo, contacta al administrador." }),
     text,
   };
 }
@@ -504,8 +505,8 @@ export function buildResendCredentialsEmail(input: {
   frontendBaseUrl?: string;
 }): EmailBuildResult {
   const baseUrl = normalizeBaseUrl(input.frontendBaseUrl);
-  const subject = "Tus datos de acceso — Programador de Actualizaciones ERP";
-  const intro = `Hola ${input.displayName}, un administrador reenvió tus datos de acceso al Programador de Actualizaciones ERP. Se generó una nueva contraseña temporal.`;
+  const subject = "Tus datos de acceso — Portal SAG Web";
+  const intro = `Hola ${input.displayName}, un administrador reenvió tus datos de acceso a Portal SAG Web. Se generó una nueva contraseña temporal.`;
   const body = `
     ${credentialsBlock({ email: input.email, temporaryPassword: input.temporaryPassword, roles: input.roles ?? [] })}
     <p style="margin:10px 0 0; font-size:13px; line-height:19px; color:${COLORS.muted};">Esta contraseña reemplaza la anterior. Te recomendamos cambiarla después de iniciar sesión.</p>`;
@@ -518,7 +519,7 @@ export function buildResendCredentialsEmail(input: {
   ].join("\n");
   return {
     subject,
-    html: layout({ title: "Tus datos de acceso", intro, preheader: intro, body, cta: "Iniciar sesión", ctaHref: `${baseUrl}/login`, footerNote: "Correo generado automáticamente por el Programador de Actualizaciones ERP. Si no solicitaste este reenvío, contacta al administrador de inmediato." }),
+    html: layout({ title: "Tus datos de acceso", intro, preheader: intro, body, cta: "Iniciar sesión", ctaHref: `${baseUrl}/login`, footerNote: "Correo generado automáticamente por Portal SAG Web. Si no solicitaste este reenvío, contacta al administrador de inmediato." }),
     text,
   };
 }
@@ -558,9 +559,9 @@ export function buildAdministrativeReminderEmail(input: {
   </div>
   <p>${escapeHtml(extra)}</p>
   ${!isVersion ? "<p>Si ya existe un documento base, usa la estructura correspondiente y actualiza el periodo.</p>" : ""}
-  <p>Puedes ingresar al Programador de Actualizaciones desde el siguiente enlace:</p>
-  <p><a href="${escapeHtml(baseUrl)}" style="display:inline-block; background:${COLORS.primary}; color:white; padding:10px 16px; border-radius:6px; text-decoration:none;">Abrir Programador de Actualizaciones</a></p>
-  <p style="margin-top: 24px;">Gracias,<br /><strong>Programador de Actualizaciones</strong></p>
+  <p>Puedes ingresar a Portal SAG Web desde el siguiente enlace:</p>
+  <p><a href="${escapeHtml(baseUrl)}" style="display:inline-block; background:${COLORS.primary}; color:white; padding:10px 16px; border-radius:6px; text-decoration:none;">Abrir Portal SAG Web</a></p>
+  <p style="margin-top: 24px;">Gracias,<br /><strong>Portal SAG Web</strong></p>
 </div>`;
   const text = `${title} - ${subtitle}
 
@@ -574,11 +575,11 @@ Fecha sugerida: ${input.fechaProgramada}
 
 ${extra}
 
-Abrir Programador de Actualizaciones:
+Abrir Portal SAG Web:
 ${baseUrl}
 
 Gracias,
-Programador de Actualizaciones`;
+Portal SAG Web`;
   return { subject, html, text };
 }
 

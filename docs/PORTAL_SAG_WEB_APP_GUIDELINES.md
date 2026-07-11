@@ -6,6 +6,8 @@ Portal SAG Web is a multi-module operations portal for managing SAG Web customer
 
 For engineering execution, follow `docs/ENGINEERING_SKILLS_AND_TESTING.md` before coding. In particular, choose the relevant tests before implementation and rerun the focused suite after the change.
 
+For roles, permissions, and task visibility, follow `docs/PERMISSIONS_AND_TASK_VISIBILITY_DESIGN.md`. Do not implement or deploy permission changes until that design is explicitly accepted.
+
 ## Default Experience
 
 The default authenticated page is **Tareas**. This remains true even though Tareas belongs to the **Actualizaciones** module. The app should open on the user's work queue first, then let the sidebar provide stable access to the broader operational areas.

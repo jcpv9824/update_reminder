@@ -1,18 +1,18 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
-import { hasRole } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { loadEmailAlertsSettings, sanitizeForResponse, saveEmailAlertsSettings } from "../lib/settingsService";
 import { buildTestEmail, sendEmail } from "../lib/emailService";
 import { badRequest, forbidden, ok, serverError } from "../lib/http";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
+import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
+import { canEditEmailAlerts, canSendTestEmail, canViewEmailAlerts } from "../lib/managementAccess";
 
-async function getAdmin(req: HttpRequest) {
+async function getProfile(req: HttpRequest) {
   const auth = await requireUser(req);
   const profile = await loadUserProfile(auth);
   if (!profile) throw Object.assign(new Error("Usuario no registrado."), { status: 403 });
-  if (!hasRole(profile, "admin")) throw Object.assign(new Error("Solo administradores."), { status: 403 });
   return profile;
 }
 
@@ -81,7 +81,8 @@ app.http("settingsEmailAlertsGet", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      await getAdmin(req);
+      const user = await getProfile(req);
+      if (!canViewEmailAlerts(user, await loadRoleDefinitions())) return forbidden();
       const s = await loadEmailAlertsSettings();
       return ok(sanitizeForResponse(s));
     } catch (e) { return serverError(e); }
@@ -94,7 +95,8 @@ app.http("settingsEmailAlertsUpdate", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      const admin = await getAdmin(req);
+      const admin = await getProfile(req);
+      if (!canEditEmailAlerts(admin, await loadRoleDefinitions())) return forbidden();
       const body = await req.json();
       const parsed = SettingsSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
@@ -123,7 +125,8 @@ app.http("settingsEmailAlertsTestEmail", {
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      const admin = await getAdmin(req);
+      const admin = await getProfile(req);
+      if (!canSendTestEmail(admin, await loadRoleDefinitions())) return forbidden();
       const body = await req.json();
       const parsed = TestSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);

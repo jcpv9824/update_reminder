@@ -1,4 +1,6 @@
 import { Routes, Route, Navigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "./api/client";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import AppLayout from "./components/AppLayout";
 import LoginPage from "./pages/LoginPage";
@@ -18,12 +20,23 @@ import NoAutorizadoPage from "./pages/NoAutorizadoPage";
 import FormatosImpresionAdminPage from "./pages/FormatosImpresionAdminPage";
 import FormatosImpresionPublicPage from "./pages/FormatosImpresionPublicPage";
 import DescargasPublicasAdminPage from "./pages/DescargasPublicasAdminPage";
+import { DEFAULT_ROLE_DEFINITIONS, type RoleDefinition } from "./permissionModel";
+import { hasPermissionForRoleIds } from "./permissionAccess";
 
-function Protegido({ roles, element }: { roles: string[]; element: JSX.Element }) {
+function Protegido({ permiso, permisos, element }: { permiso?: string; permisos?: string[]; element: JSX.Element }) {
   const auth = useAuth();
+  const permisosRequeridos = permisos ?? (permiso ? [permiso] : []);
+  const { data: rolesRespuesta } = useQuery({
+    queryKey: ["roles"],
+    queryFn: () => api.get<RoleDefinition[]>("/roles"),
+    enabled: !auth.cargando && !!auth.usuario && permisosRequeridos.length > 0,
+  });
   if (auth.cargando) return null;
   if (!auth.usuario) return <Navigate to="/login" replace />;
-  if (!roles.some((r) => auth.usuario.roles.includes(r))) return <NoAutorizadoPage />;
+  if (permisosRequeridos.length > 0) {
+    const definicionesRoles = Array.isArray(rolesRespuesta) && rolesRespuesta.length > 0 ? rolesRespuesta : DEFAULT_ROLE_DEFINITIONS;
+    if (!permisosRequeridos.some((item) => hasPermissionForRoleIds(auth.usuario.roles, item, definicionesRoles))) return <NoAutorizadoPage />;
+  }
   return element;
 }
 
@@ -43,18 +56,18 @@ function Enrutador() {
         <Route element={<AppLayout />}>
           {/* Página inicial: tareas */}
           <Route index element={<Navigate to="/tareas" replace />} />
-          <Route path="tareas" element={<TareasPage />} />
-          <Route path="clientes" element={<Protegido roles={["admin", "client_manager", "viewer"]} element={<ClientesPage />} />} />
-          <Route path="dominios" element={<Protegido roles={["admin", "client_manager", "viewer", "domain_updater"]} element={<DominiosPage />} />} />
-          <Route path="bases-de-datos" element={<Protegido roles={["admin", "client_manager", "viewer", "database_updater"]} element={<BasesDeDatosPage />} />} />
-          <Route path="licenciamiento" element={<Protegido roles={["admin", "client_manager"]} element={<LicenciamientoPage />} />} />
-          <Route path="frecuencias" element={<Protegido roles={["admin", "client_manager"]} element={<FrecuenciasPage />} />} />
-          <Route path="admin/formatos-impresion" element={<Protegido roles={["admin", "formatos_impresion.admin"]} element={<FormatosImpresionAdminPage />} />} />
-          <Route path="admin/descargas-publicas" element={<Protegido roles={["admin", "public_downloads.admin"]} element={<DescargasPublicasAdminPage />} />} />
-          <Route path="alertas-correos" element={<Protegido roles={["admin"]} element={<AlertasCorreosPage />} />} />
-          <Route path="auditoria" element={<Protegido roles={["admin", "client_manager", "viewer", "database_updater", "domain_updater"]} element={<AuditoriaPage />} />} />
-          <Route path="usuarios" element={<Protegido roles={["admin"]} element={<UsuariosPage />} />} />
-          <Route path="tablero" element={<DashboardPage />} />
+          <Route path="tareas" element={<Protegido permiso="updates.tasks.view" element={<TareasPage />} />} />
+          <Route path="clientes" element={<Protegido permiso="clients.clients.view" element={<ClientesPage />} />} />
+          <Route path="dominios" element={<Protegido permiso="clients.domains.view" element={<DominiosPage />} />} />
+          <Route path="bases-de-datos" element={<Protegido permiso="clients.databases.view" element={<BasesDeDatosPage />} />} />
+          <Route path="licenciamiento" element={<Protegido permiso="clients.licensing.view" element={<LicenciamientoPage />} />} />
+          <Route path="frecuencias" element={<Protegido permiso="updates.schedules.view" element={<FrecuenciasPage />} />} />
+          <Route path="admin/formatos-impresion" element={<Protegido permiso="configuration.print_formats.view" element={<FormatosImpresionAdminPage />} />} />
+          <Route path="admin/descargas-publicas" element={<Protegido permiso="implementation.public_downloads.view" element={<DescargasPublicasAdminPage />} />} />
+          <Route path="alertas-correos" element={<Protegido permiso="configuration.alerts.view" element={<AlertasCorreosPage />} />} />
+          <Route path="auditoria" element={<Protegido permiso="visibility.audit.view" element={<AuditoriaPage />} />} />
+          <Route path="usuarios" element={<Protegido permisos={["configuration.users.view", "configuration.roles.view"]} element={<UsuariosPage />} />} />
+          <Route path="tablero" element={<Protegido permiso="visibility.dashboard.view" element={<DashboardPage />} />} />
           <Route path="*" element={<Navigate to="/tareas" replace />} />
         </Route>
       )}

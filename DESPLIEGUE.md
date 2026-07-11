@@ -208,9 +208,10 @@ az cosmosdb sql container create --account-name $cosmosAccount --resource-group 
 az cosmosdb sql container create --account-name $cosmosAccount --resource-group $resourceGroup --database-name $cosmosDatabase --name fuentesFormatos --partition-key-path "/id"
 az cosmosdb sql container create --account-name $cosmosAccount --resource-group $resourceGroup --database-name $cosmosDatabase --name formatosImpresion --partition-key-path "/id"
 az cosmosdb sql container create --account-name $cosmosAccount --resource-group $resourceGroup --database-name $cosmosDatabase --name publicDownloads --partition-key-path "/id"
+az cosmosdb sql container create --account-name $cosmosAccount --resource-group $resourceGroup --database-name $cosmosDatabase --name roles           --partition-key-path "/id"
 ```
 
-`emailNotifications` se usa para idempotencia de recordatorios administrativos mensuales. `licenseModules` se usa para el maestro de **Licenciamiento** y `clients.licenseModuleIds` guarda las licencias compradas por cada cliente. `licenseAssignments` queda reservado para asignaciones avanzadas futuras y puede existir sin ser usado por la UI normal. `fuentesFormatos` y `formatosImpresion` soportan el catálogo global de Formatos de Impresión. `publicDownloads` soporta el módulo configurable de **Descargas públicas**. `securityRateLimits` conserva contadores efimeros de abuso y `authSessions` conserva sesiones refresh hasheadas/revocables; ambos expiran automaticamente y no son maestros de negocio. Si un contenedor ya existe, su comando puede omitirse.
+`emailNotifications` se usa para idempotencia de recordatorios administrativos mensuales. `licenseModules` se usa para el maestro de **Licenciamiento** y `clients.licenseModuleIds` guarda las licencias compradas por cada cliente. `licenseAssignments` queda reservado para asignaciones avanzadas futuras y puede existir sin ser usado por la UI normal. `fuentesFormatos` y `formatosImpresion` soportan el catálogo global de Formatos de Impresión. `publicDownloads` soporta el módulo configurable de **Descargas públicas**. `roles` guarda las definiciones editables de roles y sus parámetros de visibilidad de tareas. `securityRateLimits` conserva contadores efimeros de abuso y `authSessions` conserva sesiones refresh hasheadas/revocables; ambos expiran automaticamente y no son maestros de negocio. Si un contenedor ya existe, su comando puede omitirse.
 
 Genere un secreto HMAC exclusivo para los identificadores de rate limiting. No lo escriba en archivos ni salidas de CI:
 
@@ -862,6 +863,43 @@ az functionapp config appsettings set `
 8. Revisar vulnerabilidades de npm antes de producción.
 9. Documentar el procedimiento de actualización del ZIP cuando se modifique el backend.
 10. No dejar contraseñas reales en capturas, logs, tickets ni documentación.
+
+## 15.1 Migrar roles de compatibilidad tras un despliegue aprobado
+
+La migración del modelo de permisos solo se ejecuta después de publicar el backend que expone `POST /api/setup/migrate-role-ids`. Antes de ejecutarla, confirme que no haya usuarios, actualizaciones programadas activas ni tareas abiertas que usen los roles retirados `client_manager`, `viewer` o `public_downloads.admin`.
+
+El endpoint conserva los roles permanentes `super_admin`, `database_updater`, `domain_updater` y `print_formats_admin`; además migra `admin` a `super_admin` y `formatos_impresion.admin` a `print_formats_admin`.
+
+Ejecute la migración sin imprimir el secreto:
+
+```powershell
+$resourceGroup = "rg-erp-update-scheduler-prod"
+$functionApp = "erpupdsch4645-api"
+$setupSecret = az functionapp config appsettings list `
+  --resource-group $resourceGroup `
+  --name $functionApp `
+  --query "[?name=='SETUP_SECRET'].value | [0]" `
+  --output tsv
+
+$body = @{ setupSecret = $setupSecret } | ConvertTo-Json
+Invoke-RestMethod `
+  -Uri "https://$functionApp.azurewebsites.net/api/setup/migrate-role-ids" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body $body
+
+Remove-Variable setupSecret
+```
+
+Compruebe la respuesta y el registro de auditoría `role_compatibility_migrated`. Cuando ya no vaya a usar ningún endpoint de inicialización, desactive el secreto:
+
+```powershell
+az functionapp config appsettings set `
+  --resource-group $resourceGroup `
+  --name $functionApp `
+  --settings "SETUP_SECRET=" `
+  --output none
+```
 
 ---
 

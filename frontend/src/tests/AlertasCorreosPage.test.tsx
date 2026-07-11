@@ -35,6 +35,19 @@ const settings = {
   sendTemporaryPasswordByEmail: false,
 };
 
+const roles = [
+  { id: "super_admin", name: "Super Administrador", permissions: [], taskVisibility: { domain: "all", database: "all" }, system: true, protected: true },
+  { id: "admin", name: "Administrador", permissions: [], taskVisibility: { domain: "all", database: "all" }, system: true },
+  { id: "domain_updater", name: "Actualizador de Dominios", permissions: [], taskVisibility: { domain: "assigned", database: "none" }, system: true },
+];
+
+function mockSettings(value: any = settings) {
+  apiMock.get.mockImplementation((path: string) => {
+    if (path === "/roles") return Promise.resolve(roles);
+    return Promise.resolve(value);
+  });
+}
+
 function render_() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -48,11 +61,11 @@ beforeEach(() => {
   apiMock.get.mockReset();
   apiMock.post.mockReset();
   apiMock.put.mockReset();
+  mockSettings();
 });
 
 describe("AlertasCorreosPage", () => {
   it("muestra las secciones principales y SMTP avanzado colapsado", async () => {
-    apiMock.get.mockResolvedValueOnce(settings);
     render_();
     expect(await screen.findByRole("heading", { name: /Alertas y correos/i })).toBeInTheDocument();
     expect(screen.getByText(/Estado del envío de correos/i)).toBeInTheDocument();
@@ -68,7 +81,6 @@ describe("AlertasCorreosPage", () => {
   });
 
   it("muestra ayuda de recordatorios globales y sección de bloqueos no resueltos", async () => {
-    apiMock.get.mockResolvedValueOnce(settings);
     render_();
     await screen.findByRole("heading", { name: /Alertas y correos/i });
     expect(screen.getByText(/valor por defecto para los recordatorios de actualizaciones programadas/i)).toBeInTheDocument();
@@ -77,8 +89,14 @@ describe("AlertasCorreosPage", () => {
     expect(screen.queryByText(/Enviar inmediatamente al bloquear/i)).toBeNull();
   });
 
+  it("usa Super Administrador como rol destinatario canónico", async () => {
+    render_();
+    await screen.findByRole("heading", { name: /Alertas y correos/i });
+    expect(screen.getAllByText("Super Administrador").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/^Administrador$/)).toBeNull();
+  });
+
   it("recordatorios administrativos usan último día hábil por defecto y día fijo muestra input", async () => {
-    apiMock.get.mockResolvedValueOnce(settings);
     render_();
     await screen.findByRole("heading", { name: /Alertas y correos/i });
     const reglas = screen.getAllByLabelText(/Regla de envío/i) as HTMLSelectElement[];
@@ -89,7 +107,6 @@ describe("AlertasCorreosPage", () => {
   });
 
   it("el botón de configuración recomendada de P&A llena los valores correctos sin contraseña", async () => {
-    apiMock.get.mockResolvedValueOnce(settings);
     render_();
     await screen.findByRole("heading", { name: /Alertas y correos/i });
     fireEvent.click(screen.getByRole("button", { name: /Usar configuración recomendada de P&A/i }));
@@ -103,7 +120,7 @@ describe("AlertasCorreosPage", () => {
   });
 
   it("permite enviar correo de prueba", async () => {
-    apiMock.get.mockResolvedValueOnce({ ...settings, emailProvider: "mock", smtpPasswordConfigured: false });
+    mockSettings({ ...settings, emailProvider: "mock", smtpPasswordConfigured: false });
     apiMock.post.mockResolvedValueOnce({ ok: true, message: "Correo de prueba enviado correctamente." });
     render_();
     await screen.findByRole("heading", { name: /Alertas y correos/i });
@@ -114,7 +131,6 @@ describe("AlertasCorreosPage", () => {
   });
 
   it("acepta destinatarios separados por punto y coma y llama endpoint de reporte", async () => {
-    apiMock.get.mockResolvedValueOnce(settings);
     apiMock.post.mockResolvedValueOnce({ ok: true, message: "Reporte enviado correctamente." });
     render_();
     await screen.findByRole("heading", { name: /Alertas y correos/i });
@@ -127,7 +143,6 @@ describe("AlertasCorreosPage", () => {
   });
 
   it("la sección SMTP muestra el botón 'Guardar configuración SMTP'", async () => {
-    apiMock.get.mockResolvedValueOnce(settings);
     render_();
     await screen.findByRole("heading", { name: /Alertas y correos/i });
     fireEvent.click(screen.getByText(/Configuración SMTP avanzada/i));
@@ -135,7 +150,6 @@ describe("AlertasCorreosPage", () => {
   });
 
   it("guardar SMTP llama PUT /settings/email-alerts y muestra el mensaje de éxito", async () => {
-    apiMock.get.mockResolvedValueOnce(settings);
     apiMock.put.mockResolvedValueOnce({ ...settings, smtpPasswordConfigured: true });
     render_();
     await screen.findByRole("heading", { name: /Alertas y correos/i });
@@ -146,7 +160,6 @@ describe("AlertasCorreosPage", () => {
   });
 
   it("guardar SMTP sin contraseña NO envía smtpPassword al backend (preserva la actual)", async () => {
-    apiMock.get.mockResolvedValueOnce(settings);
     apiMock.put.mockResolvedValueOnce({ ...settings, smtpPasswordConfigured: true });
     render_();
     await screen.findByRole("heading", { name: /Alertas y correos/i });
@@ -160,7 +173,6 @@ describe("AlertasCorreosPage", () => {
   });
 
   it("guardar SMTP con contraseña nueva la envía y luego limpia el campo", async () => {
-    apiMock.get.mockResolvedValueOnce(settings);
     apiMock.put.mockResolvedValueOnce({ ...settings, smtpPasswordConfigured: true });
     render_();
     await screen.findByRole("heading", { name: /Alertas y correos/i });
@@ -181,7 +193,6 @@ describe("AlertasCorreosPage", () => {
   });
 
   it("Cancelar en SMTP descarta cambios locales y recarga la configuración guardada", async () => {
-    apiMock.get.mockResolvedValueOnce(settings);
     render_();
     await screen.findByRole("heading", { name: /Alertas y correos/i });
     fireEvent.click(screen.getByText(/Configuración SMTP avanzada/i));
@@ -194,7 +205,6 @@ describe("AlertasCorreosPage", () => {
   });
 
   it("muestra error si guardar SMTP falla y NO limpia el formulario", async () => {
-    apiMock.get.mockResolvedValueOnce(settings);
     apiMock.put.mockRejectedValueOnce(new Error("Error en Key Vault"));
     render_();
     await screen.findByRole("heading", { name: /Alertas y correos/i });
@@ -208,7 +218,6 @@ describe("AlertasCorreosPage", () => {
   });
 
   it("rechaza destinatarios inválidos antes de enviar reporte", async () => {
-    apiMock.get.mockResolvedValueOnce(settings);
     render_();
     await screen.findByRole("heading", { name: /Alertas y correos/i });
     fireEvent.change(screen.getByPlaceholderText(/correo1@empresa.com; correo2@empresa.com/i), {

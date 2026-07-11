@@ -3,6 +3,13 @@ import type { UserRecord } from "../types/models";
 
 import { isValidEmail } from "./inputValidation";
 
+const RECIPIENT_ROLE_ALIASES: Record<string, string[]> = {
+  admin: ["super_admin"],
+  super_admin: ["admin"],
+  "formatos_impresion.admin": ["print_formats_admin"],
+  print_formats_admin: ["formatos_impresion.admin"],
+};
+
 export function parseSemicolonEmails(value: string): { emails: string[]; invalid: string[] } {
   const parts = String(value ?? "").split(";").map((e) => e.trim()).filter(Boolean);
   const emails: string[] = [];
@@ -26,9 +33,12 @@ export function uniqueEmails(emails: string[]): string[] {
 }
 
 export async function resolveEmailsByRoles(roleIds: string[] = []): Promise<string[]> {
-  if (roleIds.length === 0) return [];
-  const clauses = roleIds.map((_, i) => `ARRAY_CONTAINS(c.roles, @r${i})`).join(" OR ");
-  const parameters = roleIds.map((role, i) => ({ name: `@r${i}`, value: role }));
+  const effectiveRoleIds = Array.from(new Set(
+    roleIds.flatMap((role) => [role, ...(RECIPIENT_ROLE_ALIASES[role] ?? [])])
+  ));
+  if (effectiveRoleIds.length === 0) return [];
+  const clauses = effectiveRoleIds.map((_, i) => `ARRAY_CONTAINS(c.roles, @r${i})`).join(" OR ");
+  const parameters = effectiveRoleIds.map((role, i) => ({ name: `@r${i}`, value: role }));
   const { resources } = await getContainer("users")
     .items.query<UserRecord>({ query: `SELECT * FROM c WHERE c.active = true AND (${clauses})`, parameters })
     .fetchAll();

@@ -5,6 +5,8 @@ import type { BaseDeDatos, Cliente, Dominio, Frecuencia, ModuloLicencia, Respues
 import { Alerta, EtiquetaEstado, Modal, DialogoConfirmar, Paginacion } from "../components/Comunes";
 import { DIAS_SEMANA, ETIQUETAS_AMBIENTE, ETIQUETAS_FRECUENCIA, ETIQUETAS_ROLES } from "../types";
 import { SelectorBuscable } from "../components/SelectorBuscable";
+import { DEFAULT_ROLE_DEFINITIONS, type RoleDefinition } from "../permissionModel";
+import { eligibleRolesForTaskAssignment } from "../permissionAccess";
 
 const DIAS_LISTA = Object.keys(DIAS_SEMANA);
 
@@ -29,6 +31,7 @@ export default function FrecuenciasPage() {
   const { data: dominios = [] } = useQuery({ queryKey: ["dominios"], queryFn: () => api.get<Dominio[]>("/domains") });
   const { data: bds = [] } = useQuery({ queryKey: ["bases-de-datos"], queryFn: () => api.get<BaseDeDatos[]>("/databases") });
   const { data: usuarios = [] } = useQuery({ queryKey: ["usuarios"], queryFn: () => api.get<Usuario[]>("/users") });
+  const { data: roles = DEFAULT_ROLE_DEFINITIONS } = useQuery({ queryKey: ["roles"], queryFn: () => api.get<RoleDefinition[]>("/roles") });
   const { data: modulosLicencia = [] } = useQuery({ queryKey: ["license-modules"], queryFn: () => api.get<ModuloLicencia[]>("/license-modules") });
   const { data: emailSettings } = useQuery({
     queryKey: ["email-alerts-summary"],
@@ -135,7 +138,7 @@ export default function FrecuenciasPage() {
       )}
 
       <Modal titulo="Nueva actualización programada" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
-        <FormularioFrecuencia clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} modulosLicencia={modulosLicencia} emailSettings={emailSettings} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />
+        <FormularioFrecuencia clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} roles={roles} modulosLicencia={modulosLicencia} emailSettings={emailSettings} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />
       </Modal>
       <Modal titulo="Duplicar actualización programada" abierto={!!duplicando} onCerrar={() => setDuplicando(null)}>
         {duplicando && (
@@ -145,6 +148,7 @@ export default function FrecuenciasPage() {
             dominios={dominios}
             bds={bds}
             usuarios={usuarios}
+            roles={roles}
             modulosLicencia={modulosLicencia}
             emailSettings={emailSettings}
             cargando={crear.isPending}
@@ -153,7 +157,7 @@ export default function FrecuenciasPage() {
         )}
       </Modal>
       <Modal titulo="Editar actualización programada" abierto={!!editando} onCerrar={() => setEditando(null)}>
-        {editando && <FormularioFrecuencia inicial={editando} clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} modulosLicencia={modulosLicencia} emailSettings={emailSettings} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
+        {editando && <FormularioFrecuencia inicial={editando} clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} roles={roles} modulosLicencia={modulosLicencia} emailSettings={emailSettings} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
       </Modal>
 
       <DialogoConfirmar
@@ -225,7 +229,7 @@ function resumenSalud(f: Frecuencia): string {
   return partes.join(" · ") || "Sin tareas en ventana";
 }
 
-function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modulosLicencia, emailSettings, onSubmit, cargando }: { inicial?: Frecuencia; clientes: Cliente[]; dominios: Dominio[]; bds: BaseDeDatos[]; usuarios: Usuario[]; modulosLicencia: ModuloLicencia[]; emailSettings?: EmailAlertsResumen; onSubmit: (v: any) => void; cargando: boolean }) {
+function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, roles, modulosLicencia, emailSettings, onSubmit, cargando }: { inicial?: Frecuencia; clientes: Cliente[]; dominios: Dominio[]; bds: BaseDeDatos[]; usuarios: Usuario[]; roles: RoleDefinition[]; modulosLicencia: ModuloLicencia[]; emailSettings?: EmailAlertsResumen; onSubmit: (v: any) => void; cargando: boolean }) {
   const [name, setName] = useState(inicial?.name ?? "");
   const [selectionMode, setSelectionMode] = useState<"manual" | "licensing">(inicial?.selectionMode ?? "manual");
   const [scopeGroups, setScopeGroups] = useState<ScopeGroup[]>(inicial?.scopeGroups ?? []);
@@ -247,6 +251,8 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
   const [assignmentMode, setAssignmentMode] = useState<"role" | "users">(inicial?.assignmentMode ?? ((inicial?.assignedUserIds?.length || inicial?.databaseAssignedUserIds?.length) ? "users" : "role"));
   const [domainUsers, setDomainUsers] = useState<string[]>(inicial?.assignedUserIds ?? []);
   const [databaseUsers, setDatabaseUsers] = useState<string[]>(inicial?.databaseAssignedUserIds ?? []);
+  const [domainAssignedRole, setDomainAssignedRole] = useState(inicial?.domainAssignedRole ?? inicial?.assignedRole ?? "domain_updater");
+  const [databaseAssignedRole, setDatabaseAssignedRole] = useState(inicial?.databaseAssignedRole ?? "database_updater");
   const [frequencyType, setFrequencyType] = useState<Frecuencia["frequencyType"]>(inicial?.frequencyType ?? "once");
   const [everyNWeeks, setEveryNWeeks] = useState(inicial?.everyNWeeks ?? 1);
   const [weekdays, setWeekdays] = useState<string[]>(inicial?.weekdays ?? ["FRIDAY"]);
@@ -261,6 +267,20 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
   const [reminderDaysText, setReminderDaysText] = useState((inicial?.reminders?.reminderDaysBefore ?? [1, 0]).join(", "));
   const [reminderTime, setReminderTime] = useState(inicial?.reminders?.reminderTime ?? "08:00");
   const [err, setErr] = useState<string | null>(null);
+  const rolesDominio = useMemo(() => eligibleRolesForTaskAssignment(roles, "domain"), [roles]);
+  const rolesBase = useMemo(() => eligibleRolesForTaskAssignment(roles, "database"), [roles]);
+
+  useEffect(() => {
+    if (rolesDominio.length > 0 && !rolesDominio.some((role) => role.id === domainAssignedRole)) {
+      setDomainAssignedRole(rolesDominio[0].id);
+    }
+  }, [rolesDominio, domainAssignedRole]);
+
+  useEffect(() => {
+    if (rolesBase.length > 0 && !rolesBase.some((role) => role.id === databaseAssignedRole)) {
+      setDatabaseAssignedRole(rolesBase[0].id);
+    }
+  }, [rolesBase, databaseAssignedRole]);
 
   const previewLicencias = useMutation({
     mutationFn: (body: LicensingScope) => api.post<LicensingPreview>("/special-schedules/preview-licensing-scope", body),
@@ -369,6 +389,9 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
       if (selectionMode === "licensing" && licenseModuleIds.length === 0) return setErr("Seleccione al menos una licencia.");
       if (selectionMode === "licensing" && preview && preview.clientsCount === 0) return setErr("No se encontraron clientes activos con las licencias y filtros seleccionados.");
       if (assignmentMode === "users" && domainUsers.length === 0 && databaseUsers.length === 0) return setErr("Seleccione responsables o cambie a asignación por rol.");
+      const targetTypes = selectionMode === "licensing" ? licenseTargetTypes : manualTargetTypes;
+      if (assignmentMode === "role" && targetTypes !== "databases_only" && !domainAssignedRole) return setErr("Seleccione un rol para las tareas de dominios.");
+      if (assignmentMode === "role" && targetTypes !== "domains_only" && !databaseAssignedRole) return setErr("Seleccione un rol para las tareas de bases de datos.");
       const customReminderDays = parseReminderDays(reminderDaysText);
       if (!useGlobalReminderSettings && remindersEnabled && customReminderDays.length === 0) return setErr("Ingrese al menos un día previo para recordatorios.");
       if (!useGlobalReminderSettings && remindersEnabled && !/^\d{2}:\d{2}$/.test(reminderTime)) return setErr("La hora del recordatorio debe estar en formato HH:mm.");
@@ -382,15 +405,15 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
         manualTargetTypes: selectionMode === "manual" ? manualTargetTypes : undefined,
         licensingScope: selectionMode === "licensing" ? licensingScope() : undefined,
         assignmentMode,
-        domainAssignedRole: "domain_updater",
-        databaseAssignedRole: "database_updater",
+        domainAssignedRole,
+        databaseAssignedRole,
         frequencyType,
         everyNWeeks: frequencyType === "weekly" ? everyNWeeks : undefined,
         weekdays: frequencyType === "weekly" ? weekdays : undefined,
         intervalDays: frequencyType === "interval" ? intervalDays : undefined,
         dayOfMonth: frequencyType === "monthly" ? dayOfMonth : undefined,
         startDate, endDate: frequencyType === "once" ? null : (hasEndDate ? endDate || null : null), timezone: "America/Bogota",
-        assignedRole: "domain_updater",
+        assignedRole: domainAssignedRole,
         assignedUserIds: assignmentMode === "users" ? domainUsers : [],
         databaseAssignedUserIds: assignmentMode === "users" ? databaseUsers : [],
         reminders: useGlobalReminderSettings ? undefined : {
@@ -658,7 +681,19 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, modu
             </select></div>
         </>
       )}
-      {assignmentMode === "role" && <p className="texto-ayuda">Tareas de dominio → Actualizador de dominios. Tareas de base de datos → Actualizador de bases de datos.</p>}
+      {assignmentMode === "role" && (
+        <>
+          <div className="fila-formulario"><label>Rol para tareas de dominios</label>
+            <select value={domainAssignedRole} onChange={(e) => setDomainAssignedRole(e.target.value)} disabled={rolesDominio.length === 0}>
+              {rolesDominio.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+            </select></div>
+          <div className="fila-formulario"><label>Rol para tareas de bases de datos</label>
+            <select value={databaseAssignedRole} onChange={(e) => setDatabaseAssignedRole(e.target.value)} disabled={rolesBase.length === 0}>
+              {rolesBase.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+            </select></div>
+          <p className="texto-ayuda">Solo se muestran roles activos con acceso a Tareas y visibilidad para el tipo de tarea correspondiente.</p>
+        </>
+      )}
       <div className="fila-formulario"><label>Tipo de frecuencia *</label>
         <select value={frequencyType} onChange={(e) => setFrequencyType(e.target.value as any)}>
           {Object.entries(ETIQUETAS_FRECUENCIA).map(([k, v]) => <option key={k} value={k}>{v}</option>)}

@@ -1,7 +1,6 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
-import { canManageUsers } from "../lib/permissions";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
 import { generateTemporaryPassword, hashPassword, normalizeEmail, passwordExpirationIso, validatePasswordPolicy } from "../lib/password";
@@ -12,6 +11,18 @@ import { sendEmail } from "../lib/emailService";
 import { buildWelcomeUserEmail, buildResendCredentialsEmail } from "../lib/emailTemplates";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
 import { revokeAllUserSessions } from "../lib/authSessions";
+import { migrateLegacyRoleIds } from "../lib/permissionModel";
+import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
+import { validateAssignableRoleIds } from "../lib/roleDefinitions";
+import {
+  canCreateUser,
+  canDeactivateUser,
+  canListUsers,
+  canReactivateUser,
+  canResendUserCredentials,
+  canResetUserPassword,
+  canUpdateUser,
+} from "../lib/managementAccess";
 import type { UserRecord } from "../types/models";
 
 // Envía el correo de credenciales (bienvenida, restablecimiento o reenvío).
@@ -62,20 +73,26 @@ async function getUserOrFail(req: HttpRequest) {
   return profile;
 }
 
-const VALID_ROLES = ["admin", "client_manager", "database_updater", "domain_updater", "viewer", "formatos_impresion.admin", "public_downloads.admin"] as const;
+const RoleIdSchema = z.string()
+  .trim()
+  .min(1, "El rol no puede estar vacío.")
+  .max(80, "El rol no puede superar 80 caracteres.")
+  .regex(/^[a-z0-9_.-]+$/, "El rol solo puede contener minúsculas, números, guiones, puntos y guiones bajos.");
+
+const RolesSchema = z.array(RoleIdSchema).transform((roles) => migrateLegacyRoleIds(roles));
 
 const UserCreateSchema = z.object({
   id: z.string().optional(),
   displayName: z.string().min(1, "El nombre es obligatorio."),
   email: z.string().email("Correo electrónico no válido."),
-  roles: z.array(z.enum(VALID_ROLES)).default([]),
+  roles: RolesSchema.default([]),
   active: z.boolean().default(true),
   password: z.string().min(14, "La contraseña debe tener al menos 14 caracteres."),
 });
 
 const UserUpdateSchema = z.object({
   displayName: z.string().min(1).optional(),
-  roles: z.array(z.enum(VALID_ROLES)).optional(),
+  roles: RolesSchema.optional(),
   active: z.boolean().optional(),
 });
 
@@ -86,7 +103,7 @@ const ResetPasswordSchema = z.object({
 function sanitize(u: UserRecord) {
   const { passwordHash, passwordResetTokenHash, passwordResetExpiresAt, passwordResetUsedAt, tokenVersion,
     mfaEnabled, mfaSecretName, mfaEnrolledAt, mfaLastTimeStep, mfaRecoveryCodeHashes, ...rest } = u;
-  return rest;
+  return { ...rest, roles: migrateLegacyRoleIds(rest.roles ?? []) };
 }
 
 app.http("usersList", {
@@ -96,7 +113,7 @@ app.http("usersList", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const u = await getUserOrFail(req);
-      if (!canManageUsers(u)) return forbidden();
+      if (!canListUsers(u, await loadRoleDefinitions())) return forbidden();
       const { resources } = await getContainer("users").items.readAll<UserRecord>().fetchAll();
       const items = resources.map(sanitize);
       const pagination = getPagination(req);
@@ -113,10 +130,13 @@ app.http("usersCreate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const u = await getUserOrFail(req);
-      if (!canManageUsers(u)) return forbidden();
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canCreateUser(u, roleDefinitions)) return forbidden();
       const body = await req.json();
       const parsed = UserCreateSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      const roleError = validateAssignableRoleIds(parsed.data.roles, roleDefinitions);
+      if (roleError) return badRequest(roleError);
       const email = normalizeEmail(parsed.data.email);
       const limited = await enforceRequestRateLimit(
         req,
@@ -176,7 +196,6 @@ app.http("usersUpdate", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const u = await getUserOrFail(req);
-      if (!canManageUsers(u)) return forbidden();
       const id = req.params.id;
       const container = getContainer("users");
       const { resource } = await container.item(id, id).read<UserRecord>();
@@ -187,6 +206,14 @@ app.http("usersUpdate", {
       const before = { ...resource };
       const rolesChanged = parsed.data.roles && JSON.stringify(parsed.data.roles) !== JSON.stringify(resource.roles);
       const deactivated = resource.active !== false && parsed.data.active === false;
+      const roleDefinitions = await loadRoleDefinitions();
+      if (!canUpdateUser(u, { rolesChanged: !!rolesChanged, deactivating: deactivated }, roleDefinitions)) {
+        return forbidden();
+      }
+      if (parsed.data.roles) {
+        const roleError = validateAssignableRoleIds(parsed.data.roles, roleDefinitions);
+        if (roleError) return badRequest(roleError);
+      }
       const updated: UserRecord = {
         ...resource,
         ...(parsed.data.displayName !== undefined ? { displayName: parsed.data.displayName.trim() } : {}),
@@ -219,7 +246,7 @@ app.http("usersResetPassword", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const u = await getUserOrFail(req);
-      if (!canManageUsers(u)) return forbidden();
+      if (!canResetUserPassword(u, await loadRoleDefinitions())) return forbidden();
       const id = req.params.id;
       const body = await req.json();
       const parsed = ResetPasswordSchema.safeParse(body);
@@ -272,7 +299,7 @@ app.http("usersResendCredentials", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const u = await getUserOrFail(req);
-      if (!canManageUsers(u)) return forbidden();
+      if (!canResendUserCredentials(u, await loadRoleDefinitions())) return forbidden();
       const id = req.params.id;
       const limited = await enforceRequestRateLimit(
         req,
@@ -314,7 +341,8 @@ app.http("usersResendCredentials", {
 
 async function setUserActive(req: HttpRequest, active: boolean, action: string): Promise<HttpResponseInit> {
   const u = await getUserOrFail(req);
-  if (!canManageUsers(u)) return forbidden();
+  const roleDefinitions = await loadRoleDefinitions();
+  if (active ? !canReactivateUser(u, roleDefinitions) : !canDeactivateUser(u, roleDefinitions)) return forbidden();
   const id = req.params.id;
   const container = getContainer("users");
   const { resource } = await container.item(id, id).read<UserRecord>();

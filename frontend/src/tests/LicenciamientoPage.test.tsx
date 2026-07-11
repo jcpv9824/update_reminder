@@ -10,12 +10,15 @@ const apiMock = vi.hoisted(() => ({
   put: vi.fn(),
   del: vi.fn(),
 }));
+const authState = vi.hoisted(() => ({
+  roles: ["super_admin"] as string[],
+}));
 
 vi.mock("../api/client", () => ({ api: apiMock }));
 vi.mock("../auth/AuthContext", () => ({
   useAuth: () => ({
     cargando: false,
-    usuario: { id: "admin", email: "admin@empresa.com", displayName: "Admin", roles: ["admin"] },
+    usuario: { id: "admin", email: "admin@empresa.com", displayName: "Admin", roles: authState.roles },
     cerrarSesion: vi.fn(),
   }),
 }));
@@ -58,6 +61,23 @@ const databases = [{
   createdAt: "",
   updatedAt: "",
 }];
+const roleDefinitions = [
+  {
+    id: "super_admin",
+    name: "Super Administrador",
+    permissions: ["clients.licensing.view", "clients.licensing.create", "clients.licensing.edit", "clients.licensing.delete", "clients.licensing.deactivate", "clients.licensing.reactivate"],
+    taskVisibility: { domain: "all", database: "all" },
+    system: true,
+    protected: true,
+  },
+  {
+    id: "license_editor",
+    name: "Editor de Licencias",
+    permissions: ["clients.licensing.view", "clients.licensing.edit"],
+    taskVisibility: { domain: "none", database: "none" },
+    system: false,
+  },
+];
 
 function mockGets() {
   apiMock.get.mockImplementation((path: string) => {
@@ -67,6 +87,7 @@ function mockGets() {
     if (path === "/clients") return Promise.resolve(clients);
     if (path === "/domains") return Promise.resolve(domains);
     if (path === "/databases") return Promise.resolve(databases);
+    if (path === "/roles") return Promise.resolve(roleDefinitions);
     return Promise.resolve([]);
   });
 }
@@ -90,6 +111,7 @@ beforeEach(() => {
   apiMock.post.mockReset();
   apiMock.put.mockReset();
   apiMock.del.mockReset();
+  authState.roles = ["super_admin"];
   mockGets();
 });
 
@@ -141,5 +163,16 @@ describe("LicenciamientoPage", () => {
     await userEvent.type(textField("Nombre *"), "Mobile App");
     fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
     expect(await screen.findByText("Ya existe un módulo con este nombre.")).toBeInTheDocument();
+  });
+
+  it("aplica permisos granulares desde roles personalizados", async () => {
+    authState.roles = ["license_editor"];
+    renderPage();
+
+    expect(await screen.findByText("Mobile App")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Nuevo módulo" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Editar" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Desactivar" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Eliminar" })).toBeDisabled();
   });
 });

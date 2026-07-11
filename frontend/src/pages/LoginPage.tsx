@@ -46,7 +46,13 @@ export default function LoginPage() {
   return (
     <div className="login-pantalla">
       <div className="login-tarjeta">
-        <h1>Portal SAG Web</h1>
+        <div className="login-marca">
+          <img src="/brand/sag-white-icon.png" alt="SAG" />
+          <div className="login-marca-texto" aria-label="PORTAL SAG WEB">
+            <span>PORTAL</span>
+            <strong>SAG WEB</strong>
+          </div>
+        </div>
         <p style={{ textAlign: "center", color: "#6b7280", marginBottom: 24 }}>Gestión operativa de servicios SAG Web</p>
         {mensaje && <div className="alerta alerta-info">{mensaje}</div>}
         {info && <div className="alerta alerta-exito">{info}</div>}

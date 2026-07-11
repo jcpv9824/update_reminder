@@ -48,11 +48,11 @@ async function fallbackRecipients(settings: Awaited<ReturnType<typeof loadEmailA
   if (settings.overdueAlertRecipientsMode === "customEmails") {
     return (settings.customAdminAlertEmails ?? []).map((email) => ({ email }));
   }
-  const queryRoles = settings.overdueAlertRecipientsMode === "adminsAndClientManagers"
-    ? "SELECT * FROM c WHERE c.active = true AND (ARRAY_CONTAINS(c.roles, 'admin') OR ARRAY_CONTAINS(c.roles, 'client_manager'))"
-    : "SELECT * FROM c WHERE c.active = true AND ARRAY_CONTAINS(c.roles, 'admin')";
-  const { resources } = await getContainer("users").items.query<UserRecord>({ query: queryRoles }).fetchAll();
-  return resources.map((u) => ({ email: u.email, name: u.displayName })).filter((r) => !!r.email);
+  const roleIds = settings.overdueAlertRecipientsMode === "adminsAndClientManagers"
+    ? ["super_admin", "client_manager"]
+    : ["super_admin"];
+  const emails = await resolveConfiguredRecipients(roleIds, []);
+  return emails.map((email) => ({ email }));
 }
 
 const WEEKDAY_BY_JS = ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"] as const;
