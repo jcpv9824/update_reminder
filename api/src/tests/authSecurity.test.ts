@@ -46,7 +46,7 @@ describe("auth security", () => {
     }))).rejects.toMatchObject({ message: "No autenticado.", status: 401 });
   });
 
-  it("removes retired compatibility roles from a valid JWT session", async () => {
+  it("migrates retired compatibility roles in a valid JWT session", async () => {
     const token = signJwt({
       id: "user_1",
       email: "usuario@empresa.com",
@@ -93,7 +93,7 @@ describe("auth security", () => {
       id: "user_1",
       email: "usuario@empresa.com",
       displayName: "Usuario",
-      roles: [],
+      roles: ["client_operations_manager"],
     });
   });
 
