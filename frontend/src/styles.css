@@ -202,6 +202,20 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
 }
 .menu-modulo-opciones {
   display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 220ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 160ms ease-out;
+}
+.menu-modulo-opciones.abierto {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.menu-modulo-opciones-contenido {
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
   gap: 3px;
 }
 .menu-modulo-opciones a {
@@ -227,6 +241,11 @@ th { background: var(--color-neutral); font-weight: 600; color: var(--color-text
   background: var(--color-secondary);
   color: white;
   box-shadow: inset 3px 0 0 var(--color-accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .menu-modulo-opciones {
+    transition: none;
+  }
 }
 .menu-sin-resultados {
   margin: 8px 6px;

@@ -30,6 +30,10 @@ function renderLayout() {
   );
 }
 
+function expandModule(name: string) {
+  fireEvent.click(screen.getByRole("button", { name: `Expandir ${name}` }));
+}
+
 describe("AppLayout", () => {
   beforeEach(() => {
     authState.roles = ["admin"];
@@ -40,6 +44,7 @@ describe("AppLayout", () => {
   it("muestra Programar Actualizaciones en el menu lateral", () => {
     renderLayout();
     expect(screen.getByText("Actualizaciones")).toBeInTheDocument();
+    expandModule("Actualizaciones");
     expect(screen.getByRole("link", { name: "Programar Actualizaciones" })).toBeInTheDocument();
     expect(screen.queryByText("Frecuencias especiales")).toBeNull();
   });
@@ -53,15 +58,21 @@ describe("AppLayout", () => {
 
   it("permite contraer y expandir modulos del menu lateral", () => {
     renderLayout();
-    fireEvent.click(screen.getByRole("button", { name: "Contraer Clientes" }));
     expect(screen.queryByRole("link", { name: "Licenciamiento" })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Expandir Clientes" }));
+    expandModule("Clientes");
     expect(screen.getByRole("link", { name: "Licenciamiento" })).toBeInTheDocument();
+    const panel = document.getElementById("menu-modulo-clientes");
+    expect(panel).toHaveClass("abierto");
+
+    fireEvent.click(screen.getByRole("button", { name: "Contraer Clientes" }));
+    expect(panel).toHaveClass("cerrado");
+    expect(screen.queryByRole("link", { name: "Licenciamiento" })).toBeNull();
   });
 
   it("mantiene Tablero con su nombre actual", () => {
     renderLayout();
+    expandModule("Auditoría y Visibilidad");
     expect(screen.getByRole("link", { name: "Tablero" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Dashboard" })).toBeNull();
   });
@@ -69,8 +80,10 @@ describe("AppLayout", () => {
   it("ubica Descargas Publicas en Implementacion y Formatos de Impresion en Configuracion", () => {
     renderLayout();
     expect(screen.getByText("Implementación")).toBeInTheDocument();
+    expandModule("Implementación");
     expect(screen.getByRole("link", { name: "Descargas Públicas" })).toBeInTheDocument();
     expect(screen.getByText("Configuración")).toBeInTheDocument();
+    expandModule("Configuración");
     expect(screen.getByRole("link", { name: "Formatos de Impresión" })).toBeInTheDocument();
   });
 
@@ -85,13 +98,16 @@ describe("AppLayout", () => {
   it("muestra Licenciamiento para Administrador", () => {
     authState.roles = ["admin"];
     renderLayout();
+    expandModule("Clientes");
     expect(screen.getByRole("link", { name: "Licenciamiento" })).toBeInTheDocument();
   });
 
   it("muestra opciones administrativas para Super Administrador", () => {
     authState.roles = ["super_admin"];
     renderLayout();
+    expandModule("Clientes");
     expect(screen.getByRole("link", { name: "Licenciamiento" })).toBeInTheDocument();
+    expandModule("Configuración");
     expect(screen.getByRole("link", { name: "Usuarios y Roles" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Formatos de Impresión" })).toBeInTheDocument();
   });
@@ -100,6 +116,7 @@ describe("AppLayout", () => {
     authState.roles = ["domain_updater"];
     renderLayout();
     expect(screen.queryByRole("link", { name: "Licenciamiento" })).toBeNull();
+    expandModule("Actualizaciones");
     expect(screen.getByRole("link", { name: "Tareas" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Dominios" })).toBeNull();
   });

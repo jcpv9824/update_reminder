@@ -99,7 +99,9 @@ function normalizarBusqueda(texto: string) {
 export default function AppLayout() {
   const auth = useAuth();
   const [busqueda, setBusqueda] = useState("");
-  const [modulosContraidos, setModulosContraidos] = useState<Set<string>>(() => new Set());
+  const [modulosContraidos, setModulosContraidos] = useState<Set<string>>(
+    () => new Set(MODULOS.map((modulo) => modulo.etiqueta))
+  );
   const usuario = auth.cargando ? null : auth.usuario;
   const rolesUsuario = usuario?.roles ?? [];
   const { data: rolesRespuesta } = useQuery({
@@ -160,33 +162,41 @@ export default function AppLayout() {
           </label>
 
           <nav className="menu-modulos" aria-label="Navegación principal">
-            {modulosVisibles.map((modulo) => (
+            {modulosVisibles.map((modulo) => {
+              const abierto = Boolean(terminoBusqueda) || !modulosContraidos.has(modulo.etiqueta);
+              const panelId = `menu-modulo-${normalizarBusqueda(modulo.etiqueta).replace(/\s+/g, "-")}`;
+              return (
               <section key={modulo.etiqueta} className="menu-modulo">
                 <button
                   type="button"
                   className="menu-modulo-titulo"
-                  aria-expanded={terminoBusqueda ? true : !modulosContraidos.has(modulo.etiqueta)}
-                  aria-label={`${terminoBusqueda || !modulosContraidos.has(modulo.etiqueta) ? "Contraer" : "Expandir"} ${modulo.etiqueta}`}
+                  aria-expanded={abierto}
+                  aria-controls={panelId}
+                  aria-label={`${abierto ? "Contraer" : "Expandir"} ${modulo.etiqueta}`}
                   onClick={() => alternarModulo(modulo.etiqueta)}
                 >
                   <modulo.Icono size={16} aria-hidden="true" />
                   <span>{modulo.etiqueta}</span>
-                  {terminoBusqueda || !modulosContraidos.has(modulo.etiqueta)
+                  {abierto
                     ? <ChevronDown size={16} aria-hidden="true" />
                     : <ChevronRight size={16} aria-hidden="true" />}
                 </button>
-                {(terminoBusqueda || !modulosContraidos.has(modulo.etiqueta)) && (
-                  <div className="menu-modulo-opciones">
+                <div
+                  id={panelId}
+                  className={`menu-modulo-opciones ${abierto ? "abierto" : "cerrado"}`}
+                  aria-hidden={!abierto}
+                >
+                  <div className="menu-modulo-opciones-contenido">
                     {modulo.elementos.map((elemento) => (
-                      <NavLink key={elemento.ruta} to={elemento.ruta} className={({ isActive }) => (isActive ? "activo" : "")}>
+                      <NavLink key={elemento.ruta} to={elemento.ruta} tabIndex={abierto ? undefined : -1} className={({ isActive }) => (isActive ? "activo" : "")}>
                         <elemento.Icono size={16} aria-hidden="true" />
                         <span>{elemento.etiqueta}</span>
                       </NavLink>
                     ))}
                   </div>
-                )}
+                </div>
               </section>
-            ))}
+            )})}
             {modulosVisibles.length === 0 ? <p className="menu-sin-resultados">No hay opciones visibles.</p> : null}
           </nav>
 

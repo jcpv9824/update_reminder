@@ -47,7 +47,7 @@ export default function LoginPage() {
     <div className="login-pantalla">
       <div className="login-tarjeta">
         <div className="login-marca">
-          <img src="/brand/sag-white-icon.png" alt="SAG" />
+          <img src="/brand/sag-two-tone-icon.png" alt="SAG" />
           <div className="login-marca-texto" aria-label="PORTAL SAG WEB">
             <span>PORTAL</span>
             <strong>SAG WEB</strong>
