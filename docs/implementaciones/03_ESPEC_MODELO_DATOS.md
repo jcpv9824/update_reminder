@@ -130,7 +130,7 @@ interface ImplementationDecision {
 interface ImplementationStep {
   id: string;                        // `${implementationId}:${stepKey}`  (determinista → idempotencia RNF-06)
   implementationId: string;
-  stepKey: string;                   // clave estable en la plantilla ("c1.faseA.correosDuplicados")
+  stepKey: string;                   // clave estable en la plantilla ("c1.a.barridoUsuarios")
   stageId: StageId;                  // etapa a la que pertenece
   phase?: "A"|"B"|"C"|"D"|"E"|"F";   // fase técnica ([PROC] §1.B)
   order: number;
