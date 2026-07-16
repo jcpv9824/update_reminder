@@ -733,9 +733,6 @@ td:last-child:has(.acciones-tabla) { text-align: right; }
   width: 76px;
   height: 76px;
   object-fit: contain;
-  padding: 10px;
-  border-radius: 50%;
-  background: var(--color-primary);
 }
 .login-marca-texto {
   display: grid;
