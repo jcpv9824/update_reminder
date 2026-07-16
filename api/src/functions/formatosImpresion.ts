@@ -17,6 +17,7 @@ import {
   canViewPrintFormats,
 } from "../lib/managementAccess";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
+import { formatHasSource, getFormatSourceIds, getFormatSourceNames, normalizeSourceIds, withFormatSources } from "../lib/printFormatSources";
 import type { FormatoImpresionRecord, FuenteFormatoRecord, LicenseModuleRecord } from "../types/models";
 
 const MAX_PDF_BYTES = 1_500_000;
@@ -35,18 +36,24 @@ const PdfSchema = z.object({
   pdfNombreOriginal: z.string().min(1, "El nombre del PDF es obligatorio.").max(240),
 });
 
-const FormatoSchema = z.object({
+const FormatoFieldsSchema = z.object({
   nombre: z.string().min(1, "El nombre del formato es obligatorio.").max(200),
-  fuenteId: z.string().min(1, "El tipo de fuente es obligatorio."),
+  fuenteId: z.string().trim().min(1).optional(),
+  fuenteIds: z.array(z.string().trim().min(1)).min(1, "Seleccione al menos un tipo de fuente.").max(50).optional(),
   descripcion: z.string().min(1, "La descripción es obligatoria.").max(1600),
   tamanoFormato: TamanoFormatoSchema.nullable().optional(),
   tamanoFormatoPersonalizado: z.string().trim().max(80).nullable().optional(),
   requiereLicencia: z.boolean().optional(),
   licenciaModuloId: z.string().trim().max(160).nullable().optional(),
   activo: z.boolean().default(true),
-}).merge(PdfSchema);
+});
 
-const FormatoUpdateSchema = FormatoSchema.partial();
+const FormatoSchema = FormatoFieldsSchema.merge(PdfSchema).refine(
+  (value) => Boolean(value.fuenteIds?.length || value.fuenteId),
+  { message: "Seleccione al menos un tipo de fuente." }
+);
+
+const FormatoUpdateSchema = FormatoFieldsSchema.partial().merge(PdfSchema.partial());
 
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -71,12 +78,14 @@ function sanitizeFormato(record: FormatoImpresionRecord) {
   const { pdfBase64, ...rest } = record;
   return {
     ...rest,
+    fuenteIds: getFormatSourceIds(record),
+    fuenteNombres: getFormatSourceNames(record),
     pdfUrl: `/api/public/formatos-impresion/${record.id}/pdf`,
     downloadUrl: `/api/public/formatos-impresion/${record.id}/descargar`,
   };
 }
 
-function buildTamanoFormatoFields(input: Partial<z.infer<typeof FormatoSchema>>): Partial<FormatoImpresionRecord> {
+function buildTamanoFormatoFields(input: Partial<z.infer<typeof FormatoFieldsSchema>>): Partial<FormatoImpresionRecord> {
   if (input.tamanoFormato === undefined && input.tamanoFormatoPersonalizado === undefined) return {};
   if (!input.tamanoFormato) return { tamanoFormato: undefined, tamanoFormatoPersonalizado: undefined };
   return {
@@ -170,13 +179,18 @@ async function hasDuplicateFuenteName(nombre: string, exceptId?: string): Promis
   return fuentes.some((fuente) => fuente.id !== exceptId && normalize(fuente.nombre) === normalize(nombre));
 }
 
-async function hasDuplicateFormatoName(nombre: string, fuenteId: string, exceptId?: string): Promise<boolean> {
+async function hasDuplicateFormatoName(nombre: string, fuenteIds: string[], exceptId?: string): Promise<boolean> {
   const formatos = await readFormatos();
   return formatos.some((formato) =>
     formato.id !== exceptId &&
-    formato.fuenteId === fuenteId &&
+    getFormatSourceIds(formato).some((id) => fuenteIds.includes(id)) &&
     normalize(formato.nombre) === normalize(nombre)
   );
+}
+
+async function readSelectedFuentes(ids: string[]): Promise<FuenteFormatoRecord[]> {
+  const sources = await Promise.all(normalizeSourceIds(ids).map(readFuente));
+  return sources.filter((source): source is FuenteFormatoRecord => Boolean(source));
 }
 
 function pdfResponse(formato: FormatoImpresionRecord, disposition: "inline" | "attachment"): HttpResponseInit {
@@ -299,9 +313,20 @@ app.http("adminFuentesFormatosUpdate", {
       await getContainer("fuentesFormatos").item(id, id).replace(updated);
       if (before.nombre !== updated.nombre) {
         const formatos = await readFormatos();
-        await Promise.all(formatos.filter((formato) => formato.fuenteId === id).map((formato) =>
-          getContainer("formatosImpresion").item(formato.id, formato.id).replace({ ...formato, fuenteNombre: updated.nombre, updatedAt: updated.updatedAt, updatedBy: user.id })
-        ));
+        await Promise.all(formatos.filter((formato) => formatHasSource(formato, id)).map(async (formato) => {
+          const sourceIds = getFormatSourceIds(formato);
+          const sourceNames = getFormatSourceNames(formato);
+          const renamedSources = sourceIds.map((sourceId, index) => ({
+            id: sourceId,
+            nombre: sourceId === id ? updated.nombre : (sourceNames[index] ?? formato.fuenteNombre),
+          }));
+          const renamed = withFormatSources(formato, renamedSources);
+          return getContainer("formatosImpresion").item(formato.id, formato.id).replace({
+            ...renamed,
+            updatedAt: updated.updatedAt,
+            updatedBy: user.id,
+          });
+        }));
       }
       await writeAuditLog({
         entityType: "fuenteFormato",
@@ -331,7 +356,7 @@ app.http("adminFuentesFormatosDelete", {
       const current = await readFuente(id);
       if (!current) return notFound("Tipo de fuente no encontrado.");
       const formatos = await readFormatos();
-      const asociados = formatos.filter((formato) => formato.fuenteId === id).length;
+      const asociados = formatos.filter((formato) => formatHasSource(formato, id)).length;
       if (asociados > 0) return conflict("No se puede eliminar el tipo de fuente porque tiene formatos asociados.", { dependencies: { formatos: asociados } });
       const deleted: FuenteFormatoRecord = {
         ...current,
@@ -370,8 +395,8 @@ app.http("adminFormatosImpresionList", {
       const search = req.query.get("search")?.trim().toLowerCase();
       const fuenteId = req.query.get("fuente_id") ?? req.query.get("fuenteId");
       let items = await readFormatos();
-      if (fuenteId) items = items.filter((item) => item.fuenteId === fuenteId);
-      if (search) items = items.filter((item) => `${item.nombre} ${item.descripcion} ${item.fuenteNombre}`.toLowerCase().includes(search));
+      if (fuenteId) items = items.filter((item) => formatHasSource(item, fuenteId));
+      if (search) items = items.filter((item) => `${item.nombre} ${item.descripcion} ${getFormatSourceNames(item).join(" ")}`.toLowerCase().includes(search));
       items = sortByNombre(items);
       const pagination = getPagination(req);
       const sanitized = items.map(sanitizeFormato);
@@ -395,21 +420,22 @@ app.http("adminFormatosImpresionCreate", {
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const pdf = validatePdf(parsed.data);
       if (isHttpResponse(pdf)) return pdf;
-      const fuente = await readFuente(parsed.data.fuenteId);
-      if (!fuente) return badRequest("El tipo de fuente seleccionado no existe.");
-      if (!fuente.activa) return badRequest("Solo puede crear formatos en tipos de fuente activos.");
-      if (await hasDuplicateFormatoName(parsed.data.nombre, fuente.id)) return conflict("Ya existe un formato con este nombre dentro del tipo de fuente seleccionado.");
+      const requestedSourceIds = normalizeSourceIds(parsed.data.fuenteIds ?? (parsed.data.fuenteId ? [parsed.data.fuenteId] : []));
+      const fuentes = await readSelectedFuentes(requestedSourceIds);
+      if (fuentes.length !== requestedSourceIds.length) return badRequest("Uno o más tipos de fuente seleccionados no existen.");
+      if (fuentes.some((fuente) => !fuente.activa)) return badRequest("Solo puede crear formatos en tipos de fuente activos.");
+      if (await hasDuplicateFormatoName(parsed.data.nombre, requestedSourceIds)) return conflict("Ya existe un formato con este nombre en uno de los tipos de fuente seleccionados.");
       const licenciaFields = await buildLicenciaFields({
         requiereLicencia: parsed.data.requiereLicencia ?? false,
         licenciaModuloId: parsed.data.licenciaModuloId,
       });
       if (typeof (licenciaFields as HttpResponseInit).status === "number") return licenciaFields as HttpResponseInit;
       const now = new Date().toISOString();
-      const record: FormatoImpresionRecord = {
+      const record = withFormatSources<FormatoImpresionRecord>({
         id: `formato_impresion_${randomUUID()}`,
         nombre: parsed.data.nombre.trim(),
-        fuenteId: fuente.id,
-        fuenteNombre: fuente.nombre,
+        fuenteId: fuentes[0].id,
+        fuenteNombre: fuentes[0].nombre,
         descripcion: parsed.data.descripcion.trim(),
         ...buildTamanoFormatoFields(parsed.data),
         ...(licenciaFields as Partial<FormatoImpresionRecord>),
@@ -422,7 +448,7 @@ app.http("adminFormatosImpresionCreate", {
         createdBy: user.id,
         updatedAt: now,
         updatedBy: user.id,
-      };
+      }, fuentes);
       await getContainer("formatosImpresion").items.create(record);
       await writeAuditLog({
         entityType: "formatoImpresion",
@@ -474,13 +500,20 @@ app.http("adminFormatosImpresionUpdate", {
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const current = await readFormato(id);
       if (!current) return notFound("Formato no encontrado.");
-      let fuenteId = parsed.data.fuenteId ?? current.fuenteId;
-      const fuente = await readFuente(fuenteId);
-      if (!fuente) return badRequest("El tipo de fuente seleccionado no existe.");
-      if (parsed.data.fuenteId && !fuente.activa) return badRequest("Solo puede asignar formatos a tipos de fuente activos.");
+      const changingSources = parsed.data.fuenteIds !== undefined || parsed.data.fuenteId !== undefined;
+      const requestedSourceIds = changingSources
+        ? normalizeSourceIds(parsed.data.fuenteIds ?? (parsed.data.fuenteId ? [parsed.data.fuenteId] : []))
+        : getFormatSourceIds(current);
+      if (requestedSourceIds.length === 0) return badRequest("Seleccione al menos un tipo de fuente.");
+      const fuentes = await readSelectedFuentes(requestedSourceIds);
+      if (fuentes.length !== requestedSourceIds.length) return badRequest("Uno o más tipos de fuente seleccionados no existen.");
+      const currentSourceIds = getFormatSourceIds(current);
+      if (changingSources && fuentes.some((fuente) => !fuente.activa && !currentSourceIds.includes(fuente.id))) {
+        return badRequest("Solo puede asignar formatos a tipos de fuente activos.");
+      }
       const nextName = parsed.data.nombre ?? current.nombre;
-      if (await hasDuplicateFormatoName(nextName, fuente.id, id)) {
-        return conflict("Ya existe un formato con este nombre dentro del tipo de fuente seleccionado.");
+      if (await hasDuplicateFormatoName(nextName, requestedSourceIds, id)) {
+        return conflict("Ya existe un formato con este nombre en uno de los tipos de fuente seleccionados.");
       }
       const licenciaFields = await buildLicenciaFields({
         requiereLicencia: parsed.data.requiereLicencia ?? current.requiereLicencia ?? false,
@@ -499,11 +532,11 @@ app.http("adminFormatosImpresionUpdate", {
         replacedPdf = true;
       }
       const before = { ...current };
-      const updated: FormatoImpresionRecord = {
+      const updated = withFormatSources<FormatoImpresionRecord>({
         ...current,
         nombre: nextName.trim(),
-        fuenteId: fuente.id,
-        fuenteNombre: fuente.nombre,
+        fuenteId: fuentes[0].id,
+        fuenteNombre: fuentes[0].nombre,
         ...(parsed.data.descripcion !== undefined ? { descripcion: parsed.data.descripcion.trim() } : {}),
         ...buildTamanoFormatoFields(parsed.data),
         ...(licenciaFields as Partial<FormatoImpresionRecord>),
@@ -512,7 +545,7 @@ app.http("adminFormatosImpresionUpdate", {
         ...(parsed.data.activo !== undefined ? { activo: parsed.data.activo, status: parsed.data.activo ? "active" : "inactive" } : {}),
         updatedAt: new Date().toISOString(),
         updatedBy: user.id,
-      };
+      }, fuentes);
       await getContainer("formatosImpresion").item(id, id).replace(updated);
       await writeAuditLog({
         entityType: "formatoImpresion",
@@ -616,9 +649,16 @@ app.http("publicFuentesFormatosList", {
   handler: async (): Promise<HttpResponseInit> => {
     try {
       const [fuentes, formatos] = await Promise.all([readFuentes(), readFormatos()]);
-      const activeFormatos = formatos.filter((formato) => formato.activo && formato.status !== "deleted");
+      const activeSourceIds = new Set(fuentes.filter((fuente) => fuente.activa).map((fuente) => fuente.id));
+      const activeFormatos = formatos.filter((formato) =>
+        formato.activo &&
+        formato.status !== "deleted" &&
+        getFormatSourceIds(formato).some((id) => activeSourceIds.has(id))
+      );
       const counts = new Map<string, number>();
-      activeFormatos.forEach((formato) => counts.set(formato.fuenteId, (counts.get(formato.fuenteId) ?? 0) + 1));
+      activeFormatos.forEach((formato) => getFormatSourceIds(formato).forEach((id) => {
+        if (activeSourceIds.has(id)) counts.set(id, (counts.get(id) ?? 0) + 1);
+      }));
       const items = sortByNombre(fuentes.filter((fuente) => fuente.activa && (counts.get(fuente.id) ?? 0) > 0))
         .map((fuente) => ({ ...sanitizeFuente(fuente), formatosActivos: counts.get(fuente.id) ?? 0 }));
       return ok(items);
@@ -637,9 +677,11 @@ app.http("publicFormatosImpresionList", {
       const fuenteId = req.query.get("fuente_id") ?? req.query.get("fuenteId");
       const q = req.query.get("q")?.trim().toLowerCase();
       const fuentesActivas = new Set((await readFuentes()).filter((fuente) => fuente.activa).map((fuente) => fuente.id));
-      let items = (await readFormatos()).filter((formato) => formato.activo && fuentesActivas.has(formato.fuenteId));
-      if (fuenteId) items = items.filter((item) => item.fuenteId === fuenteId);
-      if (q) items = items.filter((item) => `${item.nombre} ${item.descripcion}`.toLowerCase().includes(q));
+      let items = (await readFormatos()).filter((formato) =>
+        formato.activo && getFormatSourceIds(formato).some((id) => fuentesActivas.has(id))
+      );
+      if (fuenteId) items = items.filter((item) => formatHasSource(item, fuenteId));
+      if (q) items = items.filter((item) => `${item.nombre} ${item.descripcion} ${getFormatSourceNames(item).join(" ")}`.toLowerCase().includes(q));
       items = sortByNombre(items);
       const sanitized = items.map(sanitizeFormato);
       const pagination = getPagination(req);
@@ -659,8 +701,8 @@ app.http("publicFormatosImpresionGet", {
     try {
       const record = await readFormato(req.params.id);
       if (!record || !record.activo) return notFound("Formato no encontrado.");
-      const fuente = await readFuente(record.fuenteId);
-      if (!fuente?.activa) return notFound("Formato no encontrado.");
+      const fuentes = await readSelectedFuentes(getFormatSourceIds(record));
+      if (!fuentes.some((fuente) => fuente.activa)) return notFound("Formato no encontrado.");
       return ok(sanitizeFormato(record));
     } catch (e) {
       return serverError(e);
@@ -676,8 +718,8 @@ app.http("publicFormatosImpresionPdf", {
     try {
       const record = await readFormato(req.params.id);
       if (!record || !record.activo) return notFound("Formato no encontrado.");
-      const fuente = await readFuente(record.fuenteId);
-      if (!fuente?.activa) return notFound("Formato no encontrado.");
+      const fuentes = await readSelectedFuentes(getFormatSourceIds(record));
+      if (!fuentes.some((fuente) => fuente.activa)) return notFound("Formato no encontrado.");
       return pdfResponse(record, "inline");
     } catch (e) {
       return serverError(e);
@@ -693,8 +735,8 @@ app.http("publicFormatosImpresionDownload", {
     try {
       const record = await readFormato(req.params.id);
       if (!record || !record.activo) return notFound("Formato no encontrado.");
-      const fuente = await readFuente(record.fuenteId);
-      if (!fuente?.activa) return notFound("Formato no encontrado.");
+      const fuentes = await readSelectedFuentes(getFormatSourceIds(record));
+      if (!fuentes.some((fuente) => fuente.activa)) return notFound("Formato no encontrado.");
       return pdfResponse(record, "attachment");
     } catch (e) {
       return serverError(e);

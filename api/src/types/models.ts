@@ -198,8 +198,11 @@ export type FuenteFormatoRecord = {
 export type FormatoImpresionRecord = {
   id: string;
   nombre: string;
+  /** Campos singulares conservados para compatibilidad con registros históricos. */
   fuenteId: string;
   fuenteNombre: string;
+  fuenteIds?: string[];
+  fuenteNombres?: string[];
   descripcion: string;
   tamanoFormato?: "carta" | "oficio" | "a4" | "legal" | "personalizado";
   tamanoFormatoPersonalizado?: string;

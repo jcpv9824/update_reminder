@@ -139,6 +139,8 @@ export type FormatoImpresion = {
   nombre: string;
   fuenteId: string;
   fuenteNombre: string;
+  fuenteIds?: string[];
+  fuenteNombres?: string[];
   descripcion: string;
   tamanoFormato?: "carta" | "oficio" | "a4" | "legal" | "personalizado";
   tamanoFormatoPersonalizado?: string;

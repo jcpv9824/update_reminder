@@ -118,6 +118,7 @@ const ENTITY_SNAPSHOT_SCHEMAS: Record<string, AuditSchema> = {
   },
   formatoImpresion: {
     id: "scalar", nombre: "scalar", fuenteId: "scalar", fuenteNombre: "scalar",
+    fuenteIds: "scalarArray", fuenteNombres: "scalarArray",
     descripcion: "scalar", tamanoFormato: "scalar", tamanoFormatoPersonalizado: "scalar",
     requiereLicencia: "scalar", licenciaModuloId: "scalar", licenciaModuloNombre: "scalar",
     licenciaModuloCodigo: "scalar", pdfNombreOriginal: "scalar", pdfMimeType: "scalar", activo: "scalar",

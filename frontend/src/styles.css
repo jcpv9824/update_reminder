@@ -985,6 +985,39 @@ td:last-child:has(.acciones-tabla) { text-align: right; }
   color: #667085;
   line-height: 1.35;
 }
+.selector-fuentes-formato {
+  border: 0;
+  padding: 0;
+  margin: 0 0 14px;
+}
+.selector-fuentes-formato legend {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.selector-fuentes-formato .texto-ayuda {
+  margin: 0 0 8px;
+}
+.opciones-fuentes-formato {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 10px;
+}
+.opciones-fuentes-formato label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 400;
+  cursor: pointer;
+}
+.opciones-fuentes-formato input {
+  width: auto;
+  margin: 0;
+}
 .catalogo-preview {
   display: flex;
   flex-direction: column;

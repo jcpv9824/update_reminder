@@ -10,6 +10,7 @@ export default function FormatosImpresionPublicPage() {
   const [busqueda, setBusqueda] = useState("");
   const [seleccionadoId, setSeleccionadoId] = useState<string | null>(null);
   const [pdfError, setPdfError] = useState(false);
+  const [total, setTotal] = useState(0);
 
   const { data: fuentes = [], isLoading: cargandoFuentes } = useQuery({
     queryKey: ["fuentes-formatos-public"],
@@ -27,7 +28,6 @@ export default function FormatosImpresionPublicPage() {
     },
   });
 
-  const total = fuentes.reduce((sum, fuente) => sum + (fuente.formatosActivos ?? 0), 0);
   const seleccionado = useMemo(
     () => formatos.find((formato) => formato.id === seleccionadoId) ?? formatos[0] ?? null,
     [formatos, seleccionadoId]
@@ -39,6 +39,10 @@ export default function FormatosImpresionPublicPage() {
       setSeleccionadoId(formatos[0]?.id ?? null);
     }
   }, [formatos, seleccionadoId]);
+
+  useEffect(() => {
+    if (fuenteId === "todas" && !busqueda.trim() && !cargandoFormatos) setTotal(formatos.length);
+  }, [busqueda, cargandoFormatos, formatos.length, fuenteId]);
 
   return (
     <main className="catalogo-formatos-publico">
@@ -65,6 +69,7 @@ export default function FormatosImpresionPublicPage() {
                 key={fuente.id}
                 className={fuenteId === fuente.id ? "activo" : ""}
                 onClick={() => setFuenteId(fuente.id)}
+                aria-label={`Filtrar por ${fuente.nombre}`}
               >
                 <span>{fuente.nombre}</span><strong>{fuente.formatosActivos ?? 0}</strong>
               </button>
@@ -98,7 +103,7 @@ export default function FormatosImpresionPublicPage() {
                     onClick={() => { setSeleccionadoId(formato.id); setPdfError(false); }}
                   >
                     <strong>{formato.nombre}</strong>
-                    <span>{formato.fuenteNombre}</span>
+                    <span>{(formato.fuenteNombres?.length ? formato.fuenteNombres : [formato.fuenteNombre]).join(" · ")}</span>
                     <small>{formato.descripcion}</small>
                   </button>
                 ))}

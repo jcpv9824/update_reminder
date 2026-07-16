@@ -50,6 +50,8 @@ const formatos = [
     nombre: "Factura de Venta - Estándar",
     fuenteId: "fuente_factura",
     fuenteNombre: "Factura de venta",
+    fuenteIds: ["fuente_factura", "fuente_remision"],
+    fuenteNombres: ["Factura de venta", "Remisión"],
     descripcion: "Incluye impuestos y totales.",
     pdfNombreOriginal: "factura_estandar.pdf",
     pdfMimeType: "application/pdf",
@@ -67,6 +69,8 @@ const formatos = [
     nombre: "Factura de Venta - Resumido",
     fuenteId: "fuente_factura",
     fuenteNombre: "Factura de venta",
+    fuenteIds: ["fuente_factura"],
+    fuenteNombres: ["Factura de venta"],
     descripcion: "Sin detalle de ítems.",
     pdfNombreOriginal: "factura_resumido.pdf",
     pdfMimeType: "application/pdf",
@@ -99,7 +103,7 @@ function mockGets() {
     if (path === "/public/fuentes-formatos") return Promise.resolve(fuentes);
     if (path.startsWith("/public/formatos-impresion")) {
       if (path.includes("q=resumido")) return Promise.resolve([formatos[1]]);
-      if (path.includes("fuente_id=fuente_remision")) return Promise.resolve([]);
+      if (path.includes("fuente_id=fuente_remision")) return Promise.resolve([formatos[0]]);
       return Promise.resolve(formatos);
     }
     return Promise.resolve([]);
@@ -140,11 +144,22 @@ describe("FormatosImpresionPublicPage", () => {
     expect(screen.getByRole("heading", { name: "Filtrar por tipo de fuente" })).toBeInTheDocument();
     expect((await screen.findAllByText("Factura de venta")).length).toBeGreaterThan(0);
     expect((await screen.findAllByText("Factura de Venta - Estándar")).length).toBeGreaterThan(0);
+    expect(screen.getByText("Factura de venta · Remisión")).toBeInTheDocument();
     expect(screen.getByTitle("Vista previa Factura de Venta - Estándar")).toHaveAttribute(
       "src",
       "/api/public/formatos-impresion/formato_estandar/pdf"
     );
     expect(screen.queryByRole("link", { name: "Descargar PDF" })).toBeNull();
+  });
+
+  it("incluye un formato compartido al filtrar por cualquiera de sus fuentes", async () => {
+    renderWithQuery(<FormatosImpresionPublicPage />);
+    await screen.findAllByText("Factura de Venta - Estándar");
+
+    await userEvent.click(screen.getByRole("button", { name: "Filtrar por Remisión" }));
+
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith(expect.stringContaining("fuente_id=fuente_remision")));
+    expect((await screen.findAllByText("Factura de Venta - Estándar")).length).toBeGreaterThan(0);
   });
 
   it("combina búsqueda con la consulta pública y actualiza la selección", async () => {
@@ -197,6 +212,24 @@ describe("FormatosImpresionAdminPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
     expect(await screen.findByText("Debe cargar un PDF.")).toBeInTheDocument();
     expect(apiMock.post).not.toHaveBeenCalled();
+  });
+
+  it("permite asociar más de un tipo de fuente al crear un formato", async () => {
+    apiMock.post.mockResolvedValue({ id: "formato_compartido" });
+    renderWithQuery(<FormatosImpresionAdminPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Formatos" }));
+    fireEvent.click(screen.getByRole("button", { name: "Nuevo formato" }));
+    await userEvent.type(field("Nombre del formato *"), "Formato compartido");
+    await userEvent.click(screen.getByLabelText("Remisión"));
+    await userEvent.type(field("Descripción *"), "Disponible para factura y remisión");
+    const pdf = new File(["%PDF-1.4\n"], "compartido.pdf", { type: "application/pdf" });
+    await userEvent.upload(screen.getByLabelText("PDF *"), pdf);
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith(
+      "/catalogo-formatos/admin/formatos-impresion",
+      expect.objectContaining({ fuenteIds: ["fuente_factura", "fuente_remision"] })
+    ));
   });
 
   it("muestra metadatos opcionales de tamaño y licencia en el formato", async () => {

@@ -133,7 +133,7 @@ export default function FormatosImpresionAdminPage() {
               {formatosFiltrados.map((formato) => (
                 <tr key={formato.id}>
                   <td>{formato.nombre}</td>
-                  <td>{formato.fuenteNombre}</td>
+                  <td>{nombresFuentes(formato).join(", ")}</td>
                   <td>{formato.descripcion}</td>
                   <td><a href={apiUrl(`/public/formatos-impresion/${formato.id}/pdf`)} target="_blank" rel="noreferrer">Ver PDF</a></td>
                   <td><EtiquetaEstado estado={formato.activo ? "active" : "inactive"} /></td>
@@ -159,7 +159,9 @@ export default function FormatosImpresionAdminPage() {
       <Modal titulo={modalFormato === "nuevo" ? "Nuevo formato" : "Editar formato"} abierto={!!modalFormato} onCerrar={() => setModalFormato(null)}>
         <FormularioFormato
           inicial={modalFormato && modalFormato !== "nuevo" ? modalFormato : undefined}
-          fuentes={fuentesActivas}
+          fuentes={modalFormato && modalFormato !== "nuevo"
+            ? fuentes.filter((fuente) => fuente.status !== "deleted" && (fuente.activa || idsFuentes(modalFormato).includes(fuente.id)))
+            : fuentesActivas}
           modulosLicencia={modulosLicenciaActivos}
           cargando={guardarFormato.isPending}
           onSubmit={(body) => guardarFormato.mutate({ id: modalFormato && modalFormato !== "nuevo" ? modalFormato.id : undefined, body })}
@@ -187,10 +189,18 @@ export default function FormatosImpresionAdminPage() {
   );
 }
 
-function filtrar<T extends { nombre: string; descripcion?: string; fuenteNombre?: string }>(items: T[], busqueda: string): T[] {
+function idsFuentes(formato: Pick<FormatoImpresion, "fuenteId" | "fuenteIds">): string[] {
+  return formato.fuenteIds?.length ? formato.fuenteIds : [formato.fuenteId].filter(Boolean);
+}
+
+function nombresFuentes(formato: Pick<FormatoImpresion, "fuenteNombre" | "fuenteNombres">): string[] {
+  return formato.fuenteNombres?.length ? formato.fuenteNombres : [formato.fuenteNombre].filter(Boolean);
+}
+
+function filtrar<T extends { nombre: string; descripcion?: string; fuenteNombre?: string; fuenteNombres?: string[] }>(items: T[], busqueda: string): T[] {
   const q = busqueda.trim().toLowerCase();
   if (!q) return items;
-  return items.filter((item) => `${item.nombre} ${item.descripcion ?? ""} ${item.fuenteNombre ?? ""}`.toLowerCase().includes(q));
+  return items.filter((item) => `${item.nombre} ${item.descripcion ?? ""} ${(item.fuenteNombres ?? [item.fuenteNombre]).filter(Boolean).join(" ")}`.toLowerCase().includes(q));
 }
 
 function FormularioFuente({ inicial, cargando, onSubmit }: { inicial?: FuenteFormato; cargando: boolean; onSubmit: (body: any) => void }) {
@@ -218,7 +228,7 @@ function FormularioFuente({ inicial, cargando, onSubmit }: { inicial?: FuenteFor
 
 function FormularioFormato({ inicial, fuentes, modulosLicencia, cargando, onSubmit }: { inicial?: FormatoImpresion; fuentes: FuenteFormato[]; modulosLicencia: ModuloLicencia[]; cargando: boolean; onSubmit: (body: any) => void }) {
   const [nombre, setNombre] = useState(inicial?.nombre ?? "");
-  const [fuenteId, setFuenteId] = useState(inicial?.fuenteId ?? fuentes[0]?.id ?? "");
+  const [fuenteIds, setFuenteIds] = useState<string[]>(() => inicial ? idsFuentes(inicial) : (fuentes[0] ? [fuentes[0].id] : []));
   const [descripcion, setDescripcion] = useState(inicial?.descripcion ?? "");
   const [tamanoFormato, setTamanoFormato] = useState(inicial?.tamanoFormato ?? "");
   const [tamanoFormatoPersonalizado, setTamanoFormatoPersonalizado] = useState(inicial?.tamanoFormatoPersonalizado ?? "");
@@ -229,8 +239,14 @@ function FormularioFormato({ inicial, fuentes, modulosLicencia, cargando, onSubm
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!fuenteId && fuentes[0]) setFuenteId(fuentes[0].id);
-  }, [fuenteId, fuentes]);
+    if (fuenteIds.length === 0 && fuentes[0]) setFuenteIds([fuentes[0].id]);
+  }, [fuenteIds.length, fuentes]);
+
+  function alternarFuente(id: string) {
+    setFuenteIds((actuales) => actuales.includes(id)
+      ? actuales.filter((fuenteId) => fuenteId !== id)
+      : [...actuales, id]);
+  }
 
   async function cargarPdf(file?: File) {
     setError(null);
@@ -251,14 +267,14 @@ function FormularioFormato({ inicial, fuentes, modulosLicencia, cargando, onSubm
   function submit(e: FormEvent) {
     e.preventDefault();
     if (!nombre.trim()) { setError("El nombre del formato es obligatorio."); return; }
-    if (!fuenteId) { setError("El tipo de fuente es obligatorio."); return; }
+    if (fuenteIds.length === 0) { setError("Seleccione al menos un tipo de fuente."); return; }
     if (!descripcion.trim()) { setError("La descripción es obligatoria."); return; }
     if (tamanoFormato === "personalizado" && !tamanoFormatoPersonalizado.trim()) { setError("Ingrese el tamaño personalizado."); return; }
     if (requiereLicencia && !licenciaModuloId) { setError("Seleccione el tipo de licencia requerido."); return; }
     if (!inicial && !pdf) { setError("Debe cargar un PDF."); return; }
     onSubmit({
       nombre,
-      fuenteId,
+      fuenteIds,
       descripcion,
       tamanoFormato: tamanoFormato || null,
       tamanoFormatoPersonalizado: tamanoFormato === "personalizado" ? tamanoFormatoPersonalizado : "",
@@ -273,13 +289,29 @@ function FormularioFormato({ inicial, fuentes, modulosLicencia, cargando, onSubm
     <form onSubmit={submit}>
       {error && <Alerta tipo="error">{error}</Alerta>}
       <div className="fila-formulario"><label>Nombre del formato *</label><input value={nombre} onChange={(e) => setNombre(e.target.value)} /></div>
-      <div className="fila-formulario"><label>Tipo de fuente *</label><select value={fuenteId} onChange={(e) => setFuenteId(e.target.value)}>{fuentes.map((fuente) => <option key={fuente.id} value={fuente.id}>{fuente.nombre}</option>)}</select></div>
+      <fieldset className="fila-formulario selector-fuentes-formato">
+        <legend>Tipos de fuente *</legend>
+        <p className="texto-ayuda">Seleccione uno o varios tipos de fuente para este formato.</p>
+        <div className="opciones-fuentes-formato">
+          {fuentes.map((fuente) => (
+            <label key={fuente.id}>
+              <input
+                type="checkbox"
+                checked={fuenteIds.includes(fuente.id)}
+                onChange={() => alternarFuente(fuente.id)}
+                disabled={!fuente.activa && !fuenteIds.includes(fuente.id)}
+              />
+              <span>{fuente.nombre}{!fuente.activa ? " (Inactiva)" : ""}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
       <div className="fila-formulario"><label>Descripción *</label><textarea value={descripcion} onChange={(e) => setDescripcion(e.target.value)} rows={3} /></div>
       <div className="fila-formulario"><label>Tamaño del formato</label><select value={tamanoFormato} onChange={(e) => setTamanoFormato(e.target.value)}><option value="">Sin especificar</option><option value="carta">Carta</option><option value="oficio">Oficio</option><option value="a4">A4</option><option value="legal">Legal</option><option value="personalizado">Personalizado</option></select></div>
       {tamanoFormato === "personalizado" && <div className="fila-formulario"><label>Tamaño personalizado</label><input value={tamanoFormatoPersonalizado} onChange={(e) => setTamanoFormatoPersonalizado(e.target.value)} placeholder="Ej: 21 x 14 cm" /></div>}
       <div className="fila-formulario"><label><input type="checkbox" checked={requiereLicencia} onChange={(e) => setRequiereLicencia(e.target.checked)} style={{ width: "auto", marginRight: 6 }} />Restringir por tipo de licencia</label></div>
       {requiereLicencia && <div className="fila-formulario"><label>Tipo de licencia</label><select value={licenciaModuloId} onChange={(e) => setLicenciaModuloId(e.target.value)}><option value="">Seleccione un tipo de licencia</option>{modulosLicencia.map((modulo) => <option key={modulo.id} value={modulo.id}>{modulo.name}</option>)}</select></div>}
-      <div className="fila-formulario"><label>PDF {!inicial ? "*" : ""}</label><input type="file" accept="application/pdf,.pdf" onChange={(e) => cargarPdf(e.target.files?.[0])} /></div>
+      <div className="fila-formulario"><label htmlFor="pdf-formato">PDF {!inicial ? "*" : ""}</label><input id="pdf-formato" type="file" accept="application/pdf,.pdf" onChange={(e) => cargarPdf(e.target.files?.[0])} /></div>
       {inicial && <p className="texto-ayuda">PDF actual: {inicial.pdfNombreOriginal}</p>}
       {pdf && <p className="texto-ayuda">PDF seleccionado: {pdf.pdfNombreOriginal}</p>}
       <div className="fila-formulario"><label><input type="checkbox" checked={activo} onChange={(e) => setActivo(e.target.checked)} style={{ width: "auto", marginRight: 6 }} />Activo</label></div>
