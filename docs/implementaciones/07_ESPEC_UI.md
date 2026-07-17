@@ -27,7 +27,7 @@ Paso 1: **elegir el caso** — tres tarjetas con descripción de una línea ([00
 Encabezado: nombre, caso, cliente, etapa (stepper horizontal con las etapas de SU plantilla — RF-02), bandera de atención, acciones de etapa (transición disponible, pausar, escalar, cancelar) **solo si el rol puede** (M1).
 
 ### Pestaña "Avance"
-- **Stepper de etapas** con la actual destacada; las etapas omitidas por rama (C3 sin pruebas) se muestran tachadas con nota "no aplica: módulo directo a producción". *Justificación:* ocultarlas del todo haría ilegible la comparación entre implementaciones; tacharlas explica la rama (RF-11/12).
+- **Stepper de etapas** con la actual destacada; las etapas omitidas por rama (C3 sin copia de pruebas — prueba sobre la BD de producción) se muestran tachadas con nota "no aplica: módulo directo a producción". *Justificación:* ocultarlas del todo haría ilegible la comparación entre implementaciones; tacharlas explica la rama (RF-11/12).
 - **Checklist técnico** agrupado por fase (A–F) cuando la etapa ≥ `technical`: cada paso con estado, responsable, instrucciones desplegables (`instructions` — las reglas de SAG Admin, queries, orden de scripts), botones Completar / Bloquear / Desbloquear según rol, y campo de evidencia (obligatorio donde M3 §5.2 lo exige — la UI lo marca con asterisco y el backend lo refuerza).
 - Pasos `blocked` en rojo con su motivo, arriba del grupo. Paso N/A en gris con la razón automática.
 - **Decisiones**: tarjetas con las decisiones registradas y las pendientes de la etapa (p. ej. `requires_test_env` en C3 muestra la sugerencia del catálogo y pide confirmación).

@@ -61,16 +61,16 @@
 
 **Justificación del cambio más importante vs. el proceso en papel:** hoy el correo 3 ES el repositorio de la información. En el sistema, la información ya está estructurada y auditada; el correo se conserva (el proceso lo exige y Soporte vive en el correo) pero como **notificación con resumen + enlace**, evitando la divergencia correo-vs-sistema. Las credenciales, que hoy viajan en ese correo, quedan solo en el almacén seguro — reducción de riesgo directa.
 
-## 5. `buildImplementationCredentialsEmail` (correos 4a/4b)
+## 5. `buildImplementationCredentialsEmails` (correos 4a-1, 4a-2 y 4b) — RN-24 v2 (2026-07-16)
 
 | Aspecto | Especificación | Fuente |
 |---|---|---|
-| Variantes | `environment: "test" | "production"` — asunto y encabezado distinguen claramente el ambiente | [VEN] D.4 |
-| Contenido | URL de acceso (dominio del cliente); usuario(s) de acceso; **cómo reportar fallos**: portal Zoho `https://crmpya.zohodesk.com/portal/es/newticket`, opción "SAG Web"; firma con rol | [VEN] D.4 |
-| Contraseñas | **NUNCA en el correo** (RNF-01). El correo indica que las contraseñas se entregan por el canal seguro definido. *(Ver hallazgo H-04 en `08`: los docx actuales usan `{{placeholders}}` — nunca hubo intención de credenciales reales en texto; el sistema formaliza la entrega segura.)* | [VEN] D.4 + política [SYS] |
+| Variantes | `kind: "userList" (4a-1) | "passwords" (4a-2) | "productionConfirmation" (4b)` — asunto y encabezado distinguen claramente qué entrega cada correo y el ambiente | [VEN] D.4, RN-24 v2 |
+| Contenido | **4a-1:** URL de acceso, lista **NUMERADA** de usuarios (SIN contraseñas), videos, Opciones Disponibles, guía logo/formatos, Zoho. **4a-2:** SOLO contraseñas con la MISMA numeración (+ explicación fija de "CORREO YA EXISTE"). **4b:** confirmación de producción sin credenciales. Portal Zoho `https://crmpya.zohodesk.com/portal/es/newticket`, opción "SAG Web"; firma con rol | [VEN] D.4, RN-24 v2 |
+| Contraseñas | **Nunca junto a los usuarios**: van SOLO en el 4a-2, correlacionadas por número con la lista del 4a-1 (decisión de negocio 2026-07-16, hoy implementada con la herramienta `GenerarCorreosCredenciales`). El 4b nunca las repite. *(El hallazgo H-04 evoluciona: la separación en dos correos ES el mecanismo aprobado; un canal más seguro podrá proponerse después sin romper el proceso.)* | [DEC] 2026-07-16 + política [SYS] |
 | Guía de logo/formatos | Sección propia con la guía «Cómo configurar el logo y el formato de impresión…» (enlace; sin formato asignado SAG Web falla al imprimir) — RN-18 | [VEN] D.4 |
 | C1 producción | Recordar que es el **mismo dominio** de siempre, ahora apuntando a producción (RN-07) | [CTX] §3.1 |
-| Obligatorios para enviar | dominio entregado, contacto del cliente; 4a solo si la plantilla/rama incluye pruebas; 4b solo tras FASE F | RF-13, M3 |
+| Obligatorios para enviar | dominio entregado, contacto del cliente; 4a-2 solo DESPUÉS del 4a-1; 4b solo tras FASE F (o tras aprobar pruebas sobre BD de producción en C3) | RF-13, M3 |
 
 ## 6. Notificaciones internas (secundarias, reutilizan el motor de timers)
 
@@ -84,10 +84,10 @@
 ## 7. Criterios de aceptación (CA-M4)
 
 - **CA-M4-1:** Enviar el correo 1 de un C2 produce un HTML que contiene el dominio y la solicitud de BD nueva y **no contiene** "NEW SAG" ni nombres de BD dictados (prueba unitaria).
-- **CA-M4-2:** El correo 2 de C1 contiene las dos consultas SQL, la regla activos ≤ contratados y NO contiene petición de lista de usuarios; el de C2 no contiene consultas.
+- **CA-M4-2:** El correo 2 de C1 contiene la consulta ÚNICA de validación (con literales "tercero", nunca "usuario"), la regla activos ≤ contratados y NO contiene petición de lista de usuarios; el de C2 no contiene consultas.
 - **CA-M4-3:** El correo 2 de C3 con `hosting=local` incluye las dos IPs de firewall; con `cloud` no las incluye.
 - **CA-M4-4:** El correo 3 se rechaza (400) si `deliverablesComplete=false`, y su HTML contiene el caso, la nota de confianza y cero credenciales.
-- **CA-M4-5:** Los correos 4a/4b nunca contienen contraseñas (prueba con acceso poblado) e incluyen Zoho + guía de logo.
+- **CA-M4-5:** El 4a-1 y el 4b nunca contienen contraseñas; el 4a-2 nunca contiene nombres ni correos de usuarios; la numeración de 4a-1 y 4a-2 coincide 1:1 (prueba con acceso poblado). El 4a-1 incluye Zoho + guía de logo.
 - **CA-M4-6:** Un envío exitoso genera exactamente un evento `email_sent` y un registro en `emailNotifications`; un reenvío requiere confirmación y queda como segundo evento.
 - **CA-M4-7:** Con el buzón de Soporte sin configurar, el envío del correo 3 devuelve 400 con mensaje accionable (no un envío a dirección inventada).
 - **CA-M4-8:** Todos los HTML pasan por `layout()` (contienen `max-width` y el preheader) y escapan datos del cliente (`<script>` en un nombre no aparece en el HTML).

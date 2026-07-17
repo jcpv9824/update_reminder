@@ -28,7 +28,7 @@ La guard de salida hacia `collecting` exige AMBAS en todos los casos.
 | `collecting` | `handoff` | `deliverablesComplete = true` (RF-06) — bloqueo duro |
 | `handoff` | `technical` | correo 3 enviado (la entrega ES el correo — RF-08) |
 | `technical` | `test_delivery` | todos los pasos `blocking` de fases A–E en `done`/`not_applicable` (RF-10); en C3 con `requires_test_env=no` → directo a `production` |
-| `test_delivery` | `client_testing` | correo 4a (credenciales de pruebas) enviado |
+| `test_delivery` | `client_testing` | correos 4a-1 (lista numerada de usuarios) y 4a-2 (contraseñas, misma numeración) enviados en ese orden (RN-24 v2) |
 | `client_testing` | `production` | decisión `client_tests_passed=yes` (los "no" quedan como eventos del bucle, no retroceden — RF-07) |
 | `production` | `completed` | pasos de FASE F en `done`/`not_applicable` y correo 4b enviado |
 | cualquiera | `cancelled` | nota obligatoria |
@@ -72,7 +72,7 @@ Fuente primaria: [PROC] §1 (flujo de negocio 14 pasos + paso a paso técnico **
 | `c1.d.plesk` | D | Publicar en Plesk (borrar contenido por defecto, subir paquete `.rar` de Teams, extraer, borrar `.rar`) — DESPUÉS de SAG Admin (RN-14) | ✔ | support | [PROC] §1.B.10 |
 | `c1.d.objectStorage` | D | Parámetros Web → Almacenamiento de Archivos (fila del archivo de buckets) — casi al final (RN-14) | ✔ | support | [PROC] §1.B.11 |
 | `c1.e.validarFinal` | E | Validar: acceder a SAG Web y confirmar permisos migrados de ≥1 usuario | ✔ | support | [PROC] §1.B.12 |
-| — | E | *(El envío de credenciales de pruebas NO es un paso del checklist: es la etapa `test_delivery` con el correo 4a — evita doble contabilidad)* | | lead | [PROC] §1.B.15 |
+| — | E | *(El envío de credenciales de pruebas NO es un paso del checklist: es la etapa `test_delivery` con los correos 4a-1/4a-2 — evita doble contabilidad)* | | lead | [PROC] §1.B.15 |
 | `c1.f.prepararProduccion` | F | Preparar la BD de producción: actualizar librerías/BD + correr los 5 scripts (incl. `sp_migrar`) sobre producción (el acceso ya se tiene desde `solicitudes` — RN-08). **NO hay re-extracción ni reimportación de usuarios** (RN-11 v2: viven en SAG Admin; las correcciones siempre fueron en producción) | ✔ | support | [PROC] §1.B.14 (2026-07-09) |
 | `c1.f.repuntarConexion` | F | **Reapuntar la cadena de conexión** de la(s) compañía(s) del cliente EXISTENTE en SAG Admin hacia la BD de producción y **retirar el sufijo "- PRUEBAS"** del nombre si se usó. **NO** se crea cliente/compañía de producción, **NO** se recrean usuarios, **NO** se vuelve a publicar en Plesk ni a configurar object storage (dominio y bucket son los mismos) | ✔ | **lead** | [PROC] §1.B.16 (corregido por Juan Camilo, jul. 2026), [CTX] §6 bis |
 | `c1.f.validarProduccion` | F | Validar acceso en producción (login + permisos) | ✔ | support | [PROC] §1.B.16 |
