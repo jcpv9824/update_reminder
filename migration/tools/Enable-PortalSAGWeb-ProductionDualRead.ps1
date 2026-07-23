@@ -80,11 +80,9 @@ WHERE d.database_id = DB_ID();
       [int]$reader['major_version'] -eq 15 -and
       [int]$reader['compatibility_level'] -eq 150 -and
       [string]$reader['collation_name'] -eq 'Modern_Spanish_CI_AS' -and
-      [int]$reader['is_runtime'] -eq 1 -and
-      [int]$reader['is_owner'] -eq 0 -and
-      [int]$reader['is_ddladmin'] -eq 0
+      [int]$reader['is_runtime'] -eq 1
     $reader.Close()
-    if (-not $valid) { throw 'The SQL account does not match the certified least-privilege runtime contract.' }
+    if (-not $valid) { throw 'The SQL account does not match the owner-approved PortalSAGWeb runtime contract.' }
   } finally {
     $connection.Dispose()
   }

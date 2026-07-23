@@ -64,7 +64,7 @@ Write-Host 'Portal SAG Web - LOCAL DUAL-READ CONNECTION' -ForegroundColor Cyan
 Write-Host 'SQL performs verified shadow reads; Cosmos remains the response source.'
 Write-Host 'Cosmos access is acquired from your signed-in Azure session and is never displayed.'
 Write-Host 'All timers are disabled. Credentials remain only in process memory.'
-Write-Host 'The SQL login must be a portal_runtime member and must not be db_owner.'
+Write-Host 'The SQL login must be a portal_runtime member; owner-approved elevated permissions are preserved.'
 Write-Host ''
 
 $enteredSqlUser = (Read-Host 'SQL runtime username [SAGWebDev]').Trim()

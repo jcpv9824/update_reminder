@@ -33,11 +33,10 @@ async function main() {
     const row = result.recordset[0];
     const contractOk = row && row.major_version === 15 && row.database_name === "PortalSAGWeb"
       && row.collation_name === "Modern_Spanish_CI_AS" && row.compatibility_level === 150;
-    const leastPrivilegeOk = row && row.is_portal_runtime === 1 && row.is_db_owner === 0
-      && row.is_db_ddladmin === 0 && row.is_portal_migrator === 0;
+    const ownerApprovedRuntimeOk = row && row.is_portal_runtime === 1;
     if (!contractOk) throw new Error("The SQL endpoint does not match the certified PortalSAGWeb contract.");
-    if (!leastPrivilegeOk) throw new Error("The SQL login is not the required least-privilege portal_runtime account.");
-    process.stdout.write("SQL runtime validation succeeded: certified database and least-privilege role.\n");
+    if (!ownerApprovedRuntimeOk) throw new Error("The SQL login is not a portal_runtime member.");
+    process.stdout.write("SQL runtime validation succeeded: certified database and owner-approved permission-preservation contract.\n");
   } finally {
     await pool.close();
   }

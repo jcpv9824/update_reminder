@@ -3,7 +3,9 @@ setlocal
 title Portal SAG Web - EPHEMERAL FULL-CONTROL MIGRATION SESSION
 cd /d "%~dp0"
 
-echo Use the separate provider migration login. SAGWebDev is runtime-only and will be rejected.
+echo Enter the owner-approved production migration login.
+echo SAGWebDev is accepted only when SQL proves db_owner plus database CONTROL.
+echo Existing database permissions are preserved; this controller never downgrades them.
 echo The password remains only in this terminal process and is never stored or printed.
 echo.
 

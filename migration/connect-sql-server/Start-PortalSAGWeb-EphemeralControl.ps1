@@ -124,7 +124,7 @@ if ($RequireFullControl) {
   if ($Environment -eq 'production') {
     if ($AllowElevatedRuntimeLogin) {
       Write-Host 'Owner-approved exception: SAGWebDev is accepted only if SQL proves db_owner + database CONTROL.' -ForegroundColor Yellow
-      Write-Host 'After migration, SAGWebDev must be returned to portal_runtime-only permissions.' -ForegroundColor Yellow
+      Write-Host 'Owner permission policy: this controller preserves existing SAGWebDev permissions and never downgrades them.' -ForegroundColor Yellow
     }
     else {
       Write-Host 'This launcher accepts only the separate provider migration login.' -ForegroundColor Yellow
@@ -234,15 +234,15 @@ WHERE d.database_id=DB_ID();
   if ($RequireFullControl -and $accessLevel -ne 'full-control') {
     throw 'The supplied login does not have the required db_owner + database CONTROL migration capability.'
   }
-  $temporarilyElevatedRuntimeLogin = (
+  $ownerApprovedElevatedRuntimeLogin = (
     $Environment -eq 'production' -and
     $RequireFullControl -and
     $AllowElevatedRuntimeLogin -and
     $Username -ieq 'SAGWebDev'
   )
-  if ($temporarilyElevatedRuntimeLogin) {
+  if ($ownerApprovedElevatedRuntimeLogin) {
     Write-Host 'WARNING: the application runtime login currently has migration-level permissions.' -ForegroundColor Red
-    Write-Host 'Do not enable SQL runtime until this login is returned to portal_runtime-only access.' -ForegroundColor Red
+    Write-Host 'The owner accepted this elevated-runtime risk; this controller will not remove roles or grants.' -ForegroundColor Red
   }
 
   Write-Host
@@ -319,7 +319,8 @@ WHERE d.database_id=DB_ID();
     compatibilityLevel = $compatibilityLevel
     fullControl = ($accessLevel -eq 'full-control')
     runtimeAccess = ($accessLevel -eq 'runtime')
-    temporarilyElevatedRuntimeLogin = $temporarilyElevatedRuntimeLogin
+    ownerApprovedElevatedRuntimeLogin = $ownerApprovedElevatedRuntimeLogin
+    permissionMutationPolicy = 'preserve-existing'
     accessLevel = $accessLevel
     sessionAuthorized = $true
     approvalMode = 'session'

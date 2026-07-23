@@ -46,7 +46,9 @@ The QA launcher uses `migration/work/sql-session-qa`, never stores credentials, 
 
 This provides full control of the `PortalSAGWeb` database only. It neither requests nor requires server-level `sysadmin` or `VIEW SERVER STATE` privileges. It does not authorize production DDL/data changes by itself; backup, rehearsal, and migration gates still apply.
 
-The controller intentionally has no default username. With `SAGWebDev`, it opens in `runtime` mode and can execute only the DML already granted to `portal_runtime`; SQL Server rejects schema changes. A separate provider-controlled migration login with `db_owner` and database `CONTROL` opens in `full-control` mode when DDL is required.
+The controller intentionally has no default username. Under the owner decision recorded on 2026-07-23, `SAGWebDev` may open the production full-control controller only when SQL proves both `db_owner` and database `CONTROL`. The controller records `permissionMutationPolicy=preserve-existing` in its non-secret session descriptor and never removes roles or grants when it closes or applies a patch.
+
+This is an explicit exception to the recommended separate-runtime/separate-migrator model. Because the deployed application also uses `SAGWebDev`, retaining `db_owner` increases the impact of a compromised runtime credential. The exception does not waive backup, rehearsal, reconciliation, maintenance, or rollback gates.
 
 The `.cmd` now exposes the two non-secret values you may edit:
 
@@ -127,6 +129,6 @@ az login
 
 Do not copy the Cosmos setting from Azure or paste it into the terminal.
 
-The launcher validates SQL Server 2019, database, compatibility, collation and least privilege before starting anything. It refuses `db_owner`, `db_ddladmin`, migration credentials, or a login that is not a member of `portal_runtime`. It disables all six timers and keeps `SQL_SECURITY_RUNTIME_ENABLED=false`.
+The launcher validates SQL Server 2019, database, compatibility, collation and `portal_runtime` membership before starting anything. It preserves owner-approved elevated roles, disables all six timers and keeps `SQL_SECURITY_RUNTIME_ENABLED=false`.
 
-`SAGWebDev` was converted on 2026-07-21 from temporary `db_owner` membership to `portal_runtime`. It is now the default local runtime username and has no elevated database-role membership. Future DDL/migrations require a separate provider-controlled migration identity; the application must never be re-elevated for that purpose.
+`SAGWebDev` was restricted on 2026-07-21, then the owner explicitly reversed that operating policy on 2026-07-23. From that decision forward, Portal migration tooling must preserve the login's effective permissions and must not execute `Repurpose-SAGWebDev-As-PortalRuntime.sql`; that downgrade script now fails closed before changing SQL.
