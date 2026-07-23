@@ -1,8 +1,12 @@
-# Solicitud de base SQL Server para migración del Programador de Actualizaciones ERP
+# Solicitud de SQL Server para migración de Portal SAG Web
+
+Revisión integral: **2026-07-21**
+
+> Estado confirmado: la base entregada es `PortalSAGWeb` en SQL Server 2019, compatibilidad 150 y collation `Modern_Spanish_CI_AS`. El login `SAGWebDev` es exclusivamente de migración y no puede crear logins de servidor. Antes del cutover, infraestructura debe aprovisionar el login runtime descrito en la sección 8 por canal seguro.
 
 ## 1. Objetivo
 
-Solicitamos una base de datos SQL Server para migrar gradualmente la aplicación **Programador de Actualizaciones ERP** desde Azure Cosmos DB hacia un modelo relacional, conservando datos productivos, auditoría, tareas, programaciones, licenciamiento y configuraciones.
+Solicitamos una base de datos SQL Server para migrar gradualmente **Portal SAG Web** desde Azure Cosmos DB hacia un modelo relacional, conservando datos productivos, seguridad, permisos, auditoría, tareas, programaciones, licenciamiento, configuraciones, formatos y descargas. La base también debe admitir el módulo de Gestión de Implementaciones ya especificado, aunque todavía no esté implementado.
 
 La migración se hará por fases. Cosmos DB seguirá siendo la fuente de verdad hasta completar exportación, carga, validación y aprobación de la base SQL.
 
@@ -40,7 +44,7 @@ erp_update_scheduler_dev
 erp_update_scheduler_test
 ```
 
-No mezclar esta base con otras aplicaciones, aunque compartan servidor o pool.
+Si ya existe una base dedicada y compatible, puede complementarse mediante migraciones versionadas después de inventariar sus objetos, propietarios, collation, permisos y uso. No reutilizar tablas ajenas ni ejecutar DDL manual sin baseline. Si no existe una base dedicada, crearla; no mezclar tablas de Portal SAG Web con otras aplicaciones aunque compartan servidor o pool.
 
 ## 4. Collation y codificación
 
@@ -114,16 +118,17 @@ Crear usuarios/logins separados:
 Nombre sugerido:
 
 ```text
-erp_scheduler_app
+portal_sag_runtime
 ```
 
 Permisos:
 
 - `CONNECT`.
-- `SELECT`, `INSERT`, `UPDATE`, `DELETE` sobre schemas de aplicación.
-- Ejecución de stored procedures si se crean.
+- Ser mapeado a un usuario de `PortalSAGWeb` y al rol de base que entregará la migración.
+- Solo permisos DML y `EXECUTE` explícitamente requeridos por la API; ningún acceso a `migration` ni staging.
 - No debe tener permisos de `db_owner`.
-- No debe poder modificar schema en producción.
+- No debe tener `ALTER`, `CONTROL`, `CREATE TABLE`, `CREATE PROCEDURE`, `IMPERSONATE` ni permisos de servidor.
+- Contraseña larga y aleatoria, entregada por canal seguro para guardarla como secreto de Key Vault.
 
 ### Usuario de migración
 
@@ -178,20 +183,24 @@ licensing
 scheduling
 workflow
 settings
+content
 notifications
+implementation
 audit
 migration
 ```
 
 Uso esperado:
 
-- `security`: usuarios, roles y relación usuario-rol.
+- `security`: usuarios, roles, permisos, visibilidad, sesiones y rate limits.
 - `core`: clientes, dominios, bases de datos, ambientes.
 - `licensing`: módulos y licencias de clientes.
 - `scheduling`: programaciones normales, especiales, scopes y recordatorios.
 - `workflow`: tareas, responsables, fuentes e historial de estados.
 - `settings`: configuración de alertas/correos.
+- `content`: formatos, descargas y metadata/versiones de archivos.
 - `notifications`: idempotencia de correos y recordatorios enviados.
+- `implementation`: flujo futuro de implementaciones, pasos, decisiones y eventos.
 - `audit`: auditoría.
 - `migration`: staging, raw JSON, runs y validaciones.
 
@@ -211,13 +220,7 @@ El valor `all` puede existir únicamente para filtros/configuraciones, no para d
 
 ### Roles funcionales
 
-```text
-admin
-client_manager
-domain_updater
-database_updater
-viewer
-```
+El catálogo inicial canónico es `super_admin`, `database_updater`, `domain_updater` y `print_formats_admin`, más roles custom. Los permisos no se codifican en el rol como columnas: se siembran en `security.permissions` y se asignan mediante `security.role_permissions`. La visibilidad de tareas por dominio/base se guarda separadamente en `security.roles`.
 
 ## 12. Contenedores Cosmos a migrar
 
@@ -235,9 +238,13 @@ appSettings
 emailNotifications
 licenseModules
 licenseAssignments
+roles
+fuentesFormatos
+formatosImpresion
+publicDownloads
 ```
 
-Todos deben exportarse y preservarse. No migrar solo activos; también se deben preservar inactivos, eliminados lógicos e historial.
+Además existen `securityRateLimits` y `authSessions`: se inventarían, pero sus filas no se cargan; el control inicia vacío y las sesiones se cierran en cutover. En total el código declara **17 contenedores**. Todos los contenedores de negocio deben exportarse y preservarse; no migrar solo activos.
 
 ## 13. Reglas de datos críticas
 
@@ -357,17 +364,21 @@ Tablas principales esperadas:
 ```text
 security.users
 security.roles
+security.permissions
+security.role_permissions
 security.user_roles
+security.auth_sessions
+security.rate_limits
 
 core.clients
 core.environments
 core.domains
 core.domain_assignees
+core.database_access_profiles
 core.databases
 core.database_assignees
 
 licensing.license_modules
-licensing.client_license_modules
 licensing.license_assignments
 
 scheduling.update_schedules
@@ -388,14 +399,46 @@ workflow.update_tasks
 workflow.task_assignees
 workflow.task_sources
 workflow.task_status_history
+workflow.task_reminders
+workflow.task_reminder_recipients
+workflow.task_overdue_alerts
 
-settings.app_settings
+settings.email_settings
+settings.default_reminder_days
+settings.alert_recipient_roles
+settings.alert_recipient_emails
+settings.overdue_alert_weekdays
+settings.blocked_reminder_days
+settings.administrative_reminders
+settings.administrative_reminder_recipients
+
+content.files
+content.print_format_sources
+content.print_formats
+content.print_format_files
+content.public_download_sections
+content.public_download_documents
+content.public_download_files
+
 notifications.email_notifications
+notifications.email_notification_recipients
+
+implementation.implementations
+implementation.implementation_assignees
+implementation.implementation_companies
+implementation.implementation_modules
+implementation.implementation_module_users
+implementation.implementation_decisions
+implementation.implementation_steps
+implementation.implementation_events
+implementation.module_test_catalog
+
 audit.audit_logs
 
 migration.migration_runs
 migration.raw_documents
 migration.validation_results
+migration.reconciliation_counts
 ```
 
 ## 16. Índices y constraints mínimos
@@ -414,10 +457,12 @@ Solicitar soporte para:
 core.clients.external_id where external_id is not null and status <> 'deleted'
 core.clients.name_normalized where status <> 'deleted'
 core.domains.domain_name_normalized where status <> 'deleted'
-core.databases.connection_fingerprint where status <> 'deleted'
+core.database_access_profiles.connection_fingerprint where active = 1
 licensing.license_modules.code_normalized where code_normalized is not null and status <> 'deleted'
 workflow.update_tasks.dedupe_key where dedupe_key is not null
-workflow.update_tasks(target_type, target_id, task_date)
+workflow.update_tasks(target_type, domain_id, database_id, task_date)
+content.public_download_sections.slug_normalized where status <> 'deleted'
+content.public_download_documents.slug_normalized where status <> 'deleted'
 ```
 
 ## 17. Funcionalidades SQL necesarias
@@ -460,6 +505,8 @@ Solicitamos al proveedor entregar:
 13. Límite inicial de almacenamiento.
 14. Métricas/monitoreo disponibles.
 15. Ventanas de mantenimiento.
+16. Confirmación de soporte para `ROWVERSION`, índices filtrados y transacciones con snapshot isolation.
+17. Confirmación de Blob Storage privado (o servicio equivalente) para extraer los Base64 actuales; incluir cifrado, backup/versionado, lifecycle y acceso por identidad administrada.
 
 ## 19. Información que NO debe enviarse por correo ni documento plano
 

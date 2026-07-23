@@ -6,6 +6,12 @@ import { loadEmailAlertsSettings, saveEmailAlertsSettings } from "../lib/setting
 import { resolveConfiguredRecipients } from "../lib/emailRecipients";
 import type { UpdateTask, UserRecord } from "../types/models";
 import { filterTasksForOperationalView } from "../lib/taskVisibility";
+import { assertCosmosRuntimeMutation } from "../lib/dataBackend";
+import { getDataBackend } from "../lib/dataBackend";
+import { findSqlUserById } from "../lib/securityManagementSqlWriteRepository";
+import { readSqlWorkflowTasks } from "../lib/workflowTasksSqlRepository";
+import { enqueueSqlEmail } from "../lib/emailOutboxSqlRepository";
+import { createHash } from "node:crypto";
 
 type Recipient = { email: string; name?: string };
 
@@ -17,6 +23,10 @@ function ahoraEnBogotaIso(): string {
 }
 
 async function getActiveUserById(id: string): Promise<UserRecord | null> {
+  if (getDataBackend() === "sql") {
+    const user = await findSqlUserById(id);
+    return user?.active ? user : null;
+  }
   try {
     const { resource } = await getContainer("users").item(id, id).read<UserRecord>();
     return resource && resource.active ? resource : null;
@@ -73,6 +83,8 @@ function shouldSendForFrequency(settings: Awaited<ReturnType<typeof loadEmailAle
 }
 
 export async function ejecutarAlertasVencidas(log: (m: string) => void): Promise<{ enviados: number; tareas: number }> {
+  const sqlBackend = getDataBackend() === "sql";
+  if (!sqlBackend) assertCosmosRuntimeMutation("El envío de alertas de tareas vencidas");
   const settings = await loadEmailAlertsSettings();
   if (settings.overdueAlertsEnabled === false) {
     log("Alertas de vencidos deshabilitadas globalmente.");
@@ -84,9 +96,19 @@ export async function ejecutarAlertasVencidas(log: (m: string) => void): Promise
     log(frequency.reason ?? "La alerta de vencidos ya fue enviada para este periodo.");
     return { enviados: 0, tareas: 0 };
   }
-  const { resources: tareas } = await getContainer("updateTasks")
-    .items.query<UpdateTask>({ query: "SELECT * FROM c WHERE c.taskDate < @hoy AND c.status IN ('pending','in_progress','failed','blocked','reopened')", parameters: [{ name: "@hoy", value: hoy }] })
-    .fetchAll();
+  const tareas = sqlBackend
+    ? await readSqlWorkflowTasks({ today: hoy, range: "overdue", operationalOnly: true })
+    : (await getContainer("updateTasks")
+      .items.query<UpdateTask>({ query: "SELECT * FROM c WHERE c.taskDate < @hoy AND c.status IN ('pending','in_progress','failed','blocked','reopened')", parameters: [{ name: "@hoy", value: hoy }] })
+      .fetchAll()).resources;
+  if (sqlBackend) {
+    // The SQL repository already applies the operational schedule/source filter.
+    if (tareas.length === 0) {
+      log("No hay tareas vencidas visibles.");
+      return { enviados: 0, tareas: 0 };
+    }
+  }
+  if (!sqlBackend) {
   const { resources: schedules } = await getContainer("updateSchedules").items
     .query<{ id: string; active?: boolean }>({
       query: "SELECT c.id, c.active FROM c WHERE (NOT IS_DEFINED(c.deletedAt) OR IS_NULL(c.deletedAt))",
@@ -102,7 +124,9 @@ export async function ejecutarAlertasVencidas(log: (m: string) => void): Promise
     else log("No hay tareas vencidas.");
     return { enviados: 0, tareas: 0 };
   }
-  const pendientes = tareasVisibles.filter((t) => !((t.overdueAlertSentDates ?? []).includes(hoy)));
+  }
+  const tareasVisibles = tareas;
+  const pendientes = sqlBackend ? tareasVisibles : tareasVisibles.filter((t) => !((t.overdueAlertSentDates ?? []).includes(hoy)));
   if (pendientes.length === 0) {
     log("Todas las tareas vencidas ya recibieron alerta hoy.");
     return { enviados: 0, tareas: tareasVisibles.length };
@@ -154,6 +178,24 @@ export async function ejecutarAlertasVencidas(log: (m: string) => void): Promise
         assignedToName: group.recipient.name,
       })),
     });
+    if (sqlBackend) {
+      const taskIds = [...group.domains, ...group.databases].map((task) => task.id).sort();
+      const digest = createHash("sha256").update(taskIds.join("|"), "utf8").digest("hex");
+      const queued = await enqueueSqlEmail({
+        type: "overdue_alert",
+        idempotencyKey: `overdue:${hoy}:${group.recipient.email.toLowerCase()}:${digest}`,
+        entityType: "task", entityId: "overdue_summary", taskId: taskIds[0],
+        period: frequency.period, sendDate: hoy,
+        subject: email.subject, html: email.html, text: email.text,
+        recipients: [group.recipient],
+        metadata: { date: hoy, recipientsCount: 1, domainCount: group.domains.length, databaseCount: group.databases.length, taskIds },
+      });
+      if (queued.created) {
+        enviados++;
+        for (const task of [...group.domains, ...group.databases]) alertedTaskIds.add(task.id);
+      }
+      continue;
+    }
     const r = await sendEmail({ to: group.recipient.email, subject: email.subject, html: email.html, text: email.text }, settings);
     await writeAuditLog({
       entityType: "task",
@@ -175,7 +217,7 @@ export async function ejecutarAlertasVencidas(log: (m: string) => void): Promise
     }
   }
 
-  for (const t of pendientes) {
+  if (!sqlBackend) for (const t of pendientes) {
     if (!alertedTaskIds.has(t.id)) continue;
     t.overdueAlertSentDates = [...(t.overdueAlertSentDates ?? []), hoy];
     t.updatedAt = new Date().toISOString();
@@ -184,7 +226,7 @@ export async function ejecutarAlertasVencidas(log: (m: string) => void): Promise
   }
 
   log(`Alertas de vencidos enviadas: ${enviados}; tareas incluidas: ${alertedTaskIds.size}.`);
-  if (enviados > 0) {
+  if (enviados > 0 && !sqlBackend) {
     await saveEmailAlertsSettings({ patch: { overdueAlertLastSentPeriod: frequency.period } as any, performedBy: "system" });
   }
   return { enviados, tareas: pendientes.length };

@@ -2,6 +2,7 @@ import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
+import { getDataBackend } from "../lib/dataBackend";
 import { badRequest, forbidden, notFound, ok, serverError } from "../lib/http";
 import { filterTasksForOperationalView } from "../lib/taskVisibility";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
@@ -12,7 +13,11 @@ import {
   isTaskAssignedToUserWithRoleDefinitions,
 } from "../lib/taskAccess";
 import { toPublicTask } from "../lib/publicDtos";
+import { normalizedLogicalTaskCount, readSqlWorkflowTasks, type WorkflowTaskFilters } from "../lib/workflowTasksSqlRepository";
+import { changeSqlWorkflowTaskStatus } from "../lib/workflowTasksSqlWriteRepository";
 import type { DatabaseRecord, DomainRecord, UpdateTask } from "../types/models";
+import { readSqlRestrictedDatabase } from "../lib/coreMastersSqlRepository";
+import { enqueueSqlEmail } from "../lib/emailOutboxSqlRepository";
 
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -22,10 +27,18 @@ async function getUserOrFail(req: HttpRequest) {
 }
 
 async function findTask(id: string): Promise<UpdateTask | null> {
+  const backend = getDataBackend();
+  const today = new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10);
+  if (backend === "sql") return (await readSqlWorkflowTasks({ sourceId: id, today, status: undefined, operationalOnly: false }))[0] ?? null;
   const { resources } = await getContainer("updateTasks")
     .items.query<UpdateTask>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })
     .fetchAll();
-  return resources[0] ?? null;
+  const primary = resources[0] ?? null;
+  if (backend === "dual-read") {
+    const shadow = (await readSqlWorkflowTasks({ sourceId: id, today, status: primary?.status, operationalOnly: false }))[0] ?? null;
+    if (Boolean(primary) !== Boolean(shadow)) console.warn("Task detail dual-read parity mismatch.");
+  }
+  return primary;
 }
 
 function actionIdForAuditAction(auditAction: string): string {
@@ -61,6 +74,14 @@ app.http("tasksList", {
       // Today en zona Bogotá (UTC-5). Evita que después de las 7pm locales el
       // backend reporte el día siguiente.
       const today = new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10);
+      const sqlFilters: WorkflowTaskFilters = { date, targetType, status, clientId, domainId, dateFrom, dateTo, range, today };
+      const backend = getDataBackend();
+      const roleDefinitions = await loadRoleDefinitions();
+      if (backend === "sql") {
+        let sqlItems = filterTasksWithRoleDefinitions(user, await readSqlWorkflowTasks(sqlFilters), roleDefinitions);
+        if (assignedToMe) sqlItems = sqlItems.filter((task) => isTaskAssignedToUserWithRoleDefinitions(user, task));
+        return ok(sqlItems.map(toPublicTask));
+      }
       const conditions: string[] = [];
       const parameters: { name: string; value: any }[] = [];
       if (date) {
@@ -116,9 +137,13 @@ app.http("tasksList", {
         schedules.filter((schedule) => schedule.active !== false).map((schedule) => schedule.id)
       );
       items = filterTasksForOperationalView(items, { activeScheduleIds, existingScheduleIds });
-      const roleDefinitions = await loadRoleDefinitions();
       items = filterTasksWithRoleDefinitions(user, items, roleDefinitions);
       if (assignedToMe) items = items.filter((t) => isTaskAssignedToUserWithRoleDefinitions(user, t));
+      if (backend === "dual-read") {
+        let shadow = filterTasksWithRoleDefinitions(user, await readSqlWorkflowTasks(sqlFilters), roleDefinitions);
+        if (assignedToMe) shadow = shadow.filter((task) => isTaskAssignedToUserWithRoleDefinitions(user, task));
+        if (normalizedLogicalTaskCount(items) !== shadow.length) console.warn("Tasks dual-read normalized parity mismatch.");
+      }
       return ok(items.map(toPublicTask));
     } catch (e) {
       return serverError(e);
@@ -170,10 +195,11 @@ async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string):
     const dominioPublicable = formatDomainForPublishing(t.domainName);
     let dbInfo: DatabaseRecord | null = null;
     if (t.targetType === "database") {
-      const { resources } = await getContainer("databases")
-        .items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: t.targetId }] })
-        .fetchAll();
-      dbInfo = resources[0] ?? null;
+      dbInfo = getDataBackend() === "sql"
+        ? await readSqlRestrictedDatabase(t.targetId)
+        : (await getContainer("databases")
+          .items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: t.targetId }] })
+          .fetchAll()).resources[0] ?? null;
     }
     const html = `
       <h3>${escapeHtml(subject)}</h3>
@@ -199,7 +225,17 @@ async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string):
     `;
     const dbText = dbInfo ? ` Empresa: ${dbInfo.companyName}. Servidor y puerto: ${dbInfo.dbAccess.serverHostPort}. Base de datos: ${dbInfo.dbAccess.initialCatalog}. Usuario: ${dbInfo.dbAccess.userId}.` : "";
     const text = `${subject}. Tipo: ${tipo}. Cliente: ${t.clientName}. Dominio registrado: ${t.domainName}. Dominio para publicar: ${dominioPublicable}.${dbText} Fecha programada: ${t.taskDate}. Responsable: ${performedByEmail}. ${esFallida ? "Motivo" : "Problema"}: ${detalleProblema}`;
-    await sendEmail({ to: destinatarios, subject, html, text }, settings);
+    if (getDataBackend() === "sql") {
+      await enqueueSqlEmail({
+        type: "task_status_notification",
+        idempotencyKey: `task-status:${t.id}:${t.status}:${t.updatedAt}`,
+        entityType: "task", entityId: t.id, taskId: t.id, subject, html, text,
+        recipients: destinatarios.map((email) => ({ email })),
+        metadata: { status: t.status, targetType: t.targetType, problem: true },
+      });
+    } else {
+      await sendEmail({ to: destinatarios, subject, html, text }, settings);
+    }
   } catch {/* no bloquear flujo de tarea */}
 }
 
@@ -244,7 +280,17 @@ async function notificarCompletadaConExito(t: UpdateTask, performedByEmail: stri
       ${linkApp}
     `;
     const text = `${subject}. Tipo: ${tipo}. Cliente: ${t.clientName}. Dominio para publicar: ${dominioPublicable}. Fecha programada: ${t.taskDate}. Completada por: ${performedByEmail}.${nota ? ` Nota: ${nota}` : ""}`;
-    await sendEmail({ to: destinatarios, subject, html, text }, settings);
+    if (getDataBackend() === "sql") {
+      await enqueueSqlEmail({
+        type: "task_status_notification",
+        idempotencyKey: `task-status:${t.id}:${t.status}:${t.updatedAt}`,
+        entityType: "task", entityId: t.id, taskId: t.id, subject, html, text,
+        recipients: destinatarios.map((email) => ({ email })),
+        metadata: { status: t.status, targetType: t.targetType, problem: false },
+      });
+    } else {
+      await sendEmail({ to: destinatarios, subject, html, text }, settings);
+    }
   } catch {/* no bloquear flujo de tarea */}
 }
 
@@ -267,6 +313,24 @@ async function changeTaskStatus(
     const before = { ...t };
     if (newStatus === "blocked" && !String(body.notes ?? body.blockReason ?? "").trim()) {
       return badRequest("El motivo del bloqueo es obligatorio.");
+    }
+    if (getDataBackend() === "sql") {
+      const updated = await changeSqlWorkflowTaskStatus(req.params.id, newStatus, auditAction, body, {
+        id: user.id, email: user.email,
+      });
+      if (!updated) return notFound("Tarea no encontrada.");
+      if (newStatus === "completed" || newStatus === "blocked" || newStatus === "failed") {
+        const settings = await (await import("../lib/settingsService")).loadEmailAlertsSettings();
+        const { decidirNotificacionPorEstado } = await import("../lib/taskNotifications");
+        const decision = decidirNotificacionPorEstado({
+          newStatus,
+          completedWithProblems: !!updated.completedWithProblems,
+          blockedAlertsEnabled: settings.blockedAlertsEnabled !== false,
+        });
+        if (decision === "problema") void notificarProblemaAdmins(updated, user.email);
+        else if (decision === "exito") void notificarCompletadaConExito(updated, user.email);
+      }
+      return ok(toPublicTask(updated));
     }
     t.status = newStatus;
     t.updatedAt = new Date().toISOString();

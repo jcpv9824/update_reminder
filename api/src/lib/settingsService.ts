@@ -1,7 +1,10 @@
 import { getContainer } from "./cosmos";
+import { getDataBackend } from "./dataBackend";
+import { readSqlEmailAlertsSettings, type StoredEmailAlertsSettings } from "./emailSettingsSqlRepository";
 import { toKeyVaultSecretName } from "./keyVaultNames";
 import * as keyVault from "./keyVault";
 import type { EmailAlertsSettings } from "../types/models";
+import { saveSqlEmailAlertsSettings } from "./emailSettingsSqlWriteRepository";
 
 export const SETTINGS_ID = "email-alerts";
 
@@ -64,15 +67,60 @@ const DEFAULTS: EmailAlertsSettings = {
   sendTemporaryPasswordByEmail: false,
 };
 
+export function mergeEmailAlertsSettings(stored: StoredEmailAlertsSettings): EmailAlertsSettings {
+  const defaultAdministrative = DEFAULTS.administrativeReminders!;
+  return {
+    ...DEFAULTS,
+    ...stored,
+    id: SETTINGS_ID,
+    administrativeReminders: {
+      sagWebVersionReminder: {
+        ...defaultAdministrative.sagWebVersionReminder,
+        ...(stored.administrativeReminders?.sagWebVersionReminder ?? {}),
+      },
+      whatsNewReminder: {
+        ...defaultAdministrative.whatsNewReminder,
+        ...(stored.administrativeReminders?.whatsNewReminder ?? {}),
+      },
+    },
+  };
+}
+
+function parityShape(settings: EmailAlertsSettings): string {
+  return JSON.stringify({
+    provider: settings.emailProvider,
+    remindersEnabled: settings.remindersEnabled,
+    defaultDays: settings.defaultReminderDaysBefore.length,
+    overdueEnabled: settings.overdueAlertsEnabled,
+    overdueRoles: settings.overdueAlertRecipientRoleIds?.length ?? 0,
+    overdueEmails: settings.overdueAlertCustomEmails?.length ?? 0,
+    legacyEmails: settings.customAdminAlertEmails?.length ?? 0,
+    weekdays: settings.overdueAlertWeekdays?.length ?? 0,
+    blockedEnabled: settings.blockedAlertsEnabled,
+    blockedRoles: settings.blockedAlertRecipientRoleIds?.length ?? 0,
+    blockedEmails: settings.blockedAlertCustomEmails?.length ?? 0,
+    blockedDays: settings.blockedReminderDaysAfter?.length ?? 0,
+    administrative: Object.values(settings.administrativeReminders ?? {}).filter((reminder) => reminder.enabled).length,
+    passwordNotificationEnabled: settings.passwordNotificationEnabled,
+  });
+}
+
 // Lee la configuración desde Cosmos. Si no existe, devuelve los defaults
 // combinados con valores de variables de entorno como respaldo.
 export async function loadEmailAlertsSettings(): Promise<EmailAlertsSettings> {
+  const backend = getDataBackend();
+  if (backend === "sql") {
+    const stored = await readSqlEmailAlertsSettings();
+    if (!stored) throw Object.assign(new Error("La configuración SQL email-alerts no existe."), { status: 503 });
+    return mergeEmailAlertsSettings(stored);
+  }
+  let primary: EmailAlertsSettings | null = null;
   try {
     const { resource } = await getContainer("appSettings").item(SETTINGS_ID, SETTINGS_ID).read<EmailAlertsSettings>();
-    if (resource) return { ...DEFAULTS, ...resource, id: SETTINGS_ID };
+    if (resource) primary = mergeEmailAlertsSettings(resource);
   } catch {/* ignorar — usar defaults */}
   // Fallback a variables de entorno cuando no hay documento todavía.
-  return {
+  primary ??= {
     ...DEFAULTS,
     emailProvider: (process.env.EMAIL_PROVIDER as any) ?? DEFAULTS.emailProvider,
     emailFrom: process.env.EMAIL_FROM ?? DEFAULTS.emailFrom,
@@ -83,6 +131,13 @@ export async function loadEmailAlertsSettings(): Promise<EmailAlertsSettings> {
     smtpSecure: process.env.SMTP_SECURE === "true",
     smtpUser: process.env.SMTP_USER ?? DEFAULTS.smtpUser,
   };
+  if (backend === "dual-read") {
+    const stored = await readSqlEmailAlertsSettings();
+    if (!stored || parityShape(primary) !== parityShape(mergeEmailAlertsSettings(stored))) {
+      console.warn("Email settings dual-read parity mismatch.");
+    }
+  }
+  return primary;
 }
 
 // Devuelve la configuración SIN secretos para enviarla al frontend.
@@ -103,11 +158,15 @@ export async function saveEmailAlertsSettings(args: {
   // Si el admin envía una nueva contraseña, sanitizar nombre y guardar en Key Vault.
   let smtpPasswordSecretName = current.smtpPasswordSecretName;
   let smtpPasswordConfigured = !!current.smtpPasswordConfigured;
+  let priorSecretValue: string | null = null;
+  let wroteSecret = false;
   if (typeof smtpPassword === "string" && smtpPassword.length > 0) {
     const baseName = `smtp-password-${rest.smtpUser ?? current.smtpUser ?? "default"}`;
     smtpPasswordSecretName = toKeyVaultSecretName(baseName);
     try {
+      try { priorSecretValue = await keyVault.getSecret(smtpPasswordSecretName); } catch { priorSecretValue = null; }
       await keyVault.setSecret(smtpPasswordSecretName, smtpPassword);
+      wroteSecret = true;
       smtpPasswordConfigured = true;
     } catch (e: any) {
       throw new Error(`No se pudo guardar la contraseña SMTP en Key Vault: ${e?.message ?? e}`);
@@ -126,6 +185,22 @@ export async function saveEmailAlertsSettings(args: {
     updatedAt: now,
     updatedBy: args.performedBy,
   };
+
+  if (getDataBackend() === "sql") {
+    try {
+      return await saveSqlEmailAlertsSettings(current, next, args.performedBy);
+    } catch (error) {
+      if (wroteSecret && smtpPasswordSecretName) {
+        try {
+          if (priorSecretValue !== null) await keyVault.setSecret(smtpPasswordSecretName, priorSecretValue);
+          else await keyVault.deleteSecret(smtpPasswordSecretName);
+        } catch {
+          throw Object.assign(new Error("La configuración SQL falló y no se pudo compensar el secreto SMTP; revise Key Vault antes de reintentar."), { cause: error });
+        }
+      }
+      throw error;
+    }
+  }
 
   await getContainer("appSettings").items.upsert(next);
   return next;

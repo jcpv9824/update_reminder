@@ -16,6 +16,7 @@ import {
   revokeAllUserSessions,
   revokeRefreshSession,
   rotateAuthSession,
+  makeAuthSession,
 } from "../lib/authSessions";
 import {
   checkLoginLockout,
@@ -24,6 +25,15 @@ import {
   RATE_LIMIT_POLICIES,
   recordLoginFailure,
 } from "../lib/rateLimit";
+import { sqlSecurityRuntimeEnabled } from "../lib/dataBackend";
+import {
+  completeSqlLogin,
+  findSqlUserByEmail,
+  findSqlUserByResetTokenHash,
+  requestSqlPasswordReset,
+  resetSqlPasswordByToken,
+  setSqlUserPassword,
+} from "../lib/securityManagementSqlWriteRepository";
 
 const LoginSchema = z.object({
   email: z.string().min(1).max(254),
@@ -60,10 +70,11 @@ app.http("authLogin", {
         if (limited) return limited;
         return { status: 401, jsonBody: { error: MENSAJE_LOGIN_GENERICO } };
       }
-      const { resources } = await getContainer("users")
-        .items.query<UserRecord>({ query: "SELECT * FROM c WHERE LOWER(c.email) = @e", parameters: [{ name: "@e", value: email }] })
-        .fetchAll();
-      const user = resources[0];
+      const user = sqlSecurityRuntimeEnabled()
+        ? await findSqlUserByEmail(email)
+        : (await getContainer("users")
+          .items.query<UserRecord>({ query: "SELECT * FROM c WHERE LOWER(c.email) = @e", parameters: [{ name: "@e", value: email }] })
+          .fetchAll()).resources[0];
       if (!user || !user.passwordHash || !user.active) {
         const limited = await recordLoginFailure(req, email);
         if (limited) return limited;
@@ -98,37 +109,55 @@ app.http("authLogin", {
         user.tokenVersion = (user.tokenVersion ?? 0) + 1;
         user.updatedAt = changedAt;
         user.updatedBy = user.id;
-        await getContainer("users").item(user.id, user.id).replace(user);
-        await revokeAllUserSessions(user.id, "mandatory_password_change");
-        await writeAuditLog({
-          entityType: "user", entityId: user.id, action: "mandatory_password_changed",
-          performedBy: user.id, performedByEmail: user.email,
-        });
+        if (sqlSecurityRuntimeEnabled()) {
+          const changed = await setSqlUserPassword(user.id, user.passwordHash, { id: user.id, email: user.email }, "mandatory_password_changed", {
+            mustChangePassword: false,
+            expiresAt: user.passwordExpiresAt ? new Date(user.passwordExpiresAt) : null,
+            updatedBy: user.id,
+          });
+          if (!changed) throw Object.assign(new Error("Usuario no disponible."), { status: 503 });
+        } else {
+          await getContainer("users").item(user.id, user.id).replace(user);
+          await revokeAllUserSessions(user.id, "mandatory_password_change");
+          await writeAuditLog({
+            entityType: "user", entityId: user.id, action: "mandatory_password_changed",
+            performedBy: user.id, performedByEmail: user.email,
+          });
+        }
         return { status: 200, headers: { "Cache-Control": "no-store" }, jsonBody: { passwordChanged: true, message: "Contraseña actualizada. Inicie sesión nuevamente." } };
       }
 
-      // Actualizar lastLoginAt sin tocar passwordHash.
-      user.lastLoginAt = new Date().toISOString();
-      await getContainer("users").item(user.id, user.id).replace(user);
-
       let createdSession: Awaited<ReturnType<typeof createAuthSession>>;
-      try {
-        createdSession = await createAuthSession(user);
-      } catch {
-        throw Object.assign(new Error("No se pudo crear la sesión segura."), { status: 503 });
+      if (sqlSecurityRuntimeEnabled()) {
+        const prepared = makeAuthSession(user, Date.now());
+        const persisted = await completeSqlLogin(user.id, prepared.record);
+        if (!persisted) throw Object.assign(new Error("No se pudo crear la sesión segura."), { status: 503 });
+        Object.assign(user, persisted);
+        createdSession = { session: prepared.record, refreshToken: prepared.refreshToken };
+      } else {
+        // Actualizar lastLoginAt sin tocar passwordHash.
+        user.lastLoginAt = new Date().toISOString();
+        await getContainer("users").item(user.id, user.id).replace(user);
+        try {
+          createdSession = await createAuthSession(user);
+        } catch {
+          throw Object.assign(new Error("No se pudo crear la sesión segura."), { status: 503 });
+        }
       }
       const { session, refreshToken } = createdSession;
       const token = signJwt(
         { id: user.id, email: user.email, displayName: user.displayName, roles: migrateLegacyRoleIds(user.roles ?? []) },
         { id: session.id, tokenVersion: session.tokenVersion }
       );
-      await writeAuditLog({
-        entityType: "user",
-        entityId: user.id,
-        action: "user_logged_in",
-        performedBy: user.id,
-        performedByEmail: user.email,
-      });
+      if (!sqlSecurityRuntimeEnabled()) {
+        await writeAuditLog({
+          entityType: "user",
+          entityId: user.id,
+          action: "user_logged_in",
+          performedBy: user.id,
+          performedByEmail: user.email,
+        });
+      }
       return {
         status: 200,
         headers: { "Set-Cookie": refreshCookie(refreshToken), "Cache-Control": "no-store" },
@@ -213,13 +242,18 @@ app.http("authForgotPassword", {
       if (!parsed.success) return ok({ message: MENSAJE_FORGOT_GENERICO });
       const email = identity!;
 
-      const { resources } = await getContainer("users")
-        .items.query<UserRecord>({ query: "SELECT * FROM c WHERE LOWER(c.email) = @e", parameters: [{ name: "@e", value: email }] })
-        .fetchAll();
-      const user = resources[0];
+      const user = sqlSecurityRuntimeEnabled()
+        ? await findSqlUserByEmail(email)
+        : (await getContainer("users")
+          .items.query<UserRecord>({ query: "SELECT * FROM c WHERE LOWER(c.email) = @e", parameters: [{ name: "@e", value: email }] })
+          .fetchAll()).resources[0];
 
       // Si existe y está activo, generamos token y enviamos email.
       if (user && user.active) {
+        if (sqlSecurityRuntimeEnabled()) {
+          await requestSqlPasswordReset(user);
+          return ok({ message: MENSAJE_FORGOT_GENERICO });
+        }
         const { generateResetToken, resetExpirationIso } = await import("../lib/resetTokens");
         const { settingsService } = { settingsService: await import("../lib/settingsService") };
         const { renderResetPasswordEmail, sendEmail } = await import("../lib/emailService");
@@ -290,10 +324,11 @@ app.http("authResetPassword", {
       const { hashResetToken, isResetTokenExpired } = await import("../lib/resetTokens");
       const { writeAuditLog } = await import("../lib/audit");
       const tokenHash = hashResetToken(parsed.data.token);
-      const { resources } = await getContainer("users")
-        .items.query<UserRecord>({ query: "SELECT * FROM c WHERE c.passwordResetTokenHash = @h", parameters: [{ name: "@h", value: tokenHash }] })
-        .fetchAll();
-      const user = resources[0];
+      const user = sqlSecurityRuntimeEnabled()
+        ? await findSqlUserByResetTokenHash(tokenHash)
+        : (await getContainer("users")
+          .items.query<UserRecord>({ query: "SELECT * FROM c WHERE c.passwordResetTokenHash = @h", parameters: [{ name: "@h", value: tokenHash }] })
+          .fetchAll()).resources[0];
       if (!user || !user.active) {
         return { status: 400, jsonBody: { error: MENSAJE_RESET_INVALIDO } };
       }
@@ -320,15 +355,20 @@ app.http("authResetPassword", {
       user.passwordResetExpiresAt = null;
       user.updatedAt = now;
       user.updatedBy = "system";
-      await getContainer("users").item(user.id, user.id).replace(user);
-      await revokeAllUserSessions(user.id, "password_reset_completed");
-      await writeAuditLog({
-        entityType: "user",
-        entityId: user.id,
-        action: "password_reset_completed",
-        performedBy: user.id,
-        performedByEmail: user.email,
-      });
+      if (sqlSecurityRuntimeEnabled()) {
+        const reset = await resetSqlPasswordByToken(tokenHash, newHash, new Date(user.passwordExpiresAt!));
+        if (!reset) return { status: 400, jsonBody: { error: MENSAJE_RESET_INVALIDO } };
+      } else {
+        await getContainer("users").item(user.id, user.id).replace(user);
+        await revokeAllUserSessions(user.id, "password_reset_completed");
+        await writeAuditLog({
+          entityType: "user",
+          entityId: user.id,
+          action: "password_reset_completed",
+          performedBy: user.id,
+          performedByEmail: user.email,
+        });
+      }
       return ok({ message: "Tu contraseña fue actualizada correctamente. Ya puedes iniciar sesión." });
     } catch (error: any) {
       if (error?.status === 503) return { status: 503, jsonBody: { error: "Servicio de seguridad temporalmente no disponible." } };

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
+import { getDataBackend } from "../lib/dataBackend";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import {
   canAssignClientLicenses,
@@ -18,6 +19,9 @@ import {
 import { getPagination, paginateArray } from "../lib/pagination";
 import { hasDuplicateClientExternalId, hasDuplicateClientName } from "../lib/duplicateValidation";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
+import { readSqlClients, readSqlClientTree } from "../lib/clientsSqlRepository";
+import { createSqlClient, updateSqlClient } from "../lib/clientsSqlWriteRepository";
+import { deleteSqlCoreCascade } from "../lib/coreCascadeSqlRepository";
 import { toPublicDatabase } from "../lib/publicDtos";
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
@@ -34,6 +38,32 @@ async function getUserOrFail(req: HttpRequest) {
   const profile = await loadUserProfile(auth);
   if (!profile) throw Object.assign(new Error("Usuario no registrado."), { status: 403 });
   return profile;
+}
+
+async function readClientsCosmos(): Promise<ClientRecord[]> {
+  const { resources } = await getContainer("clients").items.readAll<ClientRecord>().fetchAll();
+  return resources;
+}
+
+async function readClients(): Promise<ClientRecord[]> {
+  const backend = getDataBackend();
+  if (backend === "sql") return readSqlClients();
+  const primary = await readClientsCosmos();
+  if (backend === "dual-read") {
+    const shadow = await readSqlClients();
+    if (primary.length !== shadow.length) console.warn("Clients dual-read parity mismatch.");
+  }
+  return primary;
+}
+
+async function readClient(id: string): Promise<ClientRecord | null> {
+  if (getDataBackend() === "sql") return (await readSqlClients(id))[0] ?? null;
+  const { resource } = await getContainer("clients").item(id, id).read<ClientRecord>();
+  if (getDataBackend() === "dual-read") {
+    const shadow = (await readSqlClients(id))[0] ?? null;
+    if (Boolean(resource) !== Boolean(shadow)) console.warn("Client detail dual-read parity mismatch.");
+  }
+  return resource ?? null;
 }
 
 function uniqueIds(ids?: string[]): string[] {
@@ -71,8 +101,7 @@ app.http("clientsList", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canViewClients(user, roleDefinitions)) return forbidden();
-      const container = getContainer("clients");
-      const { resources } = await container.items.readAll<ClientRecord>().fetchAll();
+      const resources = await readClients();
       const search = req.query.get("search")?.trim().toLowerCase();
       const status = req.query.get("status");
       const includeDeleted = req.query.get("includeDeleted") === "true";
@@ -103,6 +132,15 @@ app.http("clientsCreate", {
       const parsed = ClientSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       if ((parsed.data.licenseModuleIds ?? []).length > 0 && !canAssignClientLicenses(user, roleDefinitions)) return forbidden();
+      if (getDataBackend() === "sql") {
+        const record = await createSqlClient(`client_${randomUUID()}`, {
+          externalId: parsed.data.externalId,
+          name: parsed.data.name,
+          notes: parsed.data.notes,
+          licenseModuleIds: parsed.data.licenseModuleIds,
+        }, { id: user.id, email: user.email });
+        return created(record);
+      }
       const container = getContainer("clients");
       const { resources: existingClients } = await container.items.readAll<ClientRecord>().fetchAll();
       if (hasDuplicateClientName(existingClients, parsed.data.name)) return conflict("Ya existe un cliente con este nombre.");
@@ -151,7 +189,7 @@ app.http("clientsGet", {
       const roleDefinitions = await loadRoleDefinitions();
       if (!canViewClients(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
-      const { resource } = await getContainer("clients").item(id, id).read<ClientRecord>();
+      const resource = await readClient(id);
       if (!resource) return notFound("Cliente no encontrado.");
       if (resource.status === "deleted" && !canDeleteClient(user, roleDefinitions) && !canReactivateClient(user, roleDefinitions)) return forbidden("No tiene permisos para consultar este cliente.");
       return ok(resource);
@@ -171,6 +209,11 @@ app.http("clientsTree", {
       const roleDefinitions = await loadRoleDefinitions();
       if (!canViewClientRelated(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
+      const backend = getDataBackend();
+      if (backend === "sql") {
+        const tree = await readSqlClientTree(id);
+        return tree ? ok(tree) : notFound("Cliente no encontrado.");
+      }
       const { resource: client } = await getContainer("clients").item(id, id).read<ClientRecord>();
       if (!client || client.status === "deleted") return notFound("Cliente no encontrado.");
       const [{ resources: domains }, { resources: databases }] = await Promise.all([
@@ -183,13 +226,20 @@ app.http("clientsTree", {
           parameters: [{ name: "@c", value: id }],
         }).fetchAll(),
       ]);
-      return ok({
+      const tree = {
         client,
         domains: domains.map((domain) => ({
           domain,
           databases: databases.filter((db) => db.domainId === domain.id).map(toPublicDatabase),
         })),
-      });
+      };
+      if (backend === "dual-read") {
+        const shadow = await readSqlClientTree(id);
+        const primaryCounts = [tree.domains.length, tree.domains.reduce((sum, item) => sum + item.databases.length, 0)];
+        const shadowCounts = [shadow?.domains.length ?? -1, shadow?.domains.reduce((sum, item) => sum + item.databases.length, 0) ?? -1];
+        if (JSON.stringify(primaryCounts) !== JSON.stringify(shadowCounts)) console.warn("Client tree dual-read parity mismatch.");
+      }
+      return ok(tree);
     } catch (e) {
       return serverError(e);
     }
@@ -210,6 +260,15 @@ app.http("clientsUpdate", {
       const parsed = ClientSchema.partial().safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       if (parsed.data.licenseModuleIds !== undefined && !canAssignClientLicenses(user, roleDefinitions)) return forbidden();
+      if (getDataBackend() === "sql") {
+        const resource = await readClient(id);
+        if (!resource) return notFound("Cliente no encontrado.");
+        if (parsed.data.status === "inactive" && resource.status !== "inactive" && !canDeactivateClient(user, roleDefinitions)) return forbidden();
+        if (parsed.data.status === "active" && resource.status !== "active" && !canReactivateClient(user, roleDefinitions)) return forbidden();
+        if (parsed.data.status === "deleted" && resource.status !== "deleted" && !canDeleteClient(user, roleDefinitions)) return forbidden();
+        const updated = await updateSqlClient(id, parsed.data, { id: user.id, email: user.email });
+        return updated ? ok(updated) : notFound("Cliente no encontrado.");
+      }
       const container = getContainer("clients");
       const { resource } = await container.item(id, id).read<ClientRecord>();
       if (!resource) return notFound("Cliente no encontrado.");
@@ -268,6 +327,10 @@ app.http("clientsDeactivate", {
       const roleDefinitions = await loadRoleDefinitions();
       if (!canDeactivateClient(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
+      if (getDataBackend() === "sql") {
+        const resource = await updateSqlClient(id, { status: "inactive" }, { id: user.id, email: user.email }, "client_deactivated");
+        return resource ? ok(resource) : notFound("Cliente no encontrado.");
+      }
       const container = getContainer("clients");
       const { resource } = await container.item(id, id).read<ClientRecord>();
       if (!resource) return notFound("Cliente no encontrado.");
@@ -302,6 +365,10 @@ app.http("clientsReactivate", {
       const roleDefinitions = await loadRoleDefinitions();
       if (!canReactivateClient(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
+      if (getDataBackend() === "sql") {
+        const resource = await updateSqlClient(id, { status: "active" }, { id: user.id, email: user.email }, "client_reactivated");
+        return resource ? ok(resource) : notFound("Cliente no encontrado.");
+      }
       const container = getContainer("clients");
       const { resource } = await container.item(id, id).read<ClientRecord>();
       if (!resource) return notFound("Cliente no encontrado.");
@@ -337,6 +404,12 @@ app.http("clientsDelete", {
       if (!canDeleteClient(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
       const cascade = req.query.get("cascade") === "true";
+      if (getDataBackend() === "sql") {
+        const result = await deleteSqlCoreCascade("client", id, cascade, { id: user.id, email: user.email });
+        if (!result.found) return notFound("Cliente no encontrado.");
+        if (result.requiresCascade) return conflict("El cliente tiene dependencias. Confirme eliminación en cascada.", { dependencies: result.dependencies });
+        return ok({ ok: true, deleted: { ...result.dependencies, obsoletedTasks: result.obsoletedTasks, cascadeSchedules: result.cascadeSchedules } });
+      }
       const container = getContainer("clients");
       const { resource } = await container.item(id, id).read<ClientRecord>();
       if (!resource) return notFound("Cliente no encontrado.");

@@ -93,7 +93,7 @@ export default function FormatosImpresionAdminPage() {
         <div className="campo campo-busqueda-formatos">
           <label>Buscar</label>
           <div className="buscador-limpiable">
-            <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar por nombre o descripción..." />
+            <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder={tab === "fuentes" ? "Buscar por nombre..." : "Buscar por nombre o descripción..."} />
             {busqueda && (
               <button type="button" onClick={() => setBusqueda("")} aria-label="Limpiar busqueda" title="Limpiar busqueda">
                 x
@@ -106,12 +106,11 @@ export default function FormatosImpresionAdminPage() {
       {tab === "fuentes" && (
         cargandoFuentes ? <div className="cargando">Cargando tipos de fuente...</div> : (
           <table>
-            <thead><tr><th>Nombre del tipo de fuente</th><th>Descripción</th><th>Estado</th><th>Acciones</th></tr></thead>
+            <thead><tr><th>Nombre del tipo de fuente</th><th>Estado</th><th>Acciones</th></tr></thead>
             <tbody>
               {fuentesFiltradas.map((fuente) => (
                 <tr key={fuente.id}>
                   <td>{fuente.nombre}</td>
-                  <td>{fuente.descripcion || "-"}</td>
                   <td><EtiquetaEstado estado={fuente.activa ? "active" : "inactive"} /></td>
                   <td className="acciones-tabla">
                     <button onClick={() => setModalFuente(fuente)}>Editar</button>
@@ -119,7 +118,7 @@ export default function FormatosImpresionAdminPage() {
                   </td>
                 </tr>
               ))}
-              {fuentesFiltradas.length === 0 && <tr><td colSpan={4}><div className="vacio">No hay tipos de fuente para mostrar.</div></td></tr>}
+              {fuentesFiltradas.length === 0 && <tr><td colSpan={3}><div className="vacio">No hay tipos de fuente para mostrar.</div></td></tr>}
             </tbody>
           </table>
         )
@@ -205,21 +204,19 @@ function filtrar<T extends { nombre: string; descripcion?: string; fuenteNombre?
 
 function FormularioFuente({ inicial, cargando, onSubmit }: { inicial?: FuenteFormato; cargando: boolean; onSubmit: (body: any) => void }) {
   const [nombre, setNombre] = useState(inicial?.nombre ?? "");
-  const [descripcion, setDescripcion] = useState(inicial?.descripcion ?? "");
   const [activa, setActiva] = useState(inicial?.activa ?? true);
   const [error, setError] = useState<string | null>(null);
 
   function submit(e: FormEvent) {
     e.preventDefault();
     if (!nombre.trim()) { setError("El nombre del tipo de fuente es obligatorio."); return; }
-    onSubmit({ nombre, descripcion, activa });
+    onSubmit({ nombre, activa });
   }
 
   return (
     <form onSubmit={submit}>
       {error && <Alerta tipo="error">{error}</Alerta>}
       <div className="fila-formulario"><label>Nombre del tipo de fuente *</label><input value={nombre} onChange={(e) => setNombre(e.target.value)} /></div>
-      <div className="fila-formulario"><label>Descripción</label><textarea value={descripcion} onChange={(e) => setDescripcion(e.target.value)} rows={3} /></div>
       <div className="fila-formulario"><label><input type="checkbox" checked={activa} onChange={(e) => setActiva(e.target.checked)} style={{ width: "auto", marginRight: 6 }} />Activa</label></div>
       <div className="acciones-formulario"><button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button></div>
     </form>

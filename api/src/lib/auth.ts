@@ -4,6 +4,7 @@ import { verifyJwt } from "./jwt";
 import { validateAccessSession, type UserLoader, type AuthSessionStore } from "./authSessions";
 import { normalizeEmail } from "./password";
 import { migrateLegacyRoleIds } from "./permissionModel";
+import { sqlSecurityRuntimeEnabled } from "./dataBackend";
 
 // Extrae al usuario actual de la solicitud. En producción solo se acepta el
 // JWT emitido por el login de la aplicación. No se confía en
@@ -66,6 +67,21 @@ export type ProfileLoadResult =
 // case-insensitive. Devuelve estado detallado.
 export async function loadUserProfileDetailed(user: CurrentUser): Promise<ProfileLoadResult> {
   try {
+    if (sqlSecurityRuntimeEnabled()) {
+      const { findSqlUserById, findSqlUserByEmail } = await import("./securityManagementSqlWriteRepository");
+      const resource = await findSqlUserById(user.id) ?? await findSqlUserByEmail(user.email);
+      if (!resource) return { status: "not_registered" };
+      if (resource.active === false) return { status: "inactive" };
+      return {
+        status: "ok",
+        user: {
+          id: resource.id,
+          email: resource.email,
+          displayName: resource.displayName,
+          roles: migrateLegacyRoleIds(resource.roles ?? []),
+        },
+      };
+    }
     const { getContainer } = await import("./cosmos");
     const container = getContainer("users");
     let resource: any = null;

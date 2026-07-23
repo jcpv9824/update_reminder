@@ -6,6 +6,10 @@ import { loadEmailAlertsSettings } from "../lib/settingsService";
 import { writeAuditLog } from "../lib/audit";
 import type { UpdateTask } from "../types/models";
 import { buildBlockedTaskReminderEmail } from "../lib/emailTemplates";
+import { assertCosmosRuntimeMutation } from "../lib/dataBackend";
+import { getDataBackend } from "../lib/dataBackend";
+import { readSqlWorkflowTasks } from "../lib/workflowTasksSqlRepository";
+import { enqueueSqlEmail } from "../lib/emailOutboxSqlRepository";
 
 function bogotaNow(): Date {
   return new Date(Date.now() - 5 * 3600_000);
@@ -41,6 +45,8 @@ async function markSent(taskId: string, daysAfter: number, recipients: string[])
 }
 
 export async function ejecutarRecordatoriosBloqueos(log: (message: string) => void, now = bogotaNow()): Promise<{ enviados: number }> {
+  const sqlBackend = getDataBackend() === "sql";
+  if (!sqlBackend) assertCosmosRuntimeMutation("El envío de recordatorios de bloqueos");
   const settings = await loadEmailAlertsSettings();
   if (!settings.blockedReminderEnabled) return { enviados: 0 };
   const hhmm = now.toISOString().slice(11, 16);
@@ -54,15 +60,16 @@ export async function ejecutarRecordatoriosBloqueos(log: (message: string) => vo
   }
 
   const today = now.toISOString().slice(0, 10);
-  const { resources: tasks } = await getContainer("updateTasks")
-    .items.query<UpdateTask>({ query: "SELECT * FROM c WHERE c.status = 'blocked'" })
-    .fetchAll();
+  const tasks = sqlBackend
+    ? await readSqlWorkflowTasks({ today, status: "blocked", operationalOnly: true })
+    : (await getContainer("updateTasks")
+      .items.query<UpdateTask>({ query: "SELECT * FROM c WHERE c.status = 'blocked'" }).fetchAll()).resources;
   let enviados = 0;
   for (const task of tasks) {
     if (!task.blockedAt) continue;
     const elapsed = daysBetweenIso(task.blockedAt, today);
     if (!days.includes(elapsed)) continue;
-    if (await wasSent(task.id, elapsed)) continue;
+    if (!sqlBackend && await wasSent(task.id, elapsed)) continue;
     const email = buildBlockedTaskReminderEmail({
       task: {
         clientName: task.clientName,
@@ -74,6 +81,18 @@ export async function ejecutarRecordatoriosBloqueos(log: (message: string) => vo
       },
       frontendBaseUrl: settings.frontendBaseUrl,
     });
+    if (sqlBackend) {
+      const queued = await enqueueSqlEmail({
+        type: "blocked_task_reminder",
+        idempotencyKey: `blockedReminder:${task.id}:${elapsed}`,
+        entityType: "task", entityId: task.id, taskId: task.id, sendDate: today,
+        subject: email.subject, html: email.html, text: email.text,
+        recipients: recipients.map((recipient) => ({ email: recipient })),
+        metadata: { daysAfter: elapsed, recipientsCount: recipients.length },
+      });
+      if (queued.created) enviados++;
+      continue;
+    }
     const result = await sendEmail({ to: recipients, subject: email.subject, html: email.html, text: email.text }, settings);
     await writeAuditLog({
       entityType: "task",

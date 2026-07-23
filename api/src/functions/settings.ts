@@ -6,8 +6,11 @@ import { loadEmailAlertsSettings, sanitizeForResponse, saveEmailAlertsSettings }
 import { buildTestEmail, sendEmail } from "../lib/emailService";
 import { badRequest, forbidden, ok, serverError } from "../lib/http";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
+import { assertCosmosRuntimeMutation, getDataBackend } from "../lib/dataBackend";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import { canEditEmailAlerts, canSendTestEmail, canViewEmailAlerts } from "../lib/managementAccess";
+import { enqueueSqlEmail } from "../lib/emailOutboxSqlRepository";
+import { randomUUID } from "node:crypto";
 
 async function getProfile(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -127,6 +130,7 @@ app.http("settingsEmailAlertsTestEmail", {
     try {
       const admin = await getProfile(req);
       if (!canSendTestEmail(admin, await loadRoleDefinitions())) return forbidden();
+      if (getDataBackend() !== "sql") assertCosmosRuntimeMutation("El envío de correos de prueba");
       const body = await req.json();
       const parsed = TestSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
@@ -141,6 +145,16 @@ app.http("settingsEmailAlertsTestEmail", {
         sentAt: new Date(),
         timezone: process.env.APP_TIMEZONE || "America/Bogota",
       });
+      if (getDataBackend() === "sql") {
+        const queued = await enqueueSqlEmail({
+          type: "test_email",
+          idempotencyKey: `test-email:${admin.id}:${randomUUID()}`,
+          entityType: "settings", entityId: "email-alerts", subject: email.subject,
+          text: email.text, html: email.html, recipients: [{ email: parsed.data.to, name: admin.displayName }],
+          metadata: { test: true, provider: settings.emailProvider }, createdBy: admin.id,
+        });
+        return ok({ ok: queued.created, message: queued.created ? "Correo de prueba puesto en cola correctamente." : "El correo de prueba ya estaba en cola." });
+      }
       const r = await sendEmail({
         to: parsed.data.to,
         subject: email.subject,

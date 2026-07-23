@@ -184,7 +184,6 @@ export type LicenseAssignmentRecord = {
 export type FuenteFormatoRecord = {
   id: string;
   nombre: string;
-  descripcion?: string;
   activa: boolean;
   status: EntityStatus;
   createdAt: string;
@@ -210,9 +209,15 @@ export type FormatoImpresionRecord = {
   licenciaModuloId?: string;
   licenciaModuloNombre?: string;
   licenciaModuloCodigo?: string;
-  pdfBase64: string;
+  /** Legacy compatibility only. New PDFs live in private Blob Storage. */
+  pdfBase64?: string;
   pdfNombreOriginal: string;
   pdfMimeType: "application/pdf";
+  pdfBytes?: number;
+  pdfStorageProvider?: "azure_blob";
+  pdfBlobContainer?: string;
+  pdfBlobName?: string;
+  pdfSha256?: string;
   activo: boolean;
   status: EntityStatus;
   createdAt: string;
@@ -246,10 +251,17 @@ export type PublicDownloadDocumentRecord = {
   titulo: string;
   slug: string;
   descripcion?: string;
+  assetKind?: "document" | "video";
   archivoNombreOriginal: string;
   archivoMimeType: string;
-  archivoBase64: string;
+  /** Legacy compatibility only. New files live in private Blob Storage. */
+  archivoBase64?: string;
   archivoBytes: number;
+  archivoStorageProvider?: "azure_blob";
+  archivoBlobContainer?: string;
+  archivoBlobName?: string;
+  archivoBlobEtag?: string;
+  archivoSha256?: string;
   activo: boolean;
   status: EntityStatus;
   createdAt: string;

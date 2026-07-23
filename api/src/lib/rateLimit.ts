@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import type { HttpRequest, HttpResponseInit } from "@azure/functions";
 import { getContainer } from "./cosmos";
 import { writeAuditLog } from "./audit";
+import { sqlSecurityRuntimeEnabled } from "./dataBackend";
 
 export type RateLimitPolicy = {
   maxAttempts: number;
@@ -33,6 +34,12 @@ export interface RateLimitStore {
   create(record: RateLimitRecord): Promise<void>;
   replace(record: RateLimitRecord, etag?: string): Promise<void>;
   delete(id: string): Promise<void>;
+  consumeAtomic?(args: {
+    id: string;
+    scope: string;
+    keyType: "ip" | "identity";
+    evaluate: (existing: RateLimitRecord | null) => RateLimitDecision;
+  }): Promise<RateLimitDecision>;
 }
 
 export const RATE_LIMIT_POLICIES = {
@@ -149,6 +156,15 @@ class CosmosRateLimitStore implements RateLimitStore {
 
 const cosmosStore = new CosmosRateLimitStore();
 
+async function resolveRateLimitStore(explicit?: RateLimitStore): Promise<RateLimitStore> {
+  if (explicit) return explicit;
+  if (sqlSecurityRuntimeEnabled()) {
+    const { sqlRateLimitStore } = await import("./securityRateLimitSqlRepository");
+    return sqlRateLimitStore;
+  }
+  return cosmosStore;
+}
+
 function isConflict(error: any): boolean {
   return error?.code === 409 || error?.statusCode === 409 || error?.code === 412 || error?.statusCode === 412;
 }
@@ -161,8 +177,22 @@ export async function consumeRateLimit(args: {
   nowMs?: number;
   store?: RateLimitStore;
 }): Promise<RateLimitDecision> {
-  const store = args.store ?? cosmosStore;
+  const store = await resolveRateLimitStore(args.store);
   const id = hashRateLimitKey(args.scope, args.keyType, args.key);
+  if (store.consumeAtomic) {
+    return store.consumeAtomic({
+      id,
+      scope: args.scope,
+      keyType: args.keyType,
+      evaluate: (existing) => evaluateRateLimit(existing, {
+        id,
+        scope: args.scope,
+        keyType: args.keyType,
+        policy: args.policy,
+        nowMs: args.nowMs ?? Date.now(),
+      }),
+    });
+  }
   for (let attempt = 0; attempt < 5; attempt++) {
     const existing = await store.read(id);
     const decision = evaluateRateLimit(existing, {
@@ -192,14 +222,14 @@ export async function peekRateLimit(args: {
   store?: RateLimitStore;
 }): Promise<{ blocked: boolean; retryAfterSeconds: number }> {
   const id = hashRateLimitKey(args.scope, args.keyType, args.key);
-  const record = await (args.store ?? cosmosStore).read(id);
+  const record = await (await resolveRateLimitStore(args.store)).read(id);
   const nowMs = args.nowMs ?? Date.now();
   const retry = retryAfter(record?.blockedUntil, nowMs);
   return { blocked: retry > 0, retryAfterSeconds: retry };
 }
 
 export async function resetRateLimit(scope: string, keyType: "ip" | "identity", key: string, store?: RateLimitStore): Promise<void> {
-  await (store ?? cosmosStore).delete(hashRateLimitKey(scope, keyType, key));
+  await (await resolveRateLimitStore(store)).delete(hashRateLimitKey(scope, keyType, key));
 }
 
 export function tooManyRequests(retryAfterSeconds: number): HttpResponseInit {

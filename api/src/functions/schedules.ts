@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
+import { getDataBackend } from "../lib/dataBackend";
 import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
 import {
   canCreateSchedule,
@@ -14,13 +15,23 @@ import {
   canReactivateSchedule,
   canViewSchedules,
 } from "../lib/managementAccess";
-import { getPagination, paginateArray } from "../lib/pagination";
+import { getPagination, paginateArray, type PageResult } from "../lib/pagination";
 import { matchesScheduleSearch } from "../lib/listSearch";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import { generateGenericScheduleName, inferScheduleRole, normalizeFrequencyResponsibility, validateFrequency, validateScheduleRoleAssignments } from "../lib/scheduleService";
 import { filterSchedulesByOrigin } from "../lib/scheduleFilters";
 import { previewLicensingScope } from "../lib/licensingScope";
 import { markTaskCancelledForOneTimeReschedule, shouldCancelTaskForOneTimeReschedule } from "../lib/scheduleReschedule";
+import { readSqlSchedules } from "../lib/schedulingSqlRepository";
+import {
+  createSqlSchedule,
+  deleteSqlSchedule,
+  setSqlScheduleActive,
+  updateSqlSchedule,
+} from "../lib/schedulingSqlWriteRepository";
+import { readSqlClients } from "../lib/clientsSqlRepository";
+import { readSqlDomains, readSqlPublicDatabases } from "../lib/coreMastersSqlRepository";
+import { readSqlLicenseModules } from "../lib/licensingSqlRepository";
 import { rootScheduleId } from "../lib/taskGenerator";
 import { runTaskGeneration } from "./generateDailyUpdateTasks";
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, LicensingScope, UpdateSchedule, UpdateTask } from "../types/models";
@@ -135,6 +146,10 @@ async function getUserOrFail(req: HttpRequest) {
   return profile;
 }
 
+function resultCount<T>(result: T[] | PageResult<T>): number {
+  return Array.isArray(result) ? result.length : result.total;
+}
+
 const Weekdays = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"] as const;
 const FrequencyTypes = ["once", "weekly", "interval", "monthly", "manual"] as const;
 
@@ -202,6 +217,21 @@ const LicensingPreviewSchema = z.union([
 ]);
 
 async function loadLicensingScopeData() {
+  if (getDataBackend() === "sql") {
+    const pagination = { enabled: false, page: 1, pageSize: 500 };
+    const [clients, domainsResult, databasesResult, modulesResult] = await Promise.all([
+      readSqlClients(),
+      readSqlDomains({ excludeDeleted: true }, pagination),
+      readSqlPublicDatabases({ visibility: "not-deleted" }, pagination),
+      readSqlLicenseModules({ includeDeleted: false }, pagination),
+    ]);
+    return {
+      clients,
+      domains: Array.isArray(domainsResult) ? domainsResult : domainsResult.items,
+      databases: (Array.isArray(databasesResult) ? databasesResult : databasesResult.items) as DatabaseRecord[],
+      licenseModules: Array.isArray(modulesResult) ? modulesResult : modulesResult.items,
+    };
+  }
   const [{ resources: clients }, { resources: domains }, { resources: databases }, modulesResult] = await Promise.all([
     getContainer("clients").items.readAll<ClientRecord>().fetchAll(),
     getContainer("domains").items.readAll<DomainRecord>().fetchAll(),
@@ -306,6 +336,10 @@ app.http("schedulesList", {
       const clientId = req.query.get("clientId");
       const origin = req.query.get("origin");
       const search = req.query.get("search");
+      const pagination = getPagination(req);
+      const backend = getDataBackend();
+      const sqlFilters = { clientId, origin, search };
+      if (backend === "sql") return ok(await readSqlSchedules(sqlFilters, pagination, bogotaTodayIso()));
       const querySpec = clientId
         ? { query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: clientId }] }
         : { query: "SELECT * FROM c" };
@@ -320,9 +354,12 @@ app.http("schedulesList", {
       const summaries = await buildScheduleSummaries(bogotaTodayIso());
       const vacio: ScheduleSummary = { proximas: 0, vencidas: 0, conError: 0, completadas: 0, requiereAtencion: false };
       const items = filtered.map((s) => ({ ...s, summary: summaries.get(s.id) ?? vacio }));
-      const pagination = getPagination(req);
-      if (pagination.enabled) return ok(paginateArray(items, pagination.page, pagination.pageSize));
-      return ok(items);
+      const primary = pagination.enabled ? paginateArray(items, pagination.page, pagination.pageSize) : items;
+      if (backend === "dual-read") {
+        const shadow = await readSqlSchedules(sqlFilters, pagination, bogotaTodayIso());
+        if (resultCount(primary) !== resultCount(shadow)) console.warn("Schedules dual-read parity mismatch.");
+      }
+      return ok(primary);
     } catch (e) {
       return serverError(e);
     }
@@ -404,6 +441,11 @@ app.http("schedulesCreate", {
         updatedAt: now,
         updatedBy: user.id,
       };
+      if (getDataBackend() === "sql") {
+        const createdSchedule = await createSqlSchedule(record, { id: user.id, email: user.email });
+        await regenerarTareasTrasGuardar();
+        return created(createdSchedule);
+      }
       await getContainer("updateSchedules").items.create(record);
       await writeAuditLog({
         entityType: "schedule",
@@ -425,10 +467,21 @@ app.http("schedulesCreate", {
 });
 
 async function findSchedule(id: string): Promise<UpdateSchedule | null> {
+  const backend = getDataBackend();
+  if (backend === "sql") {
+    const result = await readSqlSchedules({ sourceId: id }, { enabled: false, page: 1, pageSize: 1 }, bogotaTodayIso());
+    return Array.isArray(result) ? result[0] ?? null : result.items[0] ?? null;
+  }
   const { resources } = await getContainer("updateSchedules")
     .items.query<UpdateSchedule>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })
     .fetchAll();
-  return resources[0] ?? null;
+  const primary = resources[0] ?? null;
+  if (backend === "dual-read") {
+    const shadow = await readSqlSchedules({ sourceId: id }, { enabled: false, page: 1, pageSize: 1 }, bogotaTodayIso());
+    const sqlItem = Array.isArray(shadow) ? shadow[0] ?? null : shadow.items[0] ?? null;
+    if (Boolean(primary) !== Boolean(sqlItem)) console.warn("Schedule detail dual-read parity mismatch.");
+  }
+  return primary;
 }
 
 app.http("schedulesGet", {
@@ -516,6 +569,12 @@ app.http("schedulesUpdate", {
         updatedAt: new Date().toISOString(),
         updatedBy: user.id,
       };
+      if (getDataBackend() === "sql") {
+        const result = await updateSqlSchedule(existing, merged, { id: user.id, email: user.email });
+        if (!result) return notFound();
+        await regenerarTareasTrasGuardar();
+        return ok(result.schedule);
+      }
       await getContainer("updateSchedules").item(existing.id, existing.clientId).replace(merged);
       const cancelledTasks = await cancelOpenTasksForOneTimeReschedule({ before: existing, after: merged, user });
       await writeAuditLog({
@@ -577,6 +636,12 @@ async function setScheduleStatus(req: HttpRequest, action: string, active: boole
   if (active) { s.completedAt = null; s.completedReason = null; }
   s.updatedAt = new Date().toISOString();
   s.updatedBy = user.id;
+  if (getDataBackend() === "sql") {
+    const updated = await setSqlScheduleActive(s, active, { id: user.id, email: user.email }, action);
+    if (!updated) return notFound();
+    if (active) await regenerarTareasTrasGuardar();
+    return ok(updated);
+  }
   await getContainer("updateSchedules").item(s.id, s.clientId).replace(s);
   await writeAuditLog({ entityType: "schedule", entityId: s.id, clientId: s.clientId, clientName: s.clientName, action, performedBy: user.id, performedByEmail: user.email, after: { active } });
   if (active) {
@@ -603,6 +668,12 @@ app.http("schedulesDelete", {
       if (!canDeleteSchedule(user, roleDefinitions)) return forbidden();
       const s = await findSchedule(req.params.id);
       if (!s) return notFound();
+      if (getDataBackend() === "sql") {
+        const result = await deleteSqlSchedule(s, { id: user.id, email: user.email });
+        if (!result.deleted) return notFound();
+        await regenerarTareasTrasGuardar();
+        return noContent();
+      }
       // Cancelar tareas abiertas antes de eliminar la programación.
       const cancelled = await cancelarTareasAbiertasDeProgramacion(s, user);
       try {

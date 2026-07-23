@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
+import { getDataBackend } from "../lib/dataBackend";
 import { cancelPendingTasksForDomain } from "../lib/taskCleanup";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import {
@@ -15,13 +16,16 @@ import {
   canViewDomains,
   canViewRelatedDomainDatabases,
 } from "../lib/managementAccess";
-import { getPagination, paginateArray } from "../lib/pagination";
+import { getPagination, paginateArray, type PageResult } from "../lib/pagination";
 import { matchesDomainSearch } from "../lib/listSearch";
 import { hasDuplicateDomainUrl } from "../lib/duplicateValidation";
 import { isAllowedEnvironment } from "../lib/environments";
 import { isValidHttpsDomain } from "../lib/inputValidation";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import { toPublicDatabase } from "../lib/publicDtos";
+import { readSqlDomains, readSqlPublicDatabases, type DomainFilters } from "../lib/coreMastersSqlRepository";
+import { createSqlDomain, setSqlDomainStatus, updateSqlDomain } from "../lib/domainsSqlWriteRepository";
+import { deleteSqlCoreCascade } from "../lib/coreCascadeSqlRepository";
 import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
@@ -29,6 +33,26 @@ async function getUserOrFail(req: HttpRequest) {
   const profile = await loadUserProfile(auth);
   if (!profile) throw Object.assign(new Error("Usuario no registrado."), { status: 403 });
   return profile;
+}
+
+function resultCount<T>(result: T[] | PageResult<T>): number {
+  return Array.isArray(result) ? result.length : result.total;
+}
+
+async function readDomain(id: string): Promise<DomainRecord | null> {
+  const backend = getDataBackend();
+  if (backend === "sql") {
+    const result = await readSqlDomains({ sourceId: id }, { enabled: false, page: 1, pageSize: 1 });
+    return Array.isArray(result) ? result[0] ?? null : result.items[0] ?? null;
+  }
+  const { resources } = await getContainer("domains")
+    .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })
+    .fetchAll();
+  if (backend === "dual-read") {
+    const shadow = await readSqlDomains({ sourceId: id }, { enabled: false, page: 1, pageSize: 1 });
+    if (Boolean(resources[0]) !== (resultCount(shadow) > 0)) console.warn("Domain detail dual-read parity mismatch.");
+  }
+  return resources[0] ?? null;
 }
 
 const DomainSchema = z.object({
@@ -50,18 +74,31 @@ app.http("domainsList", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canViewDomains(user, roleDefinitions)) return forbidden();
-      const container = getContainer("domains");
       const clientId = req.query.get("clientId");
       const status = req.query.get("status");
       const environment = req.query.get("environment");
       const search = req.query.get("search");
       const responsable = req.query.get("responsable");
       const recurring = req.query.get("recurring");
+      const includeDeleted = req.query.get("includeDeleted") === "true";
+      const canReadDeleted = canDeleteDomain(user, roleDefinitions) || canReactivateDomain(user, roleDefinitions);
+      const pagination = getPagination(req);
+      const sqlFilters: DomainFilters = {
+        clientId: clientId ?? undefined,
+        status: status ?? undefined,
+        environment: environment ?? undefined,
+        search: search?.trim().toLowerCase() || undefined,
+        responsable: responsable ?? undefined,
+        recurring: recurring === "with" || recurring === "without" ? recurring : undefined,
+        excludeDeleted: !canReadDeleted || (!includeDeleted && !status),
+      };
+      const backend = getDataBackend();
+      if (backend === "sql") return ok(await readSqlDomains(sqlFilters, pagination));
+      const container = getContainer("domains");
       const querySpec = clientId
         ? { query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: clientId }] }
         : { query: "SELECT * FROM c" };
       const { resources } = await container.items.query<DomainRecord>(querySpec).fetchAll();
-      const includeDeleted = req.query.get("includeDeleted") === "true";
       let items = resources;
       if (!canDeleteDomain(user, roleDefinitions) && !canReactivateDomain(user, roleDefinitions)) items = items.filter((domain) => domain.status !== "deleted");
       if (!includeDeleted && !status) items = items.filter((d) => d.status !== "deleted");
@@ -80,9 +117,12 @@ app.http("domainsList", {
         );
         items = items.filter((domain) => recurring === "with" ? recurrentDomainIds.has(domain.id) : !recurrentDomainIds.has(domain.id));
       }
-      const pagination = getPagination(req);
-      if (pagination.enabled) return ok(paginateArray(items, pagination.page, pagination.pageSize));
-      return ok(items);
+      const primary = pagination.enabled ? paginateArray(items, pagination.page, pagination.pageSize) : items;
+      if (backend === "dual-read") {
+        const shadow = await readSqlDomains(sqlFilters, pagination);
+        if (resultCount(primary) !== resultCount(shadow)) console.warn("Domains dual-read parity mismatch.");
+      }
+      return ok(primary);
     } catch (e) {
       return serverError(e);
     }
@@ -103,6 +143,15 @@ app.http("domainsCreate", {
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       if (!isAllowedEnvironment(parsed.data.environment)) return badRequest("El ambiente debe ser Producción, Pruebas o Demo.");
       if (!isValidHttpsDomain(parsed.data.domainName)) return badRequest("El dominio debe iniciar con https://");
+      if (getDataBackend() === "sql") {
+        const record = await createSqlDomain(
+          `domain_${randomUUID()}`,
+          parsed.data.clientId,
+          parsed.data,
+          { id: user.id, email: user.email },
+        );
+        return created(record);
+      }
       const { resources: existingDomains } = await getContainer("domains").items.readAll<DomainRecord>().fetchAll();
       if (hasDuplicateDomainUrl(existingDomains, parsed.data.domainName)) return conflict("Ya existe un dominio con esta URL.");
       const { resource: client } = await getContainer("clients").item(parsed.data.clientId, parsed.data.clientId).read<ClientRecord>();
@@ -157,12 +206,10 @@ app.http("domainsGet", {
       const roleDefinitions = await loadRoleDefinitions();
       if (!canViewDomains(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
-      const { resources } = await getContainer("domains")
-        .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })
-        .fetchAll();
-      if (!resources.length) return notFound("Dominio no encontrado.");
-      if (resources[0].status === "deleted" && !canDeleteDomain(user, roleDefinitions) && !canReactivateDomain(user, roleDefinitions)) return forbidden("No tiene permisos para consultar este dominio.");
-      return ok(resources[0]);
+      const domain = await readDomain(id);
+      if (!domain) return notFound("Dominio no encontrado.");
+      if (domain.status === "deleted" && !canDeleteDomain(user, roleDefinitions) && !canReactivateDomain(user, roleDefinitions)) return forbidden("No tiene permisos para consultar este dominio.");
+      return ok(domain);
     } catch (e) {
       return serverError(e);
     }
@@ -180,11 +227,15 @@ app.http("domainsDatabases", {
       if (!canViewRelatedDomainDatabases(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
       const includeDeleted = req.query.get("includeDeleted") === "true" && (canDeleteDomain(user, roleDefinitions) || canReactivateDomain(user, roleDefinitions));
-      const { resources: domains } = await getContainer("domains")
-        .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })
-        .fetchAll();
-      if (!domains.length || (!includeDeleted && domains[0].status === "deleted")) return notFound("Dominio no encontrado.");
-      const domain = domains[0];
+      const domain = await readDomain(id);
+      if (!domain || (!includeDeleted && domain.status === "deleted")) return notFound("Dominio no encontrado.");
+      const backend = getDataBackend();
+      if (backend === "sql") {
+        return ok(await readSqlPublicDatabases(
+          { domainId: id, visibility: includeDeleted ? "all" : "active" },
+          { enabled: false, page: 1, pageSize: 100 }
+        ));
+      }
       const { resources } = await getContainer("databases")
         .items.query<DatabaseRecord>({
           query: includeDeleted
@@ -193,8 +244,15 @@ app.http("domainsDatabases", {
           parameters: [{ name: "@d", value: id }],
         })
         .fetchAll();
-      return ok(resources
-        .map(toPublicDatabase));
+      const primary = resources.map(toPublicDatabase);
+      if (backend === "dual-read") {
+        const shadow = await readSqlPublicDatabases(
+          { domainId: id, visibility: includeDeleted ? "all" : "active" },
+          { enabled: false, page: 1, pageSize: 100 }
+        );
+        if (resultCount(primary) !== resultCount(shadow)) console.warn("Domain databases dual-read parity mismatch.");
+      }
+      return ok(primary);
     } catch (e) {
       return serverError(e);
     }
@@ -211,16 +269,26 @@ app.http("domainsUpdate", {
       const roleDefinitions = await loadRoleDefinitions();
       if (!canEditDomain(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
+      const body = await req.json() as any;
+      if (typeof body.environment === "string" && !isAllowedEnvironment(body.environment)) return badRequest("El ambiente debe ser Producción, Pruebas o Demo.");
+      if (typeof body.domainName === "string" && !isValidHttpsDomain(body.domainName)) return badRequest("El dominio debe iniciar con https://");
+      if (getDataBackend() === "sql") {
+        const updated = await updateSqlDomain(id, {
+          ...(typeof body.domainName === "string" ? { domainName: body.domainName } : {}),
+          ...(typeof body.environment === "string" ? { environment: body.environment } : {}),
+          ...(typeof body.currentWebVersion === "string" ? { currentWebVersion: body.currentWebVersion } : {}),
+          ...(Array.isArray(body.assignedUpdaterIds) ? { assignedUpdaterIds: body.assignedUpdaterIds } : {}),
+          ...(typeof body.notes === "string" ? { notes: body.notes } : {}),
+        }, { id: user.id, email: user.email });
+        return updated ? ok(updated) : notFound("Dominio no encontrado.");
+      }
       const container = getContainer("domains");
       const { resources } = await container
         .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })
         .fetchAll();
       if (!resources.length) return notFound("Dominio no encontrado.");
       const existing = resources[0];
-      const body = await req.json() as any;
-      if (typeof body.environment === "string" && !isAllowedEnvironment(body.environment)) return badRequest("El ambiente debe ser Producción, Pruebas o Demo.");
       if (typeof body.domainName === "string") {
-        if (!isValidHttpsDomain(body.domainName)) return badRequest("El dominio debe iniciar con https://");
         const { resources: existingDomains } = await container.items.readAll<DomainRecord>().fetchAll();
         if (hasDuplicateDomainUrl(existingDomains, body.domainName, id)) return conflict("Ya existe un dominio con esta URL.");
       }
@@ -265,6 +333,16 @@ async function setDomainStatus(req: HttpRequest, action: "domain_deactivated" | 
   const allowed = status === "active" ? canReactivateDomain(user, roleDefinitions) : canDeactivateDomain(user, roleDefinitions);
   if (!allowed) return forbidden();
   const id = req.params.id;
+  if (getDataBackend() === "sql") {
+    const result = await setSqlDomainStatus(
+      id,
+      status,
+      action,
+      { id: user.id, email: user.email },
+      status === "inactive" ? "target_domain_inactive" : undefined,
+    );
+    return result ? ok(result.domain) : notFound("Dominio no encontrado.");
+  }
   const container = getContainer("domains");
   const { resources } = await container
     .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })
@@ -301,6 +379,12 @@ app.http("domainsDelete", {
       if (!canDeleteDomain(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
       const cascade = req.query.get("cascade") === "true";
+      if (getDataBackend() === "sql") {
+        const result = await deleteSqlCoreCascade("domain", id, cascade, { id: user.id, email: user.email });
+        if (!result.found) return notFound("Dominio no encontrado.");
+        if (result.requiresCascade) return conflict("El dominio tiene dependencias. Confirme eliminación en cascada.", { dependencies: result.dependencies });
+        return ok({ ok: true, deleted: { ...result.dependencies, obsoletedTasks: result.obsoletedTasks, cascadeSchedules: result.cascadeSchedules } });
+      }
       const container = getContainer("domains");
       const { resources } = await container
         .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })

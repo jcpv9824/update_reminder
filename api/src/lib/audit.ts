@@ -100,19 +100,21 @@ const ENTITY_SNAPSHOT_SCHEMAS: Record<string, AuditSchema> = {
     createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
   },
   licenseModule: {
-    id: "scalar", name: "scalar", code: "scalar", status: "scalar",
+    id: "scalar", name: "scalar", code: "scalar", description: "scalar", status: "scalar", active: "scalar", notes: "scalar",
     createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
     deletedAt: "scalar", deletedBy: "scalar",
   },
   licenseAssignment: {
-    id: "scalar", licenseModuleId: "scalar", licenseModuleName: "scalar", assignmentLevel: "scalar",
+    id: "scalar", moduleId: "scalar", moduleName: "scalar", moduleCode: "scalar",
+    targetType: "scalar", targetId: "scalar", active: "scalar",
+    licenseModuleId: "scalar", licenseModuleName: "scalar", assignmentLevel: "scalar",
     clientId: "scalar", clientName: "scalar", domainId: "scalar", domainName: "scalar",
     databaseId: "scalar", databaseName: "scalar", environment: "scalar", status: "scalar",
     createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
     deletedAt: "scalar", deletedBy: "scalar",
   },
   fuenteFormato: {
-    id: "scalar", nombre: "scalar", descripcion: "scalar", activa: "scalar",
+    id: "scalar", nombre: "scalar", activa: "scalar",
     status: "scalar", createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
     deletedAt: "scalar", deletedBy: "scalar",
   },
@@ -132,7 +134,7 @@ const ENTITY_SNAPSHOT_SCHEMAS: Record<string, AuditSchema> = {
   },
   publicDownloadDocument: {
     id: "scalar", sectionId: "scalar", sectionName: "scalar", sectionSlug: "scalar",
-    titulo: "scalar", slug: "scalar", descripcion: "scalar", archivoNombreOriginal: "scalar",
+    titulo: "scalar", slug: "scalar", descripcion: "scalar", assetKind: "scalar", archivoNombreOriginal: "scalar",
     archivoMimeType: "scalar", archivoBytes: "scalar", activo: "scalar", status: "scalar",
     createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",
     deletedAt: "scalar", deletedBy: "scalar",
@@ -172,6 +174,8 @@ const ACTION_METADATA_SCHEMAS: Record<string, AuditSchema> = {
   user_password_reset: fields("setup"),
   password_notification_sent: fields("kind", "includedPassword"),
   password_notification_failed: fields("kind", "includedPassword"),
+  task_status_notification_sent: fields("notificationType"),
+  task_status_notification_failed: fields("notificationType"),
   client_deleted_cascade: cascadeFields,
   domain_deleted_cascade: cascadeFields,
   database_deleted_cascade: cascadeFields,
@@ -226,9 +230,9 @@ const ACTION_METADATA_SCHEMAS: Record<string, AuditSchema> = {
   public_download_section_created: fields(),
   public_download_section_updated: fields(),
   public_download_section_deleted: fields(),
-  public_download_document_created: fields("fileLoaded"),
+  public_download_document_created: fields("fileLoaded", "assetKind"),
   public_download_document_updated: fields(),
-  public_download_document_file_replaced: fields("previousFileName", "newFileName"),
+  public_download_document_file_replaced: fields("previousFileName", "newFileName", "assetKind"),
   public_download_document_deleted: fields(),
 };
 
@@ -340,6 +344,11 @@ export function sanitizeStoredAuditLogEntry(entry: AuditLog): AuditLog {
 // Solo este builder puede crear documentos de auditoria. Los handlers nunca
 // deben persistir req, headers, cookies ni cuerpos HTTP completos.
 export async function writeAuditLog(input: BuildAuditLogInput): Promise<AuditLog> {
+  const { getDataBackend } = await import("./dataBackend");
+  if (getDataBackend() === "sql") {
+    const { appendSqlAuditLog } = await import("./auditSqlWriter");
+    return appendSqlAuditLog(input);
+  }
   const entry = buildAuditLogEntry(input);
   const { getContainer } = await import("./cosmos");
   const container = getContainer("auditLogs");

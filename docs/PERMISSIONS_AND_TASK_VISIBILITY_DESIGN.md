@@ -148,6 +148,8 @@ Task actions still require task visibility. For example, `updates.tasks.complete
 - `delete_document`
 - `replace_file`
 
+Las claves internas `*_document` se conservan por compatibilidad, pero en la interfaz representan archivos públicos y cubren tanto documentos como videos. Las secciones son categorías y prefijos de URL, no archivos duplicados.
+
 ### Configuración
 
 `configuration.alerts`

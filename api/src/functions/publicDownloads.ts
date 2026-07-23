@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
+import { getDataBackend } from "../lib/dataBackend";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import {
   canCreatePublicDownloadDocument,
@@ -16,46 +17,28 @@ import {
   canViewPublicDownloadsAdmin,
 } from "../lib/managementAccess";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
+import {
+  decodePublicDownloadFile,
+  MAX_LEGACY_COSMOS_FILE_BYTES,
+} from "../lib/publicDownloadFiles";
+import {
+  createPublicDownloadBlobUrl,
+  deletePublicDownloadBlobIfUnreferenced,
+  isPublicDownloadBlobStorageConfigured,
+  storePublicDownloadBlob,
+} from "../lib/publicDownloadStorage";
+import { readSqlPublicDownloads } from "../lib/publicDownloadsSqlRepository";
+import {
+  createSqlPublicDownloadDocument,
+  createSqlPublicDownloadSection,
+  deleteSqlPublicDownloadDocument,
+  deleteSqlPublicDownloadSection,
+  updateSqlPublicDownloadDocument,
+  updateSqlPublicDownloadSection,
+} from "../lib/publicDownloadsSqlWriteRepository";
 import type { PublicDownloadDocumentRecord, PublicDownloadSectionRecord } from "../types/models";
 
-const MAX_FILE_BYTES = 8_000_000;
 const CONTAINER = "publicDownloads";
-
-const ALLOWED_EXTENSIONS = new Set([
-  ".pdf",
-  ".doc",
-  ".docx",
-  ".xls",
-  ".xlsx",
-  ".ppt",
-  ".pptx",
-  ".vsd",
-  ".vsdx",
-  ".html",
-  ".htm",
-  ".md",
-  ".txt",
-  ".csv",
-  ".url",
-]);
-
-const MIME_TYPES: Record<string, string> = {
-  ".pdf": "application/pdf",
-  ".doc": "application/msword",
-  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ".xls": "application/vnd.ms-excel",
-  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  ".ppt": "application/vnd.ms-powerpoint",
-  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  ".vsd": "application/vnd.visio",
-  ".vsdx": "application/vnd.ms-visio.drawing",
-  ".html": "text/html; charset=utf-8",
-  ".htm": "text/html; charset=utf-8",
-  ".md": "text/markdown; charset=utf-8",
-  ".txt": "text/plain; charset=utf-8",
-  ".csv": "text/csv; charset=utf-8",
-  ".url": "text/plain; charset=utf-8",
-};
 
 const SectionSchema = z.object({
   nombre: z.string().min(1, "El nombre de la sección es obligatorio.").max(160),
@@ -68,7 +51,7 @@ const SectionUpdateSchema = SectionSchema.partial();
 
 const DocumentSchema = z.object({
   sectionId: z.string().min(1, "La sección es obligatoria."),
-  titulo: z.string().min(1, "El título del documento es obligatorio.").max(180),
+  titulo: z.string().min(1, "El título del archivo es obligatorio.").max(180),
   slug: z.string().max(140).optional(),
   descripcion: z.string().max(1200).optional(),
   activo: z.boolean().default(true),
@@ -105,12 +88,6 @@ function slugify(value: string): string {
   return slug || `descarga-${randomUUID().slice(0, 8)}`;
 }
 
-function fileExtension(filename: string): string {
-  const clean = filename.trim().toLowerCase();
-  const idx = clean.lastIndexOf(".");
-  return idx >= 0 ? clean.slice(idx) : "";
-}
-
 function sanitizeFileName(name: string): string {
   return name.trim().replace(/[\\/:*?"<>|]+/g, "-");
 }
@@ -122,24 +99,11 @@ function encodeContentDispositionFilename(filename: string): string {
 }
 
 function decodeFile(input: { archivoBase64: string; archivoNombreOriginal: string; archivoMimeType?: string }) {
-  const filename = sanitizeFileName(input.archivoNombreOriginal);
-  const ext = fileExtension(filename);
-  if (!ALLOWED_EXTENSIONS.has(ext)) {
-    return badRequest("Tipo de archivo no permitido para descargas públicas.");
-  }
-  let bytes: Buffer;
   try {
-    bytes = Buffer.from(input.archivoBase64, "base64");
-  } catch {
-    return badRequest("El archivo no tiene un contenido válido.");
+    return decodePublicDownloadFile(input);
+  } catch (error) {
+    return badRequest((error as Error).message);
   }
-  if (bytes.length === 0) return badRequest("El archivo es obligatorio.");
-  if (bytes.length > MAX_FILE_BYTES) return badRequest("El archivo supera el tamaño máximo permitido para descargas públicas.");
-  return {
-    bytes,
-    filename,
-    mimeType: input.archivoMimeType?.trim() || MIME_TYPES[ext] || "application/octet-stream",
-  };
 }
 
 function isHttpResponse(value: unknown): value is HttpResponseInit {
@@ -152,17 +116,89 @@ function sanitizeSection(record: PublicDownloadSectionRecord) {
 }
 
 function sanitizeDocument(record: PublicDownloadDocumentRecord) {
-  const { type, archivoBase64, _rid, _self, _etag, _attachments, _ts, ...rest } = record as PublicDownloadDocumentRecord & Record<string, unknown>;
+  const {
+    type, archivoBase64, archivoBlobContainer, archivoBlobName, archivoBlobEtag, archivoSha256,
+    archivoStorageProvider, _rid, _self, _etag, _attachments, _ts, ...rest
+  } = record as PublicDownloadDocumentRecord & Record<string, unknown>;
   return {
     ...rest,
+    assetKind: record.assetKind ?? (record.archivoMimeType.toLowerCase().startsWith("video/") ? "video" : "document"),
     downloadUrl: `/api/public/downloads/${record.sectionSlug}/${record.slug}`,
     legacyDownloadUrl: `/api/public/descargas/${record.slug}`,
   };
 }
 
-async function readAll(): Promise<PublicDownloadRecord[]> {
+function auditDocument(record: PublicDownloadDocumentRecord) {
+  const sanitized = sanitizeDocument(record);
+  const { downloadUrl, legacyDownloadUrl, ...snapshot } = sanitized;
+  return snapshot;
+}
+
+async function storedFileFields(file: ReturnType<typeof decodePublicDownloadFile>): Promise<Partial<PublicDownloadDocumentRecord>> {
+  const shared = {
+    assetKind: file.assetKind,
+    archivoNombreOriginal: file.filename,
+    archivoMimeType: file.mimeType,
+    archivoBytes: file.byteCount,
+    archivoSha256: file.sha256,
+  };
+  if (isPublicDownloadBlobStorageConfigured()) {
+    return {
+      ...shared,
+      ...(await storePublicDownloadBlob(file)),
+      archivoBase64: undefined,
+    };
+  }
+  if (getDataBackend() === "sql") {
+    throw Object.assign(new Error("Configure Azure Blob Storage antes de guardar archivos en SQL."), { status: 503 });
+  }
+  if (file.assetKind === "video" || file.byteCount > MAX_LEGACY_COSMOS_FILE_BYTES) {
+    throw Object.assign(new Error("Configure el almacenamiento privado de archivos para cargar videos o archivos de este tamaño."), { status: 503 });
+  }
+  return { ...shared, archivoBase64: file.bytes.toString("base64") };
+}
+
+async function compensateUnreferencedBlob(record: Partial<PublicDownloadDocumentRecord>): Promise<void> {
+  if (record.archivoStorageProvider !== "azure_blob" || !record.archivoBlobContainer || !record.archivoBlobName) return;
+  try {
+    await deletePublicDownloadBlobIfUnreferenced({
+      containerName: record.archivoBlobContainer,
+      blobName: record.archivoBlobName,
+    });
+  } catch {
+    // The database error remains authoritative; an orphan scan can retry cleanup if SQL was unavailable.
+  }
+}
+
+async function readAllCosmos(): Promise<PublicDownloadRecord[]> {
   const { resources } = await getContainer(CONTAINER).items.readAll<PublicDownloadRecord>().fetchAll();
   return resources.filter((item: any) => item.status !== "deleted");
+}
+
+function parityView(records: PublicDownloadRecord[]) {
+  return records.map((record) => ("sectionId" in record ? {
+    type: "document", id: record.id, sectionId: record.sectionId, sectionSlug: record.sectionSlug,
+    titulo: record.titulo, slug: record.slug, descripcion: record.descripcion ?? null,
+    assetKind: record.assetKind ?? (record.archivoMimeType.startsWith("video/") ? "video" : "document"),
+    archivoNombreOriginal: record.archivoNombreOriginal, archivoMimeType: record.archivoMimeType,
+    archivoBytes: record.archivoBytes, activo: record.activo, status: record.status,
+  } : {
+    type: "section", id: record.id, nombre: record.nombre, slug: record.slug,
+    descripcion: record.descripcion ?? null, activa: record.activa, status: record.status,
+  })).sort((left, right) => `${left.type}:${left.id}`.localeCompare(`${right.type}:${right.id}`, "en"));
+}
+
+async function readAll(): Promise<PublicDownloadRecord[]> {
+  const backend = getDataBackend();
+  if (backend === "sql") return readSqlPublicDownloads();
+  const cosmos = await readAllCosmos();
+  if (backend === "dual-read") {
+    const sqlRecords = await readSqlPublicDownloads();
+    if (JSON.stringify(parityView(cosmos)) !== JSON.stringify(parityView(sqlRecords))) {
+      console.warn("Public Downloads dual-read parity mismatch.");
+    }
+  }
+  return cosmos;
 }
 
 async function readSections(): Promise<PublicDownloadSectionRecord[]> {
@@ -178,11 +214,13 @@ async function readDocuments(): Promise<PublicDownloadDocumentRecord[]> {
 }
 
 async function readSection(id: string): Promise<PublicDownloadSectionRecord | null> {
+  if (getDataBackend() === "sql") return (await readSections()).find((section) => section.id === id) ?? null;
   const { resource } = await getContainer(CONTAINER).item(id, id).read<PublicDownloadSectionRecord>();
   return resource && (resource as any).type === "section" && resource.status !== "deleted" ? resource : null;
 }
 
 async function readDocument(id: string): Promise<PublicDownloadDocumentRecord | null> {
+  if (getDataBackend() === "sql") return (await readDocuments()).find((document) => document.id === id) ?? null;
   const { resource } = await getContainer(CONTAINER).item(id, id).read<PublicDownloadDocumentRecord>();
   return resource && (resource as any).type === "document" && resource.status !== "deleted" ? resource : null;
 }
@@ -206,7 +244,23 @@ async function syncSectionNameOnDocuments(section: PublicDownloadSectionRecord):
   })));
 }
 
-function downloadResponse(record: PublicDownloadDocumentRecord): HttpResponseInit {
+async function downloadResponse(record: PublicDownloadDocumentRecord): Promise<HttpResponseInit> {
+  if (record.archivoBlobContainer && record.archivoBlobName) {
+    return {
+      status: 302,
+      headers: {
+        Location: await createPublicDownloadBlobUrl({
+          containerName: record.archivoBlobContainer,
+          blobName: record.archivoBlobName,
+          mimeType: record.archivoMimeType,
+          filename: record.archivoNombreOriginal,
+        }),
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+      },
+    };
+  }
+  if (!record.archivoBase64) throw new Error("El archivo no tiene una ubicación de almacenamiento válida.");
   const bytes = Buffer.from(record.archivoBase64, "base64");
   const asciiFallback = sanitizeFileName(record.archivoNombreOriginal.normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
   return {
@@ -263,6 +317,9 @@ app.http("adminPublicDownloadSectionsCreate", {
         updatedAt: now,
         updatedBy: user.id,
       };
+      if (getDataBackend() === "sql") {
+        return created(sanitizeSection(await createSqlPublicDownloadSection(record, { id: user.id, email: user.email })));
+      }
       await getContainer(CONTAINER).items.create(record);
       await writeAuditLog({ entityType: "publicDownloadSection", entityId: record.id, action: "public_download_section_created", performedBy: user.id, performedByEmail: user.email, after: record });
       return created(sanitizeSection(record));
@@ -298,6 +355,10 @@ app.http("adminPublicDownloadSectionsUpdate", {
         updatedAt: new Date().toISOString(),
         updatedBy: user.id,
       };
+      if (getDataBackend() === "sql") {
+        const result = await updateSqlPublicDownloadSection(updated, { id: user.id, email: user.email });
+        return result ? ok(sanitizeSection(result)) : notFound("Sección no encontrada.");
+      }
       await getContainer(CONTAINER).item(updated.id, updated.id).replace(updated);
       if (before.nombre !== updated.nombre || before.slug !== updated.slug) await syncSectionNameOnDocuments(updated);
       await writeAuditLog({ entityType: "publicDownloadSection", entityId: updated.id, action: "public_download_section_updated", performedBy: user.id, performedByEmail: user.email, before, after: updated });
@@ -318,6 +379,12 @@ app.http("adminPublicDownloadSectionsDelete", {
       if (!canDeletePublicDownloadSection(user, await loadRoleDefinitions())) return forbidden();
       const current = await readSection(req.params.id);
       if (!current) return notFound("Sección no encontrada.");
+      if (getDataBackend() === "sql") {
+        const result = await deleteSqlPublicDownloadSection(current.id, { id: user.id, email: user.email });
+        if (!result.found) return notFound("Sección no encontrada.");
+        if (result.documents) return conflict("No se puede eliminar la sección porque tiene documentos asociados.", { dependencies: { documents: result.documents } });
+        return ok({ ok: true });
+      }
       const docs = (await readDocuments()).filter((doc) => doc.sectionId === current.id);
       if (docs.length > 0) return conflict("No se puede eliminar la sección porque tiene documentos asociados.", { dependencies: { documents: docs.length } });
       const deleted = { ...(current as PublicDownloadSectionRecord & { type: "section" }), activa: false, status: "deleted" as const, deletedAt: new Date().toISOString(), deletedBy: user.id, updatedAt: new Date().toISOString(), updatedBy: user.id };
@@ -357,12 +424,13 @@ app.http("adminPublicDownloadDocumentsCreate", {
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const section = await readSection(parsed.data.sectionId);
       if (!section) return badRequest("La sección seleccionada no existe.");
-      if (!section.activa) return badRequest("Solo puede crear documentos en secciones activas.");
+      if (!section.activa) return badRequest("Solo puede crear archivos en secciones activas.");
       const file = decodeFile(parsed.data);
       if (isHttpResponse(file)) return file;
       const slug = slugify(parsed.data.slug || parsed.data.titulo);
       if (await hasDuplicateDocumentSlug(slug)) return conflict("Ya existe un documento con este endpoint.");
       const now = new Date().toISOString();
+      const fileFields = await storedFileFields(file);
       const record: PublicDownloadDocumentRecord & { type: "document" } = {
         type: "document",
         id: `public_download_document_${randomUUID()}`,
@@ -372,10 +440,8 @@ app.http("adminPublicDownloadDocumentsCreate", {
         titulo: parsed.data.titulo.trim(),
         slug,
         descripcion: parsed.data.descripcion?.trim() || undefined,
-        archivoNombreOriginal: file.filename,
-        archivoMimeType: file.mimeType,
-        archivoBase64: file.bytes.toString("base64"),
-        archivoBytes: file.bytes.length,
+        ...(fileFields as Pick<PublicDownloadDocumentRecord,
+          "assetKind" | "archivoNombreOriginal" | "archivoMimeType" | "archivoBytes">),
         activo: parsed.data.activo,
         status: parsed.data.activo ? "active" : "inactive",
         createdAt: now,
@@ -383,8 +449,16 @@ app.http("adminPublicDownloadDocumentsCreate", {
         updatedAt: now,
         updatedBy: user.id,
       };
+      if (getDataBackend() === "sql") {
+        try {
+          return created(sanitizeDocument(await createSqlPublicDownloadDocument(record, { id: user.id, email: user.email })));
+        } catch (error) {
+          await compensateUnreferencedBlob(record);
+          throw error;
+        }
+      }
       await getContainer(CONTAINER).items.create(record);
-      await writeAuditLog({ entityType: "publicDownloadDocument", entityId: record.id, action: "public_download_document_created", performedBy: user.id, performedByEmail: user.email, after: record, metadata: { fileLoaded: true } });
+      await writeAuditLog({ entityType: "publicDownloadDocument", entityId: record.id, action: "public_download_document_created", performedBy: user.id, performedByEmail: user.email, after: auditDocument(record), metadata: { fileLoaded: true, assetKind: record.assetKind } });
       return created(sanitizeDocument(record));
     } catch (e) {
       return serverError(e);
@@ -405,12 +479,12 @@ app.http("adminPublicDownloadDocumentsUpdate", {
       if (!canEditPublicDownloadDocument(user, roleDefinitions)) return forbidden();
       if (replacingFile && !canReplacePublicDownloadFile(user, roleDefinitions)) return forbidden();
       const current = await readDocument(req.params.id);
-      if (!current) return notFound("Documento no encontrado.");
+      if (!current) return notFound("Archivo no encontrado.");
       const parsed = DocumentUpdateSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const section = parsed.data.sectionId ? await readSection(parsed.data.sectionId) : await readSection(current.sectionId);
       if (!section) return badRequest("La sección seleccionada no existe.");
-      if (parsed.data.sectionId && !section.activa) return badRequest("Solo puede mover documentos a secciones activas.");
+      if (parsed.data.sectionId && !section.activa) return badRequest("Solo puede mover archivos a secciones activas.");
       const nextSlug = parsed.data.slug !== undefined || parsed.data.titulo !== undefined
         ? slugify(parsed.data.slug || parsed.data.titulo || current.slug)
         : current.slug;
@@ -425,15 +499,10 @@ app.http("adminPublicDownloadDocumentsUpdate", {
           archivoMimeType: parsed.data.archivoMimeType,
         });
         if (isHttpResponse(file)) return file;
-        fileFields = {
-          archivoNombreOriginal: file.filename,
-          archivoMimeType: file.mimeType,
-          archivoBase64: file.bytes.toString("base64"),
-          archivoBytes: file.bytes.length,
-        };
+        fileFields = await storedFileFields(file);
         replacedFile = true;
       }
-      const before = { ...current };
+      const before = auditDocument(current);
       const updated: PublicDownloadDocumentRecord & { type: "document" } = {
         ...(current as PublicDownloadDocumentRecord & { type: "document" }),
         sectionId: section.id,
@@ -447,6 +516,16 @@ app.http("adminPublicDownloadDocumentsUpdate", {
         updatedAt: new Date().toISOString(),
         updatedBy: user.id,
       };
+      if (getDataBackend() === "sql") {
+        try {
+          const result = await updateSqlPublicDownloadDocument(current, updated, { id: user.id, email: user.email }, replacedFile);
+          if (!result && replacedFile) await compensateUnreferencedBlob(updated);
+          return result ? ok(sanitizeDocument(result)) : notFound("Archivo no encontrado.");
+        } catch (error) {
+          if (replacedFile) await compensateUnreferencedBlob(updated);
+          throw error;
+        }
+      }
       await getContainer(CONTAINER).item(updated.id, updated.id).replace(updated);
       await writeAuditLog({
         entityType: "publicDownloadDocument",
@@ -455,8 +534,8 @@ app.http("adminPublicDownloadDocumentsUpdate", {
         performedBy: user.id,
         performedByEmail: user.email,
         before,
-        after: updated,
-        metadata: replacedFile ? { previousFileName: before.archivoNombreOriginal, newFileName: updated.archivoNombreOriginal } : undefined,
+        after: auditDocument(updated),
+        metadata: replacedFile ? { previousFileName: before.archivoNombreOriginal, newFileName: updated.archivoNombreOriginal, assetKind: updated.assetKind } : undefined,
       });
       return ok(sanitizeDocument(updated));
     } catch (e) {
@@ -474,10 +553,14 @@ app.http("adminPublicDownloadDocumentsDelete", {
       const user = await getUserOrFail(req);
       if (!canDeletePublicDownloadDocument(user, await loadRoleDefinitions())) return forbidden();
       const current = await readDocument(req.params.id);
-      if (!current) return notFound("Documento no encontrado.");
+      if (!current) return notFound("Archivo no encontrado.");
+      if (getDataBackend() === "sql") {
+        return (await deleteSqlPublicDownloadDocument(current, { id: user.id, email: user.email }))
+          ? ok({ ok: true }) : notFound("Archivo no encontrado.");
+      }
       const deleted = { ...(current as PublicDownloadDocumentRecord & { type: "document" }), activo: false, status: "deleted" as const, deletedAt: new Date().toISOString(), deletedBy: user.id, updatedAt: new Date().toISOString(), updatedBy: user.id };
       await getContainer(CONTAINER).item(deleted.id, deleted.id).replace(deleted);
-      await writeAuditLog({ entityType: "publicDownloadDocument", entityId: deleted.id, action: "public_download_document_deleted", performedBy: user.id, performedByEmail: user.email, before: current, after: deleted });
+      await writeAuditLog({ entityType: "publicDownloadDocument", entityId: deleted.id, action: "public_download_document_deleted", performedBy: user.id, performedByEmail: user.email, before: auditDocument(current), after: auditDocument(deleted) });
       return ok({ ok: true });
     } catch (e) {
       return serverError(e);
@@ -523,7 +606,7 @@ app.http("publicDownloadBySectionAndSlug", {
     try {
       const doc = await findActiveDocument(req.params.sectionSlug, req.params.documentSlug);
       if (!doc) return notFound("Documento no encontrado.");
-      return downloadResponse(doc);
+      return await downloadResponse(doc);
     } catch (e) {
       return serverError(e);
     }
@@ -538,7 +621,7 @@ app.http("publicDownloadBySlug", {
     try {
       const doc = await findActiveDocument(null, req.params.documentSlug);
       if (!doc) return notFound("Documento no encontrado.");
-      return downloadResponse(doc);
+      return await downloadResponse(doc);
     } catch (e) {
       return serverError(e);
     }

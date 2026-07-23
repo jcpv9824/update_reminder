@@ -14,6 +14,13 @@ import { canCreateRoleDefinition, canEditRoleDefinition, canListRoleDefinitions 
 import { canDeleteRoleDefinition } from "../lib/managementAccess";
 import { roleUsageMessage, roleUsageSummary } from "../lib/roleLifecycle";
 import type { UpdateSchedule, UpdateTask, UserRecord } from "../types/models";
+import { getDataBackend } from "../lib/dataBackend";
+import {
+  createSqlRole,
+  deleteSqlRole,
+  getSqlRoleUsage,
+  updateSqlRole,
+} from "../lib/securityManagementSqlWriteRepository";
 
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -32,6 +39,7 @@ function defaultRoleById(id: string) {
 }
 
 async function getRoleUsage(roleId: string) {
+  if (getDataBackend() === "sql") return getSqlRoleUsage(roleId);
   const [users, schedules, tasks] = await Promise.all([
     getContainer("users").items.readAll<UserRecord>().fetchAll(),
     getContainer("updateSchedules").items.readAll<UpdateSchedule>().fetchAll(),
@@ -72,6 +80,16 @@ app.http("rolesCreate", {
         return badRequest(error?.message ?? "Rol no válido.");
       }
 
+      if (getDataBackend() === "sql") {
+        try {
+          return created(await createSqlRole(record, { id: user.id, email: user.email }));
+        } catch (error: any) {
+          if (error?.status === 409) return conflict(error.message);
+          if (error?.status === 400) return badRequest(error.message);
+          throw error;
+        }
+      }
+
       const stored = await readStoredRoleRecords();
       if (defaultRoleById(record.id) || stored.some((role) => role.id === record.id)) {
         return badRequest("Ya existe un rol con ese ID.");
@@ -105,8 +123,7 @@ app.http("rolesUpdate", {
 
       const id = req.params.id;
       const container = getContainer("roles");
-      const stored = await readStoredRoleRecords();
-      const existing = stored.find((role) => role.id === id) ?? defaultRoleById(id);
+      const existing = roleDefinitions.find((role) => role.id === id);
       if (!existing) return notFound("Rol no encontrado.");
 
       let updated: RoleDefinitionRecord;
@@ -119,6 +136,16 @@ app.http("rolesUpdate", {
       if (existing.active !== false && updated.active === false) {
         const usage = await getRoleUsage(updated.id);
         if (usage.hasReferences) return conflict(roleUsageMessage(usage), usage);
+      }
+
+      if (getDataBackend() === "sql") {
+        try {
+          const result = await updateSqlRole(updated, { id: user.id, email: user.email });
+          return result ? ok(result) : notFound("Rol no encontrado.");
+        } catch (error: any) {
+          if (error?.status === 400) return badRequest(error.message);
+          throw error;
+        }
       }
 
       await container.items.upsert(updated);
@@ -157,6 +184,17 @@ app.http("rolesDelete", {
 
       const usage = await getRoleUsage(id);
       if (usage.hasReferences) return conflict(roleUsageMessage(usage), usage);
+
+      if (getDataBackend() === "sql") {
+        try {
+          const deleted = await deleteSqlRole(id, { id: user.id, email: user.email });
+          return deleted ? noContent() : notFound("Rol no encontrado.");
+        } catch (error: any) {
+          if (error?.status === 409) return conflict(roleUsageMessage(error.usage), error.usage);
+          if (error?.status === 400) return badRequest(error.message);
+          throw error;
+        }
+      }
 
       await getContainer("roles").item(id, id).delete();
       await writeAuditLog({

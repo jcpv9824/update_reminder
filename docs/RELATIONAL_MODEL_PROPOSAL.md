@@ -1,832 +1,383 @@
-# Relational Model Proposal — Fase 3
+# Modelo relacional objetivo de Portal SAG Web para SQL Server
 
-Proyecto: **Programador de Actualizaciones ERP**  
-Fecha: 2026-05-16  
-Destino recomendado: **Azure SQL Database**  
+Proyecto: **Portal SAG Web**
 
-Este documento propone el modelo relacional objetivo para migrar desde Cosmos DB sin perder datos ni romper comportamiento actual. No es un script SQL final; es la base de diseño para crear scripts en la siguiente fase.
+Revisión: **2026-07-16**
 
-## 1. Decisiones arquitectónicas
+Estado: **diseño físico canónico para construcción no productiva; Cosmos DB continúa como fuente de verdad**
 
-### 1.1 Mantener IDs actuales
+Motor confirmado: **SQL Server 2019 Standard Edition, compatibilidad 150**
 
-Durante la primera migración, las claves principales deben conservar los IDs actuales de Cosmos:
+Este documento reemplaza las propuestas anteriores. Fue contrastado con el código, permisos, tests, los 17 contenedores y el snapshot productivo estructural del 2026-07-16 (2.890 documentos). El DDL debe evitar funciones exclusivas de SQL Server 2022. La matriz canónica está en [COSMOS_TO_SQL_MIGRATION_MATRIX.md](COSMOS_TO_SQL_MIGRATION_MATRIX.md).
 
-```text
-id NVARCHAR(100) NOT NULL PRIMARY KEY
-```
+## 1. Decisiones de arquitectura
 
-Razones:
+1. **Migración gradual, no reescritura simultánea.** Cosmos permanece como sistema de registro hasta completar carga, reconciliación, pruebas de comportamiento, ensayo de cutover y aprobación.
+2. **Clave interna estrecha + ID público conservado.** Las entidades de volumen usan PK clustered `BIGINT IDENTITY`; cada ID Cosmos se conserva sin cambios en `source_id NVARCHAR(150)` con índice unique. API, auditoría y reconciliación siguen usando `source_id`; las FK internas usan `BIGINT`. Catálogos pequeños con claves estables (`roles`, `permissions`, `environments`) conservan PK textual. Esto evita propagar claves anchas por todos los índices sin perder comparabilidad ni rollback.
+3. **Normalizar datos operativos.** Arrays, scopes, roles, responsables, destinatarios y licencias se convierten en tablas hijas. JSON se reserva para auditoría sanitizada, staging y metadata extensible.
+4. **Conservar snapshots históricos.** Nombres de cliente, dominio, compañía, destino y correo del actor se mantienen en tareas/auditoría aunque también exista FK.
+5. **Key Vault sigue siendo la fuente de secretos.** SQL guarda solo nombres de secretos o hashes; nunca contraseñas SMTP/SQL, refresh tokens, JWT secrets ni valores recuperados de Key Vault.
+6. **Los archivos salen de la fila operativa.** Los Base64 actuales de formatos y descargas se migran a Azure Blob Storage privado. SQL conserva metadata, hash, versión y clave del blob. Esto evita inflar backups, log y memoria de Azure Functions.
+7. **Permisos y visibilidad son conceptos separados.** Los permisos de opción/acción se normalizan; la visibilidad de tareas por tipo queda en el rol con niveles `none`, `assigned`, `all`.
+8. **Historial append-only.** Auditoría, eventos de implementación e historial de estados no se actualizan ni eliminan desde la cuenta runtime.
+9. **UTC para timestamps; `DATE` para fechas de negocio.** Zona de negocio `America/Bogota`; `DATETIME2(3)` en UTC y `DATE` para fechas de tarea/inicio/fin.
+10. **Concurrencia explícita.** Entidades mutables llevan `row_version ROWVERSION`; tareas, sesiones, roles, rate limits y settings deben usar actualización optimista o transacciones.
 
-- El frontend, backend, auditoría, tareas y programaciones ya referencian esos IDs.
-- Reduce riesgo de romper relaciones históricas.
-- Facilita rollback a Cosmos.
-- Permite comparar Cosmos vs SQL por ID.
+## 2. Límites de datos
 
-No introducir IDs enteros autoincrementales en la primera migración. Si se desean surrogate keys en el futuro, agregarlas después de estabilizar SQL.
-
-### 1.2 Preservar soft delete
-
-Las tablas maestras deben conservar:
-
-```text
-status NVARCHAR(30) NOT NULL
-created_at DATETIME2 NULL
-created_by NVARCHAR(100) NULL
-updated_at DATETIME2 NULL
-updated_by NVARCHAR(100) NULL
-deleted_at DATETIME2 NULL
-deleted_by NVARCHAR(100) NULL
-```
-
-No migrar solo activos. Los inactivos y eliminados son importantes para auditoría, tareas históricas y reportes de trazabilidad.
-
-### 1.3 Separar schemas por dominio
-
-Schemas recomendados:
-
-| Schema | Propósito |
-|---|---|
-| `security` | Usuarios, roles, credenciales/hash y permisos. |
-| `core` | Clientes, dominios, bases de datos, ambientes. |
-| `licensing` | Módulos/licencias y asignación principal a clientes. |
-| `scheduling` | Programaciones recurrentes/especiales y scopes. |
-| `workflow` | Tareas generadas, estados, fuentes y recordatorios por tarea. |
-| `settings` | Configuración global de correos/alertas. |
-| `notifications` | Idempotencia y registro de notificaciones/correos. |
-| `audit` | Auditoría append-only. |
-| `migration` | Staging, raw documents, resultados y control de corridas. |
-
-### 1.4 Mantener Key Vault como fuente de secretos
-
-SQL puede guardar nombres de secretos:
-
-- `password_secret_name`
-- `smtp_password_secret_name`
-
-SQL no debe guardar:
-
-- Contraseña de base de datos.
-- Contraseña SMTP real.
-- JWT secrets.
-- Tokens reales.
-- Valores reales de Key Vault.
-
-### 1.5 Usar JSON solo como transición controlada
-
-Campos como `before`, `after`, `metadata`, settings complejos y raw Cosmos deben poder guardarse en JSON. Pero para entidades operativas clave se recomienda normalizar arrays y scopes:
-
-- Roles de usuario.
-- Asignados a dominio/base.
-- `targetIds`.
-- `scopeGroups`.
-- `licensingScope`.
-- `sources`.
-- `remindersSent`.
-
-## 2. Diagrama lógico
-
-```text
-security.users
-  -> security.user_roles
-
-core.clients
-  -> core.domains
-      -> core.databases
-
-licensing.license_modules
-  -> licensing.client_license_modules
-  -> licensing.license_assignments (reservado avanzado)
-
-scheduling.update_schedules
-  -> scheduling.schedule_targets
-  -> scheduling.special_schedule_scope_groups
-      -> scheduling.special_schedule_scope_domains
-          -> scheduling.special_schedule_scope_databases
-  -> scheduling.schedule_licensing_scope
-      -> scheduling.schedule_licensing_scope_modules
-      -> scheduling.schedule_licensing_excluded_domains
-      -> scheduling.schedule_licensing_excluded_databases
-
-workflow.update_tasks
-  -> workflow.task_sources
-  -> workflow.task_assignees
-  -> workflow.task_status_history
-  -> workflow.task_reminders_sent
-  -> workflow.task_overdue_alerts
-
-settings.app_settings
-notifications.email_notifications
-audit.audit_logs
-migration.*
-```
-
-## 3. Security schema
-
-### 3.1 `security.users`
-
-| Columna | Tipo recomendado | Null | Notas |
-|---|---:|---|---|
-| `id` | NVARCHAR(100) | no | ID Cosmos. |
-| `display_name` | NVARCHAR(200) | no | `displayName`. |
-| `email` | NVARCHAR(254) | no | Unique normalizado. |
-| `email_normalized` | NVARCHAR(254) | no | Lower/trim. |
-| `active` | BIT | no | Estado usuario. |
-| `password_hash` | NVARCHAR(500) | sí | Hash actual, nunca password real. |
-| `password_updated_at` | DATETIME2 | sí |  |
-| `password_expires_at` | DATETIME2 | sí | Expiracion de la credencial definitiva. |
-| `must_change_password` | BIT | no | Default 0. |
-| `token_version` | INT | no | Revocacion global de sesiones. |
-| `last_login_at` | DATETIME2 | sí |  |
-| `password_reset_token_hash` | NVARCHAR(500) | sí | Hash solamente. |
-| `password_reset_expires_at` | DATETIME2 | sí |  |
-| `password_reset_used_at` | DATETIME2 | sí |  |
-| `created_at`, `created_by`, `updated_at`, `updated_by` | varios | sí | Preservar. |
-| `legacy_cosmos_json` | NVARCHAR(MAX) | sí | Opcional temporal. |
-
-Constraints:
-
-- `PK_security_users(id)`
-- `UQ_security_users_email_normalized(email_normalized)`
-- `CK_security_users_email_not_empty`
-
-Los campos MFA heredados de Cosmos no forman parte del modelo relacional operativo. Se preservan solo en el snapshot bruto cifrado de migracion durante el periodo de retencion y luego se eliminan mediante un procedimiento controlado. Los secretos TOTP heredados en Key Vault no se copian a SQL.
-
-### 3.2 `security.roles`
-
-Tabla catálogo.
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `id` | NVARCHAR(50) PK | `admin`, `client_manager`, `domain_updater`, `database_updater`, `viewer`. |
-| `name_es` | NVARCHAR(100) | Etiqueta española. |
-| `active` | BIT | Permite ocultar roles futuros. |
-
-### 3.3 `security.user_roles`
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `user_id` | NVARCHAR(100) | FK users. |
-| `role_id` | NVARCHAR(50) | FK roles. |
-| `created_at` | DATETIME2 | Opcional. |
-
-PK compuesta:
-
-```text
-(user_id, role_id)
-```
-
-## 4. Core schema
-
-### 4.1 `core.environments`
-
-Catálogo cerrado para normalizar ambiente. Desde V15 la aplicación solo permite tres ambientes operativos: `production`, `test` y `demo`. El valor `all` puede existir únicamente para filtros/configuración, no para dominios ni bases de datos.
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `id` | NVARCHAR(50) PK | `production`, `test`, `demo`; opcionalmente `all` solo para filtros/configuración. |
-| `name_es` | NVARCHAR(100) | Producción, Pruebas, Demo. |
-| `sort_order` | INT |  |
-| `active` | BIT |  |
-
-Si aparecen ambientes no catalogados en Cosmos durante el export, no crear nuevos ambientes operativos automáticamente. Registrarlos como anomalía de migración para revisión manual y mapearlos explícitamente a `production`, `test` o `demo` antes del cutover.
-
-### 4.2 `core.clients`
-
-| Columna | Tipo | Null | Notas |
-|---|---:|---|---|
-| `id` | NVARCHAR(100) | no | ID Cosmos. |
-| `name` | NVARCHAR(200) | sí | Nombre visible; puede ser autogenerado. |
-| `external_id` | NVARCHAR(100) | sí | ID de negocio del cliente. Opcional ahora; será obligatorio en una fase futura. |
-| `name` | NVARCHAR(200) | no |  |
-| `name_normalized` | NVARCHAR(200) | no | Para duplicados. |
-| `status` | NVARCHAR(30) | no | `active`, `inactive`, `deleted`. |
-| `notes` | NVARCHAR(MAX) | sí |  |
-| `created_at`, `created_by`, `updated_at`, `updated_by` | varios | sí |  |
-| `deleted_at`, `deleted_by` | varios | sí |  |
-
-Constraints:
-
-- `PK_core_clients(id)`
-- `CK_core_clients_status`
-- Unique filtrado recomendado: `name_normalized` donde `status <> 'deleted'`.
-- Unique filtrado requerido: `external_id` donde `external_id IS NOT NULL AND status <> 'deleted'`.
-
-### 4.3 `core.domains`
-
-| Columna | Tipo | Null | Notas |
-|---|---:|---|---|
-| `id` | NVARCHAR(100) | no | ID Cosmos. |
-| `client_id` | NVARCHAR(100) | no | FK clients. |
-| `domain_name` | NVARCHAR(500) | no | URL completa registrada. |
-| `domain_name_normalized` | NVARCHAR(500) | no | Sin slash final, lower, trim. |
-| `publishable_domain` | NVARCHAR(500) | sí | Puede calcularse, opcional snapshot. |
-| `environment_id` | NVARCHAR(50) | no | FK environments. |
-| `current_web_version` | NVARCHAR(100) | sí | Preservar aunque no sea columna visible. |
-| `status` | NVARCHAR(30) | no |  |
-| `notes` | NVARCHAR(MAX) | sí |  |
-| `last_updated_at`, `last_updated_by` | varios | sí | Última actualización operativa. |
-| timestamps/delete | varios | sí |  |
-
-Constraints:
-
-- FK `client_id -> core.clients(id)`.
-- FK `environment_id -> core.environments(id)`.
-- Unique filtrado recomendado: `domain_name_normalized` donde `status <> 'deleted'`.
-- Check: `domain_name LIKE 'https://%'`.
-
-### 4.4 `core.domain_assignees`
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `domain_id` | NVARCHAR(100) | FK domains. |
-| `user_id` | NVARCHAR(100) | FK users. |
-
-PK: `(domain_id, user_id)`.
-
-### 4.5 `core.databases`
-
-| Columna | Tipo | Null | Notas |
-|---|---:|---|---|
-| `id` | NVARCHAR(100) | no | ID Cosmos. |
-| `client_id` | NVARCHAR(100) | no | FK clients. |
-| `domain_id` | NVARCHAR(100) | no | FK domains. |
-| `company_name` | NVARCHAR(250) | no | Empresa. |
-| `environment_id` | NVARCHAR(50) | no | FK environments. |
-| `server_host_port` | NVARCHAR(500) | no | Sensible técnico, no reporte maestro. |
-| `initial_catalog` | NVARCHAR(250) | no | Base de datos. |
-| `user_id_sql` | NVARCHAR(250) | no | Usuario SQL, no reporte maestro. |
-| `password_secret_name` | NVARCHAR(250) | no | Nombre secreto Key Vault, no valor. |
-| `connection_fingerprint` | NVARCHAR(500) | no | Hash/normalización para duplicados sin password. |
-| `current_db_version` | NVARCHAR(100) | sí | Preservar. |
-| `status` | NVARCHAR(30) | no |  |
-| `notes` | NVARCHAR(MAX) | sí |  |
-| `last_updated_at`, `last_updated_by` | varios | sí |  |
-| timestamps/delete | varios | sí |  |
-
-Constraints:
-
-- FK `client_id -> core.clients(id)`.
-- FK `domain_id -> core.domains(id)`.
-- FK `environment_id -> core.environments(id)`.
-- Unique filtrado recomendado: `connection_fingerprint` donde `status <> 'deleted'`.
-
-Validación extra:
-
-- `core.databases.client_id` debe coincidir con `core.domains.client_id`. En Azure SQL se puede lograr con:
-  - trigger,
-  - composite FK si `domains` expone unique `(id, client_id)`,
-  - o validación fuerte en repositorio.
-
-### 4.6 `core.database_assignees`
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `database_id` | NVARCHAR(100) | FK databases. |
-| `user_id` | NVARCHAR(100) | FK users. |
-
-PK: `(database_id, user_id)`.
-
-## 5. Licensing schema
-
-### 5.1 `licensing.license_modules`
-
-| Columna | Tipo | Null | Notas |
-|---|---:|---|---|
-| `id` | NVARCHAR(100) | no | ID Cosmos. |
-| `name` | NVARCHAR(200) | no |  |
-| `name_normalized` | NVARCHAR(200) | no | Para duplicados. |
-| `code` | NVARCHAR(100) | sí | Opcional. |
-| `code_normalized` | NVARCHAR(100) | sí | Unique cuando no null. |
-| `description` | NVARCHAR(MAX) | sí |  |
-| `status` | NVARCHAR(30) | no | Derivar de `status` o `active`. |
-| `active_legacy` | BIT | sí | Si existe `active` en Cosmos. |
-| `notes` | NVARCHAR(MAX) | sí |  |
-| timestamps/delete | varios | sí |  |
-
-Constraints:
-
-- Unique `code_normalized` donde no null y `status <> 'deleted'`.
-- Unique recomendado `name_normalized` donde `status <> 'deleted'`.
-
-### 5.2 `licensing.client_license_modules`
-
-Tabla principal actual para licencias compradas por cliente.
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `client_id` | NVARCHAR(100) | FK clients. |
-| `module_id` | NVARCHAR(100) | FK license_modules. |
-| `created_at` | DATETIME2 | Opcional si no existe en Cosmos. |
-| `created_by` | NVARCHAR(100) | Opcional. |
-| `source` | NVARCHAR(50) | `client.licenseModuleIds`. |
-
-PK: `(client_id, module_id)`.
-
-### 5.3 `licensing.license_assignments`
-
-Reservado para asignaciones avanzadas actualmente ocultas.
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `id` | NVARCHAR(100) PK | ID Cosmos. |
-| `module_id` | NVARCHAR(100) | FK license_modules. |
-| `target_type` | NVARCHAR(30) | `client`, `domain`, `database`. |
-| `target_id` | NVARCHAR(100) | FK lógica según tipo. |
-| `client_id` | NVARCHAR(100) | FK clients nullable pero recomendado. |
-| `domain_id` | NVARCHAR(100) | FK domains nullable. |
-| `database_id` | NVARCHAR(100) | FK databases nullable. |
-| `environment_id` | NVARCHAR(50) | Nullable. |
-| `status` | NVARCHAR(30) |  |
-| `active_legacy` | BIT |  |
-| timestamps/delete | varios |  |
-
-Nota: No usar esta tabla en la lógica principal hasta que se reactive explícitamente la feature avanzada.
-
-## 6. Scheduling schema
-
-### 6.1 `scheduling.update_schedules`
-
-| Columna | Tipo | Null | Notas |
-|---|---:|---|---|
-| `id` | NVARCHAR(100) | no | ID Cosmos. |
-| `client_id` | NVARCHAR(100) | no | FK clients. |
-| `domain_id` | NVARCHAR(100) | sí | FK domains. |
-| `target_type` | NVARCHAR(30) | no | `domain`, `database`. |
-| `frequency_type` | NVARCHAR(30) | no | `once`, `weekly`, `interval`, `monthly`, `manual`. |
-| `every_n_weeks` | INT | sí | Para weekly. |
-| `interval_days` | INT | sí | Para interval. |
-| `day_of_month` | INT | sí | Para monthly. |
-| `start_date` | DATE | no |  |
-| `end_date` | DATE | sí |  |
-| `timezone` | NVARCHAR(100) | no | Default `America/Bogota`. |
-| `assigned_role` | NVARCHAR(50) | no |  |
-| `database_reminder_recipients_mode` | NVARCHAR(30) | sí |  |
-| `selection_mode` | NVARCHAR(30) | sí | `manual`, `licensing`. |
-| `manual_target_types` | NVARCHAR(40) | sí | `domains_and_databases`, `domains_only`, `databases_only`; default `domains_and_databases`. |
-| `assignment_mode` | NVARCHAR(30) | sí | `role`, `users`. |
-| `domain_assigned_role` | NVARCHAR(50) | sí |  |
-| `database_assigned_role` | NVARCHAR(50) | sí |  |
-| `origin` | NVARCHAR(50) | sí | `special` como patrón nuevo; preservar `domain_default`, `database_inherited` y `licensing` por historia/compatibilidad. |
-| `active` | BIT | no |  |
-| `completed_at` | DATETIME2 | sí | Para programaciones únicas ejecutadas. |
-| `completed_reason` | NVARCHAR(100) | sí | Ej. `one_time_schedule_executed`. |
-| `notes` | NVARCHAR(MAX) | sí |  |
-| `client_name_snapshot` | NVARCHAR(200) | sí | Historia. |
-| `domain_name_snapshot` | NVARCHAR(500) | sí | Historia. |
-| timestamps | varios | sí/no |  |
-
-Nota: la frecuencia embebida de dominios/bases fue retirada de la UI. Las nuevas actualizaciones operativas se modelan como `origin = 'special'` con alcance explícito manual o por licenciamiento.
-
-### 6.2 `scheduling.schedule_weekdays`
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `schedule_id` | NVARCHAR(100) | FK schedules. |
-| `weekday` | NVARCHAR(20) | MONDAY...SUNDAY. |
-| `kind` | NVARCHAR(30) | `weekdays` o `preferredWeekdays`. |
-
-PK: `(schedule_id, weekday, kind)`.
-
-### 6.3 `scheduling.schedule_targets`
-
-Normaliza `targetIds`.
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `schedule_id` | NVARCHAR(100) | FK schedules. |
-| `target_type` | NVARCHAR(30) | Copia de schedule. |
-| `target_id` | NVARCHAR(100) | Dominio o base. |
-
-PK: `(schedule_id, target_type, target_id)`.
-
-### 6.4 `scheduling.schedule_assignees`
-
-Normaliza `assignedUserIds` y `databaseAssignedUserIds`.
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `schedule_id` | NVARCHAR(100) | FK schedules. |
-| `user_id` | NVARCHAR(100) | FK users. |
-| `assignment_kind` | NVARCHAR(30) | `domain`, `database`, `general`. |
-
-PK: `(schedule_id, user_id, assignment_kind)`.
-
-### 6.5 `scheduling.schedule_reminder_settings`
-
-Normaliza `reminders`.
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `schedule_id` | NVARCHAR(100) PK | FK schedules. |
-| `reminders_enabled` | BIT |  |
-| `reminder_time` | CHAR(5) | HH:mm. |
-| `reminder_recipients_mode` | NVARCHAR(30) |  |
-
-### 6.6 `scheduling.schedule_reminder_days`
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `schedule_id` | NVARCHAR(100) | FK. |
-| `days_before` | INT | 0 = mismo día. |
-
-PK: `(schedule_id, days_before)`.
-
-### 6.7 `scheduling.schedule_reminder_custom_emails`
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `schedule_id` | NVARCHAR(100) | FK. |
-| `email` | NVARCHAR(254) | Normalizado. |
-
-PK: `(schedule_id, email)`.
-
-### 6.8 Special schedule scope tables
-
-Normalizan `scopeGroups`.
-
-`scheduling.special_schedule_scope_groups`
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `id` | NVARCHAR(100) PK | Generar durante migración. |
-| `schedule_id` | NVARCHAR(100) | FK schedules. |
-| `client_id` | NVARCHAR(100) | FK clients. |
-| `include_all_domains` | BIT |  |
-
-`scheduling.special_schedule_scope_domains`
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `id` | NVARCHAR(100) PK | Generar durante migración. |
-| `scope_group_id` | NVARCHAR(100) | FK scope_groups. |
-| `domain_id` | NVARCHAR(100) | FK domains. |
-| `include_all_databases` | BIT |  |
-
-`scheduling.special_schedule_scope_databases`
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `scope_domain_id` | NVARCHAR(100) | FK scope_domains. |
-| `database_id` | NVARCHAR(100) | FK databases. |
-
-PK: `(scope_domain_id, database_id)`.
-
-### 6.9 Licensing schedule scope
-
-`scheduling.schedule_licensing_scope`
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `schedule_id` | NVARCHAR(100) PK | FK schedules. |
-| `license_match_mode` | NVARCHAR(20) | `any`, `all`. |
-| `environment_id` | NVARCHAR(50) | `all` o ambiente. |
-| `target_types` | NVARCHAR(40) | `domains_and_databases`, etc. |
-| `active_only` | BIT | Debe ser true por defecto. |
-
-`scheduling.schedule_licensing_scope_modules`
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `schedule_id` | NVARCHAR(100) | FK. |
-| `module_id` | NVARCHAR(100) | FK license_modules. |
-
-PK: `(schedule_id, module_id)`.
-
-`scheduling.schedule_licensing_excluded_domains`
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `schedule_id` | NVARCHAR(100) | FK. |
-| `domain_id` | NVARCHAR(100) | FK domains. Excluye solo la tarea de dominio. |
-
-PK: `(schedule_id, domain_id)`.
-
-`scheduling.schedule_licensing_excluded_databases`
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `schedule_id` | NVARCHAR(100) | FK. |
-| `database_id` | NVARCHAR(100) | FK databases. Excluye solo la tarea de base. |
-
-PK: `(schedule_id, database_id)`.
-
-Reglas importantes:
-
-- Excluir un dominio no excluye automáticamente sus bases.
-- Excluir una base no excluye el dominio.
-- Las excepciones se revalidan contra el preview vigente antes de guardar.
-- El modo manual no incorpora filtro de ambiente.
-- El modo manual sí incorpora `manual_target_types`: puede generar dominios y bases, solo dominios o solo bases. En `databases_only` las bases se seleccionan directamente desde el cliente, pero se almacenan agrupadas por dominio para preservar integridad.
-- El modo **Todos los clientes activos** está cancelado y no debe modelarse por ahora.
-
-## 7. Workflow schema
-
-### 7.1 `workflow.update_tasks`
-
-| Columna | Tipo | Null | Notas |
-|---|---:|---|---|
-| `id` | NVARCHAR(150) | no | ID Cosmos. |
-| `dedupe_key` | NVARCHAR(250) | sí | Unique recomendado. |
-| `task_date` | DATE | no |  |
-| `task_bucket` | NVARCHAR(80) | no | Preservar compatibilidad. |
-| `client_id` | NVARCHAR(100) | no | FK nullable en caso histórico no encontrado? recomendado FK con staging limpio. |
-| `domain_id` | NVARCHAR(100) | no | FK nullable si histórico eliminado no migrado, pero debe migrarse. |
-| `target_type` | NVARCHAR(30) | no | domain/database. |
-| `target_id` | NVARCHAR(100) | no | FK lógica según target. |
-| `schedule_id` | NVARCHAR(100) | no | FK schedules, nullable si schedule fue hard-deleted; preferir migrar raw. |
-| `root_schedule_id` | NVARCHAR(100) | sí | FK a la actualización programada original. Si falta en Cosmos legado, derivar desde `schedule_id`. |
-| `assigned_role` | NVARCHAR(50) | no |  |
-| `status` | NVARCHAR(30) | no | pending/in_progress/completed/failed/blocked/cancelled/reopened. |
-| `result` | NVARCHAR(200) | sí |  |
-| `notes` | NVARCHAR(MAX) | sí |  |
-| `completed_at`, `completed_by` | varios | sí |  |
-| `completed_with_problems` | BIT | no | Default 0. |
-| `problem_note`, `completion_note` | NVARCHAR(MAX) | sí |  |
-| `blocked_at`, `blocked_by`, `block_reason` | varios | sí |  |
-| `resolved_at`, `resolved_by`, `resolution_comment` | varios | sí |  |
-| `reopened_at`, `reopened_by`, `reopen_reason` | varios | sí |  |
-| `client_name_snapshot`, `domain_name_snapshot`, `target_name_snapshot` | NVARCHAR | sí/no | Preservar historia. |
-| timestamps | varios | sí/no |  |
-
-Índices recomendados:
-
-- `(task_date, target_type, status)`
-- `(target_type, target_id, task_date)` unique filtrado o full unique según regla.
-- `(assigned_role, status, task_date)`
-- `(client_id, task_date)`
-- `(domain_id, task_date)`
-- `dedupe_key` unique donde no null.
-
-Reglas operativas críticas:
-
-- La deduplicación principal es `target_type + target_id + task_date`.
-- Una tarea `completed` para la misma entidad y fecha bloquea duplicados.
-- Una tarea `cancelled` con `result = 'obsolete'` no debe bloquear la recuperación si una programación activa vuelve a requerirla; el generador actual la reactiva como `pending`.
-- Una programación `once` puede generar tareas futuras dentro de la ventana operativa, pero solo se marca inactiva/completada cuando `start_date <= hoy` en la zona de la aplicación.
-
-### 7.2 `workflow.task_assignees`
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `task_id` | NVARCHAR(150) | FK tasks. |
-| `user_id` | NVARCHAR(100) | FK users. |
-
-PK: `(task_id, user_id)`.
-
-### 7.3 `workflow.task_sources`
-
-Normaliza `sources`.
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `task_id` | NVARCHAR(150) | FK tasks. |
-| `schedule_id` | NVARCHAR(100) | FK schedules, nullable si histórico. |
-| `schedule_type` | NVARCHAR(30) | normal/special/licensing/manual. |
-| `reason` | NVARCHAR(500) | nullable. |
-| `created_at` | DATETIME2 |  |
-
-PK recomendado: `(task_id, schedule_id, schedule_type)`.
-
-### 7.4 `workflow.task_status_history`
-
-Tabla recomendada para estado transaccional futuro. La migración inicial puede crear una fila de estado inicial por tarea y filas derivadas si existen timestamps.
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `id` | NVARCHAR(150) PK | Generar. |
-| `task_id` | NVARCHAR(150) | FK tasks. |
-| `previous_status` | NVARCHAR(30) | nullable. |
-| `new_status` | NVARCHAR(30) |  |
-| `action` | NVARCHAR(100) | task_completed, task_blocked, etc. |
-| `comment` | NVARCHAR(MAX) | Nota/motivo. |
-| `performed_by` | NVARCHAR(100) | FK users nullable. |
-| `performed_at` | DATETIME2 |  |
-| `metadata_json` | NVARCHAR(MAX) | Opcional. |
-
-### 7.5 Reminder/idempotency task tables
-
-`workflow.task_reminders_sent`
-
-| Columna | Tipo |
-|---|---:|
-| `task_id` | NVARCHAR(150) |
-| `type` | NVARCHAR(30) |
-| `days_before` | INT |
-| `sent_at` | DATETIME2 |
-| `recipients_json` | NVARCHAR(MAX) |
-
-`workflow.task_overdue_alerts`
-
-| Columna | Tipo |
-|---|---:|
-| `task_id` | NVARCHAR(150) |
-| `sent_date` | DATE |
-
-## 8. Settings schema
-
-### 8.1 Fase inicial recomendada: `settings.app_settings`
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `id` | NVARCHAR(100) PK | `email-alerts`. |
-| `settings_json` | NVARCHAR(MAX) | Documento completo sanitizado. |
-| `smtp_password_secret_name` | NVARCHAR(250) | Si existe. |
-| `smtp_password_configured` | BIT |  |
-| `created_at`, `created_by`, `updated_at`, `updated_by` | varios |  |
-
-Razón: settings cambia más rápido que el core y es documento complejo. Puede normalizarse después.
-
-### 8.2 Fase posterior
-
-Normalizar:
-
-- `settings.email_provider_settings`
-- `settings.overdue_alert_settings`
-- `settings.blocked_alert_settings`
-- `settings.administrative_reminder_settings`
-- `settings.update_reminder_defaults`
-
-## 9. Notifications schema
-
-### 9.1 `notifications.email_notifications`
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `id` | NVARCHAR(250) PK | Ej: `blockedReminder:{taskId}:{daysAfter}`. |
-| `type` | NVARCHAR(100) | administrative_reminder, blocked_task_reminder, etc. |
-| `entity_type` | NVARCHAR(100) | nullable. |
-| `entity_id` | NVARCHAR(150) | nullable. |
-| `period` | NVARCHAR(20) | nullable. |
-| `send_date` | DATE | nullable. |
-| `recipients_json` | NVARCHAR(MAX) | emails enviados. |
-| `metadata_json` | NVARCHAR(MAX) | resto del documento. |
-| `sent_at` | DATETIME2 |  |
-
-Índices:
-
-- `(type, period, send_date)`
-- `(entity_id, type)`
-
-## 10. Audit schema
-
-### 10.1 `audit.audit_logs`
-
-| Columna | Tipo | Notas |
-|---|---:|---|
-| `id` | NVARCHAR(150) PK | ID Cosmos. |
-| `entity_type` | NVARCHAR(100) |  |
-| `entity_id` | NVARCHAR(150) |  |
-| `client_id` | NVARCHAR(100) | nullable. |
-| `client_name` | NVARCHAR(200) | snapshot. |
-| `domain_id` | NVARCHAR(100) | nullable. |
-| `domain_name` | NVARCHAR(500) | snapshot. |
-| `company_name` | NVARCHAR(250) | nullable. |
-| `action` | NVARCHAR(150) |  |
-| `performed_by` | NVARCHAR(100) | FK users nullable. |
-| `performed_by_email` | NVARCHAR(254) | snapshot. |
-| `performed_at` | DATETIME2 |  |
-| `before_json` | NVARCHAR(MAX) | Sanitizado actual. |
-| `after_json` | NVARCHAR(MAX) | Sanitizado actual. |
-| `metadata_json` | NVARCHAR(MAX) | Sanitizado actual. |
-
-Índices:
-
-- `(performed_at DESC)`
-- `(entity_type, entity_id, performed_at DESC)`
-- `(client_id, performed_at DESC)`
-- `(action, performed_at DESC)`
-
-## 11. Migration schema
-
-### 11.1 `migration.migration_runs`
-
-| Columna | Tipo |
-|---|---:|
-| `id` | UNIQUEIDENTIFIER PK |
-| `started_at` | DATETIME2 |
-| `completed_at` | DATETIME2 NULL |
-| `source_cosmos_account` | NVARCHAR(200) |
-| `source_cosmos_database` | NVARCHAR(200) |
-| `source_export_path` | NVARCHAR(1000) |
-| `target_sql_database` | NVARCHAR(200) |
-| `status` | NVARCHAR(50) |
-| `notes` | NVARCHAR(MAX) |
-
-### 11.2 `migration.raw_documents`
-
-| Columna | Tipo |
-|---|---:|
-| `migration_run_id` | UNIQUEIDENTIFIER |
-| `source_container` | NVARCHAR(100) |
-| `source_id` | NVARCHAR(150) |
-| `raw_json` | NVARCHAR(MAX) |
-| `sha256` | CHAR(64) |
-| `migrated_at` | DATETIME2 |
-| `migration_status` | NVARCHAR(50) |
-| `error_message` | NVARCHAR(MAX) NULL |
-
-PK: `(migration_run_id, source_container, source_id)`.
-
-### 11.3 Staging tables
-
-Crear staging con columnas cercanas a Cosmos antes de normalizar:
-
-- `migration.stage_users`
-- `migration.stage_clients`
-- `migration.stage_domains`
-- `migration.stage_databases`
-- `migration.stage_license_modules`
-- `migration.stage_license_assignments`
-- `migration.stage_update_schedules`
-- `migration.stage_update_tasks`
-- `migration.stage_app_settings`
-- `migration.stage_email_notifications`
-- `migration.stage_audit_logs`
-
-### 11.4 Validation results
-
-`migration.validation_results`
-
-| Columna | Tipo |
-|---|---:|
-| `id` | UNIQUEIDENTIFIER PK |
-| `migration_run_id` | UNIQUEIDENTIFIER |
-| `validation_name` | NVARCHAR(200) |
-| `severity` | NVARCHAR(30) |
-| `status` | NVARCHAR(30) |
-| `expected_value` | NVARCHAR(MAX) |
-| `actual_value` | NVARCHAR(MAX) |
-| `details_json` | NVARCHAR(MAX) |
-| `created_at` | DATETIME2 |
-
-## 12. Reglas de constraints importantes
-
-### 12.1 Estados permitidos
-
-`status` de maestros:
-
-```text
-active, inactive, deleted
-```
-
-`workflow.update_tasks.status`:
-
-```text
-pending, in_progress, completed, failed, blocked, cancelled, reopened
-```
-
-### 12.2 Dedupe de tareas
-
-Regla:
-
-```text
-target_type + target_id + task_date = único
-```
-
-Recomendación:
-
-- Unique index completo para todos los estados en primera migración, si los datos actuales cumplen.
-- Si hay históricos duplicados, documentar y resolver en staging antes de crear unique.
-
-### 12.3 No romper históricos
-
-Para tareas/auditoría históricas que referencien maestros eliminados:
-
-- Migrar los maestros eliminados.
-- Mantener FK si es posible.
-- Si falta un maestro por corrupción histórica, registrar en `migration.validation_results` y decidir si crear placeholder con `status='deleted'`.
-
-## 13. Orden de implementación recomendado
-
-1. Crear schemas y catálogos: `security.roles`, `core.environments`.
-2. Crear tablas core sin FKs estrictas temporales o con FKs después del staging.
-3. Cargar staging desde JSON.
-4. Cargar `security.users` y roles.
-5. Cargar `core.clients`, `core.domains`, `core.databases`.
-6. Cargar `licensing.license_modules`, `client_license_modules`, `license_assignments`.
-7. Cargar `scheduling.update_schedules` y tablas hijas.
-8. Cargar `workflow.update_tasks` y tablas hijas.
-9. Cargar `settings`, `notifications`, `audit`.
-10. Ejecutar validaciones.
-11. Agregar/validar FKs e índices unique.
-12. Repetir con snapshot nuevo hasta cero errores críticos.
-
-## 14. Decisiones pendientes antes de SQL scripts
-
-| Decisión | Opción recomendada | Motivo |
+| Área | Esquema | Responsabilidad |
 |---|---|---|
-| ¿Usar Azure SQL o PostgreSQL? | Azure SQL | Integración Azure y operación actual. |
-| ¿IDs string o integer? | String IDs Cosmos | Menor riesgo. |
-| ¿Settings JSON o normalizado? | JSON en fase inicial | Reduce riesgo y cambio de forma. |
-| ¿Auditoría en SQL desde día 1? | Migrar si se corta todo; puede quedar temporal en Cosmos | Append-heavy, bajo acoplamiento operativo. |
-| ¿emailNotifications en SQL? | Sí antes de activar timers SQL | Evita correos duplicados. |
-| ¿securityRateLimits en SQL? | No como dato migrado | Es estado efimero; recrear el control con Redis o tabla tecnica con expiracion y operaciones atomicas. |
-| ¿authSessions en SQL? | Recrear, no migrar sesiones activas | Tabla tecnica/Redis con indice por usuario, expiracion, hash y rotacion atomica. Forzar login tras cutover. |
-| ¿auditLogs se copian sin transformar? | No | Ejecutar allowlist SEC-009 antes del snapshot/import; SQL debe aceptar solo DTO de auditoria clasificado, nunca cuerpos arbitrarios. |
-| ¿licenseAssignments se usa? | No en lógica principal | Feature avanzada oculta. |
-| ¿FK estrictas desde el inicio? | Después de staging/validación | Evita bloquear por datos históricos hasta diagnosticar. |
+| Identidad y autorización | `security` | Usuarios, roles, permisos, sesiones y controles temporales de seguridad. |
+| Maestros | `core` | Clientes, dominios, bases de datos, ambientes y perfiles de acceso. |
+| Licenciamiento | `licensing` | Catálogo de módulos y asignaciones a cliente/dominio/base. |
+| Programación | `scheduling` | Actualizaciones programadas, alcance, frecuencia, asignación y recordatorios. |
+| Trabajo operativo | `workflow` | Tareas, fuentes, responsables, transiciones y alertas ya enviadas. |
+| Configuración | `settings` | Correo, alertas, recordatorios globales y destinatarios. |
+| Contenido | `content` | Fuentes/formatos de impresión, descargas públicas y versiones de archivos. |
+| Notificaciones | `notifications` | Intentos/envíos e idempotencia de correo. |
+| Implementaciones | `implementation` | Futuro flujo de migración, cliente nuevo y módulo especial. |
+| Auditoría | `audit` | Registro global sanitizado e inmutable. |
+| Migración | `migration` | Corridas, documentos raw, staging, errores y reconciliación. |
 
-## 15. Entregable siguiente
+## 3. Convenciones físicas
 
-Crear `database/sql/001_initial_schema.sql` basado en este documento, más scripts de staging/import. Antes de eso, completar y aprobar `COSMOS_TO_SQL_MIGRATION_MATRIX.md`.
+- Entidades migradas: `*_key BIGINT IDENTITY` como PK clustered y `source_id NVARCHAR(150)` como alternate key unique. Roles `NVARCHAR(80)` y permisos `NVARCHAR(160)` mantienen clave textual estable.
+- Las respuestas API exponen `source_id` como `id`; nunca exponen las claves internas.
+- Texto de usuario: `NVARCHAR`; email máximo 254; URL/host máximo 500.
+- Columnas normalizadas persistidas o escritas por repositorio: `LOWER(TRIM(valor))`; dominios además sin `/` final.
+- Estados maestros: `active`, `inactive`, `deleted` con `CHECK`.
+- Campos de trazabilidad: `created_at`, `created_by`, `updated_at`, `updated_by`; soft-delete agrega `deleted_at`, `deleted_by`.
+- `created_by`/`performed_by` son snapshots de actor y aceptan `system`; por ello no todos deben ser FK estricta.
+- Índices únicos de nombres/códigos se filtran con `WHERE status <> 'deleted'`.
+- Todas las FK operativas usan claves internas y `NO ACTION`. Las cascadas de negocio se ejecutan en transacciones de servicio para conservar los efectos actuales y generar auditoría.
+- SQL Server 2019 no dispone de un tipo JSON nativo: JSON permitido usa `NVARCHAR(MAX)` + `CHECK (ISJSON(...) = 1)`.
+- Índices de listas usan orden estable `(business_sort_columns, *_key)` para soportar keyset pagination; `OFFSET` queda limitado a páginas pequeñas de administración.
+
+## 4. Modelo lógico resumido
+
+```mermaid
+erDiagram
+  USERS ||--o{ USER_ROLES : has
+  ROLES ||--o{ USER_ROLES : assigned
+  ROLES ||--o{ ROLE_PERMISSIONS : grants
+  PERMISSIONS ||--o{ ROLE_PERMISSIONS : includes
+  CLIENTS ||--o{ DOMAINS : owns
+  DOMAINS ||--o{ DATABASES : contains
+  DATABASES ||--|| DATABASE_ACCESS_PROFILES : uses
+  LICENSE_MODULES ||--o{ LICENSE_ASSIGNMENTS : assigned
+  CLIENTS ||--o{ UPDATE_SCHEDULES : schedules
+  UPDATE_SCHEDULES ||--o{ UPDATE_TASKS : produces
+  UPDATE_TASKS ||--o{ TASK_STATUS_HISTORY : transitions
+  PRINT_FORMAT_SOURCES ||--o{ PRINT_FORMATS : groups
+  PUBLIC_DOWNLOAD_SECTIONS ||--o{ PUBLIC_DOWNLOAD_DOCUMENTS : groups
+  FILES ||--o{ PRINT_FORMAT_FILES : versions
+  FILES ||--o{ PUBLIC_DOWNLOAD_FILES : versions
+  CLIENTS ||--o{ IMPLEMENTATIONS : relates
+  IMPLEMENTATIONS ||--o{ IMPLEMENTATION_STEPS : instantiates
+  IMPLEMENTATIONS ||--o{ IMPLEMENTATION_EVENTS : traces
+```
+
+## 5. Esquema `security`
+
+Salvo catálogos textuales indicados, cada tabla raíz descrita con `id` lógico implementa `*_key BIGINT IDENTITY` + `source_id`; los nombres siguientes son el contrato lógico.
+
+### `security.users`
+
+PK `user_key`; AK `source_id`. Columnas: `display_name`, `email`, `email_normalized`, `active`, `password_hash`, `password_updated_at`, `password_expires_at`, `must_change_password`, `token_version`, `last_login_at`, hashes/fechas del reset, auditoría y `row_version`.
+
+Reglas: email normalizado único; `token_version >= 0`; nunca exponer hashes. Campos MFA retirados se conservan únicamente en el snapshot raw cifrado durante la retención aprobada, no en el modelo operativo.
+
+### `security.roles`, `security.permissions`, `security.role_permissions`, `security.user_roles`
+
+- `roles`: PK `role_id NVARCHAR(80)`; `name`, `active`, `system_role`, `protected_role`, `domain_task_visibility`, `database_task_visibility`, auditoría y `row_version`.
+- `permissions`: PK `permission_key`; `module_id`, `option_id`, `action_id`, etiquetas y `active`. Se siembra desde `PERMISSION_CATALOG`.
+- `role_permissions`: PK `(role_id, permission_key)`.
+- `user_roles`: PK `(user_id, role_id)` con fecha/actor de asignación.
+
+Checks: ambos niveles de visibilidad en `none|assigned|all`. `super_admin` se protege en servicio y mediante trigger/procedimiento de administración; sus permisos y visibilidad no se pueden reducir. Los IDs heredados se transforman durante migración: `admin→super_admin`, `formatos_impresion.admin→print_formats_admin`; los otros IDs retirados solo se migran después de resolver referencias según la política aprobada.
+
+### `security.auth_sessions`
+
+PK `session_key`; AK `source_id`; FK `user_key`; `refresh_token_hash`, `token_version`, `created_at`, `last_used_at`, `expires_at`, `revoked_at`, `revoked_reason`, FK nullable `replaced_by_session_key`, `row_version`.
+
+Índices: `(user_id, revoked_at, expires_at)` y `expires_at`. No se migran sesiones Cosmos: en cutover se fuerza nuevo login. SQL debe soportar rotación atómica y detección de replay.
+
+### `security.rate_limits`
+
+PK `rate_limit_key`; AK `source_id` hash; `scope`, `key_type`, `attempt_count`, `window_started_at`, `blocked_until`, `expires_at`, `updated_at`, `row_version`. Índices en `expires_at` y `(scope, key_type, blocked_until)`. Empieza vacía en cutover y requiere job de purga. Para el MVP confirmado se usará SQL; Redis queda como evolución si la carga distribuida lo justifica.
+
+Estado runtime 2026-07-21: los stores SQL de sesiones y rate limits están implementados detrás de `SQL_SECURITY_RUNTIME_ENABLED=false`. La rotación de refresh token, el enlace al descendiente y la detección de reutilización usan una transacción `SERIALIZABLE`; el consumo de límites bloquea el rango de la clave seudónima con `UPDLOCK,HOLDLOCK`. Esta base no autoriza activación: login, password/reset, auditoría y outbox deben cambiar como una sola unidad transaccional antes del ensayo.
+
+## 6. Esquema `core`
+
+### `core.environments`
+
+Catálogo: `production`, `test`, `demo`. `all` no es un ambiente operativo y solo aparece en filtros de configuración/programación.
+
+### `core.clients`
+
+PK/AK estándar (`client_key`/`source_id`); `external_id`, `name`, `name_normalized`, `status`, `notes`, auditoría/soft-delete/`row_version`. Únicos filtrados para `external_id` no nulo y `name_normalized` mientras no esté eliminado.
+
+### `core.domains` y `core.domain_assignees`
+
+- `domains`: PK/AK estándar; FK `client_key`; `domain_name`, `domain_name_normalized`, `environment_id`, `current_web_version`, `status`, notas, última actualización operativa, snapshots de auditoría y `row_version`.
+- `domain_assignees`: PK `(domain_id,user_id)`.
+
+Reglas: URL HTTPS; dominio normalizado único entre no eliminados; FK compuesta `(id,client_id)` disponible para validar que bases y tareas pertenezcan al mismo cliente.
+
+### `core.database_access_profiles`
+
+PK `access_profile_key`; public ID `UNIQUEIDENTIFIER`; `server_host_port`, `initial_catalog`, `sql_user_id`, `password_secret_name`, `connection_fingerprint BINARY(32)`, `active`, auditoría y `row_version`. Es dato técnico sensible: no se incluye en vistas generales. La huella SHA-256 usa exactamente la representación canónica host/puerto + catálogo + usuario de `duplicateValidation.ts`, nunca la contraseña.
+
+Esta tabla permite reutilizar el patrón seguro para accesos de bases maestras y para accesos de pruebas/producción del futuro módulo de implementaciones. La unicidad de fingerprint es filtrada por `active=1`: perfiles pertenecientes a bases eliminadas permanecen inactivos y retienen su `password_secret_name`, por lo que no se fusionan con el perfil activo aunque host/catálogo/usuario coincidan.
+
+### `core.databases` y `core.database_assignees`
+
+- `databases`: PK/AK estándar; FK compuesta `domain_key,client_key`; FK `access_profile_key`; `company_name`, `environment_id`, `current_db_version`, `status`, notas, última actualización, auditoría/soft-delete/`row_version`.
+- `database_assignees`: PK `(database_id,user_id)`.
+
+Único filtrado recomendado: `(client_id, domain_id, company_name_normalized, environment_id)` para no eliminados. El adaptador SQL reconstruye el DTO `dbAccess` sin revelar la contraseña.
+
+## 7. Esquema `licensing`
+
+### `licensing.license_modules`
+
+PK/AK estándar; `name`, normalizado, `code`, normalizado, `description`, `status`, notas, auditoría/soft-delete/`row_version`. Nombre y código únicos filtrados.
+
+### `licensing.license_assignments`
+
+PK/AK estándar; FK `module_key`; `target_type`; FKs nullable `client_key`, `domain_key`, `database_key`; `environment_id`; `status`; auditoría/soft-delete/`row_version`.
+
+Un `CHECK` exige exactamente el destino correspondiente:
+
+- `client`: solo `client_id`.
+- `domain`: `client_id + domain_id`.
+- `database`: `client_id + domain_id + database_id`.
+
+Índice único filtrado por módulo/destino/ambiente mientras no esté eliminado. `ClientRecord.licenseModuleIds[]` se migra a asignaciones de nivel `client`; no se mantiene una segunda tabla que pueda divergir. Si también existe un documento `licenseAssignments` equivalente, la carga lo reconcilia por prioridad y registra conflictos.
+
+## 8. Esquema `scheduling`
+
+### `scheduling.update_schedules`
+
+PK `schedule_key`; AK `source_id`; FK `client_key`; FK nullable `domain_key`; `name`; `target_type`; `frequency_type`; `every_n_weeks`, `interval_days`, `day_of_month`; `start_date`, `end_date`, `timezone`; FKs de rol general/dominio/base; `database_reminder_recipients_mode`; `selection_mode`, `manual_target_types`, `assignment_mode`, `origin`; `active`; `completed_at`, `completed_reason`; `deleted_at`, `deleted_by`; `notes`; snapshots de nombres; auditoría y `row_version`.
+
+Checks condicionales:
+
+- `once`: sin parámetros de recurrencia.
+- `weekly`: `every_n_weeks >= 1` y al menos un weekday.
+- `interval`: `interval_days >= 1`.
+- `monthly`: `day_of_month BETWEEN 1 AND 31`.
+- `manual`: sin recurrencia automática.
+- `end_date IS NULL OR end_date >= start_date`.
+- roles asignados deben estar activos, tener `updates.tasks.view` y visibilidad compatible con el tipo de tarea.
+
+### Tablas hijas de programación
+
+| Tabla | PK y propósito |
+|---|---|
+| `schedule_weekdays` | `(schedule_id,kind,weekday)`; `kind=weekly|preferred`. |
+| `schedule_targets` | `(schedule_id,target_type,target_id)`; conserva `targetIds[]` legado. |
+| `schedule_assignees` | `(schedule_id,assignment_kind,user_id)`; general/dominio/base. |
+| `schedule_reminder_settings` | PK/FK `schedule_id`; habilitado, hora y modo de destinatarios. |
+| `schedule_reminder_days` | `(schedule_id,days_before)`. |
+| `schedule_reminder_emails` | `(schedule_id,email_normalized)`. |
+| `scope_groups` | PK `scope_group_key BIGINT`; FK schedule/client; `include_all_domains`. |
+| `scope_domains` | PK `scope_domain_key BIGINT`; FK group/domain; `include_all_databases`. |
+| `scope_databases` | `(scope_domain_id,database_id)`. |
+| `licensing_scope` | PK/FK schedule; match any/all, ambiente, tipos y solo activos. |
+| `licensing_scope_modules` | `(schedule_id,module_id)`. |
+| `licensing_excluded_domains` | `(schedule_id,domain_id)`. |
+| `licensing_excluded_databases` | `(schedule_id,database_id)`. |
+
+Excluir un dominio no excluye sus bases; excluir una base no excluye el dominio. Los scopes explícitos y los de licenciamiento son mutuamente excluyentes según `selection_mode`.
+
+Schedules referenciados nunca se borran físicamente en SQL. Una eliminación funcional crea tombstone (`active=0`, `deleted_at/by`) para que tareas e historial conserven integridad.
+
+## 9. Esquema `workflow`
+
+### `workflow.update_tasks`
+
+PK `task_key`; AK `source_id`; `dedupe_key`; `task_date`; `task_bucket` legado; FKs `client_key`, `domain_key`, `database_key` nullable; source-ID snapshots de cliente/dominio/destino; `is_historical_orphan`; `target_type`; `primary_schedule_source_id` y FK nullable `primary_schedule_key`; FK `assigned_role_id`; `status`; `result`, notas; campos de completar/bloquear/resolver/reabrir; snapshots de nombres; auditoría y `row_version`.
+
+Reglas:
+
+- `domain`: `database_id IS NULL` y el destino es `domain_id`.
+- `database`: `database_id IS NOT NULL` y pertenece al mismo dominio/cliente.
+- estados: `pending|in_progress|completed|failed|blocked|cancelled|reopened`.
+- índice único `dedupe_key` no nulo; antes de imponerlo se reconcilian históricos.
+- regla funcional principal: una tarea por `target_type + target + task_date`. `completed` bloquea duplicados; `cancelled/result=obsolete` puede reactivarse.
+- `sources[]`/`workflow.task_sources` es la relación autoritativa muchos-a-muchos. `rootScheduleId` determina `primary_schedule_key` para presentación/compatibilidad cuando el schedule existe. `scheduleId` sintético legado se conserva en staging/raw y nunca se fuerza como FK falsa.
+- Dedupe se impone sobre destino físico (`domain_key` o `database_key`) + `task_date`, incluyendo canceladas; una `cancelled/obsolete` se reactiva en vez de insertar otra fila.
+- Los 32 grupos históricos duplicados se consolidan: se conserva la fila no obsoleta (o la obsoleta más reciente si todas lo son), los otros IDs van a `task_source_aliases` y sus estados a history inferido.
+- FK master faltante solo se permite para tareas importadas terminales con `is_historical_orphan=1` y snapshots obligatorios. Tareas nuevas/no terminales exigen integridad completa.
+
+### Tablas hijas de tareas
+
+| Tabla | Propósito |
+|---|---|
+| `task_assignees(task_id,user_id)` | Normaliza responsables. |
+| `task_sources` | Orígenes con `schedule_source_id` obligatorio y `schedule_key` nullable para referencias históricas ausentes. |
+| `task_source_aliases` | IDs Cosmos supersedidos por consolidación de dedupe; unique alias→task. |
+| `task_status_history` | Cada transición con estado anterior/nuevo, acción, comentario, actor y metadata sanitizada. |
+| `task_reminders` | Envío por tipo/días/fecha. |
+| `task_reminder_recipients` | Destinatarios por recordatorio, no JSON. |
+| `task_overdue_alerts(task_id,sent_date)` | Idempotencia diaria de vencidos. |
+
+Cambiar estado de tarea y actualizar `current_*_version/last_updated_*` en el maestro se ejecuta en una sola transacción SQL. Resolver bloqueo conserva los timestamps/motivos anteriores en `task_status_history`.
+
+## 10. Esquema `settings`
+
+El documento único `appSettings/email-alerts` se normaliza para permitir constraints y referencias a roles:
+
+| Tabla | Contenido |
+|---|---|
+| `email_settings` | Fila singleton: proveedor, remitente, URL frontend, SMTP no secreto, referencia Key Vault, defaults y banderas. |
+| `default_reminder_days` | Días globales antes de tarea. |
+| `alert_recipient_roles` | `(alert_kind,role_id)` para `overdue` y `blocked`. |
+| `alert_recipient_emails` | Correos custom normalizados por tipo. |
+| `overdue_alert_weekdays` | Días de envío semanal. |
+| `blocked_reminder_days` | Días después del bloqueo. |
+| `administrative_reminders` | `sag_web_version` y `whats_new`: regla, día, hora, timezone, asunto y estado. |
+| `administrative_reminder_recipients` | Correos por recordatorio. |
+
+Campos heredados (`overdueAlertRecipientsMode`, `customAdminAlertEmails`) se transforman a destinatarios explícitos. `overdue_alert_last_sent_period` se conserva además de las filas de notificación para compatibilidad, pero la idempotencia final debe descansar en un índice único de notificaciones.
+
+## 11. Esquema `content`
+
+### Archivos y versiones
+
+`content.files`: PK `file_key`; public ID `UNIQUEIDENTIFIER`; `storage_provider`, `container_name`, `blob_name`, `original_name`, `mime_type`, `byte_length`, `sha256 BINARY(32)`, `created_at/by`. Cada carga es inmutable. No se guarda Base64 ni URL SAS.
+
+### Formatos de impresión
+
+- `print_format_sources`: PK/AK estándar; nombre normalizado único, estado/activa, auditoría/soft-delete. No tiene descripción porque el maestro solo identifica el tipo de fuente.
+- `print_formats`: PK/AK estándar; `print_format_source_key` conserva la fuente primaria compatible con `fuenteId`; nombre/normalizado; descripción; tamaño y personalizado; `requires_license`; FK módulo nullable; `legacy_import_code`, `legacy_import_status`, `legacy_variant` nullable; activo/estado; auditoría/soft-delete/`row_version`.
+- `print_format_source_assignments`: puente muchos-a-muchos `(print_format_key,print_format_source_key)`; `display_order`; fecha/actor. Debe existir entre 1 y 50 fuentes distintas por formato y siempre incluir la fuente primaria. El nombre del formato es único dentro de cada fuente asignada.
+- `print_format_files`: PK `(print_format_id,version_no)`; FK archivo; `is_current`, fecha/actor. Índice único filtrado garantiza una versión actual.
+
+Checks: PDF; tamaño máximo actual 1.500.000 bytes; si tamaño=`personalizado`, detalle obligatorio; si requiere licencia, módulo activo obligatorio. `fuenteIds[]` se normaliza al puente y `fuenteNombres[]` se deriva por join; los registros históricos sin array generan una asignación desde `fuenteId`. Los tres campos `legacy_*` preservan metadata de los 37 formatos históricos, no participan en identidad, filtros ni unicidad y no se crean en registros nuevos salvo importación controlada.
+
+### Descargas públicas
+
+- `public_download_sections`: PK/AK estándar; nombre; `slug` normalizado único; descripción; activa/estado; auditoría/soft-delete/`row_version`.
+- `public_download_documents`: nombre físico conservado por compatibilidad; representa archivos públicos. PK/AK estándar; FK sección; `asset_kind=document|video`; título; slug global normalizado único por compatibilidad con `/public/descargas/{slug}`; descripción; activo/estado; auditoría/soft-delete/`row_version`.
+- `public_download_files`: PK `(document_id,version_no)`; FK archivo; versión actual única.
+
+Una sección es la categoría y prefijo estable del endpoint; un archivo es el recurso descargable dentro de ella, por lo que ambas entidades son necesarias. No se duplican `sectionName/sectionSlug` ni `fuenteNombre/licenciaModuloNombre` como datos vigentes: se resuelven por join. La auditoría conserva snapshots históricos. Documentos admitidos: hasta 8.000.000 bytes; videos MP4/M4V/MOV/WebM: hasta 100.000.000 bytes, firma validada y payload únicamente en Blob privado.
+
+## 12. Esquema `notifications`
+
+- `email_notifications`: PK/AK estándar; `notification_type`; `entity_type`, `entity_source_id`; `idempotency_key` único; `period`, `send_date`; `subject`; `status` (`pending|claimed|sent|failed|skipped`); `attempt_count`, `claimed_at`, `claim_expires_at`, `next_attempt_at`, `attempted_at`, `sent_at`, `provider_message_id`; error sanitizado; metadata JSON validada; auditoría/`row_version`.
+- `email_notification_recipients`: PK `(notification_id,email_normalized)`; tipo `to|cc|bcc`, nombre, resultado y error sanitizado.
+
+Transforma los documentos actuales `administrative_reminder` y `blocked_task_reminder`. Los recordatorios embebidos en tareas también se preservan en `workflow`, porque allí forman parte del estado operativo de la tarea.
+
+Para reset de contraseña, el outbox no almacena el token, la URL ni el cuerpo del correo. La solicitud crea de forma idempotente una instrucción `password_notification` con plantilla fija y destinatario; el worker generará el token de un solo uso al reclamar la fila, persistirá únicamente su hash y mantendrá el token en memoria durante el envío.
+
+## 13. Esquema `audit`
+
+`audit.audit_logs`: PK `audit_log_key BIGINT IDENTITY`; AK `source_id`; tipo/source ID de entidad; FKs opcionales de cliente/dominio; snapshots de nombres; acción; actor/source ID/email; `performed_at`; `before_json`, `after_json`, `metadata_json` con `ISJSON`; clasificación/sanitización y versión de esquema.
+
+Índices: fecha descendente; `(entity_type,entity_id,performed_at)`; `(client_id,performed_at)`; `(action,performed_at)`. La cuenta runtime recibe `INSERT` y `SELECT` autorizada, pero no `UPDATE`/`DELETE`. Antes de exportar se ejecuta el saneamiento SEC-009.
+
+Estado runtime 2026-07-21: existen writers reutilizables que insertan auditoría ya saneada y outbox dentro de la transacción de negocio. La validación read-only del destino confirmó trigger append-only, unique de idempotencia, índice del worker, guard JSON, permiso runtime de `INSERT` y denegaciones explícitas de `UPDATE/DELETE` sobre auditoría. Aún no están activados desde los handlers Cosmos.
+
+## 14. Esquema `implementation` (reservado desde ahora)
+
+Este esquema corresponde a la especificación `docs/implementaciones/*`. No existe aún en el runtime, por lo que **no hay documentos Cosmos que migrar**, pero reservarlo evita rediseñar la base poco después del cutover.
+
+| Tabla | Datos principales y reglas |
+|---|---|
+| `implementations` | Tipo `migration|new_client|special_module`; estado, etapa, versión de plantilla, cliente opcional, datos de cliente, completitud, atención, última actividad, cierre/rechazo, auditoría/rowversion. |
+| `implementation_assignees` | `(implementation_id,responsibility)` a usuario; sales/support/lead. |
+| `implementation_companies` | NIT/nombre/contacto/logo/admin email/BD original y FKs a perfiles de acceso de pruebas/producción. |
+| `implementation_modules` | `(implementation_id,module_id,module_kind)` licensed/special. |
+| `implementation_module_users` | Usuarios del módulo especial. |
+| `implementation_decisions` | Clave, valor, nota, actor y fecha. |
+| `implementation_steps` | Clave estable, etapa/fase/orden, instrucciones, rol responsable, blocking, estado, evidencia y datos de bloqueo/cierre. Unique `(implementation_id,step_key)`. |
+| `implementation_events` | Timeline append-only; tipo, resumen, metadata sanitizada, actor y fecha. |
+| `module_test_catalog` | Módulo especial y si exige ambiente de pruebas; editable y auditable. |
+
+Las plantillas del proceso siguen versionadas en código. Al crear una implementación se copian sus pasos; cambiar la plantilla no modifica instancias existentes. Correos del flujo usan `notifications.email_notifications` con FK opcional `implementation_id`. Eventos y auditoría se escriben en la misma transacción que la acción de negocio; el envío externo usa patrón outbox para no perder ni duplicar correos.
+
+## 15. Esquema `migration`
+
+- `migration_runs`: fuente, destino, timestamps, snapshot, versión de app/esquema, estado y conteos.
+- `raw_documents`: PK `(run_id,source_container,source_id)`; JSON original cifrado en reposo, SHA-256, estado/error.
+- una `stage_*` por cada contenedor de negocio: users, roles, clients, domains, databases, license modules/assignments, schedules, tasks, settings, notifications, fuentes/formatos, public downloads y audit.
+- `id_mappings`: solo para nuevas IDs técnicas generadas durante normalización.
+- `validation_results`: severidad, regla, esperado, real, detalle y resolución.
+- `reconciliation_counts`: conteos y hashes por contenedor/tabla/run.
+
+`securityRateLimits` y `authSessions` se exportan solo para conteo/diagnóstico si la política lo autoriza; no se cargan al target operativo.
+
+## 16. Índices mínimos de consulta
+
+| Consulta real | Índice |
+|---|---|
+| Login | `users(email_normalized)` unique. |
+| Roles de usuario | `user_roles(user_id)` include `role_id`. |
+| Jerarquía cliente | `domains(client_id,status)`, `databases(domain_id,status)`. |
+| Lista de tareas | `(status,task_date,target_type)`, `(assigned_role_id,status,task_date)`, assignees por usuario. |
+| Dedupe | `update_tasks(dedupe_key)` unique filtrado y destino/fecha. |
+| Timers | schedules `(active,start_date,end_date)`, tasks `(task_date,status)`, sessions/rate limits por expiración. |
+| Auditoría | fecha, entidad/id, cliente y acción. |
+| Descargas públicas | sección/slug y slug global únicos filtrados. |
+| Formatos públicos | fuente/activo y módulo de licencia. |
+| Bandeja futura | implementations `(status,current_stage_id,attention_required,last_activity_at)`. |
+
+## 17. Transacciones críticas
+
+1. Crear/editar cliente, dominio o base + auditoría.
+2. Eliminar cliente/dominio/base + desactivar/cancelar dependencias + auditoría.
+3. Crear/editar programación + reemplazar todas sus tablas hijas + auditoría.
+4. Generar tareas: lock lógico por fecha/ventana, inserción idempotente, fuentes y cierre de `once`.
+5. Cambiar estado de tarea + historial + actualización de versión del maestro + auditoría/outbox.
+6. Editar rol + permisos/visibilidad; asignar rol; validar referencias antes de desactivar/eliminar.
+7. Reemplazar archivo: crear blob y metadata, cambiar versión actual, auditar; limpieza compensatoria si falla SQL.
+8. Enviar correo: crear outbox/idempotency; worker envía y actualiza resultado.
+
+## 18. Estrategia de migración
+
+1. Aprobar motor, collation, red, storage de archivos, retención y RPO/RTO.
+2. Crear base vacía y schemas; ejecutar DDL versionado con herramienta de migraciones.
+3. Exportar snapshot consistente de los 17 contenedores, metadatos de partición y conteos; sanear auditoría.
+4. Cargar `migration.raw_documents` y staging sin transformar.
+5. Ejecutar validaciones pre-carga: fechas, IDs, roles, duplicados, jerarquía, secretos, archivos, referencias y tareas huérfanas.
+6. Cargar catálogos, seguridad, core, licencias, scheduling, workflow, settings/content/notifications y audit.
+7. Extraer Base64, verificar firma/tamaño/hash, cargar Blob y crear versiones SQL. No borrar Base64 fuente hasta aprobación.
+8. Reconciliar conteos, IDs, sumas de arrays normalizados, hashes y salidas funcionales.
+9. Ejecutar aplicación en modo shadow-read sobre SQL sin responder desde SQL; comparar DTOs sanitizados.
+10. Ensayar cutover completo, rollback y recuperación de timers.
+11. Ventana final: pausar escrituras/timers, export incremental, cargar, validar, cambiar repositorios, forzar login y reactivar timers una sola vez.
+12. Mantener Cosmos read-only durante la retención acordada; retirar solo tras aprobación.
+
+## 19. Criterios de aceptación de datos
+
+- 100% de IDs de negocio presentes o explicados en `validation_results`.
+- 0 secretos en raw compartido, tablas operativas, logs o reportes; solo hashes/referencias.
+- Conteos por estado y contenedor reconciliados.
+- Arrays normalizados reconciliados: roles, asignados, targets, weekdays, scopes, fuentes y destinatarios.
+- 0 FK huérfanas críticas; placeholders históricos solo con aprobación explícita.
+- 0 duplicados de email, externalId, dominio, módulos, dedupeKey y slugs tras resolución documentada.
+- Misma visibilidad de tareas por usuario/rol en Cosmos y SQL.
+- Misma generación de tareas para ventanas de prueba, incluida reactivación de `obsolete` y cierre de `once`.
+- Ningún correo duplicado después del cutover.
+- Todos los archivos descargan con mismo hash, MIME y nombre; PDFs abren correctamente.
+- Reportes, dashboard, listas, filtros, paginación y auditoría devuelven resultados equivalentes.
+
+## 20. Decisiones que requieren aprobación antes del DDL final
+
+| Decisión | Recomendación |
+|---|---|
+| Plataforma | Cerrada: SQL Server 2019 Standard, compatibility 150, provisto en `PortalSAGWeb`. |
+| Archivos | Blob Storage privado + metadata SQL; no `VARBINARY(MAX)`. |
+| Rate limiting | Tabla SQL con `ROWVERSION` y purga para el MVP; reevaluar Redis con métricas de contención/escala horizontal. |
+| Settings | Modelo normalizado descrito; conservar JSON raw solo en migración. |
+| Implementaciones | Crear schema/tablas ahora vacíos o reservar DDL en una migración inmediatamente posterior. |
+| Auditoría | Migrarla desde día 1 y mantener append-only. |
+| Corte | Forzar logout; no migrar sesiones activas. |
+| Retención Cosmos | Mínimo una ventana de rollback y aprobación formal; sugerido 30–90 días read-only. |
+
+No se debe crear el DDL productivo hasta cerrar estas decisiones y contar con el inventario real del ambiente Cosmos. El siguiente entregable técnico es el script versionado de schema + importadores repetibles, no cambios directos manuales en producción.

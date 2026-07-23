@@ -21,7 +21,6 @@ const fuentes = [
   {
     id: "fuente_factura",
     nombre: "Factura de venta",
-    descripcion: "Documentos de venta",
     activa: true,
     status: "active",
     formatosActivos: 2,
@@ -33,7 +32,6 @@ const fuentes = [
   {
     id: "fuente_remision",
     nombre: "Remisión",
-    descripcion: "Entregas",
     activa: true,
     status: "active",
     formatosActivos: 1,
@@ -189,18 +187,17 @@ describe("FormatosImpresionPublicPage", () => {
 });
 
 describe("FormatosImpresionAdminPage", () => {
-  it("crea un tipo de fuente desde la pestaña administrativa", async () => {
+  it("crea un tipo de fuente sin solicitar una descripción innecesaria", async () => {
     apiMock.post.mockResolvedValue({ id: "fuente_nueva", nombre: "Cotización" });
     renderWithQuery(<FormatosImpresionAdminPage />);
     fireEvent.click(await screen.findByRole("button", { name: "Nuevo tipo de fuente" }));
     await userEvent.type(field("Nombre del tipo de fuente *"), "Cotización");
-    await userEvent.type(field("Descripción"), "Formatos para cotizaciones");
+    expect(screen.queryByText("Descripción")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
-    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/catalogo-formatos/admin/fuentes-formatos", expect.objectContaining({
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/catalogo-formatos/admin/fuentes-formatos", {
       nombre: "Cotización",
-      descripcion: "Formatos para cotizaciones",
       activa: true,
-    })));
+    }));
   });
 
   it("exige PDF al crear un formato", async () => {
@@ -248,7 +245,7 @@ describe("FormatosImpresionAdminPage", () => {
   it("permite limpiar rápidamente la búsqueda administrativa", async () => {
     renderWithQuery(<FormatosImpresionAdminPage />);
     await screen.findByText("Factura de venta");
-    const buscador = screen.getByPlaceholderText("Buscar por nombre o descripción...");
+    const buscador = screen.getByPlaceholderText("Buscar por nombre...");
 
     await userEvent.type(buscador, "remision");
     expect(screen.queryByText("Factura de venta")).toBeNull();

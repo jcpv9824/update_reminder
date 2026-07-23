@@ -3,12 +3,23 @@ import type { HttpRequest } from "@azure/functions";
 import { getContainer } from "./cosmos";
 import type { AuthSessionRecord, UserRecord } from "../types/models";
 import type { JwtPayload } from "./jwt";
+import { sqlSecurityRuntimeEnabled } from "./dataBackend";
+
+export type AuthSessionCreation = { record: AuthSessionRecord; refreshToken: string };
+export type AtomicSessionRotation = {
+  sessionId: string;
+  presentedTokenHash: string;
+  nowMs: number;
+  createNext: (user: UserRecord) => AuthSessionCreation;
+};
 
 export interface AuthSessionStore {
   read(id: string): Promise<AuthSessionRecord | null>;
   create(record: AuthSessionRecord): Promise<void>;
   replace(record: AuthSessionRecord, etag?: string): Promise<void>;
   listByUser(userId: string): Promise<AuthSessionRecord[]>;
+  loadUser?(id: string): Promise<UserRecord | null>;
+  rotateAtomic?(request: AtomicSessionRotation): Promise<{ session: AuthSessionRecord; refreshToken: string; user: UserRecord } | null>;
 }
 
 export type UserLoader = (id: string) => Promise<UserRecord | null>;
@@ -21,7 +32,7 @@ function refreshLifetimeSeconds(): number {
   return Math.floor(days * 86400);
 }
 
-function hashToken(token: string): string {
+export function hashRefreshToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
@@ -82,7 +93,7 @@ async function defaultLoadUser(id: string): Promise<UserRecord | null> {
   }
 }
 
-function makeSession(user: UserRecord, nowMs: number): { record: AuthSessionRecord; refreshToken: string } {
+export function makeAuthSession(user: UserRecord, nowMs: number): AuthSessionCreation {
   const id = randomUUID();
   const refreshToken = `${id}.${randomBytes(32).toString("base64url")}`;
   const lifetime = refreshLifetimeSeconds();
@@ -92,7 +103,7 @@ function makeSession(user: UserRecord, nowMs: number): { record: AuthSessionReco
     record: {
       id,
       userId: user.id,
-      refreshTokenHash: hashToken(refreshToken),
+      refreshTokenHash: hashRefreshToken(refreshToken),
       tokenVersion: user.tokenVersion ?? 0,
       createdAt: now,
       lastUsedAt: now,
@@ -105,12 +116,21 @@ function makeSession(user: UserRecord, nowMs: number): { record: AuthSessionReco
   };
 }
 
+async function resolveSessionStore(explicit?: AuthSessionStore): Promise<AuthSessionStore> {
+  if (explicit) return explicit;
+  if (sqlSecurityRuntimeEnabled()) {
+    const { sqlAuthSessionStore } = await import("./securityAuthSqlRepository");
+    return sqlAuthSessionStore;
+  }
+  return cosmosStore;
+}
+
 export async function createAuthSession(
   user: UserRecord,
   options: { store?: AuthSessionStore; nowMs?: number } = {}
 ): Promise<{ session: AuthSessionRecord; refreshToken: string }> {
-  const store = options.store ?? cosmosStore;
-  const created = makeSession(user, options.nowMs ?? Date.now());
+  const store = await resolveSessionStore(options.store);
+  const created = makeAuthSession(user, options.nowMs ?? Date.now());
   await store.create(created.record);
   return { session: created.record, refreshToken: created.refreshToken };
 }
@@ -121,12 +141,21 @@ export async function rotateAuthSession(
 ): Promise<{ session: AuthSessionRecord; refreshToken: string; user: UserRecord } | null> {
   const parsed = parseRefreshToken(refreshToken);
   if (!parsed) return null;
-  const store = options.store ?? cosmosStore;
-  const loadUser = options.loadUser ?? defaultLoadUser;
+  const store = await resolveSessionStore(options.store);
   const nowMs = options.nowMs ?? Date.now();
+  const presentedTokenHash = hashRefreshToken(parsed.raw);
+  if (store.rotateAtomic) {
+    return store.rotateAtomic({
+      sessionId: parsed.sessionId,
+      presentedTokenHash,
+      nowMs,
+      createNext: (user) => makeAuthSession(user, nowMs),
+    });
+  }
+  const loadUser = options.loadUser ?? store.loadUser?.bind(store) ?? defaultLoadUser;
   const current = await store.read(parsed.sessionId);
   if (!current) return null;
-  if (!hashesMatch(current.refreshTokenHash, hashToken(parsed.raw))) return null;
+  if (!hashesMatch(current.refreshTokenHash, presentedTokenHash)) return null;
 
   if (current.revokedAt) {
     if (current.replacedBySessionId) {
@@ -145,7 +174,7 @@ export async function rotateAuthSession(
 
   const user = await loadUser(current.userId);
   if (!user || !user.active || (user.tokenVersion ?? 0) !== current.tokenVersion) return null;
-  const next = makeSession(user, nowMs);
+  const next = makeAuthSession(user, nowMs);
   current.revokedAt = new Date(nowMs).toISOString();
   current.revokedReason = "rotated";
   current.replacedBySessionId = next.record.id;
@@ -159,8 +188,8 @@ export async function validateAccessSession(
   payload: JwtPayload,
   options: { store?: AuthSessionStore; loadUser?: UserLoader; nowMs?: number } = {}
 ): Promise<{ user: UserRecord; session: AuthSessionRecord } | null> {
-  const store = options.store ?? cosmosStore;
-  const loadUser = options.loadUser ?? defaultLoadUser;
+  const store = await resolveSessionStore(options.store);
+  const loadUser = options.loadUser ?? store.loadUser?.bind(store) ?? defaultLoadUser;
   const nowMs = options.nowMs ?? Date.now();
   const [session, user] = await Promise.all([store.read(payload.sid), loadUser(payload.sub)]);
   if (!session || !user || !user.active || session.revokedAt) return null;
@@ -177,9 +206,9 @@ export async function revokeRefreshSession(
 ): Promise<void> {
   const parsed = parseRefreshToken(refreshToken);
   if (!parsed) return;
-  const store = options.store ?? cosmosStore;
+  const store = await resolveSessionStore(options.store);
   const session = await store.read(parsed.sessionId);
-  if (!session || session.revokedAt || !hashesMatch(session.refreshTokenHash, hashToken(parsed.raw))) return;
+  if (!session || session.revokedAt || !hashesMatch(session.refreshTokenHash, hashRefreshToken(parsed.raw))) return;
   session.revokedAt = new Date(options.nowMs ?? Date.now()).toISOString();
   session.revokedReason = reason;
   await store.replace(session, session._etag);
@@ -190,7 +219,7 @@ export async function revokeAllUserSessions(
   reason: string,
   options: { store?: AuthSessionStore; nowMs?: number } = {}
 ): Promise<number> {
-  const store = options.store ?? cosmosStore;
+  const store = await resolveSessionStore(options.store);
   const now = new Date(options.nowMs ?? Date.now()).toISOString();
   const sessions = await store.listByUser(userId);
   let revoked = 0;

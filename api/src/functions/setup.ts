@@ -9,6 +9,14 @@ import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
 import { revokeAllUserSessions } from "../lib/authSessions";
 import { LEGACY_COMPATIBILITY_MIGRATION_ROLES, migrateLegacyRoleIds, RETIRED_COMPATIBILITY_ROLE_IDS } from "../lib/permissionModel";
 import { roleUsageMessage, roleUsageSummary } from "../lib/roleLifecycle";
+import { getDataBackend } from "../lib/dataBackend";
+import {
+  createSqlUser,
+  findSqlUserByEmail,
+  findSqlUserById,
+  setSqlUserPassword,
+  updateSqlUser,
+} from "../lib/securityManagementSqlWriteRepository";
 
 function sanitize(u: UserRecord) {
   const { passwordHash, passwordResetTokenHash, passwordResetExpiresAt, passwordResetUsedAt, tokenVersion,
@@ -65,6 +73,33 @@ app.http("setupFirstAdmin", {
         mustChangePassword: false,
         tokenVersion: 0,
       };
+      if (getDataBackend() === "sql") {
+        const existing = await findSqlUserById(record.id);
+        let sqlUser: UserRecord;
+        if (existing) {
+          const updated = await updateSqlUser(record.id, {
+            displayName: record.displayName,
+            roles: Array.from(new Set([...migrateLegacyRoleIds(existing.roles ?? []), "super_admin"])),
+            active: true,
+          }, { id: "system", email: "system" });
+          if (!updated) return badRequest("Usuario no encontrado.");
+          sqlUser = updated;
+        } else {
+          sqlUser = await createSqlUser({
+            id: record.id,
+            displayName: record.displayName,
+            email: record.email,
+            roles: ["super_admin"],
+            active: true,
+            passwordHash,
+            mustChangePassword: false,
+          }, { id: "system", email: "system" });
+        }
+        const passwordUser = await setSqlUserPassword(sqlUser.id, passwordHash,
+          { id: "system", email: "system" }, "user_password_reset",
+          { mustChangePassword: false, expiresAt: new Date(passwordExpirationIso()), updatedBy: "system" });
+        return existing ? ok(sanitize(passwordUser ?? sqlUser)) : created(sanitize(passwordUser ?? sqlUser));
+      }
       try {
         await container.items.create(record);
       } catch (e: any) {
@@ -145,6 +180,15 @@ app.http("setupMigrateRoleIds", {
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       if (parsed.data.setupSecret !== expected) return forbidden("Clave de inicialización incorrecta.");
 
+      if (getDataBackend() === "sql") {
+        return ok({
+          migratedUsers: 0,
+          deletedRoleDefinitions: [],
+          migratedSettings: false,
+          message: "Los roles SQL ya están normalizados; la migración de IDs heredados no aplica.",
+        });
+      }
+
       const [usersResult, schedulesResult, tasksResult, rolesResult, settingsResult] = await Promise.all([
         getContainer("users").items.readAll<UserRecord>().fetchAll(),
         getContainer("updateSchedules").items.readAll<UpdateSchedule>().fetchAll(),
@@ -224,6 +268,20 @@ app.http("setupSetAdminPassword", {
       if (parsed.data.setupSecret !== expected) return forbidden("Clave de inicialización incorrecta.");
 
       const email = normalizeEmail(parsed.data.email);
+      if (getDataBackend() === "sql") {
+        const user = await findSqlUserByEmail(email);
+        if (!user) return badRequest("Usuario no encontrado.");
+        try {
+          await validatePasswordPolicy(parsed.data.password, { email: user.email, displayName: user.displayName });
+        } catch (error: any) {
+          return error?.status === 503 ? { status: 503, jsonBody: { error: error.message } } : badRequest(error.message);
+        }
+        const passwordHash = await hashPassword(parsed.data.password);
+        const updated = await setSqlUserPassword(user.id, passwordHash,
+          { id: "system", email: "system" }, "user_password_reset",
+          { mustChangePassword: false, expiresAt: new Date(passwordExpirationIso()), updatedBy: "system" });
+        return updated ? ok(sanitize(updated)) : badRequest("Usuario no encontrado.");
+      }
       const container = getContainer("users");
       const { resources } = await container.items
         .query<UserRecord>({ query: "SELECT * FROM c WHERE LOWER(c.email) = @e", parameters: [{ name: "@e", value: email }] })

@@ -5,6 +5,9 @@ import { Alerta, BotonCopiar, DialogoConfirmar, EtiquetaEstado, Modal } from "..
 import type { PublicDownloadDocument, PublicDownloadSection } from "../types";
 
 type Tab = "sections" | "documents";
+const PUBLIC_FILE_ACCEPT = ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.vsd,.vsdx,.html,.htm,.md,.txt,.csv,.url,.mp4,.m4v,.mov,.webm,video/mp4,video/webm,video/quicktime,video/x-m4v";
+const MAX_DOCUMENT_BYTES = 8_000_000;
+const MAX_VIDEO_BYTES = 100_000_000;
 type FilePayload = {
   archivoBase64: string;
   archivoNombreOriginal: string;
@@ -55,8 +58,8 @@ export default function DescargasPublicasAdminPage() {
   });
   const saveDocument = useMutation({
     mutationFn: ({ id, body }: { id?: string; body: any }) => id ? api.put(`${ADMIN_API}/documents/${id}`, body) : api.post(`${ADMIN_API}/documents`, body),
-    onSuccess: (_, vars) => onSuccess(vars.id ? "Documento actualizado correctamente." : "Documento creado correctamente."),
-    onError: (e: any) => setError(e?.message ?? "No se pudo guardar el documento."),
+    onSuccess: (_, vars) => onSuccess(vars.id ? "Archivo actualizado correctamente." : "Archivo creado correctamente."),
+    onError: (e: any) => setError(e?.message ?? "No se pudo guardar el archivo."),
   });
   const removeSection = useMutation({
     mutationFn: (id: string) => api.del(`${ADMIN_API}/sections/${id}`),
@@ -65,8 +68,8 @@ export default function DescargasPublicasAdminPage() {
   });
   const removeDocument = useMutation({
     mutationFn: (id: string) => api.del(`${ADMIN_API}/documents/${id}`),
-    onSuccess: () => onSuccess("Documento eliminado."),
-    onError: (e: any) => setError(e?.message ?? "No se pudo eliminar el documento."),
+    onSuccess: () => onSuccess("Archivo eliminado."),
+    onError: (e: any) => setError(e?.message ?? "No se pudo eliminar el archivo."),
   });
 
   return (
@@ -74,16 +77,17 @@ export default function DescargasPublicasAdminPage() {
       <div className="encabezado-pagina">
         <h2>Descargas públicas</h2>
         <button className="primario" onClick={() => tab === "sections" ? setModalSection("nuevo") : setModalDocument("nuevo")}>
-          {tab === "sections" ? "Nueva sección" : "Nuevo documento"}
+          {tab === "sections" ? "Nueva sección" : "Nuevo archivo"}
         </button>
       </div>
       {mensaje && <Alerta tipo="exito">{mensaje}</Alerta>}
       {error && <Alerta tipo="error">{error}</Alerta>}
 
       <div className="pestanas">
-        <button className={tab === "documents" ? "activo" : ""} onClick={() => setTab("documents")}>Documentos</button>
+        <button className={tab === "documents" ? "activo" : ""} onClick={() => setTab("documents")}>Archivos</button>
         <button className={tab === "sections" ? "activo" : ""} onClick={() => setTab("sections")}>Secciones</button>
       </div>
+      <p className="texto-ayuda">Las secciones organizan los archivos públicos y forman parte de su dirección; cada archivo puede ser un documento o un video.</p>
 
       <div className="barra-filtros">
         <div className="campo campo-busqueda-formatos">
@@ -121,7 +125,7 @@ export default function DescargasPublicasAdminPage() {
       {tab === "documents" && (
         loadingDocuments ? <div className="cargando">Cargando documentos...</div> : (
           <table>
-            <thead><tr><th>Documento</th><th>Sección</th><th>Archivo</th><th>Endpoint público</th><th>Estado</th><th>Acciones</th></tr></thead>
+            <thead><tr><th>Archivo</th><th>Tipo</th><th>Sección</th><th>Archivo cargado</th><th>Endpoint público</th><th>Estado</th><th>Acciones</th></tr></thead>
             <tbody>
               {filteredDocuments.map((doc) => {
                 const url = apiUrl(`/public/downloads/${doc.sectionSlug}/${doc.slug}`);
@@ -131,6 +135,7 @@ export default function DescargasPublicasAdminPage() {
                       <strong>{doc.titulo}</strong>
                       {doc.descripcion && <div className="texto-ayuda">{doc.descripcion}</div>}
                     </td>
+                    <td>{doc.assetKind === "video" || doc.archivoMimeType.startsWith("video/") ? "Video" : "Documento"}</td>
                     <td>{doc.sectionName}</td>
                     <td>{doc.archivoNombreOriginal}<div className="texto-ayuda">{formatBytes(doc.archivoBytes)}</div></td>
                     <td>
@@ -148,7 +153,7 @@ export default function DescargasPublicasAdminPage() {
                   </tr>
                 );
               })}
-              {filteredDocuments.length === 0 && <tr><td colSpan={6}><div className="vacio">No hay documentos para mostrar.</div></td></tr>}
+              {filteredDocuments.length === 0 && <tr><td colSpan={7}><div className="vacio">No hay archivos para mostrar.</div></td></tr>}
             </tbody>
           </table>
         )
@@ -161,7 +166,7 @@ export default function DescargasPublicasAdminPage() {
           onSubmit={(body) => saveSection.mutate({ id: modalSection && modalSection !== "nuevo" ? modalSection.id : undefined, body })}
         />
       </Modal>
-      <Modal titulo={modalDocument === "nuevo" ? "Nuevo documento" : "Editar documento"} abierto={!!modalDocument} onCerrar={() => setModalDocument(null)} className="modal-descarga-publica">
+      <Modal titulo={modalDocument === "nuevo" ? "Nuevo archivo" : "Editar archivo"} abierto={!!modalDocument} onCerrar={() => setModalDocument(null)} className="modal-descarga-publica">
         <DocumentForm
           initial={modalDocument && modalDocument !== "nuevo" ? modalDocument : undefined}
           sections={activeSections}
@@ -180,8 +185,8 @@ export default function DescargasPublicasAdminPage() {
       />
       <DialogoConfirmar
         abierto={!!deleteDocument}
-        titulo="Eliminar documento"
-        mensaje={deleteDocument ? `¿Eliminar el documento "${deleteDocument.titulo}"? El endpoint dejará de estar disponible.` : ""}
+        titulo="Eliminar archivo"
+        mensaje={deleteDocument ? `¿Eliminar el archivo "${deleteDocument.titulo}"? El endpoint dejará de estar disponible.` : ""}
         textoConfirmar="Eliminar"
         variante="peligro"
         onConfirmar={() => deleteDocument && removeDocument.mutate(deleteDocument.id)}
@@ -254,6 +259,13 @@ function DocumentForm({ initial, sections, loading, onSubmit }: { initial?: Publ
       setFile(null);
       return;
     }
+    const isVideo = selected.type.startsWith("video/") || /\.(mp4|m4v|mov|webm)$/i.test(selected.name);
+    const maxBytes = isVideo ? MAX_VIDEO_BYTES : MAX_DOCUMENT_BYTES;
+    if (selected.size > maxBytes) {
+      setFile(null);
+      setError(`El archivo supera el tamaño máximo permitido de ${Math.floor(maxBytes / 1_000_000)} MB.`);
+      return;
+    }
     const dataUrl = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(String(reader.result));
@@ -270,7 +282,7 @@ function DocumentForm({ initial, sections, loading, onSubmit }: { initial?: Publ
   function submit(e: FormEvent) {
     e.preventDefault();
     if (!sectionId) return setError("Seleccione una sección.");
-    if (!titulo.trim()) return setError("El título del documento es obligatorio.");
+    if (!titulo.trim()) return setError("El título del archivo es obligatorio.");
     if (!initial && !file) return setError("Debe cargar un archivo.");
     onSubmit({
       sectionId,
@@ -285,12 +297,13 @@ function DocumentForm({ initial, sections, loading, onSubmit }: { initial?: Publ
   return (
     <form onSubmit={submit}>
       {error && <Alerta tipo="error">{error}</Alerta>}
-      {sections.length === 0 && <Alerta tipo="info">Cree una sección activa antes de agregar documentos.</Alerta>}
+      {sections.length === 0 && <Alerta tipo="info">Cree una sección activa antes de agregar archivos.</Alerta>}
       <div className="fila-formulario"><label>Sección *</label><select value={sectionId} onChange={(e) => setSectionId(e.target.value)}>{sections.map((section) => <option key={section.id} value={section.id}>{section.nombre}</option>)}</select></div>
       <div className="fila-formulario"><label>Título *</label><input value={titulo} onChange={(e) => setTitulo(e.target.value)} /></div>
-      <div className="fila-formulario"><label>Endpoint del documento</label><input value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="Se genera desde el título si se deja vacío" /></div>
+      <div className="fila-formulario"><label>Endpoint del archivo</label><input value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="Se genera desde el título si se deja vacío" /></div>
       <div className="fila-formulario"><label>Descripción</label><textarea value={descripcion} onChange={(e) => setDescripcion(e.target.value)} rows={3} /></div>
-      <div className="fila-formulario"><label>Archivo {!initial ? "*" : ""}</label><input type="file" onChange={(e) => loadFile(e.target.files?.[0])} /></div>
+      <div className="fila-formulario"><label htmlFor="public-download-file">Archivo {!initial ? "*" : ""}</label><input id="public-download-file" type="file" accept={PUBLIC_FILE_ACCEPT} onChange={(e) => loadFile(e.target.files?.[0])} /></div>
+      <p className="texto-ayuda">Documentos hasta 8 MB. Videos MP4, M4V, MOV o WebM hasta 100 MB.</p>
       {initial && <p className="texto-ayuda">Archivo actual: {initial.archivoNombreOriginal}</p>}
       {file && <p className="texto-ayuda">Archivo seleccionado: {file.archivoNombreOriginal}</p>}
       <div className="fila-formulario"><label><input type="checkbox" checked={activo} onChange={(e) => setActivo(e.target.checked)} style={{ width: "auto", marginRight: 6 }} />Activo</label></div>

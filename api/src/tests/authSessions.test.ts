@@ -17,6 +17,7 @@ import type { AuthSessionRecord, UserRecord } from "../types/models";
 class MemorySessionStore implements AuthSessionStore {
   readonly records = new Map<string, AuthSessionRecord>();
   private etag = 0;
+  rotateAtomic?: AuthSessionStore["rotateAtomic"];
 
   async read(id: string): Promise<AuthSessionRecord | null> {
     const value = this.records.get(id);
@@ -84,6 +85,23 @@ describe("sesiones refresh rotatorias", () => {
     expect(rotated?.refreshToken).not.toBe(created.refreshToken);
     expect(rotated?.session.tokenVersion).toBe(2);
     expect((await store.read(created.session.id))?.revokedReason).toBe("rotated");
+  });
+
+  it("delegates SQL-style rotation to the store's atomic boundary", async () => {
+    const store = new MemorySessionStore();
+    const currentUser = user();
+    const created = await createAuthSession(currentUser, { store, nowMs: 0 });
+    let atomicCalls = 0;
+    store.rotateAtomic = async (request) => {
+      atomicCalls++;
+      expect(request.sessionId).toBe(created.session.id);
+      expect(request.presentedTokenHash).toMatch(/^[a-f0-9]{64}$/);
+      const next = request.createNext(currentUser);
+      return { session: next.record, refreshToken: next.refreshToken, user: currentUser };
+    };
+
+    expect(await rotateAuthSession(created.refreshToken, { store, nowMs: 1_000 })).not.toBeNull();
+    expect(atomicCalls).toBe(1);
   });
 
   it("detecta reutilización del refresh anterior y revoca su descendiente", async () => {

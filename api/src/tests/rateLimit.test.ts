@@ -15,6 +15,7 @@ import {
 class MemoryRateLimitStore implements RateLimitStore {
   private readonly records = new Map<string, RateLimitRecord>();
   private etag = 0;
+  consumeAtomic?: RateLimitStore["consumeAtomic"];
 
   async read(id: string): Promise<RateLimitRecord | null> {
     const value = this.records.get(id);
@@ -72,6 +73,21 @@ describe("rate limiting distribuido", () => {
       headers: { "Retry-After": "120" },
       jsonBody: { error: "Demasiados intentos. Intente nuevamente más tarde." },
     });
+  });
+
+  it("delegates SQL-style consumption to one atomic store operation", async () => {
+    const store = new MemoryRateLimitStore();
+    let atomicCalls = 0;
+    store.consumeAtomic = async (args) => {
+      atomicCalls++;
+      return args.evaluate(null);
+    };
+    const decision = await consumeRateLimit({
+      scope: "auth_login_request", keyType: "ip", key: "203.0.113.10",
+      policy: requestPolicy, nowMs: 0, store,
+    });
+    expect(decision.allowed).toBe(true);
+    expect(atomicCalls).toBe(1);
   });
 
   it("activa lockout en el mismo intento que alcanza el umbral de fallos", async () => {

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
+import { getDataBackend } from "../lib/dataBackend";
 import { summarizeLicenseDeleteDependencies } from "../lib/licenseDeletion";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import {
@@ -14,7 +15,7 @@ import {
   canReactivateLicense,
   canViewLicensingOption,
 } from "../lib/managementAccess";
-import { getPagination, paginateArray } from "../lib/pagination";
+import { getPagination, paginateArray, type PageResult } from "../lib/pagination";
 import { matchesLicenseModuleSearch } from "../lib/listSearch";
 import {
   buildUniqueLicenseCode,
@@ -25,6 +26,17 @@ import {
   validateLicenseAssignmentRequirements,
 } from "../lib/licenseRules";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
+import { expectedNormalizedLicenseAssignmentCount, readSqlLicenseAssignments, readSqlLicenseModules } from "../lib/licensingSqlRepository";
+import {
+  createSqlLicenseAssignment,
+  createSqlLicenseModule,
+  deleteSqlLicenseAssignment,
+  deleteSqlLicenseModule,
+  findSqlLicenseAssignment,
+  findSqlLicenseModule,
+  updateSqlLicenseAssignment,
+  updateSqlLicenseModule,
+} from "../lib/licensingSqlWriteRepository";
 import type {
   ClientRecord,
   CurrentUser,
@@ -47,7 +59,7 @@ const AssignmentSchema = z.object({
   clientId: z.string().min(1, "Seleccione un cliente."),
   domainId: z.string().optional(),
   databaseId: z.string().optional(),
-  environment: z.string().optional().default("all"),
+  environment: z.enum(["all", "production", "test", "demo"]).optional().default("all"),
   status: z.enum(["active", "inactive", "deleted"]).optional().default("active"),
 });
 
@@ -56,6 +68,10 @@ async function getUserOrFail(req: HttpRequest): Promise<CurrentUser> {
   const profile = await loadUserProfile(auth);
   if (!profile) throw Object.assign(new Error("Usuario no registrado."), { status: 403 });
   return profile;
+}
+
+function resultCount<T>(result: T[] | PageResult<T>): number {
+  return Array.isArray(result) ? result.length : result.total;
 }
 
 async function nextModuleCode(name: string, code?: string, excludeId?: string): Promise<string | HttpResponseInit> {
@@ -158,13 +174,20 @@ app.http("licenseModulesList", {
       if (!canViewLicensingOption(user, roleDefinitions)) return forbidden("No tiene permisos para ver licenciamiento.");
       const includeDeleted = req.query.get("includeDeleted") === "true";
       const search = req.query.get("search");
+      const pagination = getPagination(req);
+      const backend = getDataBackend();
+      const sqlFilters = { includeDeleted, search: search?.trim().toLowerCase() || undefined };
+      if (backend === "sql") return ok(await readSqlLicenseModules(sqlFilters, pagination));
       const { resources } = await getContainer("licenseModules").items.readAll<LicenseModuleRecord>().fetchAll();
       let items = includeDeleted ? resources : resources.filter((module) => module.status !== "deleted" && !module.deletedAt);
       if (search) items = items.filter((module) => matchesLicenseModuleSearch(module, search));
       items = items.sort((a, b) => a.name.localeCompare(b.name, "es"));
-      const pagination = getPagination(req);
-      if (pagination.enabled) return ok(paginateArray(items, pagination.page, pagination.pageSize));
-      return ok(items);
+      const primary = pagination.enabled ? paginateArray(items, pagination.page, pagination.pageSize) : items;
+      if (backend === "dual-read") {
+        const shadow = await readSqlLicenseModules(sqlFilters, pagination);
+        if (resultCount(primary) !== resultCount(shadow)) console.warn("License Modules dual-read parity mismatch.");
+      }
+      return ok(primary);
     } catch (e: any) {
       if (e?.status === 403) return forbidden(e.message);
       return serverError(e);
@@ -183,6 +206,12 @@ app.http("licenseModulesCreate", {
       if (!canCreateLicense(user, roleDefinitions)) return forbidden("No tiene permisos para crear licencias.");
       const parsed = ModuleSchema.safeParse(await req.json().catch(() => ({})));
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      if (getDataBackend() === "sql") {
+        const record = await createSqlLicenseModule(`license_module_${randomUUID()}`, parsed.data, {
+          id: user.id, email: user.email,
+        });
+        return created(record);
+      }
       const duplicateName = await ensureUniqueModuleName(parsed.data.name);
       if (duplicateName) return duplicateName;
       const code = await nextModuleCode(parsed.data.name, parsed.data.code);
@@ -220,12 +249,16 @@ app.http("licenseModulesUpdate", {
       const roleDefinitions = await loadRoleDefinitions();
       if (!canEditLicense(user, roleDefinitions)) return forbidden("No tiene permisos para editar licencias.");
       const id = req.params.id;
-      const current = await findModule(id);
+      const current = getDataBackend() === "sql" ? await findSqlLicenseModule(id) : await findModule(id);
       if (!current || current.status === "deleted" || current.deletedAt) return notFound("Licencia o módulo no encontrado.");
       const parsed = ModuleSchema.partial().safeParse(await req.json().catch(() => ({})));
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       if (parsed.data.status === "inactive" && current.status !== "inactive" && !canDeactivateLicense(user, roleDefinitions)) return forbidden("No tiene permisos para desactivar licencias.");
       if (parsed.data.status === "active" && current.status !== "active" && !canReactivateLicense(user, roleDefinitions)) return forbidden("No tiene permisos para reactivar licencias.");
+      if (getDataBackend() === "sql") {
+        const updated = await updateSqlLicenseModule(id, parsed.data, { id: user.id, email: user.email });
+        return updated ? ok(updated) : notFound("Licencia o módulo no encontrado.");
+      }
       if (parsed.data.name !== undefined) {
         const duplicateName = await ensureUniqueModuleName(parsed.data.name, id);
         if (duplicateName) return duplicateName;
@@ -264,6 +297,20 @@ app.http("licenseModulesDelete", {
       const roleDefinitions = await loadRoleDefinitions();
       if (!canDeleteLicense(user, roleDefinitions)) return forbidden("No tiene permisos para eliminar licencias.");
       const id = req.params.id;
+      if (getDataBackend() === "sql") {
+        const result = await deleteSqlLicenseModule(id, { id: user.id, email: user.email });
+        if (!result.found) return notFound("Licencia o módulo no encontrado.");
+        if (!result.deleted) {
+          return conflict("No se puede eliminar esta licencia porque tiene asignaciones activas.", {
+            dependencies: {
+              assignments: result.dependencies.reduce((sum, client) => sum + Number(client.assignments), 0),
+              clients: result.dependencies,
+            },
+            detail: "Quite primero las asignaciones activas de estos clientes y luego intente eliminar la licencia nuevamente.",
+          });
+        }
+        return ok({ ok: true, deleted: true });
+      }
       const moduleContainer = getContainer("licenseModules");
       const resource = await findModule(id);
       if (!resource || resource.status === "deleted" || resource.deletedAt) return notFound("Licencia o módulo no encontrado.");
@@ -320,11 +367,22 @@ app.http("licenseAssignmentsList", {
       const roleDefinitions = await loadRoleDefinitions();
       if (!canViewLicensingOption(user, roleDefinitions)) return forbidden("No tiene permisos para ver licenciamiento.");
       const includeDeleted = req.query.get("includeDeleted") === "true";
+      const pagination = getPagination(req);
+      const backend = getDataBackend();
+      if (backend === "sql") return ok(await readSqlLicenseAssignments(includeDeleted, pagination));
       const { resources } = await getContainer("licenseAssignments").items.readAll<LicenseAssignmentRecord>().fetchAll();
       const items = includeDeleted ? resources : resources.filter((assignment) => assignment.status !== "deleted" && !assignment.deletedAt);
-      const pagination = getPagination(req);
-      if (pagination.enabled) return ok(paginateArray(items.sort((a, b) => (a.clientName ?? "").localeCompare(b.clientName ?? "", "es")), pagination.page, pagination.pageSize));
-      return ok(items.sort((a, b) => (a.clientName ?? "").localeCompare(b.clientName ?? "", "es")));
+      const sorted = items.sort((a, b) => (a.clientName ?? "").localeCompare(b.clientName ?? "", "es"));
+      const primary = pagination.enabled ? paginateArray(sorted, pagination.page, pagination.pageSize) : sorted;
+      if (backend === "dual-read") {
+        const [shadow, clientsResult] = await Promise.all([
+          readSqlLicenseAssignments(includeDeleted, pagination),
+          getContainer("clients").items.readAll<ClientRecord>().fetchAll(),
+        ]);
+        const expected = expectedNormalizedLicenseAssignmentCount(resources, clientsResult.resources, includeDeleted);
+        if (expected !== resultCount(shadow)) console.warn("License Assignments normalized dual-read parity mismatch.");
+      }
+      return ok(primary);
     } catch (e: any) {
       if (e?.status === 403) return forbidden(e.message);
       return serverError(e);
@@ -343,6 +401,12 @@ app.http("licenseAssignmentsCreate", {
       if (!canCreateLicense(user, roleDefinitions)) return forbidden("No tiene permisos para crear asignaciones.");
       const parsed = AssignmentSchema.safeParse(await req.json().catch(() => ({})));
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
+      if (getDataBackend() === "sql") {
+        const record = await createSqlLicenseAssignment(`license_assignment_${randomUUID()}`, parsed.data, {
+          id: user.id, email: user.email,
+        });
+        return created(record);
+      }
       const built = await buildAssignment(parsed.data);
       if (isHttpResponse(built)) return built;
       const now = new Date().toISOString();
@@ -367,12 +431,16 @@ app.http("licenseAssignmentsUpdate", {
       const roleDefinitions = await loadRoleDefinitions();
       if (!canEditLicense(user, roleDefinitions)) return forbidden("No tiene permisos para editar asignaciones.");
       const id = req.params.id;
-      const current = await findAssignment(id);
+      const current = getDataBackend() === "sql" ? await findSqlLicenseAssignment(id) : await findAssignment(id);
       if (!current || current.status === "deleted" || current.deletedAt) return notFound("Asignación no encontrada.");
       const parsed = AssignmentSchema.partial().safeParse(await req.json().catch(() => ({})));
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       if (parsed.data.status === "inactive" && current.status !== "inactive" && !canDeactivateLicense(user, roleDefinitions)) return forbidden("No tiene permisos para desactivar asignaciones.");
       if (parsed.data.status === "active" && current.status !== "active" && !canReactivateLicense(user, roleDefinitions)) return forbidden("No tiene permisos para reactivar asignaciones.");
+      if (getDataBackend() === "sql") {
+        const updated = await updateSqlLicenseAssignment(id, parsed.data, { id: user.id, email: user.email });
+        return updated ? ok(updated) : notFound("Asignación no encontrada.");
+      }
       const merged = {
         moduleId: parsed.data.moduleId ?? current.moduleId,
         targetType: parsed.data.targetType ?? current.targetType ?? "client",
@@ -418,6 +486,10 @@ app.http("licenseAssignmentsDelete", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canDeleteLicense(user, roleDefinitions)) return forbidden("No tiene permisos para eliminar asignaciones.");
+      if (getDataBackend() === "sql") {
+        const deleted = await deleteSqlLicenseAssignment(req.params.id, { id: user.id, email: user.email });
+        return deleted ? ok({ ok: true, deleted: true }) : notFound("Asignación no encontrada.");
+      }
       const current = await findAssignment(req.params.id);
       if (!current || current.status === "deleted" || current.deletedAt) return notFound("Asignación no encontrada.");
       const before = { ...current };

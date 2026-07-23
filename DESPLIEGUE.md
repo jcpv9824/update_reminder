@@ -335,7 +335,14 @@ az functionapp config appsettings set `
   --settings `
     "COSMOS_CONNECTION_STRING=$cosmosConnectionString" `
     "COSMOS_DATABASE_NAME=$cosmosDatabase" `
+    "DATA_BACKEND=cosmos" `
+    "SQL_SERVER_HOST=data14.sagerp.co,54103" `
+    "SQL_DATABASE=PortalSAGWeb" `
+    "SQL_USERNAME=portal_sag_runtime" `
+    "SQL_PASSWORD=@Microsoft.KeyVault(SecretUri=https://<key-vault>.vault.azure.net/secrets/portal-sag-runtime-sql-password/)" `
     "KEY_VAULT_URL=https://$keyVaultName.vault.azure.net/" `
+    "PUBLIC_DOWNLOADS_STORAGE_ACCOUNT_URL=https://<cuenta-blob-privada>.blob.core.windows.net" `
+    "PUBLIC_DOWNLOADS_STORAGE_CONTAINER=portal-sag-content" `
     "APP_TIMEZONE=America/Bogota" `
     "DEV_AUTH_ENABLED=true" `
     "SETUP_SECRET=$setupSecret" `
@@ -348,6 +355,10 @@ az functionapp config appsettings set `
     "ENABLE_ORYX_BUILD=false" `
     "WEBSITE_RUN_FROM_PACKAGE=1"
 ```
+
+Para documentos y videos de Descargas Públicas, la identidad administrada de la Function App necesita `Storage Blob Data Contributor` sobre el container privado. La cuenta debe exigir HTTPS/TLS 1.2+, bloquear acceso público y tener versionado habilitado. Las URLs SAS emitidas para una descarga expiran en cinco minutos y nunca se guardan en Cosmos ni SQL.
+
+`DATA_BACKEND=cosmos` es el valor seguro durante la migración. `dual-read` se habilita únicamente durante la comparación controlada y nunca escribe en SQL. `DATA_BACKEND=sql` solo se activa después de migrar todos los repositorios, completar las pruebas de equivalencia y rollback, y aprovisionar `portal_sag_runtime` sin `db_owner` ni permisos DDL. La contraseña SQL se referencia desde Key Vault; no se copia en App Settings, archivos ni comandos.
 
 Mostrar el valor generado de `SETUP_SECRET`:
 

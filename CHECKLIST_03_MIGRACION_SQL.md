@@ -1,219 +1,104 @@
-# Checklist 03 - Preparacion para migracion a SQL Server
+# Checklist 03 — Migración a SQL Server
 
-Fecha de revision: 2026-06-27  
-Documentos revisados: `SOLICITUD_BASE_SQL_SERVER.md`, `docs/DATA_ARCHITECTURE_DISCOVERY.md`, `docs/RELATIONAL_MODEL_PROPOSAL.md`, `docs/COSMOS_TO_SQL_MIGRATION_MATRIX.md`, `migration/README.md`, modelos TypeScript y logica operativa actual.
+Revisión: **2026-07-16**
+Estado global: **listo para construcción no productiva; producción NO autorizada**
 
-## Veredicto
+Fuentes canónicas:
 
-**Estado: NO-GO para iniciar cutover o construir runtime SQL definitivo.**
+- `docs/COSMOS_TO_SQL_MIGRATION_MATRIX.md`
+- `docs/RELATIONAL_MODEL_PROPOSAL.md`
+- `docs/SQL_SERVER_PHYSICAL_DATA_DICTIONARY.md`
+- `docs/SQL_SERVER_MIGRATION_RUNBOOK.md`
+- `migration/intake/COSMOS_SNAPSHOT_PROFILE_2026-07-16.md`
 
-La propuesta conceptual es buena y cubre aproximadamente la mayor parte del dominio, pero no es implementable aun: no existen DDL, staging, importadores, comparadores ni validadores; hay inconsistencias entre propuesta y matriz; y varias reglas de negocio bloqueantes siguen sin decidirse. La migracion puede continuar a fase de diseno/POC, no a produccion.
+Este checklist reemplaza la revisión del 2026-06-27. Ya no se exige SQL Server 2022: la plataforma recibida y aceptada condicionalmente es SQL Server 2019 Standard, compatibility 150.
 
-## Fortalezas existentes
+## Gate A — infraestructura
 
-- [x] **SQL-001 - Preservar IDs Cosmos como claves iniciales.** Reduce ruptura de referencias y facilita rollback.
-- [x] **SQL-002 - Preservar activos, inactivos y eliminados.** No se propone migrar solo datos visibles.
-- [x] **SQL-003 - Mantener secretos reales en Key Vault.** SQL guarda referencias, no passwords.
-- [x] **SQL-004 - Separacion por schemas.** `security`, `core`, `licensing`, `scheduling`, `workflow`, `settings`, `notifications`, `audit`, `migration`.
-- [x] **SQL-005 - Staging + raw JSON + migration runs.** Patron correcto para trazabilidad y recuperacion de campos omitidos.
-- [x] **SQL-006 - Normalizacion de roles, asignados, scopes, licencias, sources y recordatorios.**
-- [x] **SQL-007 - Preservacion de snapshots historicos en tareas/auditoria.**
-- [x] **SQL-008 - Dedupe de tarea por tipo+entidad+fecha considerado en el modelo.**
-- [x] **SQL-009 - Idempotencia de notificaciones reconocida como dato critico.**
-- [x] **SQL-010 - Cutover por fases con Cosmos como rollback conceptual.**
+- [x] Endpoint, autenticación SQL y TLS estricto probados.
+- [x] SQL Server 2019 Standard/compatibility 150 y collation confirmados.
+- [x] Base `PortalSAGWeb` vacía al intake.
+- [ ] Backup/restore point inmediatamente anterior a cualquier DDL.
+- [ ] Política de log backups/restore probado para recovery FULL.
+- [ ] Cifrado en reposo acreditado (TDE o volumen equivalente).
+- [ ] Cuenta runtime separada de mínimo privilegio.
+- [ ] Conectividad Function App y capacidad/crecimiento confirmados.
+- [ ] Blob Storage privado disponible.
+- [ ] `READ_COMMITTED_SNAPSHOT` y snapshot isolation habilitados en ventana aprobada.
 
-## Bloqueadores de plataforma
+Gate A: **condicional**. Permite preparar artefactos locales/no productivos; no autoriza cambios productivos.
 
-- [ ] **SQL-011 - P0 - Rechazar SQL Server 2016 como plataforma nueva.**
-  - `SOLICITUD_BASE_SQL_SERVER.md` lo acepta como minimo.
-  - Microsoft indica fin de soporte extendido el **2026-07-14**. ESU es temporal y de costo adicional.
-  - Fuente oficial: https://learn.microsoft.com/en-us/lifecycle/products/sql-server-2016
-  - Cierre: exigir Azure SQL Database o SQL Server 2022 (compatibilidad 160). SQL Server 2022 tiene soporte extendido hasta 2033: https://learn.microsoft.com/en-us/lifecycle/products/sql-server-2022
+## Gate B — inventario, mapeo y datos
 
-- [ ] **SQL-012 - P0 - Elegir producto y topologia exactos.**
-  - Pendiente: Azure SQL Database vs Managed Instance vs SQL Server 2022 administrado.
-  - Cierre: tier/vCores, HA, zona, red privada, autenticacion, mantenimiento, limites, RPO/RTO y costos aprobados.
+- [x] 17/17 contenedores exportados read-only.
+- [x] 2.890 documentos; hashes, conteos e IDs verificados.
+- [x] Todos los campos observados tienen regla canónica; 0 gaps.
+- [x] Campos históricos de formatos preservados como `legacy_*`.
+- [x] Relación muchos-a-muchos Formato–Fuente modelada con fuente primaria compatible, puente ordenado, vistas públicas e importación de `fuenteIds[]`/`fuenteId` legado.
+- [x] `rootScheduleId` y `sources[]` resueltos sin FK falsa.
+- [x] Sesiones/rate limits existentes excluidos del target operativo.
+- [x] Settings, destinatarios, archivos, roles y licencias normalizados.
+- [x] 42 controles semánticos: 0 críticos.
+- [x] 462 warnings explicados por siete transformaciones deterministas, incluida la preservación deny-all de un usuario activo sin roles.
 
-- [ ] **SQL-013 - P0 - Definir autenticacion sin password de aplicacion cuando sea posible.**
-  - Recomendado: Managed Identity de Function App + Microsoft Entra para Azure SQL; permisos por schema/procedimiento.
-  - Alternativa: credencial en Key Vault con rotacion documentada, nunca connection string en repo/app settings plano.
+Gate B: **aprobado para construcción no productiva**. Debe repetirse con cada snapshot.
 
-- [ ] **SQL-014 - P1 - Actualizar la solicitud a infraestructura.**
-  - Eliminar SQL 2016 como minimo aceptable.
-  - Agregar Private Endpoint/VNet, Defender for SQL, auditing, vulnerability assessment, PITR/LTR, geo-restore segun RPO/RTO, CMK si cumplimiento lo exige.
+## Gate C — schema y seguridad
 
-## Artefactos inexistentes
+- [x] Crear historial y schemas versionados.
+- [x] Crear DDL security/core.
+- [x] Crear DDL licensing/scheduling/workflow.
+- [x] Crear DDL settings/notifications/content/audit.
+- [x] Crear raw/staging/validation/reconciliation para 17 contenedores.
+- [x] Crear índices, checks, FKs, permisos, vistas sanitizadas y seeds.
+- [x] Validar gramática T-SQL 150; cero errores de parseo en `000..011`.
+- [ ] Construir dos bases limpias con mismo checksum/metadata.
+- [ ] Probar principals migrator/runtime/reporting.
 
-- [ ] **SQL-015 - P0 - Crear DDL versionado.**
-  - Falta `database/sql/001_initial_schema.sql`.
-  - Debe incluir schemas, tablas, checks, FKs, indices, permisos y seeds.
+Gate C: **artefactos generados; pendiente construcción repetible en bases no productivas**.
 
-- [ ] **SQL-016 - P0 - Herramienta de migraciones de schema.**
-  - Elegir Flyway/DbUp/Prisma migrations u otra opcion compatible con Azure Functions/TypeScript.
-  - No aplicar DDL manual sin version/tabla de historial.
+## Gate D — importación/reconciliación
 
-- [ ] **SQL-017 - P0 - Importador Cosmos export -> staging.**
-  - Falta script ejecutable, reanudable e idempotente.
-  - Debe registrar `migration_run_id`, errores por fila, hashes y conteos.
+- [x] Proyección raw→17 staging repetible creada en migración `008`.
+- [x] Importador raw/stage reanudable preparado; dry-run productivo: 17/17, 2.890, 0 críticos.
+- [x] Plan agregado de transformación final: 338 tareas, 32 aliases, 39 archivos, 0 críticos; pruebas sintéticas aprobadas.
+- [x] Control/checkpoints, ledger de archivos y primera fase transaccional security/core/licensing creados en `009`.
+- [x] Fase transaccional/reconciliada scheduling/workflow creada en `010`: 10 schedules, 338 tareas lógicas, 32 aliases y tablas hijas/history.
+- [x] Fase operacional final `011` creada: settings, 39 enlaces Blob verificados, contenido, 6 idempotencias de correo y 2.182 auditorías; 20 reconciliaciones.
+- [x] Contrato de perfiles validado: 55 perfiles históricos, 50 fingerprints activos únicos; pares eliminados conservan su referencia de secreto inactiva.
+- [x] Preparador de payload Blob privado validado: nombres opacos, idempotencia y detección de manipulación; dry-run real 39/968.128 bytes.
+- [x] Ejecutor Blob no-productivo protegido implementado y certificado offline: identidad Azure existente, Storage privado TLS/versionado, carga sin overwrite, descarga y SHA-256 remoto, ledger SQL `verified`.
+- [x] Migración `016` preparada: archivos públicos document/video, vista de assets, índice por sección/tipo/estado y eliminación de la descripción del maestro de fuentes.
+- [ ] Ejecutar raw/stage en dos bases no productivas y reconciliar 17/17 conteos.
+- [ ] Ejecutar/reconciliar fases `009`, `010` y `011` en dos bases no productivas.
+- [x] Completar offline fase transaccional settings/content/notifications/audit (`011`).
+- [x] Codificar y validar offline 370 tareas fuente → 338 tareas lógicas + 32 aliases/history.
+- [ ] Históricos orphan conservan snapshots y FK nullable controlada.
+- [ ] Schedules históricos ausentes conservan source ID sin filas ficticias.
+- [ ] Base64 validado/movido a Blob; bytes/hash/MIME equivalentes.
+- [ ] Conteos, estados, arrays, relaciones y permisos reconciliados.
+- [ ] 0 errores críticos; warnings resueltos/aprobados.
 
-- [ ] **SQL-018 - P0 - Transformador staging -> modelo final.**
-  - Debe ejecutarse en transacciones por agregado/lote y poder reintentarse.
+## Gate E — aplicación, comportamiento y escala
 
-- [ ] **SQL-019 - P0 - Comparador Cosmos vs SQL.**
-  - Falta `scripts/compare-cosmos-sql.ts`.
-  - Comparar conteos, hashes normalizados, relaciones, estados, scopes, tareas, correos y reportes.
+- [ ] Repositorios Cosmos/SQL y selector `DATA_PROVIDER`.
+- [ ] SQL shadow-read sanitizado; no dual-write ni timers duplicados.
+- [ ] Auth/sessions/rate limits/roles/permissions pasan sobre SQL.
+- [ ] CRUD, scheduling, dedupe, tareas, alerts y reportes equivalentes.
+- [ ] Server-side pagination y queries acotadas.
+- [ ] Concurrencia rowversion, applocks/outbox e idempotencia probadas.
+- [ ] Carga representativa, Query Store, P95/P99 y crecimiento aprobados.
 
-- [ ] **SQL-020 - P0 - Validador post-migracion.**
-  - Falta `scripts/validate-sql-migration.ts` y reporte firmado/aprobable.
+## Gate F — operaciones/cutover
 
-- [ ] **SQL-021 - P1 - Rollback ejecutable y ensayado.**
-  - Documento conceptual no basta. Se necesita switch de proveedor, freeze de escrituras, reconciliacion de cambios y tiempo maximo de retorno.
+- [ ] Dos ensayos completos desde base limpia.
+- [ ] Ventana de corte con 30% de margen.
+- [ ] Backup/restore y rollback cronometrados.
+- [ ] Freeze de writes/timers y snapshot final ensayados.
+- [ ] Smoke tests, monitoreo y reinicio uno-a-uno de timers.
+- [ ] Cosmos read-only durante retención aprobada.
+- [ ] Go-live explícitamente aprobado.
 
-- [ ] **SQL-022 - P1 - Snapshot productivo verificable.**
-  - El repo solo contiene `migration/README.md`; los exports estan correctamente ignorados, pero no hay evidencia local verificable de conteos/hashes recientes.
-  - Cierre: manifest seguro de snapshot de ensayo y resultado de validacion sin datos sensibles.
+## Próximo entregable
 
-## Correcciones al modelo propuesto
-
-- [ ] **SQL-023 - P0 - Eliminar columna duplicada `core.clients.name`.**
-  - `RELATIONAL_MODEL_PROPOSAL.md` declara `name` dos veces, una nullable y otra not null.
-
-- [ ] **SQL-024 - P0 - Agregar `scheduling.update_schedules.name`.**
-  - Existe en `UpdateSchedule` y se muestra en tareas/UI; falta en tabla y matriz.
-
-- [ ] **SQL-025 - P0 - Mapear explicitamente `updateTasks.rootScheduleId`.**
-  - La propuesta tiene `root_schedule_id`, pero la matriz campo-a-campo no contiene fila de origen `rootScheduleId`.
-
-- [ ] **SQL-026 - P0 - Resolver multiples fuentes antes de definir FKs.**
-  - `scheduleId/rootScheduleId` son mutables al sincronizar dedupe, mientras `sources[]` conserva varias programaciones.
-  - Recomendacion: tarea no debe depender de una sola FK operativa para elegibilidad; `task_sources` es la relacion autoritativa y puede tener `is_primary` solo para presentacion.
-
-- [ ] **SQL-027 - P0 - Soft delete/tombstone de schedules.**
-  - Hoy algunos schedules se borran fisicamente. Una FK desde tareas fallara o quedara null.
-  - Antes de migrar: preservar schedule borrado como tombstone o crear tabla historica de definiciones.
-
-- [ ] **SQL-028 - P1 - Alinear snapshots definidos en matriz y propuesta.**
-  - La matriz usa `client_name_snapshot`/`domain_name_snapshot` en core, pero las tablas propuestas no siempre declaran esas columnas.
-
-- [ ] **SQL-029 - P1 - Historial de estados derivado desde auditoria.**
-  - Timestamps actuales no permiten reconstruir todas las transiciones.
-  - Cierre: algoritmo que combine task actual + audit logs; marcar filas inferidas y conservar raw.
-
-- [ ] **SQL-030 - P1 - Constraint cliente-dominio-base.**
-  - Implementar unique `(domain_id, client_id)` y FK compuesta desde database, o trigger probado. No dejar solo validacion de aplicacion.
-
-- [ ] **SQL-031 - P1 - Objetivos polimorficos.**
-  - `target_type + target_id` no tiene FK real.
-  - Preferencia: columnas `domain_target_id`/`database_target_id` con check exactamente una, o tablas de tareas por objetivo; evitar trigger opaco si es posible.
-
-- [ ] **SQL-032 - P1 - Dedupe y estados cancelados.**
-  - Unique `(target_type,target_id,task_date)` coincide con regla actual y debe incluir canceladas para permitir reactivacion del mismo registro, no insercion nueva.
-  - Agregar prueba de `cancelled/obsolete -> pending`.
-
-- [ ] **SQL-033 - P1 - Huella de conexion.**
-  - Regla actual compara servidor+catalogo+usuario, sin password.
-  - Usar `BINARY(32)` SHA-256/HMAC de representacion canonica, no `NVARCHAR(500)`; definir normalizacion identica a `duplicateValidation.ts`.
-
-- [ ] **SQL-034 - P1 - Collation y normalizacion.**
-  - `Modern_Spanish_CI_AS` es accent-sensitive; algunas reglas funcionales eliminan tildes y otras no.
-  - Cierre: escoger collation y columnas normalizadas persistidas de forma coherente; probar `Facturacion/Facturación`, mayusculas y espacios.
-
-- [ ] **SQL-035 - P1 - `rowversion`/concurrencia optimista.**
-  - Agregar a maestros, schedules, tasks y settings; API debe usarlo para evitar lost updates.
-
-- [ ] **SQL-036 - P1 - Checks completos.**
-  - Estados, frecuencia, target types, dias, horas, ambiente, email y coherencia de campos condicionales (`once`, weekly, monthly).
-
-- [ ] **SQL-037 - P1 - Indices de consultas reales.**
-  - Minimos:
-    - tasks `(status, task_date, target_type)` include IDs/asignacion;
-    - task_sources `(schedule_id, task_id)`;
-    - schedules `(active, frequency_type, start_date, end_date)`;
-    - domains/databases por client/status/environment;
-    - notifications por unique idempotency key/status/next_attempt;
-    - audit por fecha/entidad/cliente/actor.
-
-- [ ] **SQL-038 - P1 - Idempotencia transaccional de correos.**
-  - Modelar `notification_attempts` o ampliar `email_notifications` con recipient, state, claimed_at, sent_at, attempts, next_attempt_at, provider_id y unique key.
-
-- [ ] **SQL-039 - P2 - Settings JSON con schema version.**
-  - Agregar `schema_version`, `CHECK ISJSON`, migradores y columnas indexables para timers; no dejar JSON indefinido permanentemente.
-
-- [ ] **SQL-040 - P2 - Auditoria append-only.**
-  - Permisos sin UPDATE/DELETE para runtime; procedimiento de insercion; hash encadenado o export WORM si cumplimiento lo requiere.
-
-## Runtime y arquitectura de aplicacion
-
-- [ ] **SQL-041 - P0 - Repository/data access layer.**
-  - Hoy Functions llaman Cosmos directamente. No existe `DATA_PROVIDER=cosmos|sql` ni repositorios intercambiables.
-  - Cierre: contratos por agregado y pruebas de conformidad Cosmos/SQL.
-
-- [ ] **SQL-042 - P0 - Driver y pool SQL.**
-  - No hay dependencia `mssql`/Tedious ni configuracion de pool para Azure Functions.
-  - Cierre: singleton por worker, limites, timeouts, cancelacion y telemetria.
-
-- [ ] **SQL-043 - P1 - Resiliencia transitoria.**
-  - Retry con backoff para errores transitorios/deadlocks, no para errores de negocio; idempotencia en escrituras.
-
-- [ ] **SQL-044 - P1 - Frontera transaccional.**
-  - Crear/editar/eliminar schedule + scope + targets + tareas/auditoria debe tener una unidad de trabajo clara.
-  - Key Vault sigue externo: usar saga/compensacion y registro de operacion.
-
-- [ ] **SQL-045 - P1 - Estrategia de cutover.**
-  - Recomendado para volumen actual: ventana de mantenimiento, freeze de escrituras, snapshot final, carga/validacion, switch, smoke tests, rollback.
-  - Dual-write solo si se diseña outbox y reconciliacion; no implementarlo improvisadamente.
-
-- [ ] **SQL-046 - P1 - Timers singleton/locks.**
-  - SQL permite `sp_getapplock` o claims atomicos para evitar dos generadores/reminders simultaneos.
-
-- [ ] **SQL-047 - P1 - Outbox para efectos externos.**
-  - Transaccion de negocio escribe outbox; worker envia email y actualiza intento. Evita “DB guardo pero correo no” y viceversa.
-
-## Seguridad SQL
-
-- [ ] **SQL-048 - P0 - Minimo privilegio por identidad.**
-  - Runtime sin `db_owner`, sin DDL, sin acceso directo a `migration` y con lectura de `audit` limitada.
-
-- [ ] **SQL-049 - P1 - Red privada y firewall.**
-  - Private Endpoint preferido; negar acceso publico o restringir estrictamente; TLS obligatorio.
-
-- [ ] **SQL-050 - P1 - TDE, backups y claves.**
-  - Confirmar TDE, PITR, LTR, geo-redundancia segun RPO/RTO y restore probado.
-
-- [ ] **SQL-051 - P1 - Clasificacion/mascarado.**
-  - Clasificar email, servidor, usuario SQL, secret name, audit metadata. Dynamic Data Masking no sustituye permisos.
-
-- [ ] **SQL-052 - P1 - Row-Level Security si se introduce scope por cliente.**
-  - No activar sin diseno, pero el modelo debe soportar asignacion usuario-cliente y politicas testeables.
-
-- [ ] **SQL-053 - P2 - Defender/auditing/alertas.**
-  - Logins anormales, cambios de schema/roles, export masivo, consultas de datos sensibles.
-
-## Validacion de migracion
-
-- [ ] **SQL-054 - Conteos por entidad y estado.** Total, active/inactive/deleted, tareas por estado/fecha/tipo.
-- [ ] **SQL-055 - Integridad relacional.** Cliente-dominio-base, scopes, licencias, tasks/sources, usuarios asignados.
-- [ ] **SQL-056 - Equivalencia funcional.** Mismos resultados en listas, arboles, preview de licencia, generador, dedupe, tareas, alertas y reporte maestro.
-- [ ] **SQL-057 - Equivalencia de seguridad.** Mismos o menores datos por rol; secretos nunca aparecen; pruebas BOLA.
-- [ ] **SQL-058 - Equivalencia temporal.** Zona Bogota, once, recurrentes, vencidas, recordatorios, fin de mes y reprogramacion.
-- [ ] **SQL-059 - Pruebas de volumen/rendimiento.** P95/P99, timers, reporte, auditoria, locks y crecimiento.
-- [ ] **SQL-060 - Ensayo de rollback.** Cronometrado, documentado y aprobado.
-- [ ] **SQL-061 - Dos migraciones de ensayo consecutivas idempotentes.** Mismo snapshot produce mismos resultados sin duplicados.
-- [ ] **SQL-062 - Aprobacion formal.** Producto, desarrollo, infraestructura, seguridad y dueño de datos.
-
-## Secuencia recomendada
-
-1. Cerrar decisiones BUS-001 a BUS-005.
-2. Corregir `SOLICITUD_BASE_SQL_SERVER.md` y pedir Azure SQL/SQL Server 2022.
-3. Corregir propuesta/matriz (SQL-023 a SQL-040).
-4. Crear DDL versionado y pruebas de schema.
-5. Crear export, staging, import y validadores.
-6. Introducir repositorios y pruebas de conformidad.
-7. Ensayar en dev/test con copia sanitizada.
-8. Medir, corregir, repetir snapshot.
-9. Ejecutar ensayo de cutover/rollback.
-10. Aprobar y programar produccion.
-
-## Criterio de go/no-go
-
-No avanzar a cutover hasta cerrar SQL-011 a SQL-027, disponer de DDL/importador/comparador/validador ejecutables, completar seguridad P0/P1 y demostrar dos migraciones de ensayo idempotentes con rollback exitoso.
+QA ya tiene `017..020` aplicadas y verificadas. El smoke rollback-only integral pasó con `portal_runtime` y dejó cero filas sintéticas; las suites completas y builds también pasan. El siguiente entregable es aplicar `017..020` en `PortalSAGWeb`, desplegar el paquete validado manteniendo `dual-read` y `SQL_SECURITY_RUNTIME_ENABLED=false`, confirmar backup/rollback y ejecutar el cutover controlado. Al terminar DDL, `SAGWebDev` debe volver a pertenecer únicamente a `portal_runtime`.

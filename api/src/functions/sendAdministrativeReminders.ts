@@ -12,6 +12,10 @@ import { canSendAdministrativeReminderTest } from "../lib/managementAccess";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import type { AdministrativeReminderSettings } from "../types/models";
+import { assertCosmosRuntimeMutation } from "../lib/dataBackend";
+import { getDataBackend } from "../lib/dataBackend";
+import { enqueueSqlEmail } from "../lib/emailOutboxSqlRepository";
+import { randomUUID } from "node:crypto";
 
 type ReminderKey = "sag-web-version" | "whats-new";
 
@@ -50,7 +54,9 @@ async function sendOne(key: ReminderKey, reminder: AdministrativeReminderSetting
   };
   const recipients = uniqueEmails(testRecipients ?? reminder.recipients ?? []);
   if (recipients.length === 0) return { sent: false, reason: "Sin destinatarios configurados." };
-  if (!testRecipients && await wasSent(key, effectiveDue.period, effectiveDue.sendDate)) return { sent: false, reason: "Ya fue enviado para esta fecha." };
+  if (!testRecipients && getDataBackend() !== "sql" && await wasSent(key, effectiveDue.period, effectiveDue.sendDate)) {
+    return { sent: false, reason: "Ya fue enviado para esta fecha." };
+  }
   const email = buildAdministrativeReminderEmail({
     type: key === "sag-web-version" ? "sagWebVersion" : "whatsNew",
     subject: reminder.subject,
@@ -59,6 +65,21 @@ async function sendOne(key: ReminderKey, reminder: AdministrativeReminderSetting
     frontendBaseUrl,
   });
   const settings = await loadEmailAlertsSettings();
+  if (getDataBackend() === "sql") {
+    const queued = await enqueueSqlEmail({
+      type: "administrative_reminder",
+      idempotencyKey: testRecipients
+        ? `admin-reminder-test:${key}:${randomUUID()}`
+        : `admin-reminder:${key}:${effectiveDue.period}:${effectiveDue.sendDate}`,
+      entityType: "settings", entityId: `administrative-reminder-${key}`,
+      period: effectiveDue.period, sendDate: effectiveDue.sendDate,
+      subject: email.subject, html: email.html, text: email.text,
+      recipients: recipients.map((recipient) => ({ email: recipient })),
+      metadata: { key, period: effectiveDue.period, sendDate: effectiveDue.sendDate, recipientsCount: recipients.length, test: !!testRecipients },
+      createdBy: testRecipients ? "admin" : "system",
+    });
+    return { sent: queued.created, reason: queued.created ? undefined : "Ya fue puesto en cola para esta fecha." };
+  }
   const result = await sendEmail({ to: recipients, subject: email.subject, html: email.html, text: email.text }, settings);
   await writeAuditLog({
     entityType: "settings",
@@ -74,6 +95,7 @@ async function sendOne(key: ReminderKey, reminder: AdministrativeReminderSetting
 }
 
 export async function ejecutarRecordatoriosAdministrativos(log: (m: string) => void): Promise<{ enviados: number }> {
+  if (getDataBackend() !== "sql") assertCosmosRuntimeMutation("El envío de recordatorios administrativos");
   const settings = await loadEmailAlertsSettings();
   const reminders = settings.administrativeReminders;
   if (!reminders) return { enviados: 0 };
@@ -113,6 +135,7 @@ app.http("settingsEmailAlertsAdministrativeReminderTest", {
       const profile = await loadUserProfile(auth);
       const roleDefinitions = profile ? await loadRoleDefinitions() : [];
       if (!profile || !canSendAdministrativeReminderTest(profile, roleDefinitions)) return forbidden("No tiene permisos para probar recordatorios administrativos.");
+      if (getDataBackend() !== "sql") assertCosmosRuntimeMutation("El envío de recordatorios administrativos de prueba");
       const keyParam = req.params.key;
       const key: ReminderKey | null = keyParam === "sag-web-version" || keyParam === "whats-new" ? keyParam : null;
       if (!key) return badRequest("Recordatorio no válido.");

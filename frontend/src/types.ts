@@ -124,7 +124,6 @@ export type AsignacionLicencia = {
 export type FuenteFormato = {
   id: string;
   nombre: string;
-  descripcion?: string;
   activa: boolean;
   status: "active" | "inactive" | "deleted";
   formatosActivos?: number;
@@ -181,6 +180,7 @@ export type PublicDownloadDocument = {
   titulo: string;
   slug: string;
   descripcion?: string;
+  assetKind: "document" | "video";
   archivoNombreOriginal: string;
   archivoMimeType: string;
   archivoBytes: number;

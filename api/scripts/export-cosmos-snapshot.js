@@ -18,6 +18,7 @@ const DEFAULT_CONTAINERS = [
   "emailNotifications",
   "securityRateLimits",
   "authSessions",
+  "roles",
   "fuentesFormatos",
   "formatosImpresion",
   "publicDownloads",

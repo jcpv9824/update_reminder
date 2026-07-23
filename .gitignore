@@ -11,3 +11,7 @@ api/local.settings.json
 frontend/dist/
 .azure/
 migration/backups/
+migration/work/
+migration/connect-sql-server/*.local.*
+migration/connect-sql-server/*.secret.*
+migration/connect-sql-server/*.credential.*

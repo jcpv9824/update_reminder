@@ -17,6 +17,30 @@ describe("buildAuditLogEntry", () => {
     expect(entry.action).toBe("client_created");
   });
 
+  it("conserva el contrato actual de módulos y asignaciones de licencia", () => {
+    const moduleEntry = buildAuditLogEntry({
+      entityType: "licenseModule", entityId: "m1", action: "license_module_created",
+      performedBy: "u1", performedByEmail: "u@x.com",
+      after: { id: "m1", name: "Ventas", code: "VENTAS", description: "Módulo", status: "active", active: true },
+    });
+    expect(moduleEntry.after).toEqual({
+      id: "m1", name: "Ventas", code: "VENTAS", description: "Módulo", status: "active", active: true,
+    });
+
+    const assignmentEntry = buildAuditLogEntry({
+      entityType: "licenseAssignment", entityId: "a1", action: "license_assignment_created",
+      performedBy: "u1", performedByEmail: "u@x.com",
+      after: {
+        id: "a1", moduleId: "m1", moduleName: "Ventas", moduleCode: "VENTAS",
+        targetType: "domain", targetId: "d1", clientId: "c1", domainId: "d1",
+        environment: "production", status: "active", active: true,
+      },
+    });
+    expect(assignmentEntry.after).toEqual(expect.objectContaining({
+      moduleId: "m1", targetType: "domain", targetId: "d1", clientId: "c1", domainId: "d1", active: true,
+    }));
+  });
+
   it("nunca incluye contraseñas aunque vengan en after", () => {
     const entry = buildAuditLogEntry({
       entityType: "database",
@@ -227,7 +251,6 @@ describe("buildAuditLogEntry", () => {
     expect(entry.after).toEqual({
       id: "fuente_1",
       nombre: "Factura de venta",
-      descripcion: "Documentos de venta",
       activa: true,
     });
     expect(JSON.stringify(entry)).not.toContain("unsafe");

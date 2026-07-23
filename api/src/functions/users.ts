@@ -3,9 +3,10 @@ import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
 import { getContainer } from "../lib/cosmos";
+import { getDataBackend } from "../lib/dataBackend";
 import { generateTemporaryPassword, hashPassword, normalizeEmail, passwordExpirationIso, validatePasswordPolicy } from "../lib/password";
 import { badRequest, created, forbidden, notFound, ok, serverError } from "../lib/http";
-import { getPagination, paginateArray } from "../lib/pagination";
+import { getPagination, paginateArray, type PageResult } from "../lib/pagination";
 import { loadEmailAlertsSettings } from "../lib/settingsService";
 import { sendEmail } from "../lib/emailService";
 import { buildWelcomeUserEmail, buildResendCredentialsEmail } from "../lib/emailTemplates";
@@ -24,6 +25,15 @@ import {
   canUpdateUser,
 } from "../lib/managementAccess";
 import type { UserRecord } from "../types/models";
+import { readSqlPublicUsers } from "../lib/securityUsersSqlRepository";
+import {
+  createSqlUser,
+  findSqlUserById,
+  findSqlUserByEmail,
+  requestSqlPasswordReset,
+  setSqlUserPassword,
+  updateSqlUser,
+} from "../lib/securityManagementSqlWriteRepository";
 
 // Envía el correo de credenciales (bienvenida, restablecimiento o reenvío).
 // `kind` decide la plantilla responsiva. Estos correos incluyen la contraseña
@@ -40,6 +50,13 @@ async function notificarContrasena(args: {
 }): Promise<void> {
   const settings = await loadEmailAlertsSettings();
   if (!settings.passwordNotificationEnabled) return;
+  if (getDataBackend() === "sql") {
+    const user = await findSqlUserByEmail(args.email);
+    if (user) {
+      await requestSqlPasswordReset(user, { id: args.performedBy, email: args.performedByEmail });
+    }
+    return;
+  }
   const tpl = args.kind === "welcome"
     ? buildWelcomeUserEmail({
         displayName: args.displayName,
@@ -106,6 +123,10 @@ function sanitize(u: UserRecord) {
   return { ...rest, roles: migrateLegacyRoleIds(rest.roles ?? []) };
 }
 
+function resultCount<T>(result: T[] | PageResult<T>): number {
+  return Array.isArray(result) ? result.length : result.total;
+}
+
 app.http("usersList", {
   route: "users",
   methods: ["GET"],
@@ -114,11 +135,17 @@ app.http("usersList", {
     try {
       const u = await getUserOrFail(req);
       if (!canListUsers(u, await loadRoleDefinitions())) return forbidden();
+      const pagination = getPagination(req);
+      const backend = getDataBackend();
+      if (backend === "sql") return ok(await readSqlPublicUsers(pagination));
       const { resources } = await getContainer("users").items.readAll<UserRecord>().fetchAll();
       const items = resources.map(sanitize);
-      const pagination = getPagination(req);
-      if (pagination.enabled) return ok(paginateArray(items, pagination.page, pagination.pageSize));
-      return ok(items);
+      const primary = pagination.enabled ? paginateArray(items, pagination.page, pagination.pageSize) : items;
+      if (backend === "dual-read") {
+        const shadow = await readSqlPublicUsers(pagination);
+        if (resultCount(primary) !== resultCount(shadow)) console.warn("Users dual-read parity mismatch.");
+      }
+      return ok(primary);
     } catch (e) { return serverError(e); }
   },
 });
@@ -170,6 +197,19 @@ app.http("usersCreate", {
         mustChangePassword: true,
         tokenVersion: 0,
       };
+      if (getDataBackend() === "sql") {
+        const sqlRecord = await createSqlUser({
+          id: record.id,
+          displayName: record.displayName,
+          email: record.email,
+          roles: record.roles,
+          active: record.active,
+          passwordHash,
+          mustChangePassword: true,
+        }, { id: u.id, email: u.email });
+        try { await notificarContrasena({ email: sqlRecord.email, displayName: sqlRecord.displayName, password: parsed.data.password, roles: sqlRecord.roles, kind: "welcome", performedBy: u.id, performedByEmail: u.email }); } catch {/* no bloquear creación */}
+        return created(sanitize(sqlRecord));
+      }
       await getContainer("users").items.create(record);
       await writeAuditLog({
         entityType: "user",
@@ -198,7 +238,9 @@ app.http("usersUpdate", {
       const u = await getUserOrFail(req);
       const id = req.params.id;
       const container = getContainer("users");
-      const { resource } = await container.item(id, id).read<UserRecord>();
+      const resource = getDataBackend() === "sql"
+        ? await findSqlUserById(id)
+        : (await container.item(id, id).read<UserRecord>()).resource;
       if (!resource) return notFound("Usuario no encontrado.");
       const body = await req.json();
       const parsed = UserUpdateSchema.safeParse(body);
@@ -223,6 +265,10 @@ app.http("usersUpdate", {
         updatedAt: new Date().toISOString(),
         updatedBy: u.id,
       };
+      if (getDataBackend() === "sql") {
+        const sqlUpdated = await updateSqlUser(id, parsed.data, { id: u.id, email: u.email });
+        return sqlUpdated ? ok(sanitize(sqlUpdated)) : notFound("Usuario no encontrado.");
+      }
       await container.item(id, id).replace(updated);
       if (deactivated) await revokeAllUserSessions(id, "user_deactivated");
       await writeAuditLog({
@@ -259,7 +305,9 @@ app.http("usersResetPassword", {
       );
       if (limited) return limited;
       const container = getContainer("users");
-      const { resource } = await container.item(id, id).read<UserRecord>();
+      const resource = getDataBackend() === "sql"
+        ? await findSqlUserById(id)
+        : (await container.item(id, id).read<UserRecord>()).resource;
       if (!resource) return notFound("Usuario no encontrado.");
       const now = new Date().toISOString();
       try {
@@ -274,6 +322,15 @@ app.http("usersResetPassword", {
       resource.tokenVersion = (resource.tokenVersion ?? 0) + 1;
       resource.updatedAt = now;
       resource.updatedBy = u.id;
+      if (getDataBackend() === "sql") {
+        const sqlUpdated = await setSqlUserPassword(id, resource.passwordHash, { id: u.id, email: u.email }, "user_password_reset", {
+          mustChangePassword: true,
+          expiresAt: null,
+        });
+        if (!sqlUpdated) return notFound("Usuario no encontrado.");
+        try { await notificarContrasena({ email: sqlUpdated.email, displayName: sqlUpdated.displayName, password: parsed.data.password, roles: sqlUpdated.roles, kind: "reset", performedBy: u.id, performedByEmail: u.email }); } catch {/* no bloquear reset */}
+        return ok(sanitize(sqlUpdated));
+      }
       await container.item(id, id).replace(resource);
       await revokeAllUserSessions(id, "admin_password_reset");
       await writeAuditLog({
@@ -309,7 +366,9 @@ app.http("usersResendCredentials", {
       );
       if (limited) return limited;
       const container = getContainer("users");
-      const { resource } = await container.item(id, id).read<UserRecord>();
+      const resource = getDataBackend() === "sql"
+        ? await findSqlUserById(id)
+        : (await container.item(id, id).read<UserRecord>()).resource;
       if (!resource) return notFound("Usuario no encontrado.");
       const settings = await loadEmailAlertsSettings();
       if (!settings.passwordNotificationEnabled) {
@@ -324,6 +383,15 @@ app.http("usersResendCredentials", {
       resource.tokenVersion = (resource.tokenVersion ?? 0) + 1;
       resource.updatedAt = now;
       resource.updatedBy = u.id;
+      if (getDataBackend() === "sql") {
+        const sqlUpdated = await setSqlUserPassword(id, resource.passwordHash, { id: u.id, email: u.email }, "user_credentials_resent", {
+          mustChangePassword: true,
+          expiresAt: null,
+        });
+        if (!sqlUpdated) return notFound("Usuario no encontrado.");
+        await notificarContrasena({ email: sqlUpdated.email, displayName: sqlUpdated.displayName, password: temporal, roles: sqlUpdated.roles, kind: "resend", performedBy: u.id, performedByEmail: u.email });
+        return ok({ ...sanitize(sqlUpdated), emailSent: true });
+      }
       await container.item(id, id).replace(resource);
       await revokeAllUserSessions(id, "credentials_resent");
       await writeAuditLog({
@@ -345,12 +413,18 @@ async function setUserActive(req: HttpRequest, active: boolean, action: string):
   if (active ? !canReactivateUser(u, roleDefinitions) : !canDeactivateUser(u, roleDefinitions)) return forbidden();
   const id = req.params.id;
   const container = getContainer("users");
-  const { resource } = await container.item(id, id).read<UserRecord>();
+  const resource = getDataBackend() === "sql"
+    ? await findSqlUserById(id)
+    : (await container.item(id, id).read<UserRecord>()).resource;
   if (!resource) return notFound("Usuario no encontrado.");
   resource.active = active;
   if (!active) resource.tokenVersion = (resource.tokenVersion ?? 0) + 1;
   resource.updatedAt = new Date().toISOString();
   resource.updatedBy = u.id;
+  if (getDataBackend() === "sql") {
+    const sqlUpdated = await updateSqlUser(id, { active }, { id: u.id, email: u.email });
+    return sqlUpdated ? ok(sanitize(sqlUpdated)) : notFound("Usuario no encontrado.");
+  }
   await container.item(id, id).replace(resource);
   if (!active) await revokeAllUserSessions(id, "user_deactivated");
   await writeAuditLog({ entityType: "user", entityId: id, action, performedBy: u.id, performedByEmail: u.email, after: { active } });

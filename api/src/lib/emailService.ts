@@ -4,6 +4,7 @@
 //   sendgrid - usa @sendgrid/mail.
 //   acs      - placeholder, no implementado.
 import { loadEmailAlertsSettings, getSmtpPassword } from "./settingsService";
+import { assertCosmosRuntimeMutation } from "./dataBackend";
 import type { EmailAlertsSettings } from "../types/models";
 import {
   buildDatabaseReminderEmail,
@@ -77,7 +78,12 @@ async function sendViaSendgrid(msg: EmailMessage, s: EmailAlertsSettings): Promi
   }
 }
 
-export async function sendEmail(msg: EmailMessage, settings?: EmailAlertsSettings): Promise<EmailResult> {
+export async function sendEmail(
+  msg: EmailMessage,
+  settings?: EmailAlertsSettings,
+  options: { outboxClaimed?: boolean } = {},
+): Promise<EmailResult> {
+  if (!options.outboxClaimed) assertCosmosRuntimeMutation("El envío directo de correo");
   const recipients = Array.isArray(msg.to) ? msg.to : [msg.to];
   if (!recipients || recipients.length === 0) return { ok: false, provider: "n/a", error: "Sin destinatarios." };
   const s = settings ?? (await loadEmailAlertsSettings());

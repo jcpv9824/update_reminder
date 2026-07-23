@@ -24,6 +24,16 @@ Esta fase **no cambia runtime**, **no modifica Cosmos**, **no consulta Key Vault
 - `auditLogs`
 - `appSettings`
 - `emailNotifications`
+- `securityRateLimits`
+- `authSessions`
+- `roles`
+- `fuentesFormatos`
+- `formatosImpresion`
+- `publicDownloads`
+
+El export incluye los **17 contenedores declarados por la aplicación**. `securityRateLimits` y `authSessions` se conservan únicamente en el snapshot restringido para inventario/diagnóstico; sus filas no se importan al almacén operativo SQL. En el cutover los rate limits empiezan vacíos y todas las sesiones se cierran.
+
+Los contenedores de negocio que sí deben transformarse e importarse son los otros 15. En particular, `roles`, formatos y descargas no pueden omitirse porque ya forman parte del portal y de su autorización.
 
 Nota V17: `updateSchedules` puede contener actualizaciones programadas con `frequencyType = "once"`, `completedAt`, `completedReason`, `name`, `manualTargetTypes`, `scopeGroups` y excepciones en `licensingScope.excludedDomainIds` / `licensingScope.excludedDatabaseIds`. `updateTasks` puede contener `rootScheduleId`. El export debe preservar esos campos sin transformarlos.
 

@@ -1,9 +1,20 @@
 import { app, InvocationContext, Timer } from "@azure/functions";
 import { getContainer } from "../lib/cosmos";
+import { getDataBackend } from "../lib/dataBackend";
 import { writeAuditLog } from "../lib/audit";
 import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, markOneTimeScheduleCompleted, obsoleteTasksOutsideExpected, oneTimeSchedulesReadyToComplete, summarizeTaskGenerationForDate } from "../lib/taskGenerator";
 import { isScheduleDueOnDate } from "../lib/scheduleEngine";
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, UpdateSchedule, UpdateTask } from "../types/models";
+import { readSqlSchedules } from "../lib/schedulingSqlRepository";
+import { readSqlClients } from "../lib/clientsSqlRepository";
+import { readSqlDomains, readSqlPublicDatabases } from "../lib/coreMastersSqlRepository";
+import { readSqlLicenseModules } from "../lib/licensingSqlRepository";
+import { readSqlWorkflowTasks } from "../lib/workflowTasksSqlRepository";
+import {
+  completeSqlOneTimeSchedule,
+  createSqlGeneratedTask,
+  syncSqlGeneratedTask,
+} from "../lib/workflowTaskGenerationSqlRepository";
 
 function todayInBogotaIso(): string {
   // America/Bogota es UTC-5 sin horario de verano.
@@ -93,26 +104,49 @@ export async function runTaskGeneration(
   log: (msg: string) => void,
   opts: { windowStart?: string; windowEnd?: string } = {}
 ): Promise<GenerationResult> {
+  const sqlBackend = getDataBackend() === "sql";
   const windowStart = opts.windowStart ?? addDaysIso(isoDate, -7);
   const windowEnd = opts.windowEnd ?? addDaysIso(isoDate, 7);
   const ventana = listDatesInWindow(windowStart, windowEnd);
 
-  const { resources: schedules } = await getContainer("updateSchedules")
-    .items.query<UpdateSchedule>({ query: "SELECT * FROM c WHERE c.active = true" })
-    .fetchAll();
-  const { resources: clients } = await getContainer("clients")
-    .items.query<ClientRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" })
-    .fetchAll();
-  const { resources: licenseModules } = await getContainer("licenseModules")
-    .items.query<LicenseModuleRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" })
-    .fetchAll()
-    .catch(() => ({ resources: [] as LicenseModuleRecord[] }));
-  const { resources: domainsRaw } = await getContainer("domains")
-    .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" })
-    .fetchAll();
-  const { resources: databasesRaw } = await getContainer("databases")
-    .items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" })
-    .fetchAll();
+  let schedules: UpdateSchedule[];
+  let clients: ClientRecord[];
+  let licenseModules: LicenseModuleRecord[];
+  let domainsRaw: DomainRecord[];
+  let databasesRaw: DatabaseRecord[];
+  let allDomains: DomainRecord[];
+  let allDatabases: DatabaseRecord[];
+  if (sqlBackend) {
+    const page = { enabled: false, page: 1, pageSize: 1000 };
+    const [scheduleResult, sqlClients, moduleResult, domainResult, databaseResult] = await Promise.all([
+      readSqlSchedules({}, page, isoDate),
+      readSqlClients(),
+      readSqlLicenseModules({ includeDeleted: false }, page),
+      readSqlDomains({}, page),
+      readSqlPublicDatabases({}, page),
+    ]);
+    schedules = (Array.isArray(scheduleResult) ? scheduleResult : scheduleResult.items).filter((schedule) => schedule.active);
+    clients = sqlClients.filter((client) => client.status === "active");
+    licenseModules = (Array.isArray(moduleResult) ? moduleResult : moduleResult.items).filter((module) => module.status === "active");
+    allDomains = Array.isArray(domainResult) ? domainResult : domainResult.items;
+    allDatabases = (Array.isArray(databaseResult) ? databaseResult : databaseResult.items) as DatabaseRecord[];
+    domainsRaw = allDomains.filter((domain) => domain.status === "active");
+    databasesRaw = allDatabases.filter((database) => database.status === "active");
+  } else {
+    schedules = (await getContainer("updateSchedules")
+      .items.query<UpdateSchedule>({ query: "SELECT * FROM c WHERE c.active = true" }).fetchAll()).resources;
+    clients = (await getContainer("clients")
+      .items.query<ClientRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll()).resources;
+    licenseModules = (await getContainer("licenseModules")
+      .items.query<LicenseModuleRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll()
+      .catch(() => ({ resources: [] as LicenseModuleRecord[] }))).resources;
+    domainsRaw = (await getContainer("domains")
+      .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll()).resources;
+    databasesRaw = (await getContainer("databases")
+      .items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll()).resources;
+    allDomains = (await getContainer("domains").items.query<DomainRecord>({ query: "SELECT * FROM c" }).fetchAll()).resources;
+    allDatabases = (await getContainer("databases").items.query<DatabaseRecord>({ query: "SELECT * FROM c" }).fetchAll()).resources;
+  }
   const activeClientIds = new Set(clients.map((c: any) => c.id));
   const domains = domainsRaw.filter((d) => activeClientIds.has(d.clientId));
   const activeDomainIds = new Set(domains.map((d) => d.id));
@@ -125,12 +159,16 @@ export async function runTaskGeneration(
     buckets.push(`${d}_database`);
     buckets.push(`${d}_domain`);
   }
-  const existing: UpdateTask[] = [];
-  for (const bucket of buckets) {
-    const { resources } = await getContainer("updateTasks")
-      .items.query<UpdateTask>({ query: "SELECT * FROM c WHERE c.taskBucket = @b", parameters: [{ name: "@b", value: bucket }] })
-      .fetchAll();
-    existing.push(...resources);
+  const existing: UpdateTask[] = sqlBackend
+    ? await readSqlWorkflowTasks({ today: isoDate, dateFrom: windowStart, dateTo: windowEnd, operationalOnly: false, includeCancelled: true })
+    : [];
+  if (!sqlBackend) {
+    for (const bucket of buckets) {
+      const { resources } = await getContainer("updateTasks")
+        .items.query<UpdateTask>({ query: "SELECT * FROM c WHERE c.taskBucket = @b", parameters: [{ name: "@b", value: bucket }] })
+        .fetchAll();
+      existing.push(...resources);
+    }
   }
   const initialExistingTasks = existing.length;
 
@@ -155,8 +193,6 @@ export async function runTaskGeneration(
   }
 
   // Contar dominios/bases inactivos asociados a algún schedule (informativo).
-  const allDomains = (await getContainer("domains").items.query<DomainRecord>({ query: "SELECT * FROM c" }).fetchAll()).resources;
-  const allDatabases = (await getContainer("databases").items.query<DatabaseRecord>({ query: "SELECT * FROM c" }).fetchAll()).resources;
   for (const s of schedules) {
     if (!activeClientIds.has(s.clientId)) {
       reasons.push(`Schedule ${s.id} omitido: cliente ${s.clientId} no existe o no está activo.`);
@@ -189,6 +225,11 @@ export async function runTaskGeneration(
   const obsoletedTasks = obsoleteTasksOutsideExpected(existing, expectedKeys, new Date().toISOString(), isoDate);
   for (const task of obsoletedTasks) {
     try {
+      if (sqlBackend) {
+        await syncSqlGeneratedTask(task, "task_obsoleted");
+        reasons.push(`Tarea ${task.id} obsoleta: ${task.targetType} ${task.targetId} ya no corresponde al estado activo actual.`);
+        continue;
+      }
       await getContainer("updateTasks").item(task.id, task.taskBucket).replace(task);
       const reason = `Tarea ${task.id} obsoleta: ${task.targetType} ${task.targetId} ya no corresponde al estado activo actual.`;
       reasons.push(reason);
@@ -244,6 +285,21 @@ export async function runTaskGeneration(
 
     for (const task of summary.tasks) {
       try {
+        if (sqlBackend) {
+          const inserted = await createSqlGeneratedTask(task);
+          if (!inserted) {
+            totalSkipped++;
+            if (task.targetType === "domain") skippedDomainTasks++;
+            else skippedDatabaseTasks++;
+            reasons.push(`Tarea ${task.id} omitida: ya existe.`);
+            continue;
+          }
+          existing.push(task);
+          if (task.targetType === "domain") createdDomainTasks++;
+          else createdDatabaseTasks++;
+          totalCreated++;
+          continue;
+        }
         await getContainer("updateTasks").items.create(task);
         existing.push(task);
         if (task.targetType === "domain") createdDomainTasks++;
@@ -276,6 +332,11 @@ export async function runTaskGeneration(
 
     for (const synced of summary.syncedTasks) {
       try {
+        if (sqlBackend) {
+          if (await syncSqlGeneratedTask(synced, "task_assignment_synced")) totalUpdated++;
+          reasons.push(`Tarea ${synced.id} sincronizada con responsable actual de la frecuencia.`);
+          continue;
+        }
         await getContainer("updateTasks").item(synced.id, synced.taskBucket).replace(synced);
         totalUpdated++;
         reasons.push(`Tarea ${synced.id} sincronizada con responsable actual de la frecuencia.`);
@@ -308,6 +369,11 @@ export async function runTaskGeneration(
   for (const schedule of oneTimeSchedulesToComplete) {
     try {
       const completed = markOneTimeScheduleCompleted(schedule, new Date().toISOString(), "system");
+      if (sqlBackend) {
+        if (await completeSqlOneTimeSchedule(completed)) completedOneTimeSchedules++;
+        reasons.push(`Programación única ${schedule.id} marcada como inactiva porque sus tareas ya están cerradas.`);
+        continue;
+      }
       await getContainer("updateSchedules").item(schedule.id, schedule.clientId).replace(completed);
       completedOneTimeSchedules++;
       reasons.push(`Programación única ${schedule.id} marcada como inactiva porque sus tareas ya están cerradas.`);
@@ -420,7 +486,7 @@ app.http("generateDailyUpdateTasksManual", {
       return { status: 200, jsonBody: r };
     } catch (e: any) {
       ctx.error("Error en generación manual", e);
-      return { status: 500, jsonBody: { error: "Error al generar tareas." } };
+      return { status: e?.status ?? 500, jsonBody: { error: e?.status === 503 ? e.message : "Error al generar tareas." } };
     }
   },
 });
@@ -456,7 +522,7 @@ app.http("refreshUpdateTasksManual", {
       return { status: 200, jsonBody: { ...r, message: "Tareas actualizadas correctamente." } };
     } catch (e: any) {
       ctx.error("Error en refresco manual", e);
-      return { status: 500, jsonBody: { error: "No se pudieron actualizar las tareas." } };
+      return { status: e?.status ?? 500, jsonBody: { error: e?.status === 503 ? e.message : "No se pudieron actualizar las tareas." } };
     }
   },
 });

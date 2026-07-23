@@ -2,7 +2,9 @@ import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
+import { appendSqlAuditLog } from "../lib/auditSqlWriter";
 import { getContainer } from "../lib/cosmos";
+import { getDataBackend } from "../lib/dataBackend";
 import { cancelPendingTasksForDatabase } from "../lib/taskCleanup";
 import * as keyVault from "../lib/keyVault";
 import { buildDatabaseRecordFromInput } from "../lib/databaseService";
@@ -20,13 +22,18 @@ import {
   canViewDatabaseConnection,
   canViewDatabases,
 } from "../lib/managementAccess";
-import { getPagination, paginateArray } from "../lib/pagination";
+import { getPagination, paginateArray, type PageResult } from "../lib/pagination";
 import { matchesDatabaseSearch } from "../lib/listSearch";
 import { hasDuplicateDatabaseConnection } from "../lib/duplicateValidation";
 import { isAllowedEnvironment } from "../lib/environments";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import { canPerformTaskActionWithRoleDefinitions } from "../lib/taskAccess";
 import { toPublicDatabase } from "../lib/publicDtos";
+import { readSqlPublicDatabases, readSqlRestrictedDatabase, type DatabaseFilters, type PublicDatabaseDto } from "../lib/coreMastersSqlRepository";
+import { createSqlDatabaseWithSecret, updateSqlDatabaseWithSecret } from "../lib/databasesSqlService";
+import { setSqlDatabaseStatus } from "../lib/databasesSqlWriteRepository";
+import { readSqlWorkflowTasks } from "../lib/workflowTasksSqlRepository";
+import { deleteSqlCoreCascade } from "../lib/coreCascadeSqlRepository";
 import type { ClientRecord, DatabaseRecord, DomainRecord, UpdateSchedule, UpdateTask } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
@@ -34,6 +41,10 @@ async function getUserOrFail(req: HttpRequest) {
   const profile = await loadUserProfile(auth);
   if (!profile) throw Object.assign(new Error("Usuario no registrado."), { status: 403 });
   return profile;
+}
+
+function resultCount<T>(result: T[] | PageResult<T>): number {
+  return Array.isArray(result) ? result.length : result.total;
 }
 
 const DbCreateSchema = z.object({
@@ -57,29 +68,45 @@ app.http("databasesList", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canViewDatabases(user, roleDefinitions)) return forbidden();
-      const container = getContainer("databases");
       const clientId = req.query.get("clientId");
       const domainId = req.query.get("domainId");
-      const querySpec = clientId
-        ? { query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: clientId }] }
-        : { query: "SELECT * FROM c" };
-      const { resources } = await container.items.query<DatabaseRecord>(querySpec).fetchAll();
       const status = req.query.get("status");
       const env = req.query.get("environment");
       const search = req.query.get("search");
       const includeDeleted = req.query.get("includeDeleted") === "true";
-      let items = resources;
       const canReadDeleted = canDeleteDatabase(user, roleDefinitions) || canReactivateDatabase(user, roleDefinitions);
+      const pagination = getPagination(req);
+      const sqlFilters: DatabaseFilters = {
+        clientId: clientId ?? undefined,
+        domainId: domainId ?? undefined,
+        status: status ?? undefined,
+        environment: env ?? undefined,
+        search: search?.trim().toLowerCase() || undefined,
+        visibility: !canReadDeleted || (!includeDeleted && !status) ? "not-deleted" : "all",
+      };
+      const backend = getDataBackend();
+      if (backend === "sql") return ok(await readSqlPublicDatabases(sqlFilters, pagination));
+      const container = getContainer("databases");
+      const querySpec = clientId
+        ? { query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: clientId }] }
+        : { query: "SELECT * FROM c" };
+      const { resources } = await container.items.query<DatabaseRecord>(querySpec).fetchAll();
+      let items = resources;
       if (!canReadDeleted) items = items.filter((d) => d.status !== "deleted");
       if (!includeDeleted && !status) items = items.filter((d) => d.status !== "deleted");
       if (domainId) items = items.filter((d) => d.domainId === domainId);
       if (status) items = items.filter((d) => d.status === status);
       if (env) items = items.filter((d) => d.environment === env);
       if (search) items = items.filter((d) => matchesDatabaseSearch(d, search));
-      const pagination = getPagination(req);
       const publicItems = items.map(toPublicDatabase);
-      if (pagination.enabled) return ok(paginateArray(publicItems, pagination.page, pagination.pageSize));
-      return ok(publicItems);
+      const primary: PublicDatabaseDto[] | PageResult<PublicDatabaseDto> = pagination.enabled
+        ? paginateArray(publicItems, pagination.page, pagination.pageSize)
+        : publicItems;
+      if (backend === "dual-read") {
+        const shadow = await readSqlPublicDatabases(sqlFilters, pagination);
+        if (resultCount(primary) !== resultCount(shadow)) console.warn("Databases dual-read parity mismatch.");
+      }
+      return ok(primary);
     } catch (e) {
       return serverError(e);
     }
@@ -100,6 +127,27 @@ app.http("databasesCreate", {
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       if (!isAllowedEnvironment(parsed.data.environment)) return badRequest("El ambiente debe ser Producción, Pruebas o Demo.");
 
+      try {
+        parseDbAccessString(parsed.data.rawDbAccess);
+      } catch (e: any) {
+        return badRequest(e.message ?? "Cadena de acceso inválida.");
+      }
+      if (getDataBackend() === "sql") {
+        const record = await createSqlDatabaseWithSecret({
+          clientId: parsed.data.clientId,
+          clientName: "",
+          domainId: parsed.data.domainId,
+          domainName: "",
+          companyName: parsed.data.companyName.trim(),
+          environment: parsed.data.environment,
+          rawDbAccess: parsed.data.rawDbAccess.trim(),
+          assignedUpdaterIds: parsed.data.assignedUpdaterIds,
+          notes: parsed.data.notes?.trim(),
+          currentDbVersion: parsed.data.currentDbVersion,
+          currentUser: user,
+        }, { id: user.id, email: user.email });
+        return created(toPublicDatabase(record));
+      }
       const { resource: client } = await getContainer("clients").item(parsed.data.clientId, parsed.data.clientId).read<ClientRecord>();
       if (!client) return badRequest("Cliente no encontrado.");
       const { resources: domains } = await getContainer("domains")
@@ -107,12 +155,6 @@ app.http("databasesCreate", {
         .fetchAll();
       if (!domains.length) return badRequest("Dominio no encontrado.");
       const domain = domains[0];
-
-      try {
-        parseDbAccessString(parsed.data.rawDbAccess);
-      } catch (e: any) {
-        return badRequest(e.message ?? "Cadena de acceso inválida.");
-      }
       const { resources: existingDatabases } = await getContainer("databases").items.readAll<DatabaseRecord>().fetchAll();
       if (hasDuplicateDatabaseConnection(existingDatabases, parsed.data.rawDbAccess)) return conflict("Ya existe una base de datos con esta cadena de conexión.");
 
@@ -162,13 +204,23 @@ app.http("databasesCreate", {
 });
 
 async function findDatabase(id: string): Promise<DatabaseRecord | null> {
+  const backend = getDataBackend();
+  if (backend === "sql") return readSqlRestrictedDatabase(id);
   const { resources } = await getContainer("databases")
     .items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })
     .fetchAll();
+  if (backend === "dual-read") {
+    const shadow = await readSqlRestrictedDatabase(id);
+    if (Boolean(resources[0]) !== Boolean(shadow)) console.warn("Database detail dual-read parity mismatch.");
+  }
   return resources[0] ?? null;
 }
 
 async function findTask(id: string): Promise<UpdateTask | null> {
+  if (getDataBackend() === "sql") {
+    const today = new Date().toISOString().slice(0, 10);
+    return (await readSqlWorkflowTasks({ sourceId: id, today, operationalOnly: false }))[0] ?? null;
+  }
   const { resources } = await getContainer("updateTasks")
     .items.query<UpdateTask>({
       query: "SELECT * FROM c WHERE c.id = @id",
@@ -245,10 +297,28 @@ app.http("databasesUpdate", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canEditDatabase(user, roleDefinitions)) return forbidden();
-      const db = await findDatabase(req.params.id);
-      if (!db) return notFound("Base de datos no encontrada.");
       const body = await req.json() as any;
       if (typeof body.environment === "string" && !isAllowedEnvironment(body.environment)) return badRequest("El ambiente debe ser Producción, Pruebas o Demo.");
+      if (typeof body.rawDbAccess === "string" && body.rawDbAccess.trim()) {
+        try {
+          parseDbAccessString(body.rawDbAccess);
+        } catch (e: any) {
+          return badRequest(e.message ?? "Cadena de acceso inválida.");
+        }
+      }
+      if (getDataBackend() === "sql") {
+        const updated = await updateSqlDatabaseWithSecret(req.params.id, {
+          ...(typeof body.companyName === "string" ? { companyName: body.companyName } : {}),
+          ...(typeof body.environment === "string" ? { environment: body.environment } : {}),
+          ...(typeof body.currentDbVersion === "string" ? { currentDbVersion: body.currentDbVersion } : {}),
+          ...(Array.isArray(body.assignedUpdaterIds) ? { assignedUpdaterIds: body.assignedUpdaterIds } : {}),
+          ...(typeof body.notes === "string" ? { notes: body.notes } : {}),
+          ...(typeof body.rawDbAccess === "string" && body.rawDbAccess.trim() ? { rawDbAccess: body.rawDbAccess } : {}),
+        }, { id: user.id, email: user.email });
+        return updated ? ok(toPublicDatabase(updated)) : notFound("Base de datos no encontrada.");
+      }
+      const db = await findDatabase(req.params.id);
+      if (!db) return notFound("Base de datos no encontrada.");
       if (typeof body.rawDbAccess === "string" && body.rawDbAccess.trim()) {
         const { resources: existingDatabases } = await getContainer("databases").items.readAll<DatabaseRecord>().fetchAll();
         if (hasDuplicateDatabaseConnection(existingDatabases, body.rawDbAccess, db.id)) return conflict("Ya existe una base de datos con esta cadena de conexión.");
@@ -296,6 +366,16 @@ async function setDbStatus(req: HttpRequest, action: "database_deactivated" | "d
   const roleDefinitions = await loadRoleDefinitions();
   const allowed = status === "active" ? canReactivateDatabase(user, roleDefinitions) : canDeactivateDatabase(user, roleDefinitions);
   if (!allowed) return forbidden();
+  if (getDataBackend() === "sql") {
+    const result = await setSqlDatabaseStatus(
+      req.params.id,
+      status,
+      action,
+      { id: user.id, email: user.email },
+      status === "inactive" ? "target_database_inactive" : undefined,
+    );
+    return result ? ok(toPublicDatabase(result.record)) : notFound("Base de datos no encontrada.");
+  }
   const db = await findDatabase(req.params.id);
   if (!db) return notFound("Base de datos no encontrada.");
   db.status = status;
@@ -330,6 +410,12 @@ app.http("databasesDelete", {
       const db = await findDatabase(req.params.id);
       if (!db) return notFound("Base de datos no encontrada.");
       const cascade = req.query.get("cascade") === "true";
+      if (getDataBackend() === "sql") {
+        const result = await deleteSqlCoreCascade("database", db.id, cascade, { id: user.id, email: user.email });
+        if (!result.found) return notFound("Base de datos no encontrada.");
+        if (result.requiresCascade) return conflict("La base de datos tiene dependencias. Confirme eliminación en cascada.", { dependencies: result.dependencies });
+        return ok({ ok: true, deleted: { ...result.dependencies, obsoletedTasks: result.obsoletedTasks, cascadeSchedules: result.cascadeSchedules } });
+      }
       const { resources: schedulesAsociadas } = await getContainer("updateSchedules").items
         .query<UpdateSchedule>({
           query: "SELECT * FROM c WHERE ARRAY_CONTAINS(c.targetIds, @t)",
@@ -404,7 +490,7 @@ app.http("databasesCopyAccessPart", {
       if (part === "password") {
         if (!canRevealDatabasePassword(user, roleDefinitions) && !canRevealFromTask) return forbidden("No tiene permisos para acceder a la contraseña.");
         const value = await keyVault.getSecret(db.dbAccess.passwordSecretName);
-        await writeAuditLog({
+        const audit = {
           entityType: "database",
           entityId: db.id,
           clientId: db.clientId,
@@ -415,13 +501,15 @@ app.http("databasesCopyAccessPart", {
           action: "database_password_copied",
           performedBy: user.id,
           performedByEmail: user.email,
-        });
+        } as const;
+        if (getDataBackend() === "sql") await appendSqlAuditLog(audit);
+        else await writeAuditLog(audit);
         return ok({ part, value });
       }
       if (!canCopyDatabaseConnectionPart(user, roleDefinitions) && !canCopyFromTask) return forbidden("No tiene permisos para acceder a esta conexión.");
 
       const value = (db.dbAccess as any)[part] as string;
-      await writeAuditLog({
+      const audit = {
         entityType: "database",
         entityId: db.id,
         clientId: db.clientId,
@@ -433,7 +521,9 @@ app.http("databasesCopyAccessPart", {
         performedBy: user.id,
         performedByEmail: user.email,
         metadata: { part },
-      });
+      } as const;
+      if (getDataBackend() === "sql") await appendSqlAuditLog(audit);
+      else await writeAuditLog(audit);
       return ok({ part, value });
     } catch (e) {
       return serverError(e);
@@ -463,7 +553,7 @@ app.http("databasesRevealPassword", {
       const value = await keyVault.getSecret(db.dbAccess.passwordSecretName);
       const metadata: Record<string, string> = { databaseId: db.id, reason: typeof body.reason === "string" ? body.reason : "manual" };
       if (taskId) metadata.taskId = taskId;
-      await writeAuditLog({
+      const audit = {
         entityType: "database",
         entityId: db.id,
         clientId: db.clientId,
@@ -475,7 +565,9 @@ app.http("databasesRevealPassword", {
         performedBy: user.id,
         performedByEmail: user.email,
         metadata,
-      });
+      } as const;
+      if (getDataBackend() === "sql") await appendSqlAuditLog(audit);
+      else await writeAuditLog(audit);
       return ok({ password: value });
     } catch (e) {
       return serverError(e);

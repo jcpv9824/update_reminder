@@ -1,10 +1,27 @@
 # Data Architecture Discovery — Fase 1
 
 Proyecto: **Programador de Actualizaciones ERP**  
-Fecha de descubrimiento: 2026-05-16  
+Fecha de descubrimiento original: 2026-05-16
+
+Última revisión contra código: **2026-07-14**
+
 Objetivo: documentar el modelo actual Cosmos/TypeScript/API/UI antes de proponer o implementar una migración a base de datos relacional.  
 
 > Regla de esta fase: **no cambiar runtime ni comportamiento de la app**. Cosmos DB sigue siendo la fuente de verdad hasta que existan propuesta relacional, matriz de migración, scripts, validaciones y plan de cutover aprobados.
+
+> **Actualización 2026-07-14:** el inventario original quedó desactualizado por la incorporación de roles/permisos granulares, formatos de impresión, descargas públicas, sesiones y controles de seguridad. El inventario completo y vigente de opciones/contenedores está en `docs/PORTAL_DATA_COVERAGE_MATRIX.md`; el modelo objetivo vigente está en `docs/RELATIONAL_MODEL_PROPOSAL.md`. Las secciones históricas inferiores siguen siendo evidencia del descubrimiento inicial, pero sus nombres de tablas o recomendaciones quedan reemplazados cuando contradicen esos documentos.
+
+### Delta confirmado desde el descubrimiento original
+
+| Incorporación | Evidencia actual | Impacto relacional |
+|---|---|---|
+| Roles granulares y roles custom | `roles`, `permissionModel.ts`, `roleDefinitions.ts` | `security.roles`, catálogo de permisos, role-permissions y visibilidad de tareas. |
+| Sesiones refresh rotatorias | `authSessions`, `authSessions.ts` | Tabla técnica con hashes, expiración, revocación, reemplazo y concurrencia. |
+| Rate limiting distribuido | `securityRateLimits`, `rateLimit.ts` | Redis o tabla técnica transaccional; no se migran registros. |
+| Formatos de impresión | `fuentesFormatos`, `formatosImpresion` | Fuentes, formatos, licencias y archivos versionados fuera de SQL. |
+| Descargas públicas | `publicDownloads` | Separar secciones/documentos por discriminator; archivos a Blob. |
+| Nuevas alertas | settings, timers, `emailNotifications` | Configuración y destinatarios normalizados; idempotencia por índice unique. |
+| Gestión de Implementaciones futura | `docs/implementaciones/*` | Schema reservado `implementation`; todavía no existe persistencia runtime. |
 
 ## 1. Alcance inspeccionado
 
@@ -53,7 +70,7 @@ Definidos en `api/src/lib/cosmos.ts`.
 | Contenedor | Modelo principal | Partición/lectura observada | Uso principal | SQL schema propuesto | Comentarios de migración |
 |---|---|---|---|---|---|
 | `users` | `UserRecord` | `.item(id, id)` y queries por roles/email | Autenticación, roles, destinatarios por rol, auditoría | `security.users`, `security.user_roles` | No exponer `passwordHash` ni reset token hashes. |
-| `clients` | `ClientRecord` | `.item(id, id)` | Maestro clientes, licencias por cliente, cascada | `core.clients`, `licensing.client_license_modules` | Mantener `licenseModuleIds` al inicio; normalizar luego. |
+| `clients` | `ClientRecord` | `.item(id, id)` | Maestro clientes, licencias por cliente, cascada | `core.clients`, `licensing.license_assignments` | Consolidar `licenseModuleIds` con asignaciones explícitas; una sola representación SQL. |
 | `domains` | `DomainRecord` | `.item(id, clientId)` en escrituras; queries por `id/clientId` | Maestro dominios, tareas, reporte | `core.domains` | FK a clients. Validar URL `https://`. |
 | `databases` | `DatabaseRecord` | `.item(id, clientId)` en escrituras; queries por `id/clientId/domainId` | Maestro empresas/bases, acceso SQL, tareas base | `core.databases`, `security.database_secrets` opcional | No guardar contraseña real, solo `password_secret_name`. |
 | `updateSchedules` | `UpdateSchedule` | `.item(id, clientId)` | Frecuencias dominio/default, especiales, licenciamiento | `scheduling.update_schedules` + tablas scope | Normalizar `scopeGroups` y `licensingScope`. |
@@ -61,7 +78,7 @@ Definidos en `api/src/lib/cosmos.ts`.
 | `licenseModules` | `LicenseModuleRecord` | `.item(id, id)` | Maestro de módulos/licencias | `licensing.license_modules` | Código opcional/autogenerado; unique por code normalizado. |
 | `licenseAssignments` | `LicenseAssignmentRecord` | `.item(id, clientId)` | Asignaciones avanzadas ocultas | `licensing.license_assignments` | Reservado; UI normal usa licencias por cliente. Migrar si existe. |
 | `auditLogs` | `AuditLog` | append/query paginada | Auditoría | `audit.audit_logs` o conservar temporalmente en Cosmos | Allowlist por entidad/accion. Ejecutar saneamiento historico antes de exportar o migrar. |
-| `appSettings` | `EmailAlertsSettings` | `.item("email-alerts", "email-alerts")` | Configuración correo/alertas | `settings.app_settings`, tablas específicas opcionales | Puede conservar JSON controlado al inicio. |
+| `appSettings` | `EmailAlertsSettings` | `.item("email-alerts", "email-alerts")` | Configuración correo/alertas | `settings.email_settings` + tablas hijas normalizadas | El repositorio reconstruye el DTO actual; secreto SMTP permanece en Key Vault. |
 | `emailNotifications` | docs idempotencia | `.item(id, id)` | Idempotencia recordatorios admin/bloqueos | `notifications.email_notifications` | Migrar para no duplicar correos tras cutover. |
 | `securityRateLimits` | docs tecnicos con TTL | `.item(id, id)` y reemplazo por `_etag` | Rate limiting y lockout distribuido | Redis o tabla tecnica temporal | No exportar ni migrar como dato de negocio; iniciar vacio en cutover. |
 | `authSessions` | `AuthSessionRecord` con TTL | `.item(id, id)`, query por `userId`, reemplazo `_etag` | Refresh rotatorio, revocacion y replay | Redis o `security.auth_sessions` | No migrar sesiones activas; cerrar sesion en cutover. Nunca contiene refresh en claro. |
@@ -111,7 +128,7 @@ Dependencias:
 - `audit.ts` usa `performedBy` y `performedByEmail`.
 - `users.ts`, `auth.ts`, `setup.ts` escriben auditoría.
 
-### 4.2 `ClientRecord` → `core.clients` + `licensing.client_license_modules`
+### 4.2 `ClientRecord` → `core.clients` + `licensing.license_assignments`
 
 | Campo Cosmos | Tipo TS | Requerido | Uso backend | Uso frontend/API | Sensible | SQL propuesto | Notas |
 |---|---:|---|---|---|---|---|---|
@@ -119,7 +136,7 @@ Dependencias:
 | `name` | string | sí | reportes, tareas, búsqueda, duplicados | tabla/formulario | no | `name` | Unique normalizado para activos/existentes. |
 | `status` | active/inactive/deleted | sí | listados, cascada, reportes | UI estado | no | `status` | Mantener soft delete. |
 | `notes` | string | no | auditoría/listado | formulario | no | `notes` | Trim. |
-| `licenseModuleIds` | string[] | no | reportes, licensing scope | checkboxes cliente | no | `licensing.client_license_modules.module_id` | Normalizar. |
+| `licenseModuleIds` | string[] | no | reportes, licensing scope | checkboxes cliente | no | `licensing.license_assignments.module_key` con `target_type=client` | Reconciliar con documentos de asignación; una sola representación SQL. |
 | `licenseModuleNames` | string[] | no | snapshot visual | ver dominios/bases | no | opcional snapshot | Recalcular desde módulos mejor. |
 | `createdAt`, `createdBy` | string | sí | reporte/audit | UI | no | `created_at`, `created_by` | Preservar. |
 | `updatedAt`, `updatedBy` | string | sí | auditoría | UI | no | `updated_at`, `updated_by` | Preservar. |
@@ -281,10 +298,10 @@ Nota: `reportsService` solo usa asignaciones avanzadas si `ENABLE_ADVANCED_LICEN
 | `startDate`, `endDate`, `timezone` | string | sí/parcial | scheduleEngine/timers | UI | no | `start_date`, `end_date`, `timezone` | Date/timezone. |
 | `assignedRole`, `assignedUserIds` | string/string[] | sí | task assignment | UI responsables | no | `assigned_role`, `schedule_assignees` | Normalizar user IDs. |
 | `databaseAssignedUserIds`, `databaseReminderRecipientsMode` | string[]/enum | no | herencia bases | UI | no | child table/columns | Preservar. |
-| `scopeGroups` | array jerárquico | no | especiales manuales | constructor UI | no | `special_schedule_scope_groups/domains/databases` | No dejar solo JSON en SQL final. |
+| `scopeGroups` | array jerárquico | no | especiales manuales | constructor UI | no | `scheduling.scope_groups/scope_domains/scope_databases` | No dejar solo JSON en SQL final. |
 | `selectionMode` | manual/licensing | no | especiales | UI | no | `selection_mode` | Enum. |
 | `manualTargetTypes` | domains_and_databases/domains_only/databases_only | no | especiales manuales | UI objetivo manual | no | `manual_target_types` | Define si se generan tareas de dominio, base o ambas. |
-| `licensingScope` | object | no | preview/generator licencias | UI | no | `schedule_licensing_scope` | Normalizar license ids. |
+| `licensingScope` | object | no | preview/generator licencias | UI | no | `scheduling.licensing_scope` + tablas de módulos/exclusiones | Normalizar IDs a claves internas. |
 | `assignmentMode`, `domainAssignedRole`, `databaseAssignedRole` | varios | no | especiales | UI | no | columns | Preservar. |
 | `origin` | special/domain_default/database_inherited/licensing | no | generator/filter/report | UI | no | `origin` | `special` es el patrón nuevo; otros valores se preservan por historia/compatibilidad. |
 | `active` | boolean | sí | generator/listados | UI | no | `active` | No confundir con status. |
@@ -378,10 +395,11 @@ Grupos de campos:
 - Password notifications: `passwordNotificationEnabled`, `sendTemporaryPasswordByEmail`.
 - Timestamps.
 
-SQL recomendado:
+SQL objetivo vigente:
 
-- Fase inicial: `settings.app_settings(id, settings_json, created_at, updated_at)` preservando JSON y `smtp_password_secret_name` separado.
-- Fase posterior: normalizar `email_settings`, `overdue_alert_settings`, `blocked_alert_settings`, `administrative_reminder_settings`.
+- `settings.email_settings` conserva los escalares no secretos y la referencia a Key Vault.
+- Días, roles, correos, weekdays y recordatorios administrativos se almacenan en tablas hijas normalizadas definidas en el diccionario físico.
+- El repositorio SQL reconstruye el mismo DTO API de forma transaccional; no existe una fase operativa basada en un JSON genérico.
 
 Seguridad:
 
@@ -524,14 +542,14 @@ Migración:
 | Cosmos/modelo | SQL tabla principal | Tablas hijas recomendadas | Prioridad migración | Riesgo |
 |---|---|---|---|---|
 | `users` | `security.users` | `security.user_roles`, `security.password_reset_tokens` opcional | media | Auth/JWT sensible. |
-| `clients` | `core.clients` | `licensing.client_license_modules` | alta | Base de todo el dominio. |
+| `clients` | `core.clients` | `licensing.license_assignments` | alta | Base de todo el dominio; licencias embebidas se reconcilian con asignaciones explícitas. |
 | `domains` | `core.domains` | `core.domain_assignees` | alta | Frecuencias y tareas dependen. |
 | `databases` | `core.databases` | `core.database_assignees` | alta | Secretos y acceso técnico. |
 | `licenseModules` | `licensing.license_modules` | - | alta | Programación por licencia/reportes. |
 | `licenseAssignments` | `licensing.license_assignments` | - | baja/media | Oculto, migrar si hay datos. |
-| `updateSchedules` | `scheduling.update_schedules` | `schedule_targets`, `special_schedule_scope_*`, `schedule_licensing_scope`, `schedule_assignees`, `schedule_reminder_settings` | alta | Generador de tareas. |
-| `updateTasks` | `workflow.update_tasks` | `task_sources`, `task_assignees`, `task_status_history`, `task_reminders_sent`, `task_overdue_alerts` | alta | Operación diaria. |
-| `appSettings` | `settings.app_settings` | settings normalizadas fase 2 | media | Puede conservar JSON controlado. |
+| `updateSchedules` | `scheduling.update_schedules` | `schedule_targets`, `scope_groups/domains/databases`, `licensing_scope*`, `schedule_assignees`, `schedule_reminder_settings` | alta | Generador de tareas. |
+| `updateTasks` | `workflow.update_tasks` | `task_sources`, `task_assignees`, `task_status_history`, `task_reminders`, `task_overdue_alerts` | alta | Operación diaria. |
+| `appSettings` | `settings.email_settings` | tablas normalizadas de destinatarios, días y recordatorios | media | Round-trip del DTO; sin secreto SMTP en SQL. |
 | `emailNotifications` | `notifications.email_notifications` | - | media | Idempotencia correos. |
 | `auditLogs` | `audit.audit_logs` | - | media/baja | Puede quedarse temporalmente en Cosmos. |
 
