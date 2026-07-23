@@ -40,6 +40,10 @@ BEGIN
     N'EXEC migration.usp_load_operational_settings_content_notifications_audit @run_key;',
     N'EXEC migration.usp_load_operational_final_with_print_sources @run_key;'
   );
+  DECLARE @procedure_keyword INT=CHARINDEX(N'PROCEDURE',@refresh_definition);
+  IF @procedure_keyword=0
+    THROW 52207,N'The atomic refresh procedure header is invalid.',1;
+  SET @refresh_definition=N'ALTER '+SUBSTRING(@refresh_definition,@procedure_keyword,LEN(@refresh_definition));
   EXEC sys.sp_executesql @refresh_definition;
 END;
 
