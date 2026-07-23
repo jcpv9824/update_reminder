@@ -87,6 +87,18 @@ El parseo no sustituye la construcción en una base desechable. Gate C termina s
 
 El destino `data14.sagerp.co,54103` / `PortalSAGWeb` está reservado como producción y está bloqueado en todas las herramientas `nonproduction`. Los dos ensayos limpios deben ejecutarse en un servidor/base de rehearsal separado. La designación productiva no cambia todavía el backend de la aplicación: Cosmos sigue siendo la fuente de verdad hasta el cutover aprobado.
 
+### Modo de mantenimiento productivo
+
+La API incluye una compuerta global `PORTAL_MAINTENANCE_MODE`, desactivada por defecto. Cuando su valor es exactamente `true`, todas las mutaciones HTTP responden `503 PORTAL_MAINTENANCE`, los triggers timer se convierten en no-op y las rutas de solo lectura continúan disponibles. El launcher también deshabilita explícitamente los seis timers en Azure para defensa en profundidad:
+
+```text
+migration/tools/Run-Production-Maintenance-Entry.cmd
+```
+
+El operador debe escribir `ENTER PRODUCTION MAINTENANCE`. La herramienta exige que producción esté saludable en `dual-read` con seguridad SQL desactivada, conserva los settings anteriores, activa mantenimiento, deshabilita los seis timers, reinicia la Function App y verifica tanto el estado sanitizado como una mutación sintética bloqueada. Si cualquier probe falla, restaura automáticamente los settings previos. Esta herramienta prepara la ventana; no cambia `DATA_BACKEND`, no importa datos y no autoriza el cutover por sí sola.
+
+El rollback de emergencia se ejecuta con `migration/tools/Rollback-PortalSAGWeb-ProductionToCosmos.ps1`. Restaura `DATA_BACKEND=cosmos`, desactiva mantenimiento, elimina los seis flags de timer y comprueba que el portal público vuelve a responder. No elimina datos SQL ni secretos de Key Vault.
+
 Cuando exista una instancia **no productiva** con una base vacía llamada `PortalSAGWeb`, ejecutar el build protegido (solicita la contraseña sin guardarla):
 
 ```powershell

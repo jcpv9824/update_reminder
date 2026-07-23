@@ -315,7 +315,7 @@ No usar `dual-read` para enviar correo ni ejecutar mutaciones/timers duplicados.
 Estado runtime 2026-07-21:
 
 - conexión SQL con pool, TLS estricto y preflight del contrato de motor/base/collation: implementada;
-- conexión local del proyecto preparada en `dual-read`: launcher con credenciales efímeras, validación de rol `portal_runtime`, rechazo de `db_owner/db_ddladmin/portal_migrator`, cinco timers deshabilitados, proxy frontend `/api` y endpoint sanitizado `/api/runtime/status`;
+- conexión local del proyecto preparada en `dual-read`: launcher con credenciales efímeras, validación de rol `portal_runtime`, rechazo de `db_owner/db_ddladmin/portal_migrator`, seis timers deshabilitados, proxy frontend `/api` y endpoint sanitizado `/api/portal-runtime-status`;
 - acceso runtime resuelto el 2026-07-21: `SAGWebDev` fue retirado de `db_owner` y agregado únicamente a `portal_runtime` mediante transacción auditada; verificación final: 1 membresía runtime, 0 membresías elevadas y 1 evento append-only. DDL futuro requiere una identidad de migración separada controlada por el proveedor;
 - Clientes, Dominios, Bases de Datos y Licenciamiento (listas, detalles, jerarquías, módulos y asignaciones), Programaciones (lista, detalle, alcance normalizado y resumen operativo), Tareas (lista/detalle consolidados y visibilidad por rol), configuración de Alertas y Correos, Usuarios/Roles (listas y autorización normalizada), Descargas Públicas, Formatos de Impresión y consulta de Auditoría: lecturas SQL y comparación `dual-read` implementadas;
 - Licenciamiento compara contra la proyección normalizada: 0 documentos explícitos + 55 licencias embebidas de clientes = 55 filas SQL, sin reintroducir una segunda representación;
@@ -342,7 +342,7 @@ Estado runtime 2026-07-21:
 - `PortalSAGWeb-TEST` tiene `017..020` aplicadas: 0 identidades de dominio con slash final, descripción de módulos de 2.000 caracteres Unicode, tipos `task_status_notification`/`test_email` habilitados y transición de intentos `processing→sent/failed` probada;
 - el smoke vivo rollback-only ejercitó seguridad/autenticación, programación/alcance, generación y transición de tareas, outbox con recuperación de lease, video público, formato con dos fuentes, archivos, licencias y cascadas. Pasó como `portal_runtime` sin `db_owner` y dejó 0 filas sintéticas;
 - QA conserva 65/65 reconciliaciones correctas, 39/39 archivos enlazados, 0 constraints/FK inválidos, 0 validaciones críticas abiertas y `DBCC CHECKDB PHYSICAL_ONLY` correcto;
-- esta etapa no fue desplegada y no cambia el estado productivo `dual-read`.
+- los writers SQL y las migraciones `017..020` ya están desplegados en la API y aplicados al destino productivo; el backend productivo permanece intencionalmente en `dual-read`, por lo que Cosmos sigue atendiendo respuestas y escrituras.
 
 Estado productivo 2026-07-22:
 
@@ -355,8 +355,10 @@ Estado productivo 2026-07-22:
 - contraseña runtime SQL guardada en Azure Key Vault y referenciada por la Function App; no se imprimió ni escribió localmente;
 - health productivo confirmó `backend=dual-read`, conexión SQL activa, `SQL_SECURITY_RUNTIME_ENABLED=false`, descarga pública `200` y endpoint protegido `401` sin autenticación;
 - rollback de runtime ensayado `dual-read → cosmos → dual-read`; ambos backends alcanzaron estado saludable y la descarga pública regresó a `200` después del warm-up de cada reinicio;
+- compuerta de mantenimiento implementada y desactivada por defecto: `PORTAL_MAINTENANCE_MODE=true` bloquea globalmente mutaciones HTTP con `503`, convierte los seis triggers timer en no-op y conserva lecturas; `Run-Production-Maintenance-Entry.cmd` deshabilita además los seis timers mediante app settings, valida una mutación sintética bloqueada y restaura los settings anteriores si el probe falla;
+- el rollback productivo restaura `DATA_BACKEND=cosmos`, desactiva mantenimiento y elimina los seis flags de timer antes de comprobar el endpoint público;
 - el rol temporal de escritura de secretos concedido al operador fue retirado; la identidad administrada de la Function App conserva acceso de lectura al secreto;
-- este despliegue prueba conectividad y rollback del selector, pero no autoriza `DATA_BACKEND=sql`: las mutaciones SQL y Gate E/F siguen pendientes.
+- este despliegue prueba conectividad, writers, mantenimiento y rollback del selector, pero no autoriza `DATA_BACKEND=sql`: los dos rebuilds limpios en SQL Server 2019 separado, el ensayo completo de cutover y la prueba de backup/restore de Gate C–F siguen pendientes.
 
 Snapshot incremental 2026-07-22:
 

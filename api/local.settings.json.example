@@ -7,6 +7,7 @@
     "COSMOS_DATABASE_NAME": "erp-update-scheduler",
     "DATA_BACKEND": "cosmos",
     "SQL_SECURITY_RUNTIME_ENABLED": "false",
+    "PORTAL_MAINTENANCE_MODE": "false",
     "SQL_SERVER_HOST": "data14.sagerp.co,54103",
     "SQL_DATABASE": "PortalSAGWeb",
     "SQL_USERNAME": "portal_sag_runtime",

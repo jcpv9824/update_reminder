@@ -9,6 +9,15 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+$timerNames = @(
+  'generateDailyUpdateTasks',
+  'sendScheduledReminders',
+  'sendOverdueAlerts',
+  'sendAdministrativeReminders',
+  'sendBlockedReminders',
+  'processEmailOutbox'
+)
+
 function Invoke-AzText([string[]]$Arguments, [string]$FailureMessage) {
   $value = & az @Arguments 2>$null
   if ($LASTEXITCODE -ne 0) { throw $FailureMessage }
@@ -49,7 +58,10 @@ function Wait-CosmosStatus {
   do {
     try {
       $status = Invoke-RestMethod -Method Get -Uri $uri -TimeoutSec 20 -Headers @{ 'Cache-Control' = 'no-cache' }
-      if ($status.backend -eq 'cosmos' -and $status.sqlConnected -eq $false) {
+      if ($status.backend -eq 'cosmos' -and
+          $status.sqlConnected -eq $false -and
+          $status.maintenanceMode -eq $false -and
+          $status.timerDisableState -eq 'none') {
         $publicStatus = (Invoke-WebRequest -Method Get -Uri $publicUri -UseBasicParsing -TimeoutSec 20).StatusCode
         if ($publicStatus -eq 200) { return $true }
       }
@@ -60,7 +72,8 @@ function Wait-CosmosStatus {
 }
 
 Write-Host 'Portal SAG Web - PRODUCTION ROLLBACK TO COSMOS' -ForegroundColor Cyan
-Write-Host 'This changes only the runtime selector. SQL data and Key Vault secrets are preserved for investigation.'
+Write-Host 'This restores Cosmos runtime, exits maintenance and re-enables the six Cosmos timers.'
+Write-Host 'SQL data and Key Vault secrets are preserved for investigation.'
 Write-Host ''
 $confirmation = Read-Host 'Type ROLLBACK PRODUCTION TO COSMOS to continue'
 if ($confirmation -cne 'ROLLBACK PRODUCTION TO COSMOS') { throw 'Confirmation did not match; nothing changed.' }
@@ -76,6 +89,10 @@ try {
   $settings = Copy-Settings $current.properties
   $settings['DATA_BACKEND'] = 'cosmos'
   $settings['SQL_SECURITY_RUNTIME_ENABLED'] = 'false'
+  $settings['PORTAL_MAINTENANCE_MODE'] = 'false'
+  foreach ($timerName in $timerNames) {
+    $null = $settings.Remove("AzureWebJobs.$timerName.Disabled")
+  }
   $null = Invoke-ArmRest 'PUT' "${settingsUri}?api-version=2023-12-01" $armToken @{ properties = $settings } 'Could not set the production backend to Cosmos.'
   & az functionapp restart --resource-group $ResourceGroup --name $FunctionApp --only-show-errors 2>$null
   if ($LASTEXITCODE -ne 0) { throw 'Function App restart failed.' }

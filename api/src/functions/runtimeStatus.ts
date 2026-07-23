@@ -21,3 +21,17 @@ app.http("runtimeStatus", {
     }
   },
 });
+
+app.http("maintenanceMutationProbe", {
+  route: "portal-maintenance-mutation-probe",
+  methods: ["POST"],
+  authLevel: "anonymous",
+  handler: async (): Promise<HttpResponseInit> => ({
+    status: 409,
+    headers: { "Cache-Control": "no-store" },
+    jsonBody: {
+      error: "El modo mantenimiento no está bloqueando mutaciones.",
+      code: "PORTAL_MAINTENANCE_INACTIVE",
+    },
+  }),
+});

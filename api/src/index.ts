@@ -1,3 +1,4 @@
+import "./lib/registerMaintenanceMode";
 import "./functions/me";
 import "./functions/auth";
 import "./functions/users";

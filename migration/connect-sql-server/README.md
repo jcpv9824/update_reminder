@@ -127,6 +127,6 @@ az login
 
 Do not copy the Cosmos setting from Azure or paste it into the terminal.
 
-The launcher validates SQL Server 2019, database, compatibility, collation and least privilege before starting anything. It refuses `db_owner`, `db_ddladmin`, migration credentials, or a login that is not a member of `portal_runtime`. It disables all five timers and keeps `SQL_SECURITY_RUNTIME_ENABLED=false`.
+The launcher validates SQL Server 2019, database, compatibility, collation and least privilege before starting anything. It refuses `db_owner`, `db_ddladmin`, migration credentials, or a login that is not a member of `portal_runtime`. It disables all six timers and keeps `SQL_SECURITY_RUNTIME_ENABLED=false`.
 
 `SAGWebDev` was converted on 2026-07-21 from temporary `db_owner` membership to `portal_runtime`. It is now the default local runtime username and has no elevated database-role membership. Future DDL/migrations require a separate provider-controlled migration identity; the application must never be re-elevated for that purpose.
