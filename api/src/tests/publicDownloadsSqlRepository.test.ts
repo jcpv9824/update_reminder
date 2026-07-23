@@ -13,7 +13,7 @@ describe("Public Downloads SQL mapping", () => {
       active: true, status: "active", created_at: created, created_by: "migration",
       updated_at: created, updated_by: "migration", deleted_at: null, deleted_by: null,
     })).toMatchObject({
-      id: "section-1", nombre: "Manuales", slug: "manuales", activa: true,
+      type: "section", id: "section-1", nombre: "Manuales", slug: "manuales", activa: true,
       createdAt: "2026-07-21T12:00:00.000Z",
     });
   });
@@ -29,7 +29,7 @@ describe("Public Downloads SQL mapping", () => {
       updated_at: created, updated_by: "migration", deleted_at: null, deleted_by: null,
     });
     expect(record).toMatchObject({
-      id: "asset-1", assetKind: "video", archivoBytes: 1024,
+      type: "document", id: "asset-1", assetKind: "video", archivoBytes: 1024,
       archivoBlobContainer: "portal-sag-content", archivoBlobName: "opaque/video.mp4",
     });
     expect(record.archivoBase64).toBeUndefined();

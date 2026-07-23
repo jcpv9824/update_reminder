@@ -46,8 +46,11 @@ function iso(value: Date | null): string | null {
   return value ? value.toISOString() : null;
 }
 
-export function mapSqlPublicDownloadSection(row: SqlSectionRow): PublicDownloadSectionRecord {
+export function mapSqlPublicDownloadSection(
+  row: SqlSectionRow,
+): PublicDownloadSectionRecord & { type: "section" } {
   return {
+    type: "section",
     id: row.source_id,
     nombre: row.name,
     slug: row.slug,
@@ -63,11 +66,14 @@ export function mapSqlPublicDownloadSection(row: SqlSectionRow): PublicDownloadS
   };
 }
 
-export function mapSqlPublicDownloadDocument(row: SqlDocumentRow): PublicDownloadDocumentRecord {
+export function mapSqlPublicDownloadDocument(
+  row: SqlDocumentRow,
+): PublicDownloadDocumentRecord & { type: "document" } {
   if (!row.original_name || !row.mime_type || row.byte_count === null) {
     throw new Error("Un archivo público SQL no tiene una versión de archivo vigente.");
   }
   return {
+    type: "document",
     id: row.source_id,
     sectionId: row.section_source_id,
     sectionName: row.section_name,
@@ -95,7 +101,10 @@ export function mapSqlPublicDownloadDocument(row: SqlDocumentRow): PublicDownloa
 }
 
 export async function readSqlPublicDownloads(): Promise<
-  Array<PublicDownloadSectionRecord | PublicDownloadDocumentRecord>
+  Array<
+    (PublicDownloadSectionRecord & { type: "section" }) |
+    (PublicDownloadDocumentRecord & { type: "document" })
+  >
 > {
   const pool = await getSqlPool();
   const [sections, documents] = await Promise.all([
