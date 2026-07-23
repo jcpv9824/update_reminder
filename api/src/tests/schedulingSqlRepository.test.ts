@@ -1,9 +1,40 @@
-import { describe, expect, it } from "vitest";
-import { mapSqlSchedule } from "../lib/schedulingSqlRepository";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const sqlMocks = vi.hoisted(() => {
+  const request = {
+    input: vi.fn(),
+    query: vi.fn(),
+  };
+  request.input.mockReturnValue(request);
+  return { request };
+});
+
+vi.mock("../lib/sql", () => ({
+  getSqlPool: vi.fn(async () => ({
+    request: () => sqlMocks.request,
+  })),
+}));
+
+import { mapSqlSchedule, readSqlSchedules } from "../lib/schedulingSqlRepository";
 
 const at = new Date("2026-07-21T12:00:00.000Z");
 
 describe("Scheduling SQL mapping", () => {
+  beforeEach(() => {
+    sqlMocks.request.input.mockClear();
+    sqlMocks.request.query.mockReset();
+    sqlMocks.request.query.mockResolvedValue({ recordset: [] });
+  });
+
+  it("excludes soft-deleted schedules from every operational list query", async () => {
+    await readSqlSchedules({}, { enabled: false, page: 1, pageSize: 50 }, "2026-07-23");
+
+    expect(sqlMocks.request.query).toHaveBeenCalledOnce();
+    expect(sqlMocks.request.query.mock.calls[0][0]).toMatch(
+      /WHERE\s+s\.deleted_at\s+IS\s+NULL/i,
+    );
+  });
+
   it("reconstructs normalized schedule scope, reminders, licensing and shared-task summary", () => {
     const schedule = mapSqlSchedule({
       schedule_key: 1,

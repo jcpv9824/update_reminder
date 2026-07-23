@@ -192,7 +192,7 @@ export async function readSqlSchedules(
 ): Promise<SqlScheduleDto[] | PageResult<SqlScheduleDto>> {
   const pool = await getSqlPool();
   const request = pool.request();
-  const conditions: string[] = [];
+  const conditions: string[] = ["s.deleted_at IS NULL"];
   request.input("today", sql.VarChar(10), today);
   if (filters.sourceId) {
     request.input("sourceId", sql.NVarChar(150), filters.sourceId);
