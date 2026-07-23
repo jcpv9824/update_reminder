@@ -197,24 +197,27 @@ function Test-PublicAndSecurityRoutes([switch]$IncludeBlobDownload) {
 }
 
 function Test-MaintenanceMutationBlock {
-  $response = Invoke-WebRequest `
-    -Method Post `
-    -Uri "$baseUri/portal-maintenance-mutation-probe" `
-    -UseBasicParsing `
-    -SkipHttpErrorCheck `
-    -TimeoutSec 30
-  if ($response.StatusCode -ne 503) {
-    throw 'The maintenance mutation probe was not blocked with HTTP 503.'
+  for ($attempt = 1; $attempt -le 12; $attempt++) {
+    try {
+      $response = Invoke-WebRequest `
+        -Method Post `
+        -Uri "$baseUri/portal-maintenance-mutation-probe" `
+        -UseBasicParsing `
+        -SkipHttpErrorCheck `
+        -TimeoutSec 30
+      if ($response.StatusCode -eq 503) {
+        $body = $response.Content | ConvertFrom-Json
+        if ($body.code -eq 'PORTAL_MAINTENANCE') {
+          return
+        }
+      }
+    }
+    catch { }
+    if ($attempt -lt 12) {
+      Start-Sleep -Seconds 5
+    }
   }
-  try {
-    $body = $response.Content | ConvertFrom-Json
-  }
-  catch {
-    throw 'The maintenance mutation probe did not return the expected JSON response.'
-  }
-  if ($body.code -ne 'PORTAL_MAINTENANCE') {
-    throw 'The maintenance mutation probe did not return PORTAL_MAINTENANCE.'
-  }
+  throw 'The maintenance mutation probe did not return the exact PORTAL_MAINTENANCE JSON block in time.'
 }
 
 function Set-FunctionSettings(
