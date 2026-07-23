@@ -1,12 +1,25 @@
 # Runbook de migración de Portal SAG Web a SQL Server
 
-Versión: **2026-07-16**
+Versión: **2026-07-23**
 
 Base recibida: **2026-07-16** (`PortalSAGWeb`; production MVP; intake técnico completado)
 
 Modalidad aprobada por producto: **production MVP**. Esto permite una sola base y un despliegue incremental, pero mantiene los controles mínimos de backup, integridad, autorización, secretos y rollback.
 
-Estado: **plan de ejecución; ninguna acción productiva autorizada por este documento por sí sola**
+Estado: **cutover productivo a SQL completado y verificado el 2026-07-23**
+
+## Estado productivo certificado — 2026-07-23
+
+- La Function App productiva opera con `DATA_BACKEND=sql`, conexión SQL activa, autorización SQL habilitada, mantenimiento desactivado y los seis timers habilitados.
+- La corrida certificada `2` está `completed`: 2.987 documentos raw/stage, 66 reconciliaciones sin fallos y 0 validaciones críticas abiertas.
+- La carga operacional contiene 7 usuarios, 40 clientes, 45 dominios, 55 bases, 11 programaciones, 341 tareas, 2.251 auditorías, 2 activos públicos y 39 archivos.
+- La base tiene 0 FK inválidas/no confiables, 0 checks inválidos/no confiables y 0 triggers de tabla deshabilitados.
+- Los 39 objetos privados (968.128 bytes) permanecen en Azure Blob Storage; SQL conserva metadata, hashes, versiones y referencias, no los bytes.
+- El probe productivo verificó catálogos públicos, un archivo Blob privado mediante SAS de delegación, frontera no autenticada `401`, bloqueo de mutaciones durante mantenimiento y reapertura posterior.
+- La identidad administrada conserva acceso de datos limitado al container y recibió `Storage Blob Delegator` al nivel de la cuenta, requisito para generar SAS de delegación sin claves de cuenta.
+- `SAGWebDev` conserva `db_owner` y `CONTROL` conforme a la excepción explícita del propietario; ningún script de cutover redujo sus permisos.
+- Application Insights mostró 0 requests fallidas `5xx`, excepciones o trazas de error desde el corte hasta `2026-07-23T21:01:53Z`.
+- Cosmos dejó de ser el backend de lectura/escritura de la aplicación. Debe conservarse sin eliminación durante el período de retención acordado; cualquier rollback posterior a nuevas escrituras SQL requiere reconciliación controlada.
 
 ## 1. Objetivo y resultado esperado
 
