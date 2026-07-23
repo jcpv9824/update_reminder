@@ -357,6 +357,7 @@ Estado productivo 2026-07-22:
 - rollback de runtime ensayado `dual-read → cosmos → dual-read`; ambos backends alcanzaron estado saludable y la descarga pública regresó a `200` después del warm-up de cada reinicio;
 - compuerta de mantenimiento implementada y desactivada por defecto: `PORTAL_MAINTENANCE_MODE=true` bloquea globalmente mutaciones HTTP con `503`, convierte los seis triggers timer en no-op y conserva lecturas; `Run-Production-Maintenance-Entry.cmd` deshabilita además los seis timers mediante app settings, valida una mutación sintética bloqueada y restaura los settings anteriores si el probe falla;
 - el rollback productivo restaura `DATA_BACKEND=cosmos`, desactiva mantenimiento y elimina los seis flags de timer antes de comprobar el endpoint público;
+- el controlador de rehearsal exige ahora cero tablas de usuario al inicio de cada corrida 1/2, mide las seis fases, emite evidencia agregada ignorada por Git y compara ambas corridas contra la ventana aprobada con margen mínimo de 30%; no crea, limpia ni restaura bases;
 - el rol temporal de escritura de secretos concedido al operador fue retirado; la identidad administrada de la Function App conserva acceso de lectura al secreto;
 - este despliegue prueba conectividad, writers, mantenimiento y rollback del selector, pero no autoriza `DATA_BACKEND=sql`: los dos rebuilds limpios en SQL Server 2019 separado, el ensayo completo de cutover y la prueba de backup/restore de Gate C–F siguen pendientes.
 

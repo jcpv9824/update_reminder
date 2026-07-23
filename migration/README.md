@@ -81,6 +81,8 @@ node migration/tools/validate-permission-seed.js
 node migration/tools/validate-operational-core-loader.js
 node migration/tools/validate-operational-scheduling-workflow-loader.js
 node migration/tools/validate-operational-settings-content-audit-loader.js
+node migration/tools/validate-rehearsal-certification-controller.js
+node migration/tools/test-rehearsal-evidence-comparison.js
 ```
 
 El parseo no sustituye la construcción en una base desechable. Gate C termina solo después de dos builds limpios equivalentes y pruebas de los roles `portal_migrator`, `portal_runtime` y `portal_reporting`.
@@ -123,9 +125,22 @@ La segunda forma exige escribir `IMPORT RAW STAGE NONPRODUCTION`, verifica hashe
 
 ### Ensayo completo del snapshot vigente con una sola credencial
 
-El launcher `migration/tools/Run-Current-Snapshot-SQL-Rehearsal.cmd` encadena build (solo si la base no tiene tablas), raw/stage, core, scheduling/workflow, verificación Blob y carga final. Solicita una sola vez la credencial SQL del migrador y una sola frase exacta de autorización; la contraseña permanece únicamente en la memoria de ese proceso.
+El launcher `migration/tools/Run-Current-Snapshot-SQL-Rehearsal.cmd` encadena build desde cero, raw/stage, core, scheduling/workflow, verificación Blob y carga final. Solicita una sola vez la credencial SQL del migrador y una sola frase exacta de autorización; la contraseña permanece únicamente en la memoria de ese proceso.
 
-El preflight rechaza `SAGWebDev`, exige `CONTROL`/`db_owner` para la identidad separada del proveedor y se detiene si encuentra filas operativas o corridas anteriores. No limpia ni reemplaza evidencia silenciosamente. Para reutilizar `PortalSAGWeb`, el proveedor debe confirmar antes un backup/restore point y entregar el target limpio. Cosmos continúa como fuente de respuestas y escrituras; este launcher no habilita `DATA_BACKEND=sql`.
+El preflight rechaza el endpoint productivo y la identidad runtime, exige `CONTROL`/`db_owner` para la identidad separada del proveedor y se detiene si encuentra cualquier tabla de usuario. Cada corrida certificada debe recibir `-RehearsalNumber 1` o `2` y comenzar en una base `PortalSAGWeb` vacía de un SQL Server 2019 separado. No limpia ni reemplaza evidencia silenciosamente. Para la segunda corrida, el proveedor debe entregar nuevamente la base vacía y conservar evidencia del backup/restore. Cosmos continúa como fuente de respuestas y escrituras; este launcher no habilita `DATA_BACKEND=sql`.
+
+Al terminar, el launcher escribe un `rehearsal-report.json` sanitizado bajo `migration/work/rehearsal-evidence/`: contrato del motor, cero tablas iniciales, checksum del manifest, duración por fase, reconciliaciones, críticos abiertos, archivos verificados y constraints confiables. No contiene credenciales, cadenas de conexión, IDs, nombres de archivos ni valores de documentos.
+
+Comparar las dos evidencias contra la ventana aprobada:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy RemoteSigned -File migration/tools/Compare-PortalSAGWeb-RehearsalEvidence.ps1 `
+  -FirstEvidence "<rehearsal-1>\rehearsal-report.json" `
+  -SecondEvidence "<rehearsal-2>\rehearsal-report.json" `
+  -ApprovedCutoverWindowMinutes <minutos>
+```
+
+La comparación exige contratos fuente/schema idénticos, ambas corridas completas desde cero, cero reconciliaciones fallidas/críticos/constraints no confiables, 39 archivos privados verificados y al menos 30% de margen en la segunda corrida.
 
 Calcular el contrato agregado de la transformación final, sin abrir SQL ni Blob y sin emitir valores productivos:
 
