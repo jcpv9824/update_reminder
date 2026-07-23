@@ -10,7 +10,7 @@ param(
   [switch]$Apply,
 
   [Parameter(ParameterSetName = 'Apply', Mandatory = $true)]
-  [ValidateSet('nonproduction')]
+  [ValidateSet('nonproduction', 'production-stage')]
   [string]$TargetEnvironment,
 
   [Parameter(ParameterSetName = 'Apply', Mandatory = $true)]
@@ -38,9 +38,25 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-if ($PSCmdlet.ParameterSetName -eq 'Apply' -and $DatabaseName -eq 'PortalSAGWeb' -and
-    $ServerName.Trim().Equals('data14.sagerp.co,54103',[StringComparison]::OrdinalIgnoreCase)) {
-  throw 'REFUSED: the designated production PortalSAGWeb database cannot be loaded by the non-production raw/stage importer.'
+$productionServer = 'data14.sagerp.co,54103'
+$productionDatabase = 'PortalSAGWeb'
+$isProductionTarget = (
+  $PSCmdlet.ParameterSetName -eq 'Apply' -and
+  $DatabaseName.Equals($productionDatabase, [StringComparison]::OrdinalIgnoreCase) -and
+  $ServerName.Trim().Equals($productionServer, [StringComparison]::OrdinalIgnoreCase)
+)
+if ($PSCmdlet.ParameterSetName -eq 'Apply') {
+  if ($TargetEnvironment -eq 'production-stage') {
+    if (-not $isProductionTarget) {
+      throw 'REFUSED: production-stage mode accepts only the designated production PortalSAGWeb endpoint.'
+    }
+    if ($SourceEnvironment -cne 'production') {
+      throw 'REFUSED: production-stage mode requires a production Cosmos source snapshot.'
+    }
+  }
+  elseif ($isProductionTarget) {
+    throw 'REFUSED: the designated production PortalSAGWeb database requires explicit production-stage mode.'
+  }
 }
 
 $expectedContainers = @(
@@ -296,7 +312,7 @@ if ([int]$businessReport.documentCount -ne $totalDocumentCount) {
 
 Write-Host "Snapshot preflight passed: $($expectedContainers.Count) containers; $totalDocumentCount documents; $($businessReport.checks.Count) semantic checks; 0 critical errors; $($businessReport.warningCount) warnings." -ForegroundColor Green
 if ([int]$businessReport.warningCount -gt 0) {
-  Write-Host 'Warnings require explicit acceptance for a non-production load.' -ForegroundColor Yellow
+  Write-Host 'Warnings require explicit acceptance for the selected staging load.' -ForegroundColor Yellow
 }
 
 if (-not $Apply) {
@@ -315,9 +331,15 @@ Write-Host
 Write-Host "Target server:   $ServerName"
 Write-Host "Target database: $DatabaseName"
 if (-not $Confirmed) {
-  $confirmation = Read-Host 'Type IMPORT RAW STAGE NONPRODUCTION to continue'
-  if ($confirmation -cne 'IMPORT RAW STAGE NONPRODUCTION') {
-    throw 'Import cancelled: exact non-production confirmation was not provided.'
+  $expectedConfirmation = if ($TargetEnvironment -eq 'production-stage') {
+    'STAGE CURRENT SNAPSHOT PRODUCTION'
+  }
+  else {
+    'IMPORT RAW STAGE NONPRODUCTION'
+  }
+  $confirmation = Read-Host "Type $expectedConfirmation to continue"
+  if ($confirmation -cne $expectedConfirmation) {
+    throw 'Import cancelled: the exact staging confirmation was not provided.'
   }
 }
 
@@ -341,8 +363,44 @@ if (-not $securePassword.IsReadOnly()) { $securePassword.MakeReadOnly() }
 
 $connection = New-SafeSqlConnection $ServerName $DatabaseName $Username $securePassword
 $runKey = 0L
+$sessionExecutingAsDbo = $false
 try {
   $connection.Open()
+
+  if ($TargetEnvironment -eq 'production-stage') {
+    $permissionCommand = $connection.CreateCommand()
+    try {
+      $permissionCommand.CommandText = @'
+SELECT
+  ISNULL(IS_ROLEMEMBER(N'db_owner'), 0) AS is_db_owner,
+  ISNULL(HAS_PERMS_BY_NAME(DB_NAME(),N'DATABASE',N'CONTROL'), 0) AS has_database_control;
+'@
+      $permissionReader = $permissionCommand.ExecuteReader()
+      if (-not $permissionReader.Read()) {
+        throw 'Unable to verify the production migration capability.'
+      }
+      $isDbOwner = [Convert]::ToInt32($permissionReader.GetValue(0))
+      $hasDatabaseControl = [Convert]::ToInt32($permissionReader.GetValue(1))
+      $permissionReader.Close()
+      if ($isDbOwner -ne 1 -or $hasDatabaseControl -ne 1) {
+        throw 'Production staging requires the supplied login to have both db_owner and database CONTROL.'
+      }
+    }
+    finally {
+      $permissionCommand.Dispose()
+    }
+
+    $executeAsCommand = $connection.CreateCommand()
+    try {
+      $executeAsCommand.CommandText = "EXECUTE AS USER=N'dbo';"
+      $null = $executeAsCommand.ExecuteNonQuery()
+      $sessionExecutingAsDbo = $true
+    }
+    finally {
+      $executeAsCommand.Dispose()
+    }
+    Write-Host 'Authorized production staging context opened; existing permission memberships and grants were preserved.' -ForegroundColor Yellow
+  }
 
   $preflightCommand = $connection.CreateCommand()
   $preflightCommand.CommandText = @'
@@ -352,6 +410,8 @@ SELECT
   d.collation_name,
   CASE WHEN OBJECT_ID(N'migration.usp_project_raw_to_stage', N'P') IS NULL THEN 0 ELSE 1 END AS has_stage_projector,
   CASE WHEN EXISTS (SELECT 1 FROM migration.schema_migrations WHERE migration_version = '008' AND succeeded = 1) THEN 1 ELSE 0 END AS has_008,
+  CASE WHEN EXISTS (SELECT 1 FROM migration.schema_migrations WHERE migration_version = '020' AND succeeded = 1) THEN 1 ELSE 0 END AS has_020,
+  ISNULL((SELECT MAX(migration_version) FROM migration.schema_migrations WHERE succeeded = 1), N'008') AS schema_version,
   (
     (SELECT COUNT_BIG(*) FROM core.clients) +
     (SELECT COUNT_BIG(*) FROM core.domains) +
@@ -374,7 +434,9 @@ WHERE d.database_id = DB_ID();
   $collationName = $reader.GetString(2)
   $hasProjector = $reader.GetInt32(3)
   $has008 = $reader.GetInt32(4)
-  $operationalRowCount = $reader.GetInt64(5)
+  $has020 = $reader.GetInt32(5)
+  $schemaVersion = $reader.GetString(6)
+  $operationalRowCount = $reader.GetInt64(7)
   $reader.Close()
   $preflightCommand.Dispose()
 
@@ -382,7 +444,12 @@ WHERE d.database_id = DB_ID();
   if ($compatibilityLevel -ne 150) { throw "Expected compatibility level 150; found $compatibilityLevel." }
   if ($collationName -ne 'Modern_Spanish_CI_AS') { throw "Unexpected collation: $collationName." }
   if ($hasProjector -ne 1 -or $has008 -ne 1) { throw 'Migration 008 and its stage projector must be installed first.' }
-  if ($operationalRowCount -ne 0) { throw 'Raw/stage import requires empty operational tables in the disposable database.' }
+  if ($TargetEnvironment -eq 'production-stage' -and $has020 -ne 1) {
+    throw 'Production staging requires the reviewed schema through migration 020.'
+  }
+  if ($TargetEnvironment -eq 'nonproduction' -and $operationalRowCount -ne 0) {
+    throw 'Non-production raw/stage import requires empty operational tables in the disposable database.'
+  }
 
   $snapshotName = Split-Path -Leaf $snapshotPath
   $manifestHash = Convert-HexToBytes ((Get-FileHash -Algorithm SHA256 -LiteralPath $manifestPath).Hash.ToLowerInvariant())
@@ -415,19 +482,21 @@ INSERT migration.migration_runs
    status, source_document_count, critical_error_count, warning_count, initiated_by, notes)
 OUTPUT INSERTED.run_key
 VALUES
-  (@snapshot_name, @snapshot_sha256, @source_environment, @application_version, '008',
+  (@snapshot_name, @snapshot_sha256, @source_environment, @application_version, @schema_version,
    'staging', @source_document_count, 0, @warning_count, ORIGINAL_LOGIN(), N'Raw/stage import only; no operational rows loaded.');
 '@
     $null = $createRun.Parameters.Add('@snapshot_name', [Data.SqlDbType]::NVarChar, 260)
     $null = $createRun.Parameters.Add('@snapshot_sha256', [Data.SqlDbType]::Binary, 32)
     $null = $createRun.Parameters.Add('@source_environment', [Data.SqlDbType]::NVarChar, 80)
     $null = $createRun.Parameters.Add('@application_version', [Data.SqlDbType]::NVarChar, 80)
+    $null = $createRun.Parameters.Add('@schema_version', [Data.SqlDbType]::NVarChar, 40)
     $null = $createRun.Parameters.Add('@source_document_count', [Data.SqlDbType]::BigInt)
     $null = $createRun.Parameters.Add('@warning_count', [Data.SqlDbType]::Int)
     $createRun.Parameters['@snapshot_name'].Value = $snapshotName
     $createRun.Parameters['@snapshot_sha256'].Value = $manifestHash
     $createRun.Parameters['@source_environment'].Value = "cosmos-$SourceEnvironment"
     $createRun.Parameters['@application_version'].Value = '1.0.0'
+    $createRun.Parameters['@schema_version'].Value = $schemaVersion
     $createRun.Parameters['@source_document_count'].Value = $totalDocumentCount
     $createRun.Parameters['@warning_count'].Value = [int]$businessReport.warningCount
     $runKey = [long]$createRun.ExecuteScalar()
@@ -460,7 +529,7 @@ VALUES
       $insertValidation.Parameters['@severity'].Value = [string]$check.severity
       $insertValidation.Parameters['@actual_summary'].Value = "count=$($check.count); passed=$($check.passed)"
       $insertValidation.Parameters['@resolution_status'].Value = $resolution
-      $insertValidation.Parameters['@resolution_note'].Value = if ($resolution -eq 'accepted') { 'Known deterministic transformation reviewed before non-production load.' } else { [DBNull]::Value }
+      $insertValidation.Parameters['@resolution_note'].Value = if ($resolution -eq 'accepted') { "Known deterministic transformation reviewed before $TargetEnvironment load." } else { [DBNull]::Value }
       $insertValidation.Parameters['@approved_by'].Value = if ($resolution -eq 'accepted') { 'migration_operator' } else { [DBNull]::Value }
       $insertValidation.Parameters['@approved_at'].Value = if ($resolution -eq 'accepted') { [DateTime]::UtcNow } else { [DBNull]::Value }
       $null = $insertValidation.ExecuteNonQuery()
@@ -555,6 +624,17 @@ WHERE run_key=@run_key;
   throw
 }
 finally {
+  if ($sessionExecutingAsDbo -and $connection.State -eq [Data.ConnectionState]::Open) {
+    try {
+      $revertCommand = $connection.CreateCommand()
+      $revertCommand.CommandText = 'REVERT;'
+      $null = $revertCommand.ExecuteNonQuery()
+      $revertCommand.Dispose()
+    }
+    catch {
+      # Closing the connection also releases the impersonation context.
+    }
+  }
   if ($connection.State -ne [Data.ConnectionState]::Closed) { $connection.Close() }
   $connection.Dispose()
   $securePassword = $null

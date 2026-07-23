@@ -50,6 +50,8 @@ The controller intentionally has no default username. Under the owner decision r
 
 This is an explicit exception to the recommended separate-runtime/separate-migrator model. Because the deployed application also uses `SAGWebDev`, retaining `db_owner` increases the impact of a compromised runtime credential. The exception does not waive backup, rehearsal, reconciliation, maintenance, or rollback gates.
 
+For the additive production raw/staging checkpoint, run `migration/tools/Run-Production-CurrentSnapshot-Staging.cmd`. It accepts only the designated production endpoint, validates the reviewed 17-container snapshot, requires `db_owner` plus database `CONTROL`, uses session-scoped `dbo`, and writes only to the `migration` schema. It does not modify operational tables, Blob Storage, Function App settings, or permissions.
+
 The `.cmd` now exposes the two non-secret values you may edit:
 
 ```bat
