@@ -1,6 +1,6 @@
 # Retiro de Cosmos DB — Portal SAG Web
 
-Estado: **fase 1 en implementación; no autoriza eliminar la cuenta**
+Estado: **fase 1 desplegada como canary productivo; no autoriza eliminar la cuenta**
 
 ## Objetivo
 
@@ -17,6 +17,16 @@ Retirar `erpupdsch4645-cosmos` sin romper rutas poco frecuentes, timers, autenti
 7. Confirmar cero actividad sobre contenedores Cosmos durante siete días completos.
 
 Un error `Dependencia Cosmos inesperada durante la ejecución SQL` detiene el retiro y debe corregirse antes de continuar.
+
+### Canary productivo — 2026-07-23
+
+- Código: commit `32cc033` (`Guard SQL runtime from Cosmos fallback`).
+- Despliegue activo: `b5d4f55f087c4c90bedc4add13bdaef8`, completado correctamente a las `2026-07-23T22:26:43Z`.
+- Configuración verificada: backend `sql`, seguridad SQL habilitada, mantenimiento desactivado y cero timers deshabilitados.
+- Smoke tests iniciales: estado runtime `200`, descargas públicas `200`, fuentes y formatos públicos `200`, activo PDF servido desde Blob `200` y frontera protegida sin sesión `401`.
+- Application Insights desde el despliegue: cero requests fallidas, cero `5xx`, cero excepciones, cero trazas de error y cero activaciones del guard Cosmos.
+- Métrica nativa `TotalRequests` de Cosmos desde el despliegue: cero solicitudes a contenedores en la primera comprobación.
+- La cadena Cosmos permanece configurada únicamente para el período canary. El conteo de siete días comienza en `2026-07-23T22:26:43Z`; cualquier actividad posterior reinicia la ventana.
 
 ## Fase 2 — paquete SQL-only
 

@@ -23,12 +23,14 @@ Estado: **cutover productivo a SQL completado y verificado el 2026-07-23**
 
 ### Retiro de Cosmos iniciado — 2026-07-23
 
-- El runtime en desarrollo ahora falla si `DATA_BACKEND` no está configurado explícitamente; ya no existe un fallback silencioso a Cosmos.
+- El runtime ahora falla si `DATA_BACKEND` no está configurado explícitamente; ya no existe un fallback silencioso a Cosmos.
 - Cuando `DATA_BACKEND=sql`, cualquier llamada accidental a `getContainer` falla de forma explícita antes de abrir el cliente Cosmos.
 - La creación de programaciones obtiene el cliente desde SQL; los recordatorios programados resuelven usuarios por SQL sin inicializar Cosmos.
 - Usuarios, roles y setup dejaron de inicializar contenedores Cosmos antes de seleccionar sus writers SQL.
 - Se añadieron pruebas SQL-only sin `COSMOS_CONNECTION_STRING` para creación de programaciones y recordatorios.
-- Estos cambios todavía deben desplegarse como canary conservando temporalmente la cadena Cosmos. La cadena y la cuenta no se eliminan hasta completar observación de métricas, snapshot final cifrado y restore SQL probado.
+- El commit `32cc033` se desplegó como canary productivo `b5d4f55f087c4c90bedc4add13bdaef8` a las `2026-07-23T22:26:43Z`, conservando temporalmente la cadena Cosmos.
+- Los probes iniciales confirmaron SQL saludable, seis timers habilitados, rutas públicas y Blob `200`, frontera protegida `401`, cero errores del guard y cero solicitudes Cosmos posteriores al despliegue.
+- La cadena y la cuenta no se eliminan hasta completar siete días continuos sin actividad, snapshot final cifrado e inmutable y restore SQL probado.
 
 ## 1. Objetivo y resultado esperado
 
