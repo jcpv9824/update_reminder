@@ -49,6 +49,8 @@ $requiredServerPatterns = @(
   '[switch]$AllowElevatedRuntimeLogin',
   'ownerApprovedElevatedRuntimeLogin = $ownerApprovedElevatedRuntimeLogin',
   "permissionMutationPolicy = 'preserve-existing'",
+  "EXECUTE AS USER=N'dbo';",
+  "executionContext = `$(if (`$sessionExecutingAsDbo) { 'session-scoped-dbo' } else { 'login-user' })",
   'The QA controller refuses the known production server/database pair.',
   "elseif (`$Environment -eq 'qa' -and `$hasConnect -eq 1) { 'qa-readonly' }",
   'Write requests are disabled for this QA discovery session.',

@@ -183,6 +183,7 @@ $descriptorPath = $null
 $sessionId = [Guid]::NewGuid().ToString('N')
 $pipeName = "PortalSAGWeb-Codex-$sessionId"
 $keepRunning = $true
+$sessionExecutingAsDbo = $false
 
 try {
   Write-Host 'Opening encrypted connection...'
@@ -257,6 +258,19 @@ WHERE d.database_id=DB_ID();
   if ($sessionAuthorization -cne 'AUTHORIZE DATABASE ACCESS FOR THIS SESSION') {
     throw 'Database session authorization did not match; the session was not opened.'
   }
+  if ($ownerApprovedElevatedRuntimeLogin -and $isPortalRuntime -eq 1) {
+    $executeAsCommand = $connection.CreateCommand()
+    try {
+      $executeAsCommand.CommandText = "EXECUTE AS USER=N'dbo';"
+      $null = $executeAsCommand.ExecuteNonQuery()
+      $sessionExecutingAsDbo = $true
+    }
+    finally {
+      $executeAsCommand.Dispose()
+    }
+    Write-Host 'Session-scoped dbo execution is active to bypass the portal_runtime migration-schema DENY.' -ForegroundColor Yellow
+    Write-Host 'No database role membership or grant was changed.' -ForegroundColor Yellow
+  }
 
   [IO.Directory]::CreateDirectory($SessionDirectory) | Out-Null
   $SessionDirectory = (Resolve-Path -LiteralPath $SessionDirectory).Path
@@ -321,6 +335,7 @@ WHERE d.database_id=DB_ID();
     runtimeAccess = ($accessLevel -eq 'runtime')
     ownerApprovedElevatedRuntimeLogin = $ownerApprovedElevatedRuntimeLogin
     permissionMutationPolicy = 'preserve-existing'
+    executionContext = $(if ($sessionExecutingAsDbo) { 'session-scoped-dbo' } else { 'login-user' })
     accessLevel = $accessLevel
     sessionAuthorized = $true
     approvalMode = 'session'
@@ -419,6 +434,15 @@ finally {
     try {
       $currentDescriptor = Get-Content -Raw -LiteralPath $descriptorPath | ConvertFrom-Json
       if ($currentDescriptor.sessionId -eq $sessionId) { Remove-Item -LiteralPath $descriptorPath -Force }
+    }
+    catch {}
+  }
+  if ($sessionExecutingAsDbo -and $connection.State -eq [Data.ConnectionState]::Open) {
+    try {
+      $revertCommand = $connection.CreateCommand()
+      $revertCommand.CommandText = 'REVERT;'
+      $null = $revertCommand.ExecuteNonQuery()
+      $revertCommand.Dispose()
     }
     catch {}
   }

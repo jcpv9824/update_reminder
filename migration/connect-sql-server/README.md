@@ -46,7 +46,7 @@ The QA launcher uses `migration/work/sql-session-qa`, never stores credentials, 
 
 This provides full control of the `PortalSAGWeb` database only. It neither requests nor requires server-level `sysadmin` or `VIEW SERVER STATE` privileges. It does not authorize production DDL/data changes by itself; backup, rehearsal, and migration gates still apply.
 
-The controller intentionally has no default username. Under the owner decision recorded on 2026-07-23, `SAGWebDev` may open the production full-control controller only when SQL proves both `db_owner` and database `CONTROL`. The controller records `permissionMutationPolicy=preserve-existing` in its non-secret session descriptor and never removes roles or grants when it closes or applies a patch.
+The controller intentionally has no default username. Under the owner decision recorded on 2026-07-23, `SAGWebDev` may open the production full-control controller only when SQL proves both `db_owner` and database `CONTROL`. The controller records `permissionMutationPolicy=preserve-existing` in its non-secret session descriptor and never removes roles or grants when it closes or applies a patch. Because `portal_runtime` has an explicit `DENY` on the migration schema, an authorized elevated `SAGWebDev` session uses `EXECUTE AS USER='dbo'` only inside that SQL connection; the controller executes `REVERT` on close and does not persist a permission change.
 
 This is an explicit exception to the recommended separate-runtime/separate-migrator model. Because the deployed application also uses `SAGWebDev`, retaining `db_owner` increases the impact of a compromised runtime credential. The exception does not waive backup, rehearsal, reconciliation, maintenance, or rollback gates.
 
