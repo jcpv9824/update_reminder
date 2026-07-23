@@ -7,7 +7,7 @@ echo Use the separate provider migration login. SAGWebDev is runtime-only and wi
 echo The password remains only in this terminal process and is never stored or printed.
 echo.
 
-pwsh.exe -NoLogo -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0Start-PortalSAGWeb-EphemeralControl.ps1" -RequireFullControl %*
+pwsh.exe -NoLogo -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0Start-PortalSAGWeb-EphemeralControl.ps1" -RequireFullControl -AllowElevatedRuntimeLogin %*
 set EXIT_CODE=%ERRORLEVEL%
 echo.
 if not "%EXIT_CODE%"=="0" (

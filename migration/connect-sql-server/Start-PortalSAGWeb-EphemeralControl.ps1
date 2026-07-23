@@ -4,6 +4,7 @@ param(
   [string]$DatabaseName = 'PortalSAGWeb',
   [string]$Username = '',
   [switch]$RequireFullControl,
+  [switch]$AllowElevatedRuntimeLogin,
   [ValidateSet('production','qa')]
   [string]$Environment = 'production',
   [string]$SessionDirectory
@@ -121,8 +122,14 @@ Write-Host 'One exact authorization phrase enables requests for the lifetime of 
 Write-Host 'After authorization, write requests do not require individual approval prompts.'
 if ($RequireFullControl) {
   if ($Environment -eq 'production') {
-    Write-Host 'This launcher accepts only the separate provider migration login.' -ForegroundColor Yellow
-    Write-Host 'SAGWebDev is runtime-only in production and is rejected before its password is requested.' -ForegroundColor Yellow
+    if ($AllowElevatedRuntimeLogin) {
+      Write-Host 'Owner-approved exception: SAGWebDev is accepted only if SQL proves db_owner + database CONTROL.' -ForegroundColor Yellow
+      Write-Host 'After migration, SAGWebDev must be returned to portal_runtime-only permissions.' -ForegroundColor Yellow
+    }
+    else {
+      Write-Host 'This launcher accepts only the separate provider migration login.' -ForegroundColor Yellow
+      Write-Host 'SAGWebDev is runtime-only in production and is rejected before its password is requested.' -ForegroundColor Yellow
+    }
   }
   else {
     Write-Host 'QA accepts any SQL login whose effective QA permissions include db_owner and database CONTROL.' -ForegroundColor Yellow
@@ -151,7 +158,8 @@ $usernamePrompt = if ([string]::IsNullOrWhiteSpace($Username)) { 'SQL Authentica
 $enteredUsername = Read-Host $usernamePrompt
 if (-not [string]::IsNullOrWhiteSpace($enteredUsername)) { $Username = $enteredUsername.Trim() }
 if ([string]::IsNullOrWhiteSpace($Username)) { throw 'A separate full-control migration username is required.' }
-if ($Environment -eq 'production' -and $RequireFullControl -and $Username -ieq 'SAGWebDev') {
+if ($Environment -eq 'production' -and $RequireFullControl -and
+    -not $AllowElevatedRuntimeLogin -and $Username -ieq 'SAGWebDev') {
   throw 'SAGWebDev is the least-privilege application runtime login. Enter the separate provider migration login instead.'
 }
 $securePassword = Read-Host 'SQL Authentication password' -AsSecureString
@@ -225,6 +233,16 @@ WHERE d.database_id=DB_ID();
     else { throw 'The supplied login is neither the full-control migrator nor a portal_runtime member.' }
   if ($RequireFullControl -and $accessLevel -ne 'full-control') {
     throw 'The supplied login does not have the required db_owner + database CONTROL migration capability.'
+  }
+  $temporarilyElevatedRuntimeLogin = (
+    $Environment -eq 'production' -and
+    $RequireFullControl -and
+    $AllowElevatedRuntimeLogin -and
+    $Username -ieq 'SAGWebDev'
+  )
+  if ($temporarilyElevatedRuntimeLogin) {
+    Write-Host 'WARNING: the application runtime login currently has migration-level permissions.' -ForegroundColor Red
+    Write-Host 'Do not enable SQL runtime until this login is returned to portal_runtime-only access.' -ForegroundColor Red
   }
 
   Write-Host
@@ -301,6 +319,7 @@ WHERE d.database_id=DB_ID();
     compatibilityLevel = $compatibilityLevel
     fullControl = ($accessLevel -eq 'full-control')
     runtimeAccess = ($accessLevel -eq 'runtime')
+    temporarilyElevatedRuntimeLogin = $temporarilyElevatedRuntimeLogin
     accessLevel = $accessLevel
     sessionAuthorized = $true
     approvalMode = 'session'

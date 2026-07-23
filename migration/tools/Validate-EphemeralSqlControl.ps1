@@ -8,8 +8,9 @@ $clientPath = Join-Path $sessionRoot 'Invoke-PortalSAGWeb-EphemeralRequest.ps1'
 $launcherPath = Join-Path $sessionRoot 'Open-PortalSAGWeb-EphemeralControl.cmd'
 $qaLauncherPath = Join-Path $sessionRoot 'Open-PortalSAGWeb-QA-FullControl.cmd'
 $qaDiscoveryLauncherPath = Join-Path $sessionRoot 'Open-PortalSAGWeb-QA-Discovery.cmd'
+$productionFullControlLauncherPath = Join-Path $sessionRoot 'Open-PortalSAGWeb-FullControl.cmd'
 
-foreach ($path in @($serverPath, $clientPath, $launcherPath, $qaLauncherPath, $qaDiscoveryLauncherPath)) {
+foreach ($path in @($serverPath, $clientPath, $launcherPath, $qaLauncherPath, $qaDiscoveryLauncherPath,$productionFullControlLauncherPath)) {
   if (-not (Test-Path -LiteralPath $path)) { throw "Missing ephemeral-control artifact: $path" }
 }
 
@@ -27,6 +28,7 @@ $client = Get-Content -Raw -LiteralPath $clientPath
 $launcher = Get-Content -Raw -LiteralPath $launcherPath
 $qaLauncher = Get-Content -Raw -LiteralPath $qaLauncherPath
 $qaDiscoveryLauncher = Get-Content -Raw -LiteralPath $qaDiscoveryLauncherPath
+$productionFullControlLauncher = Get-Content -Raw -LiteralPath $productionFullControlLauncherPath
 
 $requiredServerPatterns = @(
   "Read-Host 'SQL Authentication password' -AsSecureString",
@@ -44,6 +46,8 @@ $requiredServerPatterns = @(
   'Write authorized by the active terminal session.',
   "HAS_PERMS_BY_NAME(DB_NAME(),'DATABASE','CONTROL')",
   "ValidateSet('production','qa')",
+  '[switch]$AllowElevatedRuntimeLogin',
+  'temporarilyElevatedRuntimeLogin = $temporarilyElevatedRuntimeLogin',
   'The QA controller refuses the known production server/database pair.',
   "elseif (`$Environment -eq 'qa' -and `$hasConnect -eq 1) { 'qa-readonly' }",
   'Write requests are disabled for this QA discovery session.',
@@ -82,6 +86,11 @@ foreach ($pattern in @('-Environment qa','-RequireFullControl','sql-session-qa')
 }
 foreach ($pattern in @('-Environment qa','PortalSAGWeb-TEST','sql-session-qa')) {
   if (-not $qaDiscoveryLauncher.Contains($pattern)) { throw "The QA discovery launcher is missing safety contract: $pattern" }
+}
+foreach ($pattern in @('-RequireFullControl','-AllowElevatedRuntimeLogin')) {
+  if (-not $productionFullControlLauncher.Contains($pattern)) {
+    throw "The production full-control launcher is missing its explicit owner-approved exception contract: $pattern"
+  }
 }
 if (-not $client.Contains('$validTarget') -or -not $client.Contains('$knownProductionPair')) {
   throw 'The request client does not distinguish authorized QA from the known production pair.'
