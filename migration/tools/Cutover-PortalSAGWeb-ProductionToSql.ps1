@@ -267,7 +267,8 @@ try {
 
   if ($script:previousSettings['DATA_BACKEND'] -cne 'dual-read' -or
       $script:previousSettings['SQL_SECURITY_RUNTIME_ENABLED'] -cne 'false' -or
-      $script:previousSettings['PORTAL_MAINTENANCE_MODE'] -cne 'false' -or
+      ($script:previousSettings.Contains('PORTAL_MAINTENANCE_MODE') -and
+        $script:previousSettings['PORTAL_MAINTENANCE_MODE'] -cne 'false') -or
       $script:previousSettings['PUBLIC_DOWNLOADS_STORAGE_ACCOUNT_URL'] -cne $expectedBlobAccountUrl -or
       $script:previousSettings['PUBLIC_DOWNLOADS_STORAGE_CONTAINER'] -cne $expectedBlobContainer) {
     throw 'Production settings do not match the reviewed healthy dual-read and private Blob preflight.'
