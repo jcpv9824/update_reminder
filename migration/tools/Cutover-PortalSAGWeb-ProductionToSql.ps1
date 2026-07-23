@@ -163,19 +163,35 @@ function Test-PublicAndSecurityRoutes([switch]$IncludeBlobDownload) {
       if ($null -eq $firstDocument -or [string]::IsNullOrWhiteSpace([string]$firstDocument.downloadUrl)) {
         throw 'No active public asset was available for the Blob-backed download probe.'
       }
-      $assetResponse = Invoke-WebRequest `
-        -Method Get `
-        -Uri ("https://$FunctionApp.azurewebsites.net" + [string]$firstDocument.downloadUrl) `
-        -UseBasicParsing `
-        -TimeoutSec 60 `
-        -MaximumRedirection 5
-      if ($assetResponse.StatusCode -ne 200 -or
-          ($null -eq $assetResponse.RawContentStream -and [string]::IsNullOrEmpty([string]$assetResponse.Content))) {
-        throw 'The Blob-backed public asset probe did not return file content.'
+      $assetVerified = $false
+      for ($attempt = 1; $attempt -le 3 -and -not $assetVerified; $attempt++) {
+        try {
+          $assetResponse = Invoke-WebRequest `
+            -Method Get `
+            -Uri ("https://$FunctionApp.azurewebsites.net" + [string]$firstDocument.downloadUrl) `
+            -UseBasicParsing `
+            -TimeoutSec 60 `
+            -MaximumRedirection 5
+          $assetVerified = $assetResponse.StatusCode -eq 200 -and
+            $null -ne $assetResponse.Content -and
+            $assetResponse.Content.Length -gt 0
+        }
+        catch {
+          $assetVerified = $false
+        }
+        if (-not $assetVerified -and $attempt -lt 3) {
+          Start-Sleep -Seconds 3
+        }
+      }
+      if (-not $assetVerified) {
+        throw 'The Blob-backed public asset did not return file content after three attempts.'
       }
     }
     catch {
-      throw 'The Blob-backed public asset probe failed.'
+      if ($_.Exception.Message -eq 'No active public asset was available for the Blob-backed download probe.') {
+        throw $_
+      }
+      throw 'The Blob-backed public asset request failed after three attempts.'
     }
   }
 }
