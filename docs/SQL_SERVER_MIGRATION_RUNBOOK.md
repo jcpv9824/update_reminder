@@ -21,6 +21,15 @@ Estado: **cutover productivo a SQL completado y verificado el 2026-07-23**
 - Application Insights mostró 0 requests fallidas `5xx`, excepciones o trazas de error desde el corte hasta `2026-07-23T21:01:53Z`.
 - Cosmos dejó de ser el backend de lectura/escritura de la aplicación. Debe conservarse sin eliminación durante el período de retención acordado; cualquier rollback posterior a nuevas escrituras SQL requiere reconciliación controlada.
 
+### Retiro de Cosmos iniciado — 2026-07-23
+
+- El runtime en desarrollo ahora falla si `DATA_BACKEND` no está configurado explícitamente; ya no existe un fallback silencioso a Cosmos.
+- Cuando `DATA_BACKEND=sql`, cualquier llamada accidental a `getContainer` falla de forma explícita antes de abrir el cliente Cosmos.
+- La creación de programaciones obtiene el cliente desde SQL; los recordatorios programados resuelven usuarios por SQL sin inicializar Cosmos.
+- Usuarios, roles y setup dejaron de inicializar contenedores Cosmos antes de seleccionar sus writers SQL.
+- Se añadieron pruebas SQL-only sin `COSMOS_CONNECTION_STRING` para creación de programaciones y recordatorios.
+- Estos cambios todavía deben desplegarse como canary conservando temporalmente la cadena Cosmos. La cadena y la cuenta no se eliminan hasta completar observación de métricas, snapshot final cifrado y restore SQL probado.
+
 ## 1. Objetivo y resultado esperado
 
 Migrar Portal SAG Web de Cosmos DB a SQL Server sin perder datos, romper permisos, duplicar tareas/correos ni exponer secretos. El resultado final debe conservar los contratos de la API y el comportamiento de todos los módulos actuales:

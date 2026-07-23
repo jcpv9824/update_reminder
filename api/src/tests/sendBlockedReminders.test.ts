@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UpdateTask } from "../types/models";
 
 const mocks = vi.hoisted(() => ({
@@ -51,9 +51,14 @@ function blockedTask(): UpdateTask {
 
 describe("sendBlockedReminders seguro", () => {
   beforeEach(() => {
+    process.env.DATA_BACKEND = "cosmos";
     mocks.tasks = [blockedTask()];
     mocks.sentNotifications.clear();
     mocks.upsert.mockClear(); mocks.sendEmail.mockClear(); mocks.audit.mockClear();
+  });
+
+  afterEach(() => {
+    delete process.env.DATA_BACKEND;
   });
 
   it("envía la plantilla central con todos los valores dinámicos escapados", async () => {

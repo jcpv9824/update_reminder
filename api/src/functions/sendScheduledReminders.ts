@@ -57,7 +57,6 @@ async function obtenerDestinatarios(task: UpdateTask, schedule: UpdateSchedule |
   if (cfg.reminderRecipientsMode === "customEmails" && cfg.customReminderEmails && cfg.customReminderEmails.length > 0) {
     return cfg.customReminderEmails.map((email) => ({ email }));
   }
-  const usuariosCnt = getContainer("users");
   if (cfg.reminderRecipientsMode === "roleUsers") {
     const role = schedule?.assignedRole;
     if (!role) return [];
@@ -83,6 +82,7 @@ async function obtenerDestinatarios(task: UpdateTask, schedule: UpdateSchedule |
     }
     return [...new Map(recipients.map((recipient) => [recipient.email.toLowerCase(), recipient])).values()];
   }
+  const usuariosCnt = getContainer("users");
   for (const id of ids) {
     try {
       const { resource } = await usuariosCnt.item(id, id).read<UserRecord>();

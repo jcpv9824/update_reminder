@@ -122,7 +122,6 @@ app.http("rolesUpdate", {
       if (!canEditRoleDefinition(user, roleDefinitions)) return forbidden();
 
       const id = req.params.id;
-      const container = getContainer("roles");
       const existing = roleDefinitions.find((role) => role.id === id);
       if (!existing) return notFound("Rol no encontrado.");
 
@@ -148,7 +147,7 @@ app.http("rolesUpdate", {
         }
       }
 
-      await container.items.upsert(updated);
+      await getContainer("roles").items.upsert(updated);
       await writeAuditLog({
         entityType: "role",
         entityId: updated.id,
@@ -178,14 +177,16 @@ app.http("rolesDelete", {
       const id = req.params.id;
       if (defaultRoleById(id)) return badRequest("Los roles predeterminados no se eliminan; puede editar su configuración o desactivarlos cuando no tengan referencias.");
 
-      const stored = await readStoredRoleRecords();
-      const existing = stored.find((role) => role.id === id);
+      const backend = getDataBackend();
+      const existing = backend === "sql"
+        ? roleDefinitions.find((role) => role.id === id)
+        : (await readStoredRoleRecords()).find((role) => role.id === id);
       if (!existing) return notFound("Rol no encontrado.");
 
       const usage = await getRoleUsage(id);
       if (usage.hasReferences) return conflict(roleUsageMessage(usage), usage);
 
-      if (getDataBackend() === "sql") {
+      if (backend === "sql") {
         try {
           const deleted = await deleteSqlRole(id, { id: user.id, email: user.email });
           return deleted ? noContent() : notFound("Rol no encontrado.");

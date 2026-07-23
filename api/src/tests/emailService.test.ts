@@ -1,8 +1,14 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, beforeEach } from "vitest";
 import { sendEmail, renderTaskReminderEmail, renderOverdueAlertEmail } from "../lib/emailService";
 
 beforeEach(() => {
+  process.env.DATA_BACKEND = "cosmos";
   process.env.EMAIL_PROVIDER = "mock";
+});
+
+afterEach(() => {
+  delete process.env.DATA_BACKEND;
+  delete process.env.EMAIL_PROVIDER;
 });
 
 describe("emailService", () => {

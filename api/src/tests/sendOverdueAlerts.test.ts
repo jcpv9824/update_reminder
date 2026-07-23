@@ -131,6 +131,7 @@ function activeUser(): UserRecord {
 
 describe("sendOverdueAlerts", () => {
   beforeEach(() => {
+    process.env.DATA_BACKEND = "cosmos";
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-16T13:00:00.000Z"));
     mocks.tasks = [];
@@ -143,6 +144,7 @@ describe("sendOverdueAlerts", () => {
   });
 
   afterEach(() => {
+    delete process.env.DATA_BACKEND;
     vi.useRealTimers();
   });
 

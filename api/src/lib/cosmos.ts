@@ -3,7 +3,16 @@ import { CosmosClient, Container, Database } from "@azure/cosmos";
 let _client: CosmosClient | null = null;
 let _database: Database | null = null;
 
+function assertLegacyCosmosBackend(): void {
+  if ((process.env.DATA_BACKEND ?? "").trim().toLowerCase() === "sql") {
+    throw new Error(
+      "Dependencia Cosmos inesperada durante la ejecución SQL. Esta ruta debe usar exclusivamente repositorios SQL."
+    );
+  }
+}
+
 export function getCosmosClient(): CosmosClient {
+  assertLegacyCosmosBackend();
   if (_client) return _client;
   const conn = process.env.COSMOS_CONNECTION_STRING;
   if (!conn) {
@@ -16,6 +25,7 @@ export function getCosmosClient(): CosmosClient {
 }
 
 export function getDatabase(): Database {
+  assertLegacyCosmosBackend();
   if (_database) return _database;
   const name = process.env.COSMOS_DATABASE_NAME ?? "erp-update-scheduler";
   _database = getCosmosClient().database(name);
@@ -42,5 +52,6 @@ export type ContainerName =
   | "publicDownloads";
 
 export function getContainer(name: ContainerName): Container {
+  assertLegacyCosmosBackend();
   return getDatabase().container(name);
 }

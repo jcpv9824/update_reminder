@@ -49,6 +49,11 @@ function addDaysIso(isoDate: string, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
+export async function loadScheduleClient(clientId: string): Promise<ClientRecord | null> {
+  if (getDataBackend() === "sql") return (await readSqlClients(clientId))[0] ?? null;
+  return (await getContainer("clients").item(clientId, clientId).read<ClientRecord>()).resource ?? null;
+}
+
 // Genera/actualiza tareas inmediatamente tras guardar una actualización
 // programada, reutilizando la misma lógica del timer diario (idempotente).
 // Una falla aquí NO debe romper el guardado de la programación.
@@ -395,7 +400,8 @@ app.http("schedulesCreate", {
       } catch (e: any) {
         return badRequest(e?.message ?? "Frecuencia inválida.");
       }
-      const { resource: client } = await getContainer("clients").item(parsed.data.clientId, parsed.data.clientId).read<ClientRecord>();
+      const backend = getDataBackend();
+      const client = await loadScheduleClient(parsed.data.clientId);
       if (!client) return badRequest("Cliente no encontrado.");
       const now = new Date().toISOString();
       const record: UpdateSchedule = {
@@ -441,7 +447,7 @@ app.http("schedulesCreate", {
         updatedAt: now,
         updatedBy: user.id,
       };
-      if (getDataBackend() === "sql") {
+      if (backend === "sql") {
         const createdSchedule = await createSqlSchedule(record, { id: user.id, email: user.email });
         await regenerarTareasTrasGuardar();
         return created(createdSchedule);

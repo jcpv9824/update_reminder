@@ -237,10 +237,10 @@ app.http("usersUpdate", {
     try {
       const u = await getUserOrFail(req);
       const id = req.params.id;
-      const container = getContainer("users");
-      const resource = getDataBackend() === "sql"
+      const sqlBackend = getDataBackend() === "sql";
+      const resource = sqlBackend
         ? await findSqlUserById(id)
-        : (await container.item(id, id).read<UserRecord>()).resource;
+        : (await getContainer("users").item(id, id).read<UserRecord>()).resource;
       if (!resource) return notFound("Usuario no encontrado.");
       const body = await req.json();
       const parsed = UserUpdateSchema.safeParse(body);
@@ -265,11 +265,11 @@ app.http("usersUpdate", {
         updatedAt: new Date().toISOString(),
         updatedBy: u.id,
       };
-      if (getDataBackend() === "sql") {
+      if (sqlBackend) {
         const sqlUpdated = await updateSqlUser(id, parsed.data, { id: u.id, email: u.email });
         return sqlUpdated ? ok(sanitize(sqlUpdated)) : notFound("Usuario no encontrado.");
       }
-      await container.item(id, id).replace(updated);
+      await getContainer("users").item(id, id).replace(updated);
       if (deactivated) await revokeAllUserSessions(id, "user_deactivated");
       await writeAuditLog({
         entityType: "user",
@@ -304,10 +304,10 @@ app.http("usersResetPassword", {
         RATE_LIMIT_POLICIES.userEmail
       );
       if (limited) return limited;
-      const container = getContainer("users");
-      const resource = getDataBackend() === "sql"
+      const sqlBackend = getDataBackend() === "sql";
+      const resource = sqlBackend
         ? await findSqlUserById(id)
-        : (await container.item(id, id).read<UserRecord>()).resource;
+        : (await getContainer("users").item(id, id).read<UserRecord>()).resource;
       if (!resource) return notFound("Usuario no encontrado.");
       const now = new Date().toISOString();
       try {
@@ -322,7 +322,7 @@ app.http("usersResetPassword", {
       resource.tokenVersion = (resource.tokenVersion ?? 0) + 1;
       resource.updatedAt = now;
       resource.updatedBy = u.id;
-      if (getDataBackend() === "sql") {
+      if (sqlBackend) {
         const sqlUpdated = await setSqlUserPassword(id, resource.passwordHash, { id: u.id, email: u.email }, "user_password_reset", {
           mustChangePassword: true,
           expiresAt: null,
@@ -331,7 +331,7 @@ app.http("usersResetPassword", {
         try { await notificarContrasena({ email: sqlUpdated.email, displayName: sqlUpdated.displayName, password: parsed.data.password, roles: sqlUpdated.roles, kind: "reset", performedBy: u.id, performedByEmail: u.email }); } catch {/* no bloquear reset */}
         return ok(sanitize(sqlUpdated));
       }
-      await container.item(id, id).replace(resource);
+      await getContainer("users").item(id, id).replace(resource);
       await revokeAllUserSessions(id, "admin_password_reset");
       await writeAuditLog({
         entityType: "user",
@@ -365,10 +365,10 @@ app.http("usersResendCredentials", {
         RATE_LIMIT_POLICIES.userEmail
       );
       if (limited) return limited;
-      const container = getContainer("users");
-      const resource = getDataBackend() === "sql"
+      const sqlBackend = getDataBackend() === "sql";
+      const resource = sqlBackend
         ? await findSqlUserById(id)
-        : (await container.item(id, id).read<UserRecord>()).resource;
+        : (await getContainer("users").item(id, id).read<UserRecord>()).resource;
       if (!resource) return notFound("Usuario no encontrado.");
       const settings = await loadEmailAlertsSettings();
       if (!settings.passwordNotificationEnabled) {
@@ -383,7 +383,7 @@ app.http("usersResendCredentials", {
       resource.tokenVersion = (resource.tokenVersion ?? 0) + 1;
       resource.updatedAt = now;
       resource.updatedBy = u.id;
-      if (getDataBackend() === "sql") {
+      if (sqlBackend) {
         const sqlUpdated = await setSqlUserPassword(id, resource.passwordHash, { id: u.id, email: u.email }, "user_credentials_resent", {
           mustChangePassword: true,
           expiresAt: null,
@@ -392,7 +392,7 @@ app.http("usersResendCredentials", {
         await notificarContrasena({ email: sqlUpdated.email, displayName: sqlUpdated.displayName, password: temporal, roles: sqlUpdated.roles, kind: "resend", performedBy: u.id, performedByEmail: u.email });
         return ok({ ...sanitize(sqlUpdated), emailSent: true });
       }
-      await container.item(id, id).replace(resource);
+      await getContainer("users").item(id, id).replace(resource);
       await revokeAllUserSessions(id, "credentials_resent");
       await writeAuditLog({
         entityType: "user",
@@ -412,20 +412,20 @@ async function setUserActive(req: HttpRequest, active: boolean, action: string):
   const roleDefinitions = await loadRoleDefinitions();
   if (active ? !canReactivateUser(u, roleDefinitions) : !canDeactivateUser(u, roleDefinitions)) return forbidden();
   const id = req.params.id;
-  const container = getContainer("users");
-  const resource = getDataBackend() === "sql"
+  const sqlBackend = getDataBackend() === "sql";
+  const resource = sqlBackend
     ? await findSqlUserById(id)
-    : (await container.item(id, id).read<UserRecord>()).resource;
+    : (await getContainer("users").item(id, id).read<UserRecord>()).resource;
   if (!resource) return notFound("Usuario no encontrado.");
   resource.active = active;
   if (!active) resource.tokenVersion = (resource.tokenVersion ?? 0) + 1;
   resource.updatedAt = new Date().toISOString();
   resource.updatedBy = u.id;
-  if (getDataBackend() === "sql") {
+  if (sqlBackend) {
     const sqlUpdated = await updateSqlUser(id, { active }, { id: u.id, email: u.email });
     return sqlUpdated ? ok(sanitize(sqlUpdated)) : notFound("Usuario no encontrado.");
   }
-  await container.item(id, id).replace(resource);
+  await getContainer("users").item(id, id).replace(resource);
   if (!active) await revokeAllUserSessions(id, "user_deactivated");
   await writeAuditLog({ entityType: "user", entityId: id, action, performedBy: u.id, performedByEmail: u.email, after: { active } });
   return ok(sanitize(resource));

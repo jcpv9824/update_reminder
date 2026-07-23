@@ -3,10 +3,8 @@
   "Values": {
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
     "FUNCTIONS_WORKER_RUNTIME": "node",
-    "COSMOS_CONNECTION_STRING": "AccountEndpoint=https://...;AccountKey=...;",
-    "COSMOS_DATABASE_NAME": "erp-update-scheduler",
-    "DATA_BACKEND": "cosmos",
-    "SQL_SECURITY_RUNTIME_ENABLED": "false",
+    "DATA_BACKEND": "sql",
+    "SQL_SECURITY_RUNTIME_ENABLED": "true",
     "PORTAL_MAINTENANCE_MODE": "false",
     "SQL_SERVER_HOST": "data14.sagerp.co,54103",
     "SQL_DATABASE": "PortalSAGWeb",

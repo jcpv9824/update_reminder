@@ -47,7 +47,6 @@ app.http("setupFirstAdmin", {
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       if (parsed.data.setupSecret !== expected) return forbidden("Clave de inicialización incorrecta.");
 
-      const container = getContainer("users");
       const now = new Date().toISOString();
       try {
         await validatePasswordPolicy(parsed.data.password, { email: parsed.data.email, displayName: parsed.data.displayName });
@@ -100,6 +99,7 @@ app.http("setupFirstAdmin", {
           { mustChangePassword: false, expiresAt: new Date(passwordExpirationIso()), updatedBy: "system" });
         return existing ? ok(sanitize(passwordUser ?? sqlUser)) : created(sanitize(passwordUser ?? sqlUser));
       }
+      const container = getContainer("users");
       try {
         await container.items.create(record);
       } catch (e: any) {

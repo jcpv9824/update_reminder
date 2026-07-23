@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import type { EmailAlertsSettings } from "../types/models";
 
 // Mockear cosmos y keyVault para aislar pruebas (con vi.hoisted).
@@ -24,11 +24,16 @@ vi.mock("../lib/keyVault", () => ({
 import { loadEmailAlertsSettings, saveEmailAlertsSettings, sanitizeForResponse, getSmtpPassword } from "../lib/settingsService";
 
 beforeEach(() => {
+  process.env.DATA_BACKEND = "cosmos";
   upsertMock.mockClear();
   setSecretMock.mockClear();
   getSecretMock.mockClear();
   readMock.mockReset();
   readMock.mockResolvedValue({ resource: undefined as any });
+});
+
+afterEach(() => {
+  delete process.env.DATA_BACKEND;
 });
 
 describe("settingsService", () => {
