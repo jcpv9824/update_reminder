@@ -4,11 +4,16 @@ param()
 $ErrorActionPreference = 'Stop'
 
 $migrationPath = Join-Path $PSScriptRoot '..\sql\021_atomic_operational_refresh.sql'
+$repairPath = Join-Path $PSScriptRoot '..\sql\022_refresh_print_source_assignments.sql'
 if (-not (Test-Path -LiteralPath $migrationPath)) {
   throw 'Migration 021 atomic operational refresh is missing.'
 }
+if (-not (Test-Path -LiteralPath $repairPath)) {
+  throw 'Migration 022 print-source refresh integration is missing.'
+}
 
 $sql = Get-Content -Raw -LiteralPath $migrationPath
+$repairSql = Get-Content -Raw -LiteralPath $repairPath
 $requiredPatterns = @(
   "IF DB_NAME() NOT IN (N'PortalSAGWeb',N'PortalSAGWeb-TEST')",
   "DROP CONSTRAINT UQ_file_transfers_blob",
@@ -101,9 +106,21 @@ foreach ($table in $requiredDeletes) {
 }
 
 foreach ($forbidden in @('ALTER ROLE', 'DROP MEMBER', 'REVOKE CONTROL', 'DENY CONTROL')) {
-  if ($sql.IndexOf($forbidden, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+  if ($sql.IndexOf($forbidden, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+      $repairSql.IndexOf($forbidden, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
     throw "Migration 021 contains a forbidden permission downgrade: $forbidden"
   }
 }
 
-Write-Host 'PASS migration 021: per-run Blob ledger, atomic operational replacement, audit preservation, trigger restoration and no permission downgrade.' -ForegroundColor Green
+foreach ($pattern in @(
+  "migration_version='021'",
+  "OBJECT_DEFINITION(OBJECT_ID(N'migration.usp_replace_operational_from_validated_run'))",
+  "EXEC migration.usp_load_operational_final_with_print_sources @run_key;",
+  "operational_final:print_format_source_assignments"
+)) {
+  if (-not $repairSql.Contains($pattern)) {
+    throw "Migration 022 print-source integration contract is missing: $pattern"
+  }
+}
+
+Write-Host 'PASS migrations 021-022: atomic operational replacement, per-run Blob ledger, print-source assignments, audit preservation and no permission downgrade.' -ForegroundColor Green
