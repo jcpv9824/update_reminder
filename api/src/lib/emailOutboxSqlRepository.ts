@@ -4,7 +4,7 @@ import { normalizeEmail } from "./password";
 import { runSqlTransaction } from "./sqlTransaction";
 import { writeSqlAuditLog } from "./auditSqlWriter";
 
-export type EmailOutboxType = "administrative_reminder" | "blocked_task_reminder" | "task_reminder" | "overdue_alert" | "password_notification" | "task_status_notification" | "test_email";
+export type EmailOutboxType = "administrative_reminder" | "blocked_task_reminder" | "task_reminder" | "overdue_alert" | "password_notification" | "task_status_notification" | "test_email" | "masters_report";
 
 export type EnqueueEmailInput = {
   type: EmailOutboxType;
@@ -212,11 +212,14 @@ export async function completeSqlEmailAttempt(
       password_notification: `password_notification_${suffix}`,
       task_status_notification: `task_status_notification_${suffix}`,
       test_email: `test_email_${suffix}`,
+      masters_report: `masters_report_email_${suffix}`,
     };
     const metadata = claimed.type === "password_notification"
       ? { kind: "reset_link", includedPassword: false }
       : claimed.type === "test_email"
         ? { provider: result.ok ? "configured" : "failed" }
+        : claimed.type === "masters_report"
+          ? { recipientsCount: claimed.recipients.length, provider: result.ok ? "configured" : "failed" }
         : claimed.type === "task_status_notification"
           ? { notificationType: claimed.metadata.notificationType ?? "task_status" }
           : claimed.metadata;

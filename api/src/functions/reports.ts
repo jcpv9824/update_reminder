@@ -10,6 +10,10 @@ import { buildMastersReportEmail, parseSemicolonEmails } from "../lib/reportsSer
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseAssignmentRecord, LicenseModuleRecord, UpdateSchedule } from "../types/models";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
+import { getDataBackend } from "../lib/dataBackend";
+import { loadSqlMastersReportData } from "../lib/mastersReportSqlData";
+import { enqueueSqlEmail } from "../lib/emailOutboxSqlRepository";
+import { randomUUID } from "node:crypto";
 
 async function getAllowedUser(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -59,27 +63,49 @@ app.http("mastersReportSendEmail", {
       const limited = await enforceRequestRateLimit(req, "email_masters_report", user.id, RATE_LIMIT_POLICIES.mastersReport);
       if (limited) return limited;
 
-      const [{ resources: clients }, { resources: domains }, { resources: databases }, { resources: schedules }, licenseModules, licenseAssignments] = await Promise.all([
-        getContainer("clients").items.query<ClientRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll(),
-        getContainer("domains").items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll(),
-        getContainer("databases").items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll(),
-        getContainer("updateSchedules").items.query<UpdateSchedule>({ query: "SELECT * FROM c WHERE c.active = true" }).fetchAll(),
-        queryOptionalContainer<LicenseModuleRecord>("licenseModules", "SELECT * FROM c"),
-        queryOptionalContainer<LicenseAssignmentRecord>("licenseAssignments", "SELECT * FROM c"),
-      ]);
+      const sqlBackend = getDataBackend() === "sql";
+      const data = sqlBackend
+        ? await loadSqlMastersReportData(new Date().toISOString().slice(0, 10))
+        : await (async () => {
+            const [{ resources: clients }, { resources: domains }, { resources: databases }, { resources: schedules }, licenseModules, licenseAssignments] = await Promise.all([
+              getContainer("clients").items.query<ClientRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll(),
+              getContainer("domains").items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll(),
+              getContainer("databases").items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll(),
+              getContainer("updateSchedules").items.query<UpdateSchedule>({ query: "SELECT * FROM c WHERE c.active = true" }).fetchAll(),
+              queryOptionalContainer<LicenseModuleRecord>("licenseModules", "SELECT * FROM c"),
+              queryOptionalContainer<LicenseAssignmentRecord>("licenseAssignments", "SELECT * FROM c"),
+            ]);
+            return { clients, domains, databases, schedules, licenseModules, licenseAssignments };
+          })();
 
       const settings = await (await import("../lib/settingsService")).loadEmailAlertsSettings();
       const email = buildMastersReportEmail({
-        clients,
-        domains,
-        databases,
-        schedules,
-        licenseModules,
-        licenseAssignments,
+        ...data,
         generatedAt: new Date(),
         frontendBaseUrl: settings.frontendBaseUrl || process.env.FRONTEND_BASE_URL,
         timezone: process.env.APP_TIMEZONE || "America/Bogota",
       });
+      if (sqlBackend) {
+        const queued = await enqueueSqlEmail({
+          type: "masters_report",
+          idempotencyKey: `masters-report:${user.id}:${randomUUID()}`,
+          entityType: "report",
+          entityId: "masters",
+          subject: email.subject,
+          html: email.html,
+          text: email.text,
+          recipients: recipients.map((emailAddress) => ({ email: emailAddress })),
+          metadata: { recipientsCount: recipients.length },
+          createdBy: user.id,
+        });
+        return ok({
+          ok: queued.created,
+          sent: false,
+          queued: queued.created,
+          recipientsCount: recipients.length,
+          message: queued.created ? "Reporte puesto en cola correctamente." : "El reporte ya estaba en cola.",
+        });
+      }
       const result = await sendEmail({ to: recipients, ...email });
 
       await writeAuditLog({

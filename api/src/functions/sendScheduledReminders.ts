@@ -2,7 +2,7 @@ import { app, InvocationContext, Timer } from "@azure/functions";
 import { getContainer } from "../lib/cosmos";
 import { writeAuditLog } from "../lib/audit";
 import { buildDatabaseReminderEmail, buildDomainReminderEmail, sendEmail } from "../lib/emailService";
-import { decidirRecordatorios, type ReminderDecision } from "../lib/reminderLogic";
+import { decidirRecordatorios, SCHEDULED_REMINDERS_TIMER_SCHEDULE, type ReminderDecision } from "../lib/reminderLogic";
 import { loadEmailAlertsSettings } from "../lib/settingsService";
 import { rootScheduleId } from "../lib/taskGenerator";
 import type { RemindersConfig, UpdateSchedule, UpdateTask, UserRecord, SentReminder } from "../types/models";
@@ -287,7 +287,7 @@ export async function ejecutarRecordatorios(log: (m: string) => void): Promise<{
 }
 
 app.timer("sendScheduledReminders", {
-  schedule: "0 */15 * * * *",
+  schedule: SCHEDULED_REMINDERS_TIMER_SCHEDULE,
   handler: async (_t: Timer, ctx: InvocationContext) => {
     try {
       await ejecutarRecordatorios((m) => ctx.log(m));

@@ -21,6 +21,14 @@ export function parseSemicolonEmails(value: string): string[] {
   return emails;
 }
 
+export type MastersReportDatabaseRecord = Pick<
+  DatabaseRecord,
+  "id" | "clientId" | "domainId" | "companyName" | "environment" | "status" | "createdAt" | "lastUpdatedAt"
+> & {
+  dbAccess: Pick<DatabaseRecord["dbAccess"], "initialCatalog">;
+  deletedAt?: string | null;
+};
+
 function describeSchedule(schedule?: UpdateSchedule): string {
   if (!schedule || !schedule.active) return "Sin frecuencia activa";
   if (schedule.frequencyType === "once") return `Única (${schedule.startDate})`;
@@ -57,7 +65,7 @@ function assignmentBelongsToClient(args: {
 export function buildMastersReportEmail(args: {
   clients: ClientRecord[];
   domains: DomainRecord[];
-  databases: DatabaseRecord[];
+  databases: MastersReportDatabaseRecord[];
   schedules: UpdateSchedule[];
   licenseModules?: LicenseModuleRecord[];
   licenseAssignments?: LicenseAssignmentRecord[];
@@ -67,7 +75,7 @@ export function buildMastersReportEmail(args: {
 }): { subject: string; html: string; text: string } {
   const includeAdvancedAssignments = process.env.ENABLE_ADVANCED_LICENSE_ASSIGNMENTS === "true";
   const domainsByClient = new Map<string, DomainRecord[]>();
-  const dbsByDomain = new Map<string, DatabaseRecord[]>();
+  const dbsByDomain = new Map<string, MastersReportDatabaseRecord[]>();
   const activeDomainSchedule = new Map<string, UpdateSchedule>();
 
   for (const domain of args.domains) {

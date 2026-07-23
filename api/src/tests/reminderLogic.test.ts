@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decidirRecordatorios, valoresRecordatoriosPorDefecto } from "../lib/reminderLogic";
+import { decidirRecordatorios, SCHEDULED_REMINDERS_TIMER_SCHEDULE, valoresRecordatoriosPorDefecto } from "../lib/reminderLogic";
 import type { UpdateSchedule, UpdateTask } from "../types/models";
 
 const sch: UpdateSchedule = {
@@ -89,6 +89,10 @@ describe("decidirRecordatorios", () => {
 });
 
 describe("valoresRecordatoriosPorDefecto", () => {
+  it("revisa cada minuto para respetar la hora HH:mm configurada", () => {
+    expect(SCHEDULED_REMINDERS_TIMER_SCHEDULE).toBe("0 * * * * *");
+  });
+
   it("usa rol por defecto, recordatorios activos y dias 1,0", () => {
     expect(valoresRecordatoriosPorDefecto()).toEqual({
       remindersEnabled: true,

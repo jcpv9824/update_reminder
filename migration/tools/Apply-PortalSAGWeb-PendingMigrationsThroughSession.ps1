@@ -59,7 +59,8 @@ $migrations=@(
   @{version='019';name='019_expand_notification_outbox_types.sql'},
   @{version='020';name='020_allow_outbox_attempt_completion.sql'},
   @{version='021';name='021_atomic_operational_refresh.sql'},
-  @{version='022';name='022_refresh_print_source_assignments.sql'}
+  @{version='022';name='022_refresh_print_source_assignments.sql'},
+  @{version='023';name='023_enable_masters_report_outbox.sql'}
 )
 
 foreach($migration in $migrations){
@@ -108,7 +109,7 @@ COMMIT TRANSACTION;
 
 $verificationSql=@'
 SELECT
-  (SELECT COUNT(*) FROM migration.schema_migrations WHERE migration_version IN ('017','018','019','020','021','022') AND succeeded=1) AS applied_count,
+  (SELECT COUNT(*) FROM migration.schema_migrations WHERE migration_version IN ('017','018','019','020','021','022','023') AND succeeded=1) AS applied_count,
   (SELECT COUNT_BIG(*) FROM core.domains WHERE RIGHT(domain_name_normalized,1)=N'/') AS trailing_domain_identities,
   COL_LENGTH(N'licensing.license_modules',N'description') AS license_description_bytes,
   (SELECT COUNT(*) FROM sys.check_constraints
@@ -116,6 +117,7 @@ SELECT
      AND name=N'CK_email_notifications_type'
      AND definition LIKE N'%task_status_notification%'
      AND definition LIKE N'%test_email%'
+     AND definition LIKE N'%masters_report%'
      AND is_disabled=0 AND is_not_trusted=0) AS outbox_constraint_ready,
   (SELECT COUNT(*) FROM sys.foreign_keys WHERE is_disabled=1 OR is_not_trusted=1) AS untrusted_or_disabled_fks,
   (SELECT COUNT(*) FROM sys.check_constraints WHERE is_disabled=1 OR is_not_trusted=1) AS untrusted_or_disabled_checks,
@@ -133,7 +135,7 @@ SELECT
 '@
 $verification=Invoke-SessionSql -Sql $verificationSql -Mode read -TimeoutSeconds 120 -MaxRows 10
 $row=$verification.resultSets[0].rows[0]
-if($row.applied_count -ne 6 -or $row.trailing_domain_identities -ne 0 -or
+if($row.applied_count -ne 7 -or $row.trailing_domain_identities -ne 0 -or
    $row.license_description_bytes -ne 4000 -or $row.outbox_constraint_ready -ne 1 -or
    $row.untrusted_or_disabled_fks -ne 0 -or $row.untrusted_or_disabled_checks -ne 0 -or
    $row.attempt_completion_trigger_ready -ne 1 -or $row.per_run_blob_index_ready -ne 1 -or
@@ -141,4 +143,4 @@ if($row.applied_count -ne 6 -or $row.trailing_domain_identities -ne 0 -or
   throw 'Pending-migration post-verification failed.'
 }
 
-Write-Host "$expectedDatabase migrations 017-022 are applied and verified." -ForegroundColor Green
+Write-Host "$expectedDatabase migrations 017-023 are applied and verified." -ForegroundColor Green

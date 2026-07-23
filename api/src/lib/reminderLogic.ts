@@ -2,6 +2,10 @@
 // del timer trigger. Aislada del IO para poder probarse fácilmente.
 import type { RemindersConfig, UpdateTask, UpdateSchedule } from "../types/models";
 
+// Se ejecuta cada minuto para respetar la hora HH:mm elegida por el usuario.
+// La deduplicación del outbox impide dobles envíos si una ejecución se repite.
+export const SCHEDULED_REMINDERS_TIMER_SCHEDULE = "0 * * * * *";
+
 export type ReminderDecision = {
   task: UpdateTask;
   daysBefore: number;
