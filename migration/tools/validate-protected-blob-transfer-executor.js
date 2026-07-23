@@ -1,4 +1,4 @@
-/* Static and value-free contract for the protected non-production Blob executor. */
+/* Static and value-free contract for the protected Blob executor. */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -7,13 +7,23 @@ const { buildTransferPlan } = require("./prepare-blob-transfer-package");
 const root = path.resolve(__dirname, "..", "..");
 const scriptPath = path.join(root, "migration", "tools", "Transfer-PortalSAGWeb-Blobs.ps1");
 const cmdPath = path.join(root, "migration", "tools", "Run-Blob-Transfer-NonProduction.cmd");
+const productionCmdPath = path.join(root, "migration", "tools", "Run-Production-CurrentSnapshot-Blob-Verification.cmd");
 assert.ok(fs.existsSync(scriptPath), "Protected non-production Blob executor is missing.");
 assert.ok(fs.existsSync(cmdPath), "Double-click non-production Blob launcher is missing.");
+assert.ok(fs.existsSync(productionCmdPath), "Double-click production Blob-verification launcher is missing.");
 
 const script = fs.readFileSync(scriptPath, "utf8");
 for (const required of [
-  "[ValidateSet('nonproduction')]",
+  "[ValidateSet('nonproduction', 'production-stage')]",
   "TRANSFER BLOBS NONPRODUCTION",
+  "VERIFY CURRENT BLOBS PRODUCTION",
+  "TargetEnvironment -eq 'production-stage'",
+  "data14.sagerp.co,54103",
+  "IS_ROLEMEMBER(N'db_owner')",
+  "HAS_PERMS_BY_NAME(DB_NAME(),N'DATABASE',N'CONTROL')",
+  "EXECUTE AS USER=N'dbo';",
+  "REVERT;",
+  "permission memberships and grants were preserved",
   "$securePassword.MakeReadOnly()",
   "TrustServerCertificate'] = $false",
   "--auth-mode", "login",

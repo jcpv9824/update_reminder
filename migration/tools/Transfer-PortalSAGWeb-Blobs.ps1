@@ -12,7 +12,7 @@ param(
   [string]$ResourceGroupName,
   [ValidatePattern('^(?!.*--)[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$')]
   [string]$BlobContainerName,
-  [ValidateSet('nonproduction')]
+  [ValidateSet('nonproduction', 'production-stage')]
   [string]$TargetEnvironment = 'nonproduction'
 )
 
@@ -149,14 +149,22 @@ function Mark-TransferVerified {
   finally { $command.Dispose() }
 }
 
-if ($DatabaseName -ne 'PortalSAGWeb') {
-  throw 'The protected transfer requires a disposable non-production database named PortalSAGWeb.'
-}
 if ([string]::IsNullOrWhiteSpace($ServerName)) {
-  $ServerName = Read-Host 'NON-PRODUCTION SQL Server / instance (server,port)'
+  $ServerName = Read-Host 'SQL Server / instance (server,port)'
 }
-if ($ServerName.Trim().Equals('data14.sagerp.co,54103',[StringComparison]::OrdinalIgnoreCase)) {
-  throw 'REFUSED: the designated production PortalSAGWeb database cannot be used by the non-production Blob transfer tool.'
+$productionServer = 'data14.sagerp.co,54103'
+$isProductionTarget = $DatabaseName -eq 'PortalSAGWeb' -and
+  $ServerName.Trim().Equals($productionServer,[StringComparison]::OrdinalIgnoreCase)
+if ($TargetEnvironment -eq 'production-stage') {
+  if (-not $isProductionTarget) {
+    throw 'REFUSED: production-stage Blob verification accepts only the designated production PortalSAGWeb endpoint.'
+  }
+}
+elseif ($isProductionTarget) {
+  throw 'REFUSED: the production PortalSAGWeb endpoint requires explicit production-stage Blob verification mode.'
+}
+if ($DatabaseName -ne 'PortalSAGWeb') {
+  throw 'The protected Blob transfer requires the certified PortalSAGWeb schema.'
 }
 if ($RunKey -le 0) {
   $enteredRunKey = Read-Host 'Validated raw/stage migration run key'
@@ -186,6 +194,15 @@ if ($BlobContainerName -notmatch '^(?!.*--)[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$') {
   throw 'The private Blob container name is invalid.'
 }
 $snapshotPath = (Resolve-Path -LiteralPath $SnapshotDirectory).Path
+if ($TargetEnvironment -eq 'production-stage') {
+  if ((Split-Path -Leaf $snapshotPath) -cne 'cosmos-export-prod-20260722-155753' -or
+      $RunKey -ne 2 -or
+      $StorageAccountName -cne 'sagwebiastorage' -or
+      $ResourceGroupName -cne 'SAGWeb-IA' -or
+      $BlobContainerName -cne 'portal-sag-content') {
+    throw 'REFUSED: production Blob verification requires the reviewed run-2 snapshot and protected Blob destination.'
+  }
+}
 $prepareScript = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot 'prepare-blob-transfer-package.js')).Path
 $packageDirectory = Join-Path (Join-Path $PSScriptRoot '..\work') ("blob-transfer-{0}" -f (Split-Path $snapshotPath -Leaf))
 
@@ -270,16 +287,27 @@ if ($null -ne $container.properties.publicAccess -and -not [string]::IsNullOrWhi
   throw 'The Blob container must not allow public access.'
 }
 
-Write-Host 'Portal SAG Web - NON-PRODUCTION private Blob transfer' -ForegroundColor Cyan
+if ($TargetEnvironment -eq 'production-stage') {
+  Write-Host 'Portal SAG Web - PRODUCTION current-snapshot Blob verification' -ForegroundColor Cyan
+}
+else {
+  Write-Host 'Portal SAG Web - NON-PRODUCTION private Blob transfer' -ForegroundColor Cyan
+}
 Write-Host 'Azure access uses the existing interactive identity session.'
 Write-Host 'SQL authentication is requested in memory and private files are never printed.'
 Write-Host "Files: $expectedFiles"
 Write-Host "Bytes: $expectedBytes"
 Write-Host
 if (-not $Confirmed) {
-  $confirmation = Read-Host 'Type TRANSFER BLOBS NONPRODUCTION to continue'
-  if ($confirmation -cne 'TRANSFER BLOBS NONPRODUCTION') {
-    throw 'Blob transfer cancelled: exact non-production confirmation was not provided.'
+  $expectedConfirmation = if ($TargetEnvironment -eq 'production-stage') {
+    'VERIFY CURRENT BLOBS PRODUCTION'
+  }
+  else {
+    'TRANSFER BLOBS NONPRODUCTION'
+  }
+  $confirmation = Read-Host "Type $expectedConfirmation to continue"
+  if ($confirmation -cne $expectedConfirmation) {
+    throw 'Blob transfer cancelled: the exact verification confirmation was not provided.'
   }
 }
 
@@ -311,8 +339,38 @@ $connection.ConnectionString = $builder.ConnectionString
 $connection.Credential = $sqlCredential
 
 $verificationDirectory = Join-Path $packagePath '.remote-verification'
+$sessionExecutingAsDbo = $false
 try {
   $connection.Open()
+  if ($TargetEnvironment -eq 'production-stage') {
+    $permission = $connection.CreateCommand()
+    try {
+      $permission.CommandText = @'
+SELECT
+  ISNULL(IS_ROLEMEMBER(N'db_owner'),0) AS is_db_owner,
+  ISNULL(HAS_PERMS_BY_NAME(DB_NAME(),N'DATABASE',N'CONTROL'),0) AS has_database_control;
+'@
+      $reader = $permission.ExecuteReader()
+      if (-not $reader.Read()) { throw 'Unable to verify production Blob-ledger capability.' }
+      $isDbOwner = [Convert]::ToInt32($reader.GetValue(0))
+      $hasDatabaseControl = [Convert]::ToInt32($reader.GetValue(1))
+      $reader.Close()
+      if ($isDbOwner -ne 1 -or $hasDatabaseControl -ne 1) {
+        throw 'Production Blob verification requires both db_owner and database CONTROL.'
+      }
+    }
+    finally { $permission.Dispose() }
+
+    $executeAs = $connection.CreateCommand()
+    try {
+      $executeAs.CommandText = "EXECUTE AS USER=N'dbo';"
+      $null = $executeAs.ExecuteNonQuery()
+      $sessionExecutingAsDbo = $true
+    }
+    finally { $executeAs.Dispose() }
+    Write-Host 'Authorized Blob-ledger context opened; existing permission memberships and grants were preserved.' -ForegroundColor Yellow
+  }
+
   $preflight = $connection.CreateCommand()
   try {
     $preflight.CommandText = @'
@@ -332,6 +390,16 @@ SELECT
     SELECT 1 FROM migration.schema_migrations
     WHERE migration_version='016' AND script_name=N'016_public_download_video_assets_and_source_cleanup.sql' AND succeeded=1
   ) THEN 1 ELSE 0 END AS has_016,
+  CASE WHEN EXISTS
+  (
+    SELECT 1 FROM migration.schema_migrations
+    WHERE migration_version='021' AND script_name=N'021_atomic_operational_refresh.sql' AND succeeded=1
+  ) AND EXISTS
+  (
+    SELECT 1 FROM sys.indexes
+    WHERE object_id=OBJECT_ID(N'migration.file_transfers')
+      AND name=N'UX_file_transfers_run_blob' AND is_unique=1
+  ) THEN 1 ELSE 0 END AS has_021,
   CASE WHEN EXISTS
   (
     SELECT 1 FROM migration.operational_load_phases
@@ -356,10 +424,11 @@ FROM sys.databases AS d WHERE d.database_id=DB_ID();
     $hasFileControl = [Convert]::ToInt32($reader.GetValue(3))
     $has011 = [Convert]::ToInt32($reader.GetValue(4))
     $has016 = [Convert]::ToInt32($reader.GetValue(5))
-    $workflowCompleted = [Convert]::ToInt32($reader.GetValue(6))
-    $finalCompleted = [Convert]::ToInt32($reader.GetValue(7))
-    $sqlExpectedFiles = [Convert]::ToInt64($reader.GetValue(8))
-    $runStatus = if ($reader.IsDBNull(9)) { $null } else { $reader.GetString(9) }
+    $has021 = [Convert]::ToInt32($reader.GetValue(6))
+    $workflowCompleted = [Convert]::ToInt32($reader.GetValue(7))
+    $finalCompleted = [Convert]::ToInt32($reader.GetValue(8))
+    $sqlExpectedFiles = [Convert]::ToInt64($reader.GetValue(9))
+    $runStatus = if ($reader.IsDBNull(10)) { $null } else { $reader.GetString(10) }
     $reader.Close()
   }
   finally { $preflight.Dispose() }
@@ -368,7 +437,12 @@ FROM sys.databases AS d WHERE d.database_id=DB_ID();
     throw 'The SQL target does not match the certified SQL Server 2019 contract.'
   }
   if ($hasFileControl -ne 1 -or $has011 -ne 1 -or $has016 -ne 1) { throw 'Required migrations 009, 011 and 016 are not installed.' }
-  if ($workflowCompleted -ne 1) { throw 'The scheduling/workflow phase is not completed for this run.' }
+  if ($TargetEnvironment -eq 'production-stage' -and $has021 -ne 1) {
+    throw 'Production Blob verification requires migration 021.'
+  }
+  if ($TargetEnvironment -eq 'nonproduction' -and $workflowCompleted -ne 1) {
+    throw 'The scheduling/workflow phase is not completed for this run.'
+  }
   if ($sqlExpectedFiles -ne $expectedFiles) { throw 'SQL staging and the restricted package have different file counts.' }
   if ($finalCompleted -ne 1 -and $runStatus -notin @('validated','loading')) {
     throw 'The migration run is not eligible for file transfer.'
@@ -472,7 +546,12 @@ WHERE run_key=@run_key AND source_container IN (N'formatosImpresion',N'publicDow
   }
 
   Write-Host
-  Write-Host 'NON-PRODUCTION private Blob transfer verified.' -ForegroundColor Green
+  if ($TargetEnvironment -eq 'production-stage') {
+    Write-Host 'PRODUCTION current-snapshot Blob verification completed.' -ForegroundColor Green
+  }
+  else {
+    Write-Host 'NON-PRODUCTION private Blob transfer verified.' -ForegroundColor Green
+  }
   Write-Host "Files verified: $readyCount"
   Write-Host "Bytes verified: $expectedBytes"
   Write-Host 'Phase 011 may now pass its verified-file preflight for this migration run.' -ForegroundColor Cyan
@@ -481,6 +560,17 @@ finally {
   if (Test-Path -LiteralPath $verificationDirectory) {
     $remaining = @(Get-ChildItem -LiteralPath $verificationDirectory -Force)
     if ($remaining.Count -eq 0) { Remove-Item -LiteralPath $verificationDirectory -Force }
+  }
+  if ($sessionExecutingAsDbo -and $connection.State -eq [Data.ConnectionState]::Open) {
+    try {
+      $revert = $connection.CreateCommand()
+      $revert.CommandText = 'REVERT;'
+      $null = $revert.ExecuteNonQuery()
+      $revert.Dispose()
+    }
+    catch {
+      # Closing the connection also releases the impersonation context.
+    }
   }
   if ($connection.State -ne [Data.ConnectionState]::Closed) { $connection.Close() }
   $connection.Dispose()

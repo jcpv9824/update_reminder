@@ -57,7 +57,8 @@ $migrations=@(
   @{version='017';name='017_normalize_domain_url_identity.sql'},
   @{version='018';name='018_expand_license_module_description.sql'},
   @{version='019';name='019_expand_notification_outbox_types.sql'},
-  @{version='020';name='020_allow_outbox_attempt_completion.sql'}
+  @{version='020';name='020_allow_outbox_attempt_completion.sql'},
+  @{version='021';name='021_atomic_operational_refresh.sql'}
 )
 
 foreach($migration in $migrations){
@@ -106,7 +107,7 @@ COMMIT TRANSACTION;
 
 $verificationSql=@'
 SELECT
-  (SELECT COUNT(*) FROM migration.schema_migrations WHERE migration_version IN ('017','018','019','020') AND succeeded=1) AS applied_count,
+  (SELECT COUNT(*) FROM migration.schema_migrations WHERE migration_version IN ('017','018','019','020','021') AND succeeded=1) AS applied_count,
   (SELECT COUNT_BIG(*) FROM core.domains WHERE RIGHT(domain_name_normalized,1)=N'/') AS trailing_domain_identities,
   COL_LENGTH(N'licensing.license_modules',N'description') AS license_description_bytes,
   (SELECT COUNT(*) FROM sys.check_constraints
@@ -119,15 +120,21 @@ SELECT
   (SELECT COUNT(*) FROM sys.check_constraints WHERE is_disabled=1 OR is_not_trusted=1) AS untrusted_or_disabled_checks,
   (SELECT COUNT(*) FROM sys.triggers
    WHERE object_id=OBJECT_ID(N'notifications.TR_notification_attempts_append_only')
-     AND OBJECT_DEFINITION(object_id) LIKE N'%processing-to-terminal completion%') AS attempt_completion_trigger_ready;
+     AND OBJECT_DEFINITION(object_id) LIKE N'%processing-to-terminal completion%') AS attempt_completion_trigger_ready,
+  (SELECT COUNT(*) FROM sys.indexes
+   WHERE object_id=OBJECT_ID(N'migration.file_transfers')
+     AND name=N'UX_file_transfers_run_blob' AND is_unique=1) AS per_run_blob_index_ready,
+  CASE WHEN OBJECT_ID(N'migration.usp_replace_operational_from_validated_run',N'P') IS NULL
+    THEN 0 ELSE 1 END AS atomic_refresh_ready;
 '@
 $verification=Invoke-SessionSql -Sql $verificationSql -Mode read -TimeoutSeconds 120 -MaxRows 10
 $row=$verification.resultSets[0].rows[0]
-if($row.applied_count -ne 4 -or $row.trailing_domain_identities -ne 0 -or
+if($row.applied_count -ne 5 -or $row.trailing_domain_identities -ne 0 -or
    $row.license_description_bytes -ne 4000 -or $row.outbox_constraint_ready -ne 1 -or
    $row.untrusted_or_disabled_fks -ne 0 -or $row.untrusted_or_disabled_checks -ne 0 -or
-   $row.attempt_completion_trigger_ready -ne 1){
+   $row.attempt_completion_trigger_ready -ne 1 -or $row.per_run_blob_index_ready -ne 1 -or
+   $row.atomic_refresh_ready -ne 1){
   throw 'Pending-migration post-verification failed.'
 }
 
-Write-Host "$expectedDatabase migrations 017-020 are applied and verified." -ForegroundColor Green
+Write-Host "$expectedDatabase migrations 017-021 are applied and verified." -ForegroundColor Green

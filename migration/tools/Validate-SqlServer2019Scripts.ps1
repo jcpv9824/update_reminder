@@ -28,7 +28,8 @@ $expected = @(
   '017_normalize_domain_url_identity.sql',
   '018_expand_license_module_description.sql',
   '019_expand_notification_outbox_types.sql',
-  '020_allow_outbox_attempt_completion.sql'
+  '020_allow_outbox_attempt_completion.sql',
+  '021_atomic_operational_refresh.sql'
 )
 
 $resolvedSqlDirectory = (Resolve-Path -LiteralPath $SqlDirectory).Path
