@@ -2,7 +2,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
-const sourceRoot = path.join(root, "src");
+const scanRoots = [
+  path.join(root, "src"),
+  path.join(root, "dist", "src"),
+].filter((directory) => fs.existsSync(directory));
 const forbidden = [
   { label: "Azure Cosmos SDK import", pattern: /@azure\/cosmos/i },
   { label: "Cosmos runtime setting", pattern: /\bCOSMOS_(?:CONNECTION_STRING|DATABASE_NAME)\b/ },
@@ -22,11 +25,13 @@ function sourceFiles(directory) {
 }
 
 const failures = [];
-for (const file of sourceFiles(sourceRoot)) {
-  const content = fs.readFileSync(file, "utf8");
-  for (const rule of forbidden) {
-    if (rule.pattern.test(content)) {
-      failures.push(`${path.relative(root, file)}: ${rule.label}`);
+for (const scanRoot of scanRoots) {
+  for (const file of sourceFiles(scanRoot)) {
+    const content = fs.readFileSync(file, "utf8");
+    for (const rule of forbidden) {
+      if (rule.pattern.test(content)) {
+        failures.push(`${path.relative(root, file)}: ${rule.label}`);
+      }
     }
   }
 }

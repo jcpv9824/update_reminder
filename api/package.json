@@ -10,7 +10,7 @@
     "dist/**/*"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "npm run clean && tsc",
     "watch": "tsc -w",
     "clean": "rimraf dist",
     "prestart": "npm run build",
