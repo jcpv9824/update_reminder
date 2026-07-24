@@ -23,7 +23,7 @@ This document defines the engineering practices Codex should follow when working
 - Business logic in `api/src/lib`.
 - SQL Server 2019 as the production operational database.
 - Cosmos DB has been removed from the runtime and the Azure account was deleted on 2026-07-24; restricted historical snapshots remain retention evidence only.
-- Provider-managed S3/MinIO object storage for public-download and print-format file payloads.
+- Selectable private object storage: provider-managed S3/MinIO or Azure Blob through managed identity. The runtime switch selects new writes while SQL locators keep historical reads provider-aware.
 - Azure Key Vault via `@azure/keyvault-secrets` and `@azure/identity`.
 - Email through SendGrid/Nodemailer.
 - Authentication and security with JWT, bcryptjs, rate limiting, sessions, and zod validation.
@@ -33,7 +33,7 @@ This document defines the engineering practices Codex should follow when working
 
 - Azure Static Web Apps for the frontend.
 - Azure Functions for the API.
-- SQL Server and provider-managed S3/MinIO for operational persistence; Key Vault for application secrets.
+- SQL Server plus selectable private S3/MinIO or Azure Blob storage for operational persistence; Key Vault for application secrets.
 - Cosmos retirement requires a SQL-only deployment, zero container activity, a final encrypted snapshot and a proven SQL restore.
 - PowerShell deployment and hardening scripts.
 - Node.js requirement: `>=20.19.0`.

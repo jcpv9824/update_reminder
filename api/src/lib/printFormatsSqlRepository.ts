@@ -14,7 +14,8 @@ type FormatRow = {
   status: "active" | "inactive" | "deleted"; created_at: Date; created_by: string;
   updated_at: Date; updated_by: string; deleted_at: Date | null; deleted_by: string | null;
   source_type_id: string; source_type_name: string; display_order: number; is_primary: boolean;
-  storage_provider: "s3" | "azure_blob" | null; storage_bucket: string | null;
+  storage_provider: "s3" | "azure_blob" | null;
+  storage_container: string | null; blob_name: string | null; storage_bucket: string | null;
   object_key: string | null; object_etag: string | null;
   original_name: string | null; mime_type: string | null; byte_count: number | null;
   content_sha256: Buffer | null;
@@ -50,9 +51,13 @@ export function mapSqlPrintFormatRows(rows: FormatRow[]): FormatoImpresionRecord
     licenciaModuloNombre: first.module_name ?? undefined,
     licenciaModuloCodigo: first.module_code ?? undefined,
     pdfNombreOriginal: first.original_name, pdfMimeType: "application/pdf",
-    pdfBytes: Number(first.byte_count), pdfStorageProvider: first.storage_provider === "s3" ? "s3" : undefined,
-    pdfStorageBucket: first.storage_bucket ?? undefined, pdfObjectKey: first.object_key ?? undefined,
-    pdfObjectEtag: first.object_etag ?? undefined,
+    pdfBytes: Number(first.byte_count), pdfStorageProvider: first.storage_provider ?? undefined,
+    pdfStorageContainer: first.storage_provider === "azure_blob" ? first.storage_container ?? undefined : undefined,
+    pdfBlobName: first.storage_provider === "azure_blob" ? first.blob_name ?? undefined : undefined,
+    pdfBlobEtag: first.storage_provider === "azure_blob" ? first.object_etag ?? undefined : undefined,
+    pdfStorageBucket: first.storage_provider === "s3" ? first.storage_bucket ?? undefined : undefined,
+    pdfObjectKey: first.storage_provider === "s3" ? first.object_key ?? undefined : undefined,
+    pdfObjectEtag: first.storage_provider === "s3" ? first.object_etag ?? undefined : undefined,
     pdfSha256: first.content_sha256?.toString("hex"),
     activo: Boolean(first.active), status: first.status,
     createdAt: iso(first.created_at)!, createdBy: first.created_by,
@@ -76,7 +81,8 @@ export async function readSqlPrintFormats(): Promise<{
         f.active,f.status,f.created_at,f.created_by,f.updated_at,f.updated_by,f.deleted_at,f.deleted_by,
         s.source_id AS source_type_id,s.name AS source_type_name,a.display_order,
         CONVERT(bit,CASE WHEN f.print_format_source_key=s.print_format_source_key THEN 1 ELSE 0 END) AS is_primary,
-        file_record.storage_provider,file_record.storage_bucket,file_record.object_key,file_record.object_etag,
+        file_record.storage_provider,file_record.storage_container,file_record.blob_name,
+        file_record.storage_bucket,file_record.object_key,file_record.object_etag,
         file_record.original_name,file_record.mime_type,file_record.byte_count,file_record.content_sha256
       FROM content.print_formats AS f
       JOIN content.print_format_source_assignments AS a ON a.print_format_key=f.print_format_key

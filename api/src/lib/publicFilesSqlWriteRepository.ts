@@ -1,6 +1,7 @@
 import sql from "mssql";
 import type { PublicFileRecord } from "../types/models";
 import { writeSqlAuditLog } from "./auditSqlWriter";
+import { ensureSqlContentFile } from "./contentFileSqlWriter";
 import { runSqlTransaction } from "./sqlTransaction";
 
 type Actor = { id: string; email: string };
@@ -16,34 +17,19 @@ function uniqueError(error: unknown): boolean {
 }
 
 async function ensureFile(transaction: sql.Transaction, record: PublicFileRecord, actorId: string): Promise<number> {
-  if (record.archivoStorageProvider !== "s3" || !record.archivoStorageBucket || !record.archivoObjectKey || !record.archivoSha256) {
-    throw Object.assign(new Error("SQL requiere una ubicación privada de archivo verificada."), { status: 503 });
-  }
-  const sha = Buffer.from(record.archivoSha256, "hex");
-  if (sha.length !== 32) throw Object.assign(new Error("La huella SHA-256 del archivo no es válida."), { status: 400 });
-  const request = new sql.Request(transaction);
-  request.input("bucket", sql.NVarChar(255), record.archivoStorageBucket);
-  request.input("objectKey", sql.NVarChar(1024), record.archivoObjectKey);
-  request.input("objectEtag", sql.NVarChar(200), record.archivoObjectEtag ?? null);
-  request.input("originalName", sql.NVarChar(260), record.archivoNombreOriginal);
-  request.input("mimeType", sql.NVarChar(160), record.archivoMimeType);
-  request.input("byteCount", sql.BigInt, record.archivoBytes);
-  request.input("sha", sql.VarBinary(32), sha);
-  request.input("createdBy", sql.NVarChar(150), actorId);
-  const result = await request.query<{ file_key: number }>(`
-    DECLARE @fileKey BIGINT=(SELECT file_key FROM content.files WITH (UPDLOCK,HOLDLOCK)
-      WHERE storage_provider='s3' AND storage_bucket=@bucket AND object_key=@objectKey);
-    IF @fileKey IS NULL
-    BEGIN
-      INSERT content.files(storage_provider,storage_bucket,object_key,object_etag,original_name,mime_type,byte_count,content_sha256,created_by)
-      VALUES('s3',@bucket,@objectKey,@objectEtag,@originalName,@mimeType,@byteCount,@sha,@createdBy);
-      SET @fileKey=SCOPE_IDENTITY();
-    END
-    ELSE IF EXISTS (SELECT 1 FROM content.files WHERE file_key=@fileKey AND (content_sha256<>@sha OR byte_count<>@byteCount))
-      THROW 51072,N'El objeto existente no coincide con el archivo verificado.',1;
-    SELECT @fileKey AS file_key;
-  `);
-  return result.recordset[0].file_key;
+  return ensureSqlContentFile(transaction, {
+    storageProvider: record.archivoStorageProvider,
+    storageBucket: record.archivoStorageBucket,
+    storageObjectKey: record.archivoObjectKey,
+    storageObjectEtag: record.archivoObjectEtag,
+    storageContainer: record.archivoStorageContainer,
+    storageBlobName: record.archivoBlobName,
+    storageBlobEtag: record.archivoBlobEtag,
+    originalName: record.archivoNombreOriginal,
+    mimeType: record.archivoMimeType,
+    byteCount: record.archivoBytes,
+    sha256: record.archivoSha256,
+  }, actorId);
 }
 
 export async function createSqlPublicFile(record: PublicFileRecord, actor: Actor): Promise<PublicFileRecord> {

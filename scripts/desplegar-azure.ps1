@@ -78,6 +78,7 @@ az functionapp config appsettings set --name $functionApp --resource-group $Reso
   "SQL_USERNAME=$SqlUsername" `
   "SQL_PASSWORD=@Microsoft.KeyVault(SecretUri=$sqlSecretUri)" `
   "KEY_VAULT_URL=https://$keyVaultName.vault.azure.net/" `
+  "OBJECT_STORAGE_PROVIDER=s3" `
   "OBJECT_STORAGE_ENDPOINT=$ObjectStorageEndpoint" `
   "OBJECT_STORAGE_REGION=$ObjectStorageRegion" `
   "OBJECT_STORAGE_BUCKET=$ObjectStorageBucket" `

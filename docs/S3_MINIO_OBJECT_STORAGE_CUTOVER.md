@@ -1,5 +1,7 @@
 # Cutover de archivos a S3/MinIO
 
+> Este runbook cubre una transferencia física hacia S3/MinIO. El contrato runtime vigente mantiene también Azure Blob y selecciona nuevas escrituras con `OBJECT_STORAGE_PROVIDER`; ver [OBJECT_STORAGE_PROVIDER_SWITCH.md](OBJECT_STORAGE_PROVIDER_SWITCH.md).
+
 ## Estado
 
 El adaptador runtime y la migración SQL `024_s3_object_storage.sql` están preparados localmente. No deben desplegarse ni aplicarse en producción hasta recibir el contrato del proveedor, transferir todos los objetos y probar rollback. El almacenamiento Azure existente no se modifica durante esta preparación.
@@ -32,6 +34,7 @@ No otorgar creación/eliminación de buckets, cambios de política, administraci
 ## Contrato runtime
 
 ```text
+OBJECT_STORAGE_PROVIDER=s3
 OBJECT_STORAGE_ENDPOINT=https://<endpoint-minio>
 OBJECT_STORAGE_REGION=us-east-1
 OBJECT_STORAGE_BUCKET=<bucket>

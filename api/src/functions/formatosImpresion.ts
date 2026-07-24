@@ -16,7 +16,13 @@ import {
 } from "../lib/managementAccess";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import { readSqlPrintFormats } from "../lib/printFormatsSqlRepository";
-import { createPrivateObjectUrl, deletePrivateObjectIfUnreferenced, isObjectStorageConfigured, storePrivateObject } from "../lib/objectStorage";
+import {
+  createPrivateObjectUrl,
+  deletePrivateObjectIfUnreferenced,
+  isObjectStorageConfigured,
+  storePrivateObject,
+  type PrivateObjectLocator,
+} from "../lib/objectStorage";
 import { formatHasSource, getFormatSourceIds, getFormatSourceNames, normalizeSourceIds, withFormatSources } from "../lib/printFormatSources";
 import type { FormatoImpresionRecord, FuenteFormatoRecord } from "../types/models";
 import { findSqlLicenseModule } from "../lib/licensingSqlWriteRepository";
@@ -84,7 +90,10 @@ function sanitizeFuente(record: FuenteFormatoRecord) {
 }
 
 function sanitizeFormato(record: FormatoImpresionRecord) {
-  const { pdfBase64, pdfStorageBucket, pdfObjectKey, pdfObjectEtag, pdfSha256, pdfStorageProvider, ...rest } = record;
+  const {
+    pdfBase64, pdfStorageBucket, pdfObjectKey, pdfObjectEtag,
+    pdfStorageContainer, pdfBlobName, pdfBlobEtag, pdfSha256, pdfStorageProvider, ...rest
+  } = record;
   return {
     ...rest,
     fuenteIds: getFormatSourceIds(record),
@@ -185,7 +194,7 @@ async function readFormato(id: string): Promise<FormatoImpresionRecord | null> {
 
 async function attachSqlPdfStorage(record: FormatoImpresionRecord, bytes: Buffer): Promise<FormatoImpresionRecord> {
   if (!isObjectStorageConfigured()) {
-    throw Object.assign(new Error("Configure el almacenamiento S3/MinIO antes de guardar formatos PDF en SQL."), { status: 503 });
+    throw Object.assign(new Error("Configure el almacenamiento privado antes de guardar formatos PDF en SQL."), { status: 503 });
   }
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const stored = await storePrivateObject({ bytes, sha256, extension: ".pdf", mimeType: "application/pdf" });
@@ -194,20 +203,46 @@ async function attachSqlPdfStorage(record: FormatoImpresionRecord, bytes: Buffer
     pdfBase64: undefined,
     pdfBytes: bytes.length,
     pdfStorageProvider: stored.storageProvider,
-    pdfStorageBucket: stored.storageBucket,
-    pdfObjectKey: stored.storageObjectKey,
-    pdfObjectEtag: stored.storageObjectEtag,
+    ...(stored.storageProvider === "s3"
+      ? {
+          pdfStorageBucket: stored.storageBucket,
+          pdfObjectKey: stored.storageObjectKey,
+          pdfObjectEtag: stored.storageObjectEtag,
+        }
+      : {
+          pdfStorageContainer: stored.storageContainer,
+          pdfBlobName: stored.storageBlobName,
+          pdfBlobEtag: stored.storageBlobEtag,
+        }),
     pdfSha256: stored.storageSha256,
   };
 }
 
+function pdfObjectLocator(record: Partial<FormatoImpresionRecord>): PrivateObjectLocator | null {
+  if (record.pdfStorageProvider === "s3" && record.pdfStorageBucket && record.pdfObjectKey) {
+    return {
+      storageProvider: "s3",
+      storageBucket: record.pdfStorageBucket,
+      storageObjectKey: record.pdfObjectKey,
+      storageObjectEtag: record.pdfObjectEtag,
+    };
+  }
+  if (record.pdfStorageProvider === "azure_blob" && record.pdfStorageContainer && record.pdfBlobName) {
+    return {
+      storageProvider: "azure_blob",
+      storageContainer: record.pdfStorageContainer,
+      storageBlobName: record.pdfBlobName,
+      storageBlobEtag: record.pdfBlobEtag,
+    };
+  }
+  return null;
+}
+
 async function compensateUnreferencedPdf(record: FormatoImpresionRecord): Promise<void> {
-  if (record.pdfStorageProvider !== "s3" || !record.pdfStorageBucket || !record.pdfObjectKey) return;
+  const locator = pdfObjectLocator(record);
+  if (!locator) return;
   try {
-    await deletePrivateObjectIfUnreferenced({
-      bucket: record.pdfStorageBucket,
-      objectKey: record.pdfObjectKey,
-    });
+    await deletePrivateObjectIfUnreferenced(locator);
   } catch {
     // Preserve the original SQL failure; the orphan scan can retry if SQL was unavailable.
   }
@@ -232,13 +267,13 @@ async function readSelectedFuentes(ids: string[]): Promise<FuenteFormatoRecord[]
 }
 
 async function pdfResponse(formato: FormatoImpresionRecord, disposition: "inline" | "attachment"): Promise<HttpResponseInit> {
-  if (formato.pdfStorageProvider === "s3" && formato.pdfStorageBucket && formato.pdfObjectKey) {
+  const locator = pdfObjectLocator(formato);
+  if (locator) {
     return {
       status: 302,
       headers: {
         Location: await createPrivateObjectUrl({
-          bucket: formato.pdfStorageBucket,
-          objectKey: formato.pdfObjectKey,
+          ...locator,
           mimeType: "application/pdf",
           filename: formato.pdfNombreOriginal,
           disposition,

@@ -17,7 +17,7 @@ Propósito: demostrar que cada opción, ruta y proceso del portal tiene persiste
 | Implementación / Archivos Públicos | `/admin/archivos-publicos` | `implementation.public_files.view` | módulo nuevo sin origen Cosmos | `content.public_files/public_file_versions`; respuesta `inline` | Preparado en migración 025 |
 | Configuración / Alertas y Correos | `/alertas-correos` | `configuration.alerts.view` | `appSettings`, `emailNotifications`, timers | `settings.*`, `notifications.*`, workflow alerts | Cubierto |
 | Configuración / Usuarios y Roles | `/usuarios` | users/roles view | `users`, `roles`, sessions, Key Vault | `security.users/roles/permissions/user_roles/auth_sessions` | Cubierto |
-| Configuración / Formatos de Impresión | `/admin/formatos-impresion` | `configuration.print_formats.view` | `fuentesFormatos`, `formatosImpresion` + Base64 | `content.print_format_*`, `content.files` + Blob | Cubierto |
+| Configuración / Formatos de Impresión | `/admin/formatos-impresion` | `configuration.print_formats.view` | `fuentesFormatos`, `formatosImpresion` + Base64 | `content.print_format_*`, `content.files` + objeto privado | Cubierto |
 | Auditoría y Visibilidad / Auditoría | `/auditoria` | `visibility.audit.view` | `auditLogs` | `audit.audit_logs` | Cubierto |
 | Auditoría y Visibilidad / Tablero | `/tablero` | `visibility.dashboard.view` | agregaciones de maestros/schedules | índices y vistas sobre core/scheduling/workflow | Cubierto |
 | Público / Formatos de Impresión | `/formatos-impresion` | público | fuentes/formatos activos | vistas/queries de `content` sin metadata privada | Cubierto |
@@ -49,7 +49,7 @@ Propósito: demostrar que cada opción, ruta y proceso del portal tiene persiste
 | Seguridad | Usuarios, roles, permisos, sesiones, login, cambio/reset y setup | Revocación de sesiones y auditoría atómicas; reset por outbox y token generado al reclamar. |
 | Notificaciones | Configuración, alertas, recordatorios, pruebas y outbox | Dedupe, lease, backoff, cinco intentos y recuperación de lease vencido. |
 | Descargas y archivos públicos | Agregados separados, archivos/versiones y storage privado | SQL guarda metadata/hash; `attachment` e `inline` nunca comparten endpoint. |
-| Formatos de impresión | Fuentes, formatos, relación N:M, PDF/versiones y Blob | Cambio de fuente primaria compatible con trigger; compensación de Blob no referenciado. |
+| Formatos de impresión | Fuentes, formatos, relación N:M, PDF/versiones y objeto privado | Cambio de fuente primaria compatible con trigger; compensación provider-aware de objeto no referenciado. |
 | Cascadas core | Cliente, dominio y base, schedules, tareas y licencias dependientes | Soft-delete y cancelación de tareas de dominio/base en una sola transacción auditable. |
 
 La implementación está local y no cambia por sí sola la fuente productiva. La migración `019` debe aplicarse antes del ensayo porque amplía el constraint del outbox para `task_status_notification` y `test_email`.

@@ -10,6 +10,8 @@ type SqlPublicFileRow = {
   active: boolean;
   status: "active" | "inactive" | "deleted";
   storage_provider: "s3" | "azure_blob" | null;
+  storage_container: string | null;
+  blob_name: string | null;
   storage_bucket: string | null;
   object_key: string | null;
   object_etag: string | null;
@@ -42,10 +44,13 @@ export function mapSqlPublicFile(row: SqlPublicFileRow): PublicFileRecord {
     archivoNombreOriginal: row.original_name,
     archivoMimeType: row.mime_type,
     archivoBytes: Number(row.byte_count),
-    archivoStorageProvider: row.storage_provider === "s3" ? "s3" : undefined,
-    archivoStorageBucket: row.storage_bucket ?? undefined,
-    archivoObjectKey: row.object_key ?? undefined,
-    archivoObjectEtag: row.object_etag ?? undefined,
+    archivoStorageProvider: row.storage_provider ?? undefined,
+    archivoStorageContainer: row.storage_provider === "azure_blob" ? row.storage_container ?? undefined : undefined,
+    archivoBlobName: row.storage_provider === "azure_blob" ? row.blob_name ?? undefined : undefined,
+    archivoBlobEtag: row.storage_provider === "azure_blob" ? row.object_etag ?? undefined : undefined,
+    archivoStorageBucket: row.storage_provider === "s3" ? row.storage_bucket ?? undefined : undefined,
+    archivoObjectKey: row.storage_provider === "s3" ? row.object_key ?? undefined : undefined,
+    archivoObjectEtag: row.storage_provider === "s3" ? row.object_etag ?? undefined : undefined,
     archivoSha256: row.content_sha256?.toString("hex"),
     activo: Boolean(row.active),
     status: row.status,
@@ -62,7 +67,8 @@ export async function readSqlPublicFiles(): Promise<PublicFileRecord[]> {
   const pool = await getSqlPool();
   const result = await pool.request().query<SqlPublicFileRow>(`
     SELECT p.source_id,p.title,p.slug,p.description,p.asset_kind,p.active,p.status,
-      f.storage_provider,f.storage_bucket,f.object_key,f.object_etag,f.original_name,f.mime_type,
+      f.storage_provider,f.storage_container,f.blob_name,f.storage_bucket,f.object_key,f.object_etag,
+      f.original_name,f.mime_type,
       f.byte_count,f.content_sha256,p.created_at,p.created_by,p.updated_at,p.updated_by,
       p.deleted_at,p.deleted_by
     FROM content.public_files AS p

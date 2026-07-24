@@ -10,6 +10,8 @@ Estado: **cutover productivo a SQL completado y verificado el 2026-07-23**
 
 ## Estado productivo certificado — 2026-07-23
 
+Actualización de almacenamiento 2026-07-24: el runtime vuelve a admitir Azure Blob junto con S3/MinIO. `OBJECT_STORAGE_PROVIDER` selecciona nuevas escrituras; las lecturas y limpiezas usan el proveedor persistido en `content.files`. Este cambio no autoriza despliegue ni transferencia de objetos sin ensayo QA y rollback. Contrato: [OBJECT_STORAGE_PROVIDER_SWITCH.md](OBJECT_STORAGE_PROVIDER_SWITCH.md).
+
 - La Function App productiva opera con `DATA_BACKEND=sql`, conexión SQL activa, autorización SQL habilitada, mantenimiento desactivado y los seis timers habilitados.
 - La corrida certificada `2` está `completed`: 2.987 documentos raw/stage, 66 reconciliaciones sin fallos y 0 validaciones críticas abiertas.
 - La carga operacional contiene 7 usuarios, 40 clientes, 45 dominios, 55 bases, 11 programaciones, 341 tareas, 2.251 auditorías, 2 activos públicos y 39 archivos.

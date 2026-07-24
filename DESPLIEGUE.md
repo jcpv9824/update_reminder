@@ -51,6 +51,7 @@ SQL_DATABASE=PortalSAGWeb
 SQL_USERNAME=<login-runtime>
 SQL_PASSWORD=@Microsoft.KeyVault(SecretUri=<uri-versionada-o-sin-version-del-secreto>)
 KEY_VAULT_URL=https://<vault>.vault.azure.net/
+OBJECT_STORAGE_PROVIDER=s3
 OBJECT_STORAGE_ENDPOINT=https://<endpoint-minio>
 OBJECT_STORAGE_REGION=us-east-1
 OBJECT_STORAGE_BUCKET=<bucket>
@@ -62,6 +63,16 @@ OBJECT_STORAGE_SECRET_ACCESS_KEY=@Microsoft.KeyVault(SecretUri=<secreto-secret-k
 APP_TIMEZONE=America/Bogota
 DEV_AUTH_ENABLED=false
 ```
+
+Para usar Azure Blob como destino de nuevas escrituras, conserve las variables S3 si aún existen objetos S3 y cambie:
+
+```text
+OBJECT_STORAGE_PROVIDER=azure_blob
+AZURE_BLOB_STORAGE_ACCOUNT_URL=https://<cuenta>.blob.core.windows.net
+AZURE_BLOB_STORAGE_CONTAINER=<container-privado>
+```
+
+La identidad administrada requiere `Storage Blob Data Contributor` en el container y `Storage Blob Delegator` en la cuenta. El switch no mueve archivos existentes; consulte [docs/OBJECT_STORAGE_PROVIDER_SWITCH.md](docs/OBJECT_STORAGE_PROVIDER_SWITCH.md).
 
 También son obligatorios `JWT_SECRET`, `RATE_LIMIT_HASH_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`, `AUTH_COOKIE_SECURE=true` y la configuración del proveedor de correo aplicable.
 

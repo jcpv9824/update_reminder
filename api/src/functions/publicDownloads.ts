@@ -17,6 +17,7 @@ import {
   deletePrivateObjectIfUnreferenced,
   isObjectStorageConfigured,
   storePrivateObject,
+  type PrivateObjectLocator,
 } from "../lib/objectStorage";
 import { readSqlPublicDownloads } from "../lib/publicDownloadsSqlRepository";
 import {
@@ -84,8 +85,8 @@ function isHttpResponse(value: unknown): value is HttpResponseInit {
 
 function sanitizeDownload(record: PublicDownloadDocumentRecord) {
   const {
-    type, archivoBase64, archivoStorageBucket, archivoObjectKey, archivoObjectEtag, archivoSha256,
-    archivoStorageProvider,
+    type, archivoBase64, archivoStorageBucket, archivoObjectKey, archivoObjectEtag,
+    archivoStorageContainer, archivoBlobName, archivoBlobEtag, archivoSha256, archivoStorageProvider,
     _rid, _self, _etag, _attachments, _ts, ...rest
   } = record as PublicDownloadDocumentRecord & Record<string, unknown>;
   return {
@@ -111,18 +112,47 @@ async function storedFileFields(file: ReturnType<typeof decodePublicDownloadFile
   return {
     ...shared,
     archivoStorageProvider: stored.storageProvider,
-    archivoStorageBucket: stored.storageBucket,
-    archivoObjectKey: stored.storageObjectKey,
-    archivoObjectEtag: stored.storageObjectEtag,
+    ...(stored.storageProvider === "s3"
+      ? {
+          archivoStorageBucket: stored.storageBucket,
+          archivoObjectKey: stored.storageObjectKey,
+          archivoObjectEtag: stored.storageObjectEtag,
+        }
+      : {
+          archivoStorageContainer: stored.storageContainer,
+          archivoBlobName: stored.storageBlobName,
+          archivoBlobEtag: stored.storageBlobEtag,
+        }),
     archivoSha256: stored.storageSha256,
     archivoBase64: undefined,
   };
 }
 
+function objectLocator(record: Partial<PublicDownloadDocumentRecord>): PrivateObjectLocator | null {
+  if (record.archivoStorageProvider === "s3" && record.archivoStorageBucket && record.archivoObjectKey) {
+    return {
+      storageProvider: "s3",
+      storageBucket: record.archivoStorageBucket,
+      storageObjectKey: record.archivoObjectKey,
+      storageObjectEtag: record.archivoObjectEtag,
+    };
+  }
+  if (record.archivoStorageProvider === "azure_blob" && record.archivoStorageContainer && record.archivoBlobName) {
+    return {
+      storageProvider: "azure_blob",
+      storageContainer: record.archivoStorageContainer,
+      storageBlobName: record.archivoBlobName,
+      storageBlobEtag: record.archivoBlobEtag,
+    };
+  }
+  return null;
+}
+
 async function compensateUnreferencedObject(record: Partial<PublicDownloadDocumentRecord>): Promise<void> {
-  if (record.archivoStorageProvider !== "s3" || !record.archivoStorageBucket || !record.archivoObjectKey) return;
+  const locator = objectLocator(record);
+  if (!locator) return;
   try {
-    await deletePrivateObjectIfUnreferenced({ bucket: record.archivoStorageBucket, objectKey: record.archivoObjectKey });
+    await deletePrivateObjectIfUnreferenced(locator);
   } catch {
     // The SQL failure remains authoritative; the orphan scan can retry cleanup.
   }
@@ -141,13 +171,13 @@ async function hasDuplicateSlug(slug: string, exceptId?: string): Promise<boolea
 }
 
 async function forcedDownloadResponse(record: PublicDownloadDocumentRecord): Promise<HttpResponseInit> {
-  if (record.archivoStorageProvider === "s3" && record.archivoStorageBucket && record.archivoObjectKey) {
+  const locator = objectLocator(record);
+  if (locator) {
     return {
       status: 302,
       headers: {
         Location: await createPrivateObjectUrl({
-          bucket: record.archivoStorageBucket,
-          objectKey: record.archivoObjectKey,
+          ...locator,
           mimeType: record.archivoMimeType,
           filename: record.archivoNombreOriginal,
           disposition: "attachment",

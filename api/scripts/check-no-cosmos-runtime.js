@@ -9,8 +9,6 @@ const scanRoots = [
 const forbidden = [
   { label: "Azure Cosmos SDK import", pattern: /@azure\/cosmos/i },
   { label: "Cosmos runtime setting", pattern: /\bCOSMOS_(?:CONNECTION_STRING|DATABASE_NAME)\b/ },
-  { label: "Azure Blob SDK import", pattern: /@azure\/storage-blob/i },
-  { label: "retired Azure Blob runtime setting", pattern: /\bPUBLIC_DOWNLOADS_STORAGE_(?:ACCOUNT_URL|CONTAINER)\b/ },
   { label: "retired backend mode", pattern: /\b(?:cosmos|dual-read)\b/i },
   { label: "retired adapter import", pattern: /(?:from|require\()\s*["'][^"']*\/cosmos["']/i },
 ];
@@ -42,10 +40,6 @@ const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), 
 if (packageJson.dependencies?.["@azure/cosmos"] || packageJson.devDependencies?.["@azure/cosmos"]) {
   failures.push("package.json: Azure Cosmos SDK dependency");
 }
-if (packageJson.dependencies?.["@azure/storage-blob"] || packageJson.devDependencies?.["@azure/storage-blob"]) {
-  failures.push("package.json: retired Azure Blob SDK dependency");
-}
-
 if (failures.length > 0) {
   console.error("Retired Cosmos runtime dependency detected:");
   for (const failure of failures) console.error(`- ${failure}`);

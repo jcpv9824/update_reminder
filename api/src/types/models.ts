@@ -209,15 +209,18 @@ export type FormatoImpresionRecord = {
   licenciaModuloId?: string;
   licenciaModuloNombre?: string;
   licenciaModuloCodigo?: string;
-  /** Legacy compatibility only. New PDFs live in private S3-compatible object storage. */
+  /** Legacy compatibility only. New PDFs live in the selected private object-storage provider. */
   pdfBase64?: string;
   pdfNombreOriginal: string;
   pdfMimeType: "application/pdf";
   pdfBytes?: number;
-  pdfStorageProvider?: "s3";
+  pdfStorageProvider?: "s3" | "azure_blob";
   pdfStorageBucket?: string;
   pdfObjectKey?: string;
   pdfObjectEtag?: string;
+  pdfStorageContainer?: string;
+  pdfBlobName?: string;
+  pdfBlobEtag?: string;
   pdfSha256?: string;
   activo: boolean;
   status: EntityStatus;
@@ -237,13 +240,16 @@ export type PublicDownloadDocumentRecord = {
   assetKind?: "document" | "video";
   archivoNombreOriginal: string;
   archivoMimeType: string;
-  /** Legacy compatibility only. New files live in private S3-compatible object storage. */
+  /** Legacy compatibility only. New files live in the selected private object-storage provider. */
   archivoBase64?: string;
   archivoBytes: number;
-  archivoStorageProvider?: "s3";
+  archivoStorageProvider?: "s3" | "azure_blob";
   archivoStorageBucket?: string;
   archivoObjectKey?: string;
   archivoObjectEtag?: string;
+  archivoStorageContainer?: string;
+  archivoBlobName?: string;
+  archivoBlobEtag?: string;
   archivoSha256?: string;
   activo: boolean;
   status: EntityStatus;
@@ -264,10 +270,13 @@ export type PublicFileRecord = {
   archivoNombreOriginal: string;
   archivoMimeType: string;
   archivoBytes: number;
-  archivoStorageProvider?: "s3";
+  archivoStorageProvider?: "s3" | "azure_blob";
   archivoStorageBucket?: string;
   archivoObjectKey?: string;
   archivoObjectEtag?: string;
+  archivoStorageContainer?: string;
+  archivoBlobName?: string;
+  archivoBlobEtag?: string;
   archivoSha256?: string;
   activo: boolean;
   status: EntityStatus;
