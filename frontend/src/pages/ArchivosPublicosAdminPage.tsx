@@ -54,10 +54,10 @@ export default function ArchivosPublicosAdminPage() {
     <>
       <div className="encabezado-pagina">
         <h2>Archivos públicos</h2>
-        <button className="primario" onClick={() => setModal("nuevo")}>Nuevo archivo</button>
+        <button className="primario" onClick={() => { setError(null); setModal("nuevo"); }}>Nuevo archivo</button>
       </div>
       {mensaje && <Alerta tipo="exito">{mensaje}</Alerta>}
-      {error && <Alerta tipo="error">{error}</Alerta>}
+      {error && !modal && <Alerta tipo="error">{error}</Alerta>}
       <p className="texto-ayuda">
         Estos endpoints se abren en el navegador y no fuerzan una descarga.
         Se admiten imágenes, PDF y videos con formatos seguros para visualización.
@@ -98,7 +98,7 @@ export default function ArchivosPublicosAdminPage() {
                   <td><EtiquetaEstado estado={archivo.activo ? "active" : "inactive"} /></td>
                   <td className="acciones-tabla">
                     <a href={url} target="_blank" rel="noreferrer">Visualizar</a>
-                    <button onClick={() => setModal(archivo)}>Editar</button>
+                    <button onClick={() => { setError(null); setModal(archivo); }}>Editar</button>
                     <button className="peligro" onClick={() => setEliminar(archivo)}>Eliminar</button>
                   </td>
                 </tr>
@@ -113,6 +113,7 @@ export default function ArchivosPublicosAdminPage() {
         <PublicFileForm
           initial={modal && modal !== "nuevo" ? modal : undefined}
           loading={guardar.isPending}
+          serverError={error}
           onSubmit={(body) => guardar.mutate({ id: modal && modal !== "nuevo" ? modal.id : undefined, body })}
         />
       </Modal>
@@ -153,10 +154,12 @@ function formatBytes(bytes: number): string {
 function PublicFileForm({
   initial,
   loading,
+  serverError,
   onSubmit,
 }: {
   initial?: PublicFile;
   loading: boolean;
+  serverError?: string | null;
   onSubmit: (body: unknown) => void;
 }) {
   const [titulo, setTitulo] = useState(initial?.titulo ?? "");
@@ -188,12 +191,13 @@ function PublicFileForm({
     event.preventDefault();
     if (!titulo.trim()) return setError("El título del archivo es obligatorio.");
     if (!initial && !file) return setError("Debe cargar un archivo.");
+    setError(null);
     onSubmit({ titulo, slug, descripcion, activo, ...(file ?? {}) });
   }
 
   return (
     <form onSubmit={submit}>
-      {error && <Alerta tipo="error">{error}</Alerta>}
+      {(error || serverError) && <Alerta tipo="error">{error || serverError}</Alerta>}
       <div className="fila-formulario"><label>Título *</label><input value={titulo} onChange={(e) => setTitulo(e.target.value)} /></div>
       <div className="fila-formulario"><label>Endpoint del archivo</label><input value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="Se genera desde el título si se deja vacío" /></div>
       <div className="fila-formulario"><label>Descripción</label><textarea value={descripcion} onChange={(e) => setDescripcion(e.target.value)} rows={3} /></div>

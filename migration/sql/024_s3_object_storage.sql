@@ -29,11 +29,14 @@ IF COL_LENGTH(N'content.files',N'object_key') IS NULL
 IF COL_LENGTH(N'content.files',N'object_etag') IS NULL
   ALTER TABLE content.files ADD object_etag NVARCHAR(200) NULL;
 
-UPDATE content.files
-SET storage_bucket=storage_container,
-    object_key=blob_name
-WHERE storage_provider='azure_blob'
-  AND (storage_bucket IS NULL OR object_key IS NULL);
+/* Defer compilation until the provider-neutral columns exist. SQL Server
+   otherwise binds this UPDATE before executing the preceding ALTER TABLEs. */
+EXEC sys.sp_executesql N'
+  UPDATE content.files
+  SET storage_bucket=storage_container,
+      object_key=blob_name
+  WHERE storage_provider=''azure_blob''
+    AND (storage_bucket IS NULL OR object_key IS NULL);';
 
 IF OBJECT_ID(N'content.UQ_files_blob',N'UQ') IS NOT NULL
   ALTER TABLE content.files DROP CONSTRAINT UQ_files_blob;
@@ -53,25 +56,26 @@ ALTER TABLE content.files
 ALTER TABLE content.files WITH CHECK
   ADD CONSTRAINT CK_files_provider CHECK (storage_provider IN ('azure_blob','s3'));
 
-ALTER TABLE content.files WITH CHECK
-  ADD CONSTRAINT CK_files_storage_locator CHECK
-  (
+EXEC sys.sp_executesql N'
+  ALTER TABLE content.files WITH CHECK
+    ADD CONSTRAINT CK_files_storage_locator CHECK
     (
-      storage_provider='azure_blob'
-      AND storage_container IS NOT NULL
-      AND LEN(LTRIM(RTRIM(storage_container)))>0
-      AND blob_name IS NOT NULL
-      AND LEN(LTRIM(RTRIM(blob_name)))>0
-    )
-    OR
-    (
-      storage_provider='s3'
-      AND storage_bucket IS NOT NULL
-      AND LEN(LTRIM(RTRIM(storage_bucket))) BETWEEN 3 AND 255
-      AND object_key IS NOT NULL
-      AND LEN(LTRIM(RTRIM(object_key)))>0
-    )
-  );
+      (
+        storage_provider=''azure_blob''
+        AND storage_container IS NOT NULL
+        AND LEN(LTRIM(RTRIM(storage_container)))>0
+        AND blob_name IS NOT NULL
+        AND LEN(LTRIM(RTRIM(blob_name)))>0
+      )
+      OR
+      (
+        storage_provider=''s3''
+        AND storage_bucket IS NOT NULL
+        AND LEN(LTRIM(RTRIM(storage_bucket))) BETWEEN 3 AND 255
+        AND object_key IS NOT NULL
+        AND LEN(LTRIM(RTRIM(object_key)))>0
+      )
+    );';
 
 IF NOT EXISTS
 (
@@ -87,9 +91,10 @@ IF NOT EXISTS
   SELECT 1 FROM sys.indexes
   WHERE object_id=OBJECT_ID(N'content.files') AND name=N'UX_files_s3_locator'
 )
-  CREATE UNIQUE INDEX UX_files_s3_locator
-    ON content.files(storage_bucket,object_key)
-    WHERE storage_provider='s3' AND storage_bucket IS NOT NULL AND object_key IS NOT NULL;
+  EXEC sys.sp_executesql N'
+    CREATE UNIQUE INDEX UX_files_s3_locator
+      ON content.files(storage_bucket,object_key)
+      WHERE storage_provider=''s3'' AND storage_bucket IS NOT NULL AND object_key IS NOT NULL;';
 
 ALTER TABLE content.files CHECK CONSTRAINT CK_files_provider;
 ALTER TABLE content.files CHECK CONSTRAINT CK_files_storage_locator;

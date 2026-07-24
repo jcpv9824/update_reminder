@@ -60,4 +60,45 @@ describe("ArchivosPublicosAdminPage", () => {
       }),
     ));
   });
+
+  it("retira una validación anterior cuando el formulario ya es válido", async () => {
+    apiMock.post.mockReturnValue(new Promise(() => undefined));
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Nuevo archivo" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+    expect(screen.getByText("El título del archivo es obligatorio.")).toBeInTheDocument();
+
+    const titleLabel = screen.getByText("Título *");
+    await userEvent.type(within(titleLabel.parentElement!).getByRole("textbox"), "Video de instalación");
+    await userEvent.upload(
+      screen.getByLabelText("Archivo *"),
+      new File([new Uint8Array([0, 0, 0, 20, 102, 116, 121, 112])], "instalacion.mp4", { type: "video/mp4" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText("El título del archivo es obligatorio.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Guardando..." })).toBeDisabled();
+  });
+
+  it("muestra el error de almacenamiento dentro de la modal activa", async () => {
+    apiMock.post.mockRejectedValue(new Error("El módulo Archivos Públicos aún no está habilitado en la base de datos."));
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Nuevo archivo" }));
+
+    const titleLabel = screen.getByText("Título *");
+    await userEvent.type(within(titleLabel.parentElement!).getByRole("textbox"), "Manual público");
+    await userEvent.upload(
+      screen.getByLabelText("Archivo *"),
+      new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], "manual.pdf", { type: "application/pdf" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+
+    const modal = screen.getByRole("heading", { name: "Nuevo archivo público" }).closest(".modal");
+    expect(modal).not.toBeNull();
+    expect(await within(modal as HTMLElement).findByText(
+      "El módulo Archivos Públicos aún no está habilitado en la base de datos.",
+    )).toBeInTheDocument();
+  });
 });
