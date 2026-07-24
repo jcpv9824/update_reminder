@@ -22,7 +22,7 @@ This document defines the engineering practices Codex should follow when working
 - HTTP functions and timer-triggered automation in `api/src/functions`.
 - Business logic in `api/src/lib`.
 - SQL Server 2019 as the production operational database.
-- Cosmos DB remains only as a temporary legacy-retention dependency while its runtime branches are retired.
+- Cosmos DB has been removed from the runtime and the Azure account was deleted on 2026-07-24; restricted historical snapshots remain retention evidence only.
 - Provider-managed S3/MinIO object storage for public-download and print-format file payloads.
 - Azure Key Vault via `@azure/keyvault-secrets` and `@azure/identity`.
 - Email through SendGrid/Nodemailer.

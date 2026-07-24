@@ -4,7 +4,7 @@
 
 El runtime de Portal SAG Web queda implementado como SQL-only. No hay importaciones del SDK, adaptador de contenedores, fallback, lectura sombra ni escritura documental dentro de `api/src` fuera de pruebas negativas del selector. El almacenamiento de archivos se está desacoplando hacia S3/MinIO administrado por el proveedor y los secretos permanecen en Key Vault.
 
-Estado operativo de este cambio: **listo para rehearsal**. La cuenta anterior no puede eliminarse todavía porque la ventana productiva de cero actividad termina como mínimo el `2026-07-30T22:26:43Z`.
+Estado operativo actualizado: la cuenta `erpupdsch4645-cosmos` fue eliminada por autorización explícita del propietario el `2026-07-24T12:33:54Z` para detener el costo. Producción permaneció SQL-only y saludable después de la eliminación.
 
 ## Cobertura revisada
 
@@ -65,19 +65,16 @@ Los controladores antiguos de rollback hacia la base retirada deben archivarse d
 3. restaurar SQL desde backup si hay corrupción de datos;
 4. recuperar versiones del bucket S3/MinIO si hay pérdida de archivos.
 
-## Pasos pendientes antes de eliminar la cuenta
+## Evidencia usada para eliminar la cuenta
 
-1. Crear un artefacto limpio y reproducible del API.
-2. Exportar los App Settings actuales como evidencia, sin imprimir secretos.
-3. Desplegar un segundo canary sin `COSMOS_CONNECTION_STRING` ni `COSMOS_DATABASE_NAME`.
-4. Validar salud, autenticación, CRUD, tareas, correo, formatos, descargas y los seis timers.
-5. Confirmar cero `5xx`, excepciones y actividad del servicio anterior.
-6. Mantener cero actividad hasta `2026-07-30T22:26:43Z` como mínimo.
-7. Generar y verificar el snapshot final cifrado.
-8. Restaurar el backup SQL en QA y ejecutar integridad/smoke tests.
-9. Verificar versionado/soft delete de Blob y recuperación de un archivo.
-10. Rotar las claves del servicio anterior y observar que producción sigue sana.
-11. Eliminar la cuenta en una operación separada y registrar el resultado.
+1. Runtime desplegado con `backend=sql`, SQL conectado y seguridad SQL habilitada.
+2. Cero variables `COSMOS_*` en producción y SDK/adaptador retirados del paquete.
+3. Cero solicitudes a Cosmos en la comprobación de las 24 horas previas.
+4. Snapshot restringido de 17 contenedores y 2.987 documentos con cero errores críticos de perfil.
+5. Clave primaria rotada antes de la eliminación.
+6. Producción verificada saludable inmediatamente después de que Azure confirmó la eliminación.
+
+La ventana original hasta el `2026-07-30T22:26:43Z` no se completó. El propietario aceptó expresamente esa excepción para detener el costo; por ello se deben conservar el snapshot y la evidencia histórica.
 
 ## Elementos que no se deben eliminar
 

@@ -1,6 +1,6 @@
 # Retiro de Cosmos DB — Portal SAG Web
 
-Estado: **fase 2 terminada y validada localmente; lista para rehearsal, no autoriza eliminar la cuenta**
+Estado: **cuenta Cosmos eliminada el 2026-07-24; producción continúa SQL-only**
 
 ## Objetivo
 
@@ -58,10 +58,18 @@ Un error `Dependencia Cosmos inesperada durante la ejecución SQL` detiene el re
 5. Rotar las claves Cosmos y comprobar que producción continúa saludable.
 6. Eliminar la cuenta Cosmos mediante una operación separada y explícitamente aprobada.
 
-La ventana de siete días iniciada el `2026-07-23T22:26:43Z` termina como mínimo el
-`2026-07-30T22:26:43Z`. Cualquier solicitud observada reinicia el conteo. Antes de
-esa fecha solo se permite el rehearsal y el canary SQL-only; no se permite eliminar
-la cuenta.
+### Eliminación productiva — 2026-07-24
+
+- El propietario priorizó explícitamente detener el costo y autorizó eliminar la cuenta antes de terminar la ventana originalmente prevista.
+- Antes de eliminar: producción reportó `backend=sql`, conexión SQL activa, seguridad SQL habilitada, cero variables `COSMOS_*` y cero solicitudes Cosmos en las últimas 24 horas.
+- El snapshot restringido `cosmos-export-prod-20260722-173416` conservó 17/17 contenedores, 2.987 documentos y cero errores críticos de perfil; su manifest quedó identificado por SHA-256.
+- La cuenta tenía backup periódico cada cuatro horas con sólo ocho horas de retención, por lo que el snapshot restringido local sigue siendo la evidencia de recuperación histórica que debe conservarse.
+- Azure confirmó la eliminación de `erpupdsch4645-cosmos` a las `2026-07-24T12:33:54Z`.
+- Después de eliminar: producción continuó `backend=sql`, SQL conectado, seguridad SQL habilitada, mantenimiento desactivado y cero variables `COSMOS_*`.
+
+La eliminación anticipada fue una excepción explícita del propietario por costo. No
+implica que las pruebas históricas de restore o los artefactos restringidos puedan
+descartarse.
 
 ## Criterios de salida
 
