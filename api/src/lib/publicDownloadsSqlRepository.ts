@@ -1,4 +1,5 @@
 import type { PublicDownloadDocumentRecord } from "../types/models";
+import { contentFileLocatorProjection, readContentSchemaCapabilities } from "./contentFileSqlSchema";
 import { getSqlPool } from "./sql";
 
 type SqlDownloadRow = {
@@ -68,9 +69,11 @@ export function mapSqlPublicDownload(
 
 export async function readSqlPublicDownloads(): Promise<Array<PublicDownloadDocumentRecord & { type: "document" }>> {
   const pool = await getSqlPool();
+  const capabilities = await readContentSchemaCapabilities(pool.request());
+  const locatorProjection = contentFileLocatorProjection("f", capabilities.provider_neutral_locators);
   const result = await pool.request().query<SqlDownloadRow>(`
     SELECT d.source_id,d.title,d.slug,d.description,d.asset_kind,d.active,d.status,
-      f.storage_provider,f.storage_container,f.blob_name,f.storage_bucket,f.object_key,f.object_etag,
+      ${locatorProjection},
       f.original_name,f.mime_type,
       f.byte_count,f.content_sha256,d.created_at,d.created_by,d.updated_at,d.updated_by,
       d.deleted_at,d.deleted_by

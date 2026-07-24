@@ -1,4 +1,5 @@
 import type { PublicFileRecord } from "../types/models";
+import { contentFileLocatorProjection, readContentSchemaCapabilities } from "./contentFileSqlSchema";
 import { getSqlPool } from "./sql";
 
 type SqlPublicFileRow = {
@@ -65,9 +66,12 @@ export function mapSqlPublicFile(row: SqlPublicFileRow): PublicFileRecord {
 
 export async function readSqlPublicFiles(): Promise<PublicFileRecord[]> {
   const pool = await getSqlPool();
+  const capabilities = await readContentSchemaCapabilities(pool.request());
+  if (!capabilities.public_files) return [];
+  const locatorProjection = contentFileLocatorProjection("f", capabilities.provider_neutral_locators);
   const result = await pool.request().query<SqlPublicFileRow>(`
     SELECT p.source_id,p.title,p.slug,p.description,p.asset_kind,p.active,p.status,
-      f.storage_provider,f.storage_container,f.blob_name,f.storage_bucket,f.object_key,f.object_etag,
+      ${locatorProjection},
       f.original_name,f.mime_type,
       f.byte_count,f.content_sha256,p.created_at,p.created_by,p.updated_at,p.updated_by,
       p.deleted_at,p.deleted_by

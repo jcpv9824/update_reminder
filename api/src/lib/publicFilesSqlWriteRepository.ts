@@ -1,6 +1,7 @@
 import sql from "mssql";
 import type { PublicFileRecord } from "../types/models";
 import { writeSqlAuditLog } from "./auditSqlWriter";
+import { requirePublicFilesSchema } from "./contentFileSqlSchema";
 import { ensureSqlContentFile } from "./contentFileSqlWriter";
 import { runSqlTransaction } from "./sqlTransaction";
 
@@ -35,6 +36,7 @@ async function ensureFile(transaction: sql.Transaction, record: PublicFileRecord
 export async function createSqlPublicFile(record: PublicFileRecord, actor: Actor): Promise<PublicFileRecord> {
   try {
     return await runSqlTransaction(async (transaction) => {
+      await requirePublicFilesSchema(transaction);
       const fileKey = await ensureFile(transaction, record, actor.id);
       const request = new sql.Request(transaction);
       request.input("sourceId", sql.NVarChar(150), record.id);
@@ -78,6 +80,7 @@ export async function updateSqlPublicFile(
 ): Promise<PublicFileRecord | null> {
   try {
     return await runSqlTransaction(async (transaction) => {
+      await requirePublicFilesSchema(transaction);
       const lookup = new sql.Request(transaction);
       lookup.input("sourceId", sql.NVarChar(150), before.id);
       const result = await lookup.query<{ public_file_key: number }>(`
@@ -135,6 +138,7 @@ export async function updateSqlPublicFile(
 
 export async function deleteSqlPublicFile(record: PublicFileRecord, actor: Actor): Promise<boolean> {
   return runSqlTransaction(async (transaction) => {
+    await requirePublicFilesSchema(transaction);
     const request = new sql.Request(transaction);
     request.input("sourceId", sql.NVarChar(150), record.id);
     request.input("now", sql.DateTime2(3), new Date());

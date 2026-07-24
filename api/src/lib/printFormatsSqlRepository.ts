@@ -1,4 +1,5 @@
 import type { FormatoImpresionRecord, FuenteFormatoRecord } from "../types/models";
+import { contentFileLocatorProjection, readContentSchemaCapabilities } from "./contentFileSqlSchema";
 import { getSqlPool } from "./sql";
 
 type SourceRow = {
@@ -70,6 +71,11 @@ export async function readSqlPrintFormats(): Promise<{
   sources: FuenteFormatoRecord[]; formats: FormatoImpresionRecord[];
 }> {
   const pool = await getSqlPool();
+  const capabilities = await readContentSchemaCapabilities(pool.request());
+  const locatorProjection = contentFileLocatorProjection(
+    "file_record",
+    capabilities.provider_neutral_locators,
+  );
   const [sourceResult, formatResult] = await Promise.all([
     pool.request().query<SourceRow>(`
       SELECT source_id,name,active,status,created_at,created_by,updated_at,updated_by,deleted_at,deleted_by
@@ -81,8 +87,7 @@ export async function readSqlPrintFormats(): Promise<{
         f.active,f.status,f.created_at,f.created_by,f.updated_at,f.updated_by,f.deleted_at,f.deleted_by,
         s.source_id AS source_type_id,s.name AS source_type_name,a.display_order,
         CONVERT(bit,CASE WHEN f.print_format_source_key=s.print_format_source_key THEN 1 ELSE 0 END) AS is_primary,
-        file_record.storage_provider,file_record.storage_container,file_record.blob_name,
-        file_record.storage_bucket,file_record.object_key,file_record.object_etag,
+        ${locatorProjection},
         file_record.original_name,file_record.mime_type,file_record.byte_count,file_record.content_sha256
       FROM content.print_formats AS f
       JOIN content.print_format_source_assignments AS a ON a.print_format_key=f.print_format_key

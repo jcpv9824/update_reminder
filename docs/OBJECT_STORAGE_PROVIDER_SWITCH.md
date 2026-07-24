@@ -73,9 +73,11 @@ Cambiar el switch no migra objetos existentes. Una transferencia entre proveedor
 ## Puertas antes de producción
 
 - API tests y build correctos.
-- Migración `024` aplicada y constraints de `content.files` trusted.
+- Para MinIO/S3: migración `024` aplicada y constraints de `content.files` trusted. Azure Blob puede operar de forma compatible con el schema Azure legado mientras se pospone esa migración.
 - Identidad/credenciales con mínimo alcance.
 - TLS estricto y acceso público deshabilitado.
 - Pruebas de attachment, inline y video Range en QA.
 - Carga, lectura, reemplazo, compensación y rollback con ambos proveedores.
 - Backup/restore SQL y restauración del switch probados.
+
+Azure Blob conserva compatibilidad de lectura y escritura con el schema legado anterior a `024`. MinIO/S3 sigue bloqueado hasta que existan sus columnas provider-neutral; el switch nunca intenta guardar un locator S3 en columnas Azure.

@@ -1,5 +1,6 @@
 import sql from "mssql";
 import type { ObjectStorageProvider } from "./objectStorage";
+import { readContentSchemaCapabilities } from "./contentFileSqlSchema";
 
 export type ContentFileInput = {
   storageProvider?: ObjectStorageProvider;
@@ -32,6 +33,52 @@ export async function ensureSqlContentFile(
   }
   if (!Number.isSafeInteger(input.byteCount) || input.byteCount <= 0) {
     throw Object.assign(new Error("El tamaño del archivo no es válido."), { status: 400 });
+  }
+
+  const capabilities = await readContentSchemaCapabilities(new sql.Request(transaction));
+  if (!capabilities.provider_neutral_locators) {
+    if (input.storageProvider !== "azure_blob") {
+      throw Object.assign(
+        new Error("La base de datos aún no admite locators S3/MinIO."),
+        { status: 503 },
+      );
+    }
+    const legacy = new sql.Request(transaction);
+    legacy.input("container", sql.NVarChar(100), input.storageContainer);
+    legacy.input("blobName", sql.NVarChar(1024), input.storageBlobName);
+    legacy.input("originalName", sql.NVarChar(260), input.originalName);
+    legacy.input("mimeType", sql.NVarChar(160), input.mimeType);
+    legacy.input("byteCount", sql.BigInt, input.byteCount);
+    legacy.input("sha", sql.VarBinary(32), Buffer.from(input.sha256, "hex"));
+    legacy.input("createdBy", sql.NVarChar(150), actorId);
+    const result = await legacy.query<{ file_key: number }>(`
+      DECLARE @fileKey BIGINT=
+      (
+        SELECT file_key FROM content.files WITH (UPDLOCK,HOLDLOCK)
+        WHERE storage_provider='azure_blob'
+          AND storage_container=@container
+          AND blob_name=@blobName
+      );
+      IF @fileKey IS NULL
+      BEGIN
+        INSERT content.files
+          (storage_provider,storage_container,blob_name,original_name,mime_type,
+           byte_count,content_sha256,created_by)
+        VALUES
+          ('azure_blob',@container,@blobName,@originalName,@mimeType,
+           @byteCount,@sha,@createdBy);
+        SET @fileKey=SCOPE_IDENTITY();
+      END
+      ELSE IF EXISTS
+      (
+        SELECT 1 FROM content.files
+        WHERE file_key=@fileKey
+          AND (content_sha256<>@sha OR byte_count<>@byteCount OR mime_type<>@mimeType)
+      )
+        THROW 51072,N'El blob existente no coincide con el archivo verificado.',1;
+      SELECT @fileKey AS file_key;
+    `);
+    return result.recordset[0].file_key;
   }
 
   const request = new sql.Request(transaction);
