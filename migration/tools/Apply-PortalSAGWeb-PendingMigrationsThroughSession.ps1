@@ -60,7 +60,8 @@ $migrations=@(
   @{version='020';name='020_allow_outbox_attempt_completion.sql'},
   @{version='021';name='021_atomic_operational_refresh.sql'},
   @{version='022';name='022_refresh_print_source_assignments.sql'},
-  @{version='023';name='023_enable_masters_report_outbox.sql'}
+  @{version='023';name='023_enable_masters_report_outbox.sql'},
+  @{version='024';name='024_s3_object_storage.sql'}
 )
 
 foreach($migration in $migrations){

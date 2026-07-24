@@ -7,8 +7,9 @@ const base = {
   custom_format_size: null, requires_license: false, module_source_id: null, module_name: null,
   module_code: null, active: true, status: "active" as const, created_at: at, created_by: "migration",
   updated_at: at, updated_by: "migration", deleted_at: null, deleted_by: null,
-  storage_provider: "azure_blob" as const, storage_container: "portal-sag-content",
-  blob_name: "opaque/factura.pdf", original_name: "factura.pdf", mime_type: "application/pdf",
+  storage_provider: "s3" as const, storage_bucket: "portal-sag-content",
+  object_key: "opaque/factura.pdf", object_etag: "etag-2",
+  original_name: "factura.pdf", mime_type: "application/pdf",
   byte_count: 500, content_sha256: Buffer.alloc(32, 2),
 };
 
@@ -29,7 +30,8 @@ describe("Print Formats SQL mapping", () => {
     expect(record).toMatchObject({
       fuenteId: "source-1", fuenteIds: ["source-1", "source-2"],
       fuenteNombres: ["Contabilidad", "Ventas"], pdfBytes: 500,
-      pdfBlobContainer: "portal-sag-content", pdfBlobName: "opaque/factura.pdf",
+      pdfStorageProvider: "s3", pdfStorageBucket: "portal-sag-content",
+      pdfObjectKey: "opaque/factura.pdf", pdfObjectEtag: "etag-2",
     });
     expect(record.pdfBase64).toBeUndefined();
   });

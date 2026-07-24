@@ -561,7 +561,7 @@ El cutover incrementa/revalida `token_version`, fuerza logout y no copia `_etag`
 | `codigoImportacion` | `legacy_import_code` | Preservar nullable; 37/37 históricos. No participa en identidad/filtros. |
 | `estadoImportacion` | `legacy_import_status` | Preservar nullable; 37/37 históricos. No imponer catálogo sin evidencia funcional. |
 | `variante` | `legacy_variant` | Preservar nullable; 37/37 históricos. No participa en unicidad. |
-| `pdfBase64` | Azure Blob + `content.files` | Decodificar; firma `%PDF`; bytes 1..1.500.000; SHA-256. |
+| `pdfBase64` | S3/MinIO + `content.files` | Decodificar; firma `%PDF`; bytes 1..1.500.000; SHA-256. |
 | `pdfNombreOriginal`, `pdfMimeType` | `content.files.original_name`, `mime_type` | MIME debe ser `application/pdf`. |
 | `createdAt`, `createdBy`, `updatedAt`, `updatedBy`, `deletedAt`, `deletedBy` | auditoría/soft delete | Parsear UTC; preservar actor. |
 | PDF actual | `content.print_format_files` | `version_no=1`, `is_current=1`. |
@@ -583,7 +583,7 @@ Mapear `id`→`source_id`, `nombre`→`name/name_normalized`, `slug`→`slug/slu
 | `titulo`, `slug`, `descripcion` | columnas del archivo | Slug global unique por endpoint legacy. |
 | `archivoMimeType` | `asset_kind`, `content.files.mime_type` | `video/*` permitido solo para MP4/M4V/MOV/WebM y firma válida; demás extensiones aprobadas se clasifican `document`. |
 | `archivoBase64` | Blob + `content.files` | Compatibilidad de cargas legacy: decodificar, validar extensión/MIME/firma y hash; documentos 1..8.000.000 bytes, videos 1..100.000.000. No llega a SQL operacional. |
-| `archivoBlobContainer`, `archivoBlobName`, `archivoSha256` | `content.files` | Para cargas nuevas ya alojadas en Blob: verificar objeto/tamaño/hash y enlazar sin persistir SAS. |
+| `archivoBlobContainer`, `archivoBlobName`, `archivoSha256` | `content.files` | Campos de origen legado. Transferir al bucket S3/MinIO, verificar objeto/tamaño/hash y persistir `storage_bucket`/`object_key` sin guardar URL firmada. |
 | `archivoNombreOriginal`, `archivoMimeType`, `archivoBytes` | metadata `content.files` | Bytes deben coincidir con contenido real; discrepancia = error. |
 | `activo`, `status` | columnas de documento | Reconciliar; `active|inactive|deleted`. |
 | `sectionName`, `sectionSlug` | raw + validación | Comparar con sección; no duplicar como vigente. |

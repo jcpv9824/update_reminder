@@ -1,6 +1,6 @@
 # Programador de Actualizaciones del ERP
 
-Aplicación web para gestionar las actualizaciones programadas de los clientes del ERP, sus dominios y bases de datos. Construida sobre Microsoft Azure (Static Web Apps, Azure Functions, SQL Server, Azure Blob Storage y Key Vault). Toda la interfaz está en español.
+Aplicación web para gestionar las actualizaciones programadas de los clientes del ERP, sus dominios y bases de datos. Usa Azure Static Web Apps, Azure Functions, SQL Server, almacenamiento de objetos S3/MinIO administrado por el proveedor de infraestructura y Key Vault. Toda la interfaz está en español.
 
 ## Características
 

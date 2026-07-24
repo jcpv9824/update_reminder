@@ -16,7 +16,7 @@ import {
 } from "../lib/managementAccess";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import { readSqlPrintFormats } from "../lib/printFormatsSqlRepository";
-import { createPublicDownloadBlobUrl, deletePublicDownloadBlobIfUnreferenced, isPublicDownloadBlobStorageConfigured, storePublicDownloadBlob } from "../lib/publicDownloadStorage";
+import { createPrivateObjectUrl, deletePrivateObjectIfUnreferenced, isObjectStorageConfigured, storePrivateObject } from "../lib/objectStorage";
 import { formatHasSource, getFormatSourceIds, getFormatSourceNames, normalizeSourceIds, withFormatSources } from "../lib/printFormatSources";
 import type { FormatoImpresionRecord, FuenteFormatoRecord } from "../types/models";
 import { findSqlLicenseModule } from "../lib/licensingSqlWriteRepository";
@@ -84,7 +84,7 @@ function sanitizeFuente(record: FuenteFormatoRecord) {
 }
 
 function sanitizeFormato(record: FormatoImpresionRecord) {
-  const { pdfBase64, pdfBlobContainer, pdfBlobName, pdfSha256, pdfStorageProvider, ...rest } = record;
+  const { pdfBase64, pdfStorageBucket, pdfObjectKey, pdfObjectEtag, pdfSha256, pdfStorageProvider, ...rest } = record;
   return {
     ...rest,
     fuenteIds: getFormatSourceIds(record),
@@ -184,28 +184,29 @@ async function readFormato(id: string): Promise<FormatoImpresionRecord | null> {
 }
 
 async function attachSqlPdfStorage(record: FormatoImpresionRecord, bytes: Buffer): Promise<FormatoImpresionRecord> {
-  if (!isPublicDownloadBlobStorageConfigured()) {
-    throw Object.assign(new Error("Configure Azure Blob Storage antes de guardar formatos PDF en SQL."), { status: 503 });
+  if (!isObjectStorageConfigured()) {
+    throw Object.assign(new Error("Configure el almacenamiento S3/MinIO antes de guardar formatos PDF en SQL."), { status: 503 });
   }
   const sha256 = createHash("sha256").update(bytes).digest("hex");
-  const stored = await storePublicDownloadBlob({ bytes, sha256, extension: ".pdf", mimeType: "application/pdf" });
+  const stored = await storePrivateObject({ bytes, sha256, extension: ".pdf", mimeType: "application/pdf" });
   return {
     ...record,
     pdfBase64: undefined,
     pdfBytes: bytes.length,
-    pdfStorageProvider: stored.archivoStorageProvider,
-    pdfBlobContainer: stored.archivoBlobContainer,
-    pdfBlobName: stored.archivoBlobName,
-    pdfSha256: stored.archivoSha256,
+    pdfStorageProvider: stored.storageProvider,
+    pdfStorageBucket: stored.storageBucket,
+    pdfObjectKey: stored.storageObjectKey,
+    pdfObjectEtag: stored.storageObjectEtag,
+    pdfSha256: stored.storageSha256,
   };
 }
 
 async function compensateUnreferencedPdf(record: FormatoImpresionRecord): Promise<void> {
-  if (record.pdfStorageProvider !== "azure_blob" || !record.pdfBlobContainer || !record.pdfBlobName) return;
+  if (record.pdfStorageProvider !== "s3" || !record.pdfStorageBucket || !record.pdfObjectKey) return;
   try {
-    await deletePublicDownloadBlobIfUnreferenced({
-      containerName: record.pdfBlobContainer,
-      blobName: record.pdfBlobName,
+    await deletePrivateObjectIfUnreferenced({
+      bucket: record.pdfStorageBucket,
+      objectKey: record.pdfObjectKey,
     });
   } catch {
     // Preserve the original SQL failure; the orphan scan can retry if SQL was unavailable.
@@ -231,13 +232,13 @@ async function readSelectedFuentes(ids: string[]): Promise<FuenteFormatoRecord[]
 }
 
 async function pdfResponse(formato: FormatoImpresionRecord, disposition: "inline" | "attachment"): Promise<HttpResponseInit> {
-  if (formato.pdfBlobContainer && formato.pdfBlobName) {
+  if (formato.pdfStorageProvider === "s3" && formato.pdfStorageBucket && formato.pdfObjectKey) {
     return {
       status: 302,
       headers: {
-        Location: await createPublicDownloadBlobUrl({
-          containerName: formato.pdfBlobContainer,
-          blobName: formato.pdfBlobName,
+        Location: await createPrivateObjectUrl({
+          bucket: formato.pdfStorageBucket,
+          objectKey: formato.pdfObjectKey,
           mimeType: "application/pdf",
           filename: formato.pdfNombreOriginal,
           disposition,

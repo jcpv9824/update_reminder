@@ -17,7 +17,7 @@ Este documento reemplaza las propuestas anteriores. Fue contrastado con el códi
 3. **Normalizar datos operativos.** Arrays, scopes, roles, responsables, destinatarios y licencias se convierten en tablas hijas. JSON se reserva para auditoría sanitizada, staging y metadata extensible.
 4. **Conservar snapshots históricos.** Nombres de cliente, dominio, compañía, destino y correo del actor se mantienen en tareas/auditoría aunque también exista FK.
 5. **Key Vault sigue siendo la fuente de secretos.** SQL guarda solo nombres de secretos o hashes; nunca contraseñas SMTP/SQL, refresh tokens, JWT secrets ni valores recuperados de Key Vault.
-6. **Los archivos salen de la fila operativa.** Los Base64 actuales de formatos y descargas se migran a Azure Blob Storage privado. SQL conserva metadata, hash, versión y clave del blob. Esto evita inflar backups, log y memoria de Azure Functions.
+6. **Los archivos salen de la fila operativa.** Los Base64 actuales de formatos y descargas se migran al bucket privado S3/MinIO del proveedor. SQL conserva metadata, hash, versión, bucket y object key. Esto evita inflar backups, log y memoria de Azure Functions.
 7. **Permisos y visibilidad son conceptos separados.** Los permisos de opción/acción se normalizan; la visibilidad de tareas por tipo queda en el rol con niveles `none`, `assigned`, `all`.
 8. **Historial append-only.** Auditoría, eventos de implementación e historial de estados no se actualizan ni eliminan desde la cuenta runtime.
 9. **UTC para timestamps; `DATE` para fechas de negocio.** Zona de negocio `America/Bogota`; `DATETIME2(3)` en UTC y `DATE` para fechas de tarea/inicio/fin.
@@ -372,7 +372,7 @@ Las plantillas del proceso siguen versionadas en código. Al crear una implement
 | Decisión | Recomendación |
 |---|---|
 | Plataforma | Cerrada: SQL Server 2019 Standard, compatibility 150, provisto en `PortalSAGWeb`. |
-| Archivos | Blob Storage privado + metadata SQL; no `VARBINARY(MAX)`. |
+| Archivos | Bucket privado S3/MinIO + metadata SQL; no `VARBINARY(MAX)`. |
 | Rate limiting | Tabla SQL con `ROWVERSION` y purga para el MVP; reevaluar Redis con métricas de contención/escala horizontal. |
 | Settings | Modelo normalizado descrito; conservar JSON raw solo en migración. |
 | Implementaciones | Crear schema/tablas ahora vacíos o reservar DDL en una migración inmediatamente posterior. |

@@ -31,7 +31,8 @@ $expected = @(
   '020_allow_outbox_attempt_completion.sql',
   '021_atomic_operational_refresh.sql',
   '022_refresh_print_source_assignments.sql',
-  '023_enable_masters_report_outbox.sql'
+  '023_enable_masters_report_outbox.sql',
+  '024_s3_object_storage.sql'
 )
 
 $resolvedSqlDirectory = (Resolve-Path -LiteralPath $SqlDirectory).Path

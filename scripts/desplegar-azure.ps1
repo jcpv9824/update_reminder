@@ -8,7 +8,12 @@ param(
   [string]$SqlServerHost  = "data14.sagerp.co,54103",
   [string]$SqlDatabase    = "PortalSAGWeb",
   [string]$SqlUsername    = "SAGWebDev",
-  [string]$SqlPasswordSecretName = "portal-sag-sql-runtime-password"
+  [string]$SqlPasswordSecretName = "portal-sag-sql-runtime-password",
+  [Parameter(Mandatory=$true)][string]$ObjectStorageEndpoint,
+  [Parameter(Mandatory=$true)][string]$ObjectStorageBucket,
+  [string]$ObjectStorageRegion = "us-east-1",
+  [string]$ObjectStorageAccessKeySecretName = "portal-sag-object-storage-access-key",
+  [string]$ObjectStorageSecretKeySecretName = "portal-sag-object-storage-secret-key"
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,6 +39,13 @@ $sqlSecretUri = az keyvault secret show --vault-name $keyVaultName --name $SqlPa
 if (-not $sqlSecretUri) {
   throw "Cree primero el secreto '$SqlPasswordSecretName' en Key Vault con la contraseña del login SQL de runtime."
 }
+Write-Host "Cree también en Key Vault los secretos '$ObjectStorageAccessKeySecretName' y '$ObjectStorageSecretKeySecretName'."
+Read-Host "Presione Enter cuando ambos secretos S3/MinIO existan" | Out-Null
+$objectAccessKeyUri = az keyvault secret show --vault-name $keyVaultName --name $ObjectStorageAccessKeySecretName --query id --output tsv
+$objectSecretKeyUri = az keyvault secret show --vault-name $keyVaultName --name $ObjectStorageSecretKeySecretName --query id --output tsv
+if (-not $objectAccessKeyUri -or -not $objectSecretKeyUri) {
+  throw "Cree primero ambos secretos S3/MinIO en Key Vault."
+}
 
 Write-Host "==> Creando cuenta de almacenamiento $storageAccount..."
 az storage account create --name $storageAccount --resource-group $ResourceGroup --location $Location --sku Standard_LRS | Out-Null
@@ -53,11 +65,6 @@ $keyVaultId          = az keyvault show --name $keyVaultName --resource-group $R
 
 Write-Host "==> Asignando rol Key Vault Secrets Officer..."
 az role assignment create --assignee $functionPrincipalId --role "Key Vault Secrets Officer" --scope $keyVaultId | Out-Null
-$storageId = az storage account show --name $storageAccount --resource-group $ResourceGroup --query id --output tsv
-Write-Host "==> Asignando acceso privado a Blob Storage..."
-az role assignment create --assignee $functionPrincipalId --role "Storage Blob Data Contributor" --scope $storageId | Out-Null
-az storage container create --name "portal-sag-content" --account-name $storageAccount --auth-mode login | Out-Null
-
 Write-Host "==> Configurando variables de entorno..."
 $setupSecret = [Guid]::NewGuid().ToString("N")
 $rateLimitHashSecret = [Guid]::NewGuid().ToString("N") + [Guid]::NewGuid().ToString("N")
@@ -71,8 +78,14 @@ az functionapp config appsettings set --name $functionApp --resource-group $Reso
   "SQL_USERNAME=$SqlUsername" `
   "SQL_PASSWORD=@Microsoft.KeyVault(SecretUri=$sqlSecretUri)" `
   "KEY_VAULT_URL=https://$keyVaultName.vault.azure.net/" `
-  "PUBLIC_DOWNLOADS_STORAGE_ACCOUNT_URL=https://$storageAccount.blob.core.windows.net" `
-  "PUBLIC_DOWNLOADS_STORAGE_CONTAINER=portal-sag-content" `
+  "OBJECT_STORAGE_ENDPOINT=$ObjectStorageEndpoint" `
+  "OBJECT_STORAGE_REGION=$ObjectStorageRegion" `
+  "OBJECT_STORAGE_BUCKET=$ObjectStorageBucket" `
+  "OBJECT_STORAGE_PREFIX=portal-sag/runtime" `
+  "OBJECT_STORAGE_FORCE_PATH_STYLE=true" `
+  "OBJECT_STORAGE_SIGNED_URL_SECONDS=300" `
+  "OBJECT_STORAGE_ACCESS_KEY_ID=@Microsoft.KeyVault(SecretUri=$objectAccessKeyUri)" `
+  "OBJECT_STORAGE_SECRET_ACCESS_KEY=@Microsoft.KeyVault(SecretUri=$objectSecretKeyUri)" `
   "APP_TIMEZONE=America/Bogota" `
   "DEV_AUTH_ENABLED=false" `
   "RATE_LIMIT_HASH_SECRET=$rateLimitHashSecret" `

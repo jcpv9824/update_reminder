@@ -2,7 +2,7 @@
 
 ## Dictamen
 
-El runtime de Portal SAG Web queda implementado como SQL-only. No hay importaciones del SDK, adaptador de contenedores, fallback, lectura sombra ni escritura documental dentro de `api/src` fuera de pruebas negativas del selector. Los archivos se mantienen en Azure Blob Storage privado y los secretos en Azure Key Vault.
+El runtime de Portal SAG Web queda implementado como SQL-only. No hay importaciones del SDK, adaptador de contenedores, fallback, lectura sombra ni escritura documental dentro de `api/src` fuera de pruebas negativas del selector. El almacenamiento de archivos se está desacoplando hacia S3/MinIO administrado por el proveedor y los secretos permanecen en Key Vault.
 
 Estado operativo de este cambio: **listo para rehearsal**. La cuenta anterior no puede eliminarse todavía porque la ventana productiva de cero actividad termina como mínimo el `2026-07-30T22:26:43Z`.
 
@@ -63,7 +63,7 @@ Los controladores antiguos de rollback hacia la base retirada deben archivarse d
 1. restaurar el paquete SQL-only anterior;
 2. restaurar App Settings exportados;
 3. restaurar SQL desde backup si hay corrupción de datos;
-4. recuperar versiones de Blob Storage si hay pérdida de archivos.
+4. recuperar versiones del bucket S3/MinIO si hay pérdida de archivos.
 
 ## Pasos pendientes antes de eliminar la cuenta
 
@@ -82,7 +82,7 @@ Los controladores antiguos de rollback hacia la base retirada deben archivarse d
 ## Elementos que no se deben eliminar
 
 - SQL Server `PortalSAGWeb`.
-- Azure Blob Storage y el contenedor privado.
+- El bucket privado S3/MinIO del proveedor, una vez transferido y reconciliado.
 - Azure Key Vault.
 - Identidad administrada y sus permisos de Key Vault/Blob.
 - Application Insights y alertas.

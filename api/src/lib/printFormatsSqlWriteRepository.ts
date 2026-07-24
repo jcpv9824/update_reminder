@@ -86,23 +86,24 @@ export async function deleteSqlPrintSource(record: FuenteFormatoRecord, actor: A
 }
 
 async function ensurePdfFile(transaction: sql.Transaction, record: FormatoImpresionRecord, actorId: string): Promise<number> {
-  if (record.pdfStorageProvider !== "azure_blob" || !record.pdfBlobContainer || !record.pdfBlobName || !record.pdfSha256) {
-    throw Object.assign(new Error("SQL requiere que el PDF esté almacenado en Azure Blob."), { status: 503 });
+  if (record.pdfStorageProvider !== "s3" || !record.pdfStorageBucket || !record.pdfObjectKey || !record.pdfSha256) {
+    throw Object.assign(new Error("SQL requiere que el PDF esté almacenado en S3/MinIO."), { status: 503 });
   }
   const sha = Buffer.from(record.pdfSha256, "hex");
   const request = new sql.Request(transaction);
-  request.input("container", sql.NVarChar(100), record.pdfBlobContainer);
-  request.input("blobName", sql.NVarChar(1024), record.pdfBlobName);
+  request.input("bucket", sql.NVarChar(255), record.pdfStorageBucket);
+  request.input("objectKey", sql.NVarChar(1024), record.pdfObjectKey);
+  request.input("objectEtag", sql.NVarChar(200), record.pdfObjectEtag ?? null);
   request.input("originalName", sql.NVarChar(260), record.pdfNombreOriginal);
   request.input("byteCount", sql.BigInt, record.pdfBytes ?? 1);
   request.input("sha", sql.VarBinary(32), sha);
   request.input("actorId", sql.NVarChar(150), actorId);
   const result = await request.query<{ file_key: number }>(`
     DECLARE @fileKey BIGINT=(SELECT file_key FROM content.files WITH (UPDLOCK,HOLDLOCK)
-      WHERE storage_provider='azure_blob' AND storage_container=@container AND blob_name=@blobName);
+      WHERE storage_provider='s3' AND storage_bucket=@bucket AND object_key=@objectKey);
     IF @fileKey IS NULL BEGIN
-      INSERT content.files(storage_provider,storage_container,blob_name,original_name,mime_type,byte_count,content_sha256,created_by)
-      VALUES('azure_blob',@container,@blobName,@originalName,N'application/pdf',@byteCount,@sha,@actorId);
+      INSERT content.files(storage_provider,storage_bucket,object_key,object_etag,original_name,mime_type,byte_count,content_sha256,created_by)
+      VALUES('s3',@bucket,@objectKey,@objectEtag,@originalName,N'application/pdf',@byteCount,@sha,@actorId);
       SET @fileKey=SCOPE_IDENTITY();
     END
     SELECT @fileKey AS file_key;

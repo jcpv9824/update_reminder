@@ -4,7 +4,7 @@ Estado: **fase 2 terminada y validada localmente; lista para rehearsal, no autor
 
 ## Objetivo
 
-Retirar `erpupdsch4645-cosmos` sin romper rutas poco frecuentes, timers, autenticación, archivos ni recuperación. SQL Server es la fuente operacional; Blob Storage conserva los archivos.
+Retirar `erpupdsch4645-cosmos` sin romper rutas poco frecuentes, timers, autenticación, archivos ni recuperación. SQL Server es la fuente operacional; los archivos migrarán al bucket privado S3/MinIO del proveedor.
 
 ## Fase 1 — canary de independencia
 
@@ -42,7 +42,7 @@ Un error `Dependencia Cosmos inesperada durante la ejecución SQL` detiene el re
 - Eliminadas todas las ramas `cosmos` y `dual-read` del runtime.
 - Eliminados `api/src/lib/cosmos.ts`, `api/src/lib/taskCleanup.ts` y `@azure/cosmos`.
 - Convertidos a SQL los maestros, seguridad, sesiones, rate limiting, auditoría, configuración, reportes, licencias, programaciones, tareas, timers, formatos y descargas.
-- Los binarios permanecen en Blob Storage privado; SQL conserva únicamente metadata y referencias.
+- Los binarios permanecen fuera de SQL. Durante la transición siguen en el almacenamiento legado y sólo se retira éste después de transferir y reconciliar cada objeto en S3/MinIO.
 - Retirados los scripts de exportación, seed y saneamiento que dependían del SDK documental.
 - Añadido `npm run check:no-cosmos-runtime`.
 - API compilada y 379 pruebas backend aprobadas.

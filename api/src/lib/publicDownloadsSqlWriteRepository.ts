@@ -39,14 +39,15 @@ async function lockSection(transaction: sql.Transaction, id: string): Promise<{ 
 }
 
 async function ensureFile(transaction: sql.Transaction, record: PublicDownloadDocumentRecord, actorId: string): Promise<number> {
-  if (record.archivoStorageProvider !== "azure_blob" || !record.archivoBlobContainer || !record.archivoBlobName || !record.archivoSha256) {
-    throw Object.assign(new Error("SQL requiere una ubicación privada de Azure Blob verificada."), { status: 503 });
+  if (record.archivoStorageProvider !== "s3" || !record.archivoStorageBucket || !record.archivoObjectKey || !record.archivoSha256) {
+    throw Object.assign(new Error("SQL requiere una ubicación privada S3/MinIO verificada."), { status: 503 });
   }
   const sha = Buffer.from(record.archivoSha256, "hex");
   if (sha.length !== 32) throw Object.assign(new Error("La huella SHA-256 del archivo no es válida."), { status: 400 });
   const request = new sql.Request(transaction);
-  request.input("container", sql.NVarChar(100), record.archivoBlobContainer);
-  request.input("blobName", sql.NVarChar(1024), record.archivoBlobName);
+  request.input("bucket", sql.NVarChar(255), record.archivoStorageBucket);
+  request.input("objectKey", sql.NVarChar(1024), record.archivoObjectKey);
+  request.input("objectEtag", sql.NVarChar(200), record.archivoObjectEtag ?? null);
   request.input("originalName", sql.NVarChar(260), record.archivoNombreOriginal);
   request.input("mimeType", sql.NVarChar(160), record.archivoMimeType);
   request.input("byteCount", sql.BigInt, record.archivoBytes);
@@ -54,15 +55,15 @@ async function ensureFile(transaction: sql.Transaction, record: PublicDownloadDo
   request.input("createdBy", sql.NVarChar(150), actorId);
   const result = await request.query<{ file_key: number }>(`
     DECLARE @fileKey BIGINT=(SELECT file_key FROM content.files WITH (UPDLOCK,HOLDLOCK)
-      WHERE storage_provider='azure_blob' AND storage_container=@container AND blob_name=@blobName);
+      WHERE storage_provider='s3' AND storage_bucket=@bucket AND object_key=@objectKey);
     IF @fileKey IS NULL
     BEGIN
-      INSERT content.files(storage_provider,storage_container,blob_name,original_name,mime_type,byte_count,content_sha256,created_by)
-      VALUES('azure_blob',@container,@blobName,@originalName,@mimeType,@byteCount,@sha,@createdBy);
+      INSERT content.files(storage_provider,storage_bucket,object_key,object_etag,original_name,mime_type,byte_count,content_sha256,created_by)
+      VALUES('s3',@bucket,@objectKey,@objectEtag,@originalName,@mimeType,@byteCount,@sha,@createdBy);
       SET @fileKey=SCOPE_IDENTITY();
     END
     ELSE IF EXISTS (SELECT 1 FROM content.files WHERE file_key=@fileKey AND (content_sha256<>@sha OR byte_count<>@byteCount))
-      THROW 51072,N'El blob existente no coincide con el archivo verificado.',1;
+      THROW 51072,N'El objeto existente no coincide con el archivo verificado.',1;
     SELECT @fileKey AS file_key;
   `);
   return result.recordset[0].file_key;

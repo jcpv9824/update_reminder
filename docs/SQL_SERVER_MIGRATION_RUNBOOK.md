@@ -14,7 +14,7 @@ Estado: **cutover productivo a SQL completado y verificado el 2026-07-23**
 - La corrida certificada `2` está `completed`: 2.987 documentos raw/stage, 66 reconciliaciones sin fallos y 0 validaciones críticas abiertas.
 - La carga operacional contiene 7 usuarios, 40 clientes, 45 dominios, 55 bases, 11 programaciones, 341 tareas, 2.251 auditorías, 2 activos públicos y 39 archivos.
 - La base tiene 0 FK inválidas/no confiables, 0 checks inválidos/no confiables y 0 triggers de tabla deshabilitados.
-- Los 39 objetos privados (968.128 bytes) permanecen en Azure Blob Storage; SQL conserva metadata, hashes, versiones y referencias, no los bytes.
+- Los 39 objetos privados (968.128 bytes) deben transferirse y reconciliarse en el bucket S3/MinIO del proveedor; SQL conserva metadata, hashes, versiones y referencias, no los bytes.
 - El probe productivo verificó catálogos públicos, un archivo Blob privado mediante SAS de delegación, frontera no autenticada `401`, bloqueo de mutaciones durante mantenimiento y reapertura posterior.
 - La identidad administrada conserva acceso de datos limitado al container y recibió `Storage Blob Delegator` al nivel de la cuenta, requisito para generar SAS de delegación sin claves de cuenta.
 - `SAGWebDev` conserva `db_owner` y `CONTROL` conforme a la excepción explícita del propietario; ningún script de cutover redujo sus permisos.
@@ -66,7 +66,7 @@ La migración termina únicamente cuando SQL sea la fuente de verdad aprobada, C
 | Dueño del portal | Aprobar decisiones de negocio, ventanas, go/no-go y resolución de anomalías. |
 | Arquitecto de datos/solución | Diseñar y revisar DDL, mapeos, orden de carga, validación, cutover y rollback. |
 | DBA/proveedor | Entregar motor, acceso, backup/PITR, red, capacidad, monitoreo y restore probado. |
-| Responsable Azure | Conectividad de Function App, identidad administrada, Key Vault y Blob Storage. |
+| Responsable de infraestructura | Conectividad de Function App, Key Vault y endpoint/bucket S3/MinIO. |
 | Equipo de pruebas | Validar equivalencia funcional y permisos con usuarios representativos. |
 
 Codex puede preparar, ejecutar y verificar comandos dentro del workspace cuando el usuario entregue el acceso y autorice cada acción con impacto. El proveedor conserva las acciones que solo pueda realizar en su infraestructura.
@@ -86,7 +86,7 @@ Solicitar por canal seguro:
 - Collation, tamaño/tier, límites, backup/PITR, retención, RPO y RTO.
 - Confirmación de TLS y cifrado en reposo.
 - Si la base está vacía o contiene objetos/datos que deban respetarse.
-- Cuenta/container de Blob Storage o autorización para crearlos.
+- Endpoint HTTPS, región, bucket S3/MinIO y credenciales limitadas al prefijo del portal.
 
 Guardar secretos directamente en Key Vault o variables de sesión. En el workspace solo se documentan nombres de variables y nombres de secretos.
 
@@ -135,7 +135,7 @@ La base se acepta para construcción cuando:
 - existen permisos separados o un plan para crearlos;
 - objetos existentes están inventariados y no habrá colisiones;
 - capacidad inicial y crecimiento son suficientes;
-- existe estrategia de archivos en Blob Storage.
+- existe estrategia de archivos en S3/MinIO.
 
 Si falla un punto, se documenta y se corrige antes de DDL.
 
@@ -162,7 +162,7 @@ Cerrar y registrar:
 
 - Azure SQL/SQL Server y ambiente que se usará para pruebas.
 - Collation final.
-- Blob Storage privado para archivos Base64.
+- Bucket privado S3/MinIO para archivos Base64 migrados.
 - SQL o Redis para rate limits.
 - Crear ahora o después las tablas vacías de `implementation`.
 - RPO/RTO, ventana máxima y período read-only de Cosmos.
@@ -179,7 +179,7 @@ Crear/probar en no-producción:
 - identidad runtime con DML solo en schemas autorizados;
 - identidad read-only/reporting con vistas sanitizadas;
 - permisos append-only para `audit` e `implementation_events`;
-- Blob Storage privado con versionado/lifecycle y acceso por identidad administrada;
+- bucket privado S3/MinIO con versionado/retención y credenciales de mínimo privilegio en Key Vault;
 - secreto de conexión o configuración Entra ID en Key Vault;
 - métricas de conexiones, CPU, storage, deadlocks, errores y queries lentas.
 
@@ -580,7 +580,7 @@ Compartir únicamente datos no secretos en el chat:
 - método de autenticación disponible;
 - estado de firewall/private endpoint;
 - si existe ambiente no productivo;
-- si Blob Storage ya está disponible;
+- si el endpoint y bucket S3/MinIO ya están disponibles;
 - ventana y tolerancia de mantenimiento;
 - quién puede aprobar DDL, backups y cutover.
 

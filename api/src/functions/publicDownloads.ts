@@ -16,11 +16,11 @@ import {
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import { decodePublicDownloadFile } from "../lib/publicDownloadFiles";
 import {
-  createPublicDownloadBlobUrl,
-  deletePublicDownloadBlobIfUnreferenced,
-  isPublicDownloadBlobStorageConfigured,
-  storePublicDownloadBlob,
-} from "../lib/publicDownloadStorage";
+  createPrivateObjectUrl,
+  deletePrivateObjectIfUnreferenced,
+  isObjectStorageConfigured,
+  storePrivateObject,
+} from "../lib/objectStorage";
 import { readSqlPublicDownloads } from "../lib/publicDownloadsSqlRepository";
 import {
   createSqlPublicDownloadDocument,
@@ -109,7 +109,7 @@ function sanitizeSection(record: PublicDownloadSectionRecord) {
 
 function sanitizeDocument(record: PublicDownloadDocumentRecord) {
   const {
-    type, archivoBase64, archivoBlobContainer, archivoBlobName, archivoBlobEtag, archivoSha256,
+    type, archivoBase64, archivoStorageBucket, archivoObjectKey, archivoObjectEtag, archivoSha256,
     archivoStorageProvider, _rid, _self, _etag, _attachments, _ts, ...rest
   } = record as PublicDownloadDocumentRecord & Record<string, unknown>;
   return {
@@ -134,22 +134,27 @@ async function storedFileFields(file: ReturnType<typeof decodePublicDownloadFile
     archivoBytes: file.byteCount,
     archivoSha256: file.sha256,
   };
-  if (!isPublicDownloadBlobStorageConfigured()) {
-    throw Object.assign(new Error("Configure Azure Blob Storage antes de guardar archivos en SQL."), { status: 503 });
+  if (!isObjectStorageConfigured()) {
+    throw Object.assign(new Error("Configure el almacenamiento S3/MinIO antes de guardar archivos en SQL."), { status: 503 });
   }
+  const stored = await storePrivateObject(file);
   return {
     ...shared,
-    ...(await storePublicDownloadBlob(file)),
+    archivoStorageProvider: stored.storageProvider,
+    archivoStorageBucket: stored.storageBucket,
+    archivoObjectKey: stored.storageObjectKey,
+    archivoObjectEtag: stored.storageObjectEtag,
+    archivoSha256: stored.storageSha256,
     archivoBase64: undefined,
   };
 }
 
-async function compensateUnreferencedBlob(record: Partial<PublicDownloadDocumentRecord>): Promise<void> {
-  if (record.archivoStorageProvider !== "azure_blob" || !record.archivoBlobContainer || !record.archivoBlobName) return;
+async function compensateUnreferencedObject(record: Partial<PublicDownloadDocumentRecord>): Promise<void> {
+  if (record.archivoStorageProvider !== "s3" || !record.archivoStorageBucket || !record.archivoObjectKey) return;
   try {
-    await deletePublicDownloadBlobIfUnreferenced({
-      containerName: record.archivoBlobContainer,
-      blobName: record.archivoBlobName,
+    await deletePrivateObjectIfUnreferenced({
+      bucket: record.archivoStorageBucket,
+      objectKey: record.archivoObjectKey,
     });
   } catch {
     // The database error remains authoritative; an orphan scan can retry cleanup if SQL was unavailable.
@@ -189,13 +194,13 @@ async function hasDuplicateDocumentSlug(slug: string, exceptId?: string): Promis
 }
 
 async function downloadResponse(record: PublicDownloadDocumentRecord): Promise<HttpResponseInit> {
-  if (record.archivoBlobContainer && record.archivoBlobName) {
+  if (record.archivoStorageProvider === "s3" && record.archivoStorageBucket && record.archivoObjectKey) {
     return {
       status: 302,
       headers: {
-        Location: await createPublicDownloadBlobUrl({
-          containerName: record.archivoBlobContainer,
-          blobName: record.archivoBlobName,
+        Location: await createPrivateObjectUrl({
+          bucket: record.archivoStorageBucket,
+          objectKey: record.archivoObjectKey,
           mimeType: record.archivoMimeType,
           filename: record.archivoNombreOriginal,
         }),
@@ -376,7 +381,7 @@ app.http("adminPublicDownloadDocumentsCreate", {
       try {
         return created(sanitizeDocument(await createSqlPublicDownloadDocument(record, { id: user.id, email: user.email })));
       } catch (error) {
-        await compensateUnreferencedBlob(record);
+        await compensateUnreferencedObject(record);
         throw error;
       }
     } catch (e) {
@@ -437,10 +442,10 @@ app.http("adminPublicDownloadDocumentsUpdate", {
       };
       try {
         const result = await updateSqlPublicDownloadDocument(current, updated, { id: user.id, email: user.email }, replacedFile);
-        if (!result && replacedFile) await compensateUnreferencedBlob(updated);
+        if (!result && replacedFile) await compensateUnreferencedObject(updated);
         return result ? ok(sanitizeDocument(result)) : notFound("Archivo no encontrado.");
       } catch (error) {
-        if (replacedFile) await compensateUnreferencedBlob(updated);
+        if (replacedFile) await compensateUnreferencedObject(updated);
         throw error;
       }
     } catch (e) {
