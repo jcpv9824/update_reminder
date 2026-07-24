@@ -12,15 +12,15 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "security:audit:prod": "npm audit --omit=dev --audit-level=moderate",
-    "security:audit": "npm audit --audit-level=moderate"
+    "security:audit:prod": "node scripts/audit-dependencies.mjs --omit-dev",
+    "security:audit": "node scripts/audit-dependencies.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.40.0",
     "lucide-react": "^1.24.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.30.4"
+    "react-router-dom": "^7.18.1"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.4.2",
