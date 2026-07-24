@@ -16,18 +16,6 @@ vi.mock("../api/client", () => ({
   apiUrl: (path: string) => `/api${path}`,
 }));
 
-const sections = [{
-  id: "section_manuals",
-  nombre: "Manuales",
-  slug: "manuales",
-  activa: true,
-  status: "active",
-  createdAt: "",
-  createdBy: "admin",
-  updatedAt: "",
-  updatedBy: "admin",
-}];
-
 function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={client}><DescargasPublicasAdminPage /></QueryClientProvider>);
@@ -38,17 +26,17 @@ beforeEach(() => {
   apiMock.post.mockReset();
   apiMock.put.mockReset();
   apiMock.del.mockReset();
-  apiMock.get.mockImplementation((path: string) => Promise.resolve(path.endsWith("/sections") ? sections : []));
+  apiMock.get.mockResolvedValue([]);
 });
 
 describe("DescargasPublicasAdminPage", () => {
-  it("distingue las secciones de los archivos y usa Archivos como concepto general", async () => {
+  it("administra únicamente archivos descargables sin secciones", async () => {
     renderPage();
 
-    expect(await screen.findByRole("button", { name: "Archivos" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Secciones" })).toBeInTheDocument();
-    expect(screen.getByText(/Las secciones organizan los archivos públicos/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Nuevo archivo" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Nuevo archivo" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Secciones" })).toBeNull();
+    expect(screen.queryByText(/Las secciones organizan/i)).toBeNull();
+    expect(screen.getByText(/Todos los endpoints de esta opción fuerzan la descarga/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Nuevo documento" })).toBeNull();
   });
 
@@ -68,8 +56,13 @@ describe("DescargasPublicasAdminPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
 
     await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith(
-      "/public-downloads/admin/documents",
-      expect.objectContaining({ titulo: "Video de instalación", archivoNombreOriginal: "instalacion.mp4", archivoMimeType: "video/mp4" })
+      "/public-downloads/admin/files",
+      expect.objectContaining({
+        titulo: "Video de instalación",
+        archivoNombreOriginal: "instalacion.mp4",
+        archivoMimeType: "video/mp4",
+      })
     ));
+    expect(apiMock.post.mock.calls[0][1]).not.toHaveProperty("sectionId");
   });
 });

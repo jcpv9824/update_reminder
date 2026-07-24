@@ -3,7 +3,7 @@
 Proyecto: **Programador de Actualizaciones ERP**  
 Fecha de descubrimiento original: 2026-05-16
 
-Última revisión contra código: **2026-07-14**
+Última revisión contra código: **2026-07-24**
 
 Objetivo: documentar el modelo actual Cosmos/TypeScript/API/UI antes de proponer o implementar una migración a base de datos relacional.  
 
@@ -19,7 +19,8 @@ Objetivo: documentar el modelo actual Cosmos/TypeScript/API/UI antes de proponer
 | Sesiones refresh rotatorias | `authSessions`, `authSessions.ts` | Tabla técnica con hashes, expiración, revocación, reemplazo y concurrencia. |
 | Rate limiting distribuido | `securityRateLimits`, `rateLimit.ts` | Redis o tabla técnica transaccional; no se migran registros. |
 | Formatos de impresión | `fuentesFormatos`, `formatosImpresion` | Fuentes, formatos, licencias y archivos versionados fuera de SQL. |
-| Descargas públicas | `publicDownloads` | Separar secciones/documentos por discriminator; archivos a Blob. |
+| Descargas públicas | `publicDownloads` | Migrar documentos/videos como descargas forzadas; conservar secciones solo como evidencia histórica. |
+| Archivos públicos | módulo SQL nuevo | Agregado separado para imágenes/PDF/videos visualizados inline; sin origen Cosmos. |
 | Nuevas alertas | settings, timers, `emailNotifications` | Configuración y destinatarios normalizados; idempotencia por índice unique. |
 | Gestión de Implementaciones futura | `docs/implementaciones/*` | Schema reservado `implementation`; todavía no existe persistencia runtime. |
 

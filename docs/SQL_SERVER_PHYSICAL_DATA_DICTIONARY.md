@@ -130,11 +130,13 @@ Updates reemplazan el agregado completo en una transacción con rowversion; el r
 | `print_formats` | Patrón entidad; fuente primaria de compatibilidad, name/normalizado, description, size/custom size, license flag/module FK, tres `legacy_*` nullable, active/status. |
 | `print_format_source_assignments` | PK `(print_format_key,print_format_source_key)`; orden único por formato; FK a formato/fuente; 1–50 fuentes y la primaria siempre incluida. Índice inverso por fuente para catálogo público. |
 | `print_format_files` | PK `(print_format_key,version_no)`; file FK, is_current, created at/by; unique filtrado current. |
-| `public_download_sections` | Patrón entidad; name, slug normalizado, description, active/status. |
-| `public_download_documents` | Nombre físico legacy; representa archivos públicos. Patrón entidad; section FK, `asset_kind document|video`, title, slug global normalizado, description, active/status. |
+| `public_download_sections` | Evidencia histórica de la migración; fuera del runtime desde 025. |
+| `public_download_documents` | Nombre físico legacy; representa descargas forzadas. `section_key` nullable/legacy, `asset_kind document|video`, title, slug normalizado, description, active/status. |
 | `public_download_files` | PK `(document_key,version_no)`; file FK, is_current, created at/by. |
+| `public_files` | Archivos visualizables inline; `asset_kind image|video|pdf`, title, slug normalizado, description, active/status, `row_version`. |
+| `public_file_versions` | PK `(public_file_key,version_no)`; file FK, is_current, created at/by. |
 
-`content.v_public_download_assets` expone la semántica vigente de archivos (documentos y videos) junto con su versión Blob actual, sin Base64 ni SAS persistido.
+`content.v_public_download_assets` expone descargas forzadas; `content.v_public_files` expone archivos inline. Ninguna vista persiste Base64 ni URLs firmadas.
 
 Blob se escribe primero con clave temporal; la transacción SQL publica metadata/versión; una compensación elimina blobs huérfanos. URLs SAS nunca se persisten.
 

@@ -77,11 +77,12 @@ describe("AppLayout", () => {
     expect(screen.queryByRole("link", { name: "Dashboard" })).toBeNull();
   });
 
-  it("ubica Descargas Publicas en Implementacion y Formatos de Impresion en Configuracion", () => {
+  it("ubica Descargas Públicas y Archivos Públicos como opciones separadas de Implementación", () => {
     renderLayout();
     expect(screen.getByText("Implementación")).toBeInTheDocument();
     expandModule("Implementación");
     expect(screen.getByRole("link", { name: "Descargas Públicas" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Archivos Públicos" })).toBeInTheDocument();
     expect(screen.getByText("Configuración")).toBeInTheDocument();
     expandModule("Configuración");
     expect(screen.getByRole("link", { name: "Formatos de Impresión" })).toBeInTheDocument();

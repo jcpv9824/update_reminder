@@ -87,7 +87,8 @@ export const PERMISSION_CATALOG: PermissionModule[] = [
     id: "implementation",
     label: "Implementación",
     options: [
-      option("public_downloads", "Descargas Públicas", "implementation.public_downloads", [ACTIONS.view, { id: "create_section", label: "Crear Sección" }, { id: "edit_section", label: "Editar Sección" }, { id: "delete_section", label: "Eliminar Sección" }, { id: "create_document", label: "Crear Archivo" }, { id: "edit_document", label: "Editar Archivo" }, { id: "delete_document", label: "Eliminar Archivo" }, { id: "replace_file", label: "Reemplazar Archivo" }]),
+      option("public_downloads", "Descargas Públicas", "implementation.public_downloads", [ACTIONS.view, { id: "create_document", label: "Crear Archivo" }, { id: "edit_document", label: "Editar Archivo" }, { id: "delete_document", label: "Eliminar Archivo" }, { id: "replace_file", label: "Reemplazar Archivo" }]),
+      option("public_files", "Archivos Públicos", "implementation.public_files", [ACTIONS.view, { id: "create_file", label: "Crear Archivo" }, { id: "edit_file", label: "Editar Archivo" }, { id: "delete_file", label: "Eliminar Archivo" }, { id: "replace_file", label: "Reemplazar Archivo" }]),
     ],
   },
   {

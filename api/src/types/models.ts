@@ -229,12 +229,23 @@ export type FormatoImpresionRecord = {
   deletedBy?: string | null;
 };
 
-export type PublicDownloadSectionRecord = {
+export type PublicDownloadDocumentRecord = {
   id: string;
-  nombre: string;
+  titulo: string;
   slug: string;
   descripcion?: string;
-  activa: boolean;
+  assetKind?: "document" | "video";
+  archivoNombreOriginal: string;
+  archivoMimeType: string;
+  /** Legacy compatibility only. New files live in private S3-compatible object storage. */
+  archivoBase64?: string;
+  archivoBytes: number;
+  archivoStorageProvider?: "s3";
+  archivoStorageBucket?: string;
+  archivoObjectKey?: string;
+  archivoObjectEtag?: string;
+  archivoSha256?: string;
+  activo: boolean;
   status: EntityStatus;
   createdAt: string;
   createdBy: string;
@@ -244,19 +255,14 @@ export type PublicDownloadSectionRecord = {
   deletedBy?: string | null;
 };
 
-export type PublicDownloadDocumentRecord = {
+export type PublicFileRecord = {
   id: string;
-  sectionId: string;
-  sectionName: string;
-  sectionSlug: string;
   titulo: string;
   slug: string;
   descripcion?: string;
-  assetKind?: "document" | "video";
+  assetKind: "image" | "video" | "pdf";
   archivoNombreOriginal: string;
   archivoMimeType: string;
-  /** Legacy compatibility only. New files live in private S3-compatible object storage. */
-  archivoBase64?: string;
   archivoBytes: number;
   archivoStorageProvider?: "s3";
   archivoStorageBucket?: string;

@@ -7,7 +7,7 @@ import {
   canCreateDomain,
   canCreateLicense,
   canCreatePublicDownloadDocument,
-  canCreatePublicDownloadSection,
+  canCreatePublicFile,
   canCreatePrintFormat,
   canCreatePrintFormatSource,
   canCreateSchedule,
@@ -18,7 +18,7 @@ import {
   canDeactivateDomain,
   canDeactivateLicense,
   canDeletePublicDownloadDocument,
-  canDeletePublicDownloadSection,
+  canDeletePublicFile,
   canDeleteClient,
   canDeleteDatabase,
   canDeleteDomain,
@@ -34,7 +34,7 @@ import {
   canEditLicense,
   canEditEmailAlerts,
   canEditPublicDownloadDocument,
-  canEditPublicDownloadSection,
+  canEditPublicFile,
   canEditPrintFormat,
   canEditPrintFormatSource,
   canEditRoleDefinition,
@@ -49,6 +49,7 @@ import {
   canRevealDatabasePassword,
   canReplacePrintFormatPdf,
   canReplacePublicDownloadFile,
+  canReplacePublicFile,
   canSendAdministrativeReminderTest,
   canSendConfiguredReport,
   canSendTestEmail,
@@ -64,6 +65,7 @@ import {
   canViewEmailAlerts,
   canViewPrintFormats,
   canViewPublicDownloadsAdmin,
+  canViewPublicFilesAdmin,
   canViewRelatedDomainDatabases,
   canViewSchedules,
   canReactivateUser,
@@ -267,9 +269,6 @@ describe("management access", () => {
     const roles = [
       role("downloads_admin", [
         "implementation.public_downloads.view",
-        "implementation.public_downloads.create_section",
-        "implementation.public_downloads.edit_section",
-        "implementation.public_downloads.delete_section",
         "implementation.public_downloads.create_document",
         "implementation.public_downloads.edit_document",
         "implementation.public_downloads.delete_document",
@@ -279,13 +278,30 @@ describe("management access", () => {
     const current = user(["downloads_admin"]);
 
     expect(canViewPublicDownloadsAdmin(current, roles)).toBe(true);
-    expect(canCreatePublicDownloadSection(current, roles)).toBe(true);
-    expect(canEditPublicDownloadSection(current, roles)).toBe(true);
-    expect(canDeletePublicDownloadSection(current, roles)).toBe(true);
     expect(canCreatePublicDownloadDocument(current, roles)).toBe(true);
     expect(canEditPublicDownloadDocument(current, roles)).toBe(true);
     expect(canDeletePublicDownloadDocument(current, roles)).toBe(true);
     expect(canReplacePublicDownloadFile(current, roles)).toBe(true);
+  });
+
+  it("keeps inline public files under their own permission prefix", () => {
+    const roles = [
+      role("public_files_admin", [
+        "implementation.public_files.view",
+        "implementation.public_files.create_file",
+        "implementation.public_files.edit_file",
+        "implementation.public_files.delete_file",
+        "implementation.public_files.replace_file",
+      ]),
+    ];
+    const current = user(["public_files_admin"]);
+
+    expect(canViewPublicFilesAdmin(current, roles)).toBe(true);
+    expect(canCreatePublicFile(current, roles)).toBe(true);
+    expect(canEditPublicFile(current, roles)).toBe(true);
+    expect(canDeletePublicFile(current, roles)).toBe(true);
+    expect(canReplacePublicFile(current, roles)).toBe(true);
+    expect(canViewPublicDownloadsAdmin(current, roles)).toBe(false);
   });
 
   it("maps print format actions to option-specific permissions", () => {

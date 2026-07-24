@@ -203,8 +203,15 @@ export async function createPrivateObjectUrl(input: {
       Bucket: input.bucket,
       Key: input.objectKey,
       ResponseContentType: input.mimeType,
-      ResponseContentDisposition: `${input.disposition ?? "attachment"}; filename*=UTF-8''${encodeURIComponent(input.filename)}`,
+      ResponseContentDisposition: buildObjectContentDisposition(input.disposition ?? "attachment", input.filename),
     }),
     { expiresIn: config.signedUrlSeconds },
   );
+}
+
+export function buildObjectContentDisposition(
+  disposition: "inline" | "attachment",
+  filename: string,
+): string {
+  return `${disposition}; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }

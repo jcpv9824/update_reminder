@@ -5,11 +5,8 @@ import { requireUser, loadUserProfile } from "../lib/auth";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import {
   canCreatePublicDownloadDocument,
-  canCreatePublicDownloadSection,
   canDeletePublicDownloadDocument,
-  canDeletePublicDownloadSection,
   canEditPublicDownloadDocument,
-  canEditPublicDownloadSection,
   canReplacePublicDownloadFile,
   canViewPublicDownloadsAdmin,
 } from "../lib/managementAccess";
@@ -23,26 +20,13 @@ import {
 } from "../lib/objectStorage";
 import { readSqlPublicDownloads } from "../lib/publicDownloadsSqlRepository";
 import {
-  createSqlPublicDownloadDocument,
-  createSqlPublicDownloadSection,
-  deleteSqlPublicDownloadDocument,
-  deleteSqlPublicDownloadSection,
-  updateSqlPublicDownloadDocument,
-  updateSqlPublicDownloadSection,
+  createSqlPublicDownload,
+  deleteSqlPublicDownload,
+  updateSqlPublicDownload,
 } from "../lib/publicDownloadsSqlWriteRepository";
-import type { PublicDownloadDocumentRecord, PublicDownloadSectionRecord } from "../types/models";
+import type { PublicDownloadDocumentRecord } from "../types/models";
 
-const SectionSchema = z.object({
-  nombre: z.string().min(1, "El nombre de la sección es obligatorio.").max(160),
-  slug: z.string().max(120).optional(),
-  descripcion: z.string().max(1000).optional(),
-  activa: z.boolean().default(true),
-});
-
-const SectionUpdateSchema = SectionSchema.partial();
-
-const DocumentSchema = z.object({
-  sectionId: z.string().min(1, "La sección es obligatoria."),
+const DownloadSchema = z.object({
   titulo: z.string().min(1, "El título del archivo es obligatorio.").max(180),
   slug: z.string().max(140).optional(),
   descripcion: z.string().max(1200).optional(),
@@ -52,11 +36,7 @@ const DocumentSchema = z.object({
   archivoMimeType: z.string().max(160).optional(),
 });
 
-const DocumentUpdateSchema = DocumentSchema.partial().extend({
-  sectionId: z.string().min(1).optional(),
-});
-
-type PublicDownloadRecord = PublicDownloadSectionRecord | PublicDownloadDocumentRecord;
+const DownloadUpdateSchema = DownloadSchema.partial();
 
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -102,28 +82,18 @@ function isHttpResponse(value: unknown): value is HttpResponseInit {
   return typeof (value as HttpResponseInit)?.status === "number";
 }
 
-function sanitizeSection(record: PublicDownloadSectionRecord) {
-  const { type, _rid, _self, _etag, _attachments, _ts, ...rest } = record as PublicDownloadSectionRecord & Record<string, unknown>;
-  return rest;
-}
-
-function sanitizeDocument(record: PublicDownloadDocumentRecord) {
+function sanitizeDownload(record: PublicDownloadDocumentRecord) {
   const {
     type, archivoBase64, archivoStorageBucket, archivoObjectKey, archivoObjectEtag, archivoSha256,
-    archivoStorageProvider, _rid, _self, _etag, _attachments, _ts, ...rest
+    archivoStorageProvider,
+    _rid, _self, _etag, _attachments, _ts, ...rest
   } = record as PublicDownloadDocumentRecord & Record<string, unknown>;
   return {
     ...rest,
     assetKind: record.assetKind ?? (record.archivoMimeType.toLowerCase().startsWith("video/") ? "video" : "document"),
-    downloadUrl: `/api/public/downloads/${record.sectionSlug}/${record.slug}`,
+    downloadUrl: `/api/public/downloads/${record.slug}`,
     legacyDownloadUrl: `/api/public/descargas/${record.slug}`,
   };
-}
-
-function auditDocument(record: PublicDownloadDocumentRecord) {
-  const sanitized = sanitizeDocument(record);
-  const { downloadUrl, legacyDownloadUrl, ...snapshot } = sanitized;
-  return snapshot;
 }
 
 async function storedFileFields(file: ReturnType<typeof decodePublicDownloadFile>): Promise<Partial<PublicDownloadDocumentRecord>> {
@@ -135,7 +105,7 @@ async function storedFileFields(file: ReturnType<typeof decodePublicDownloadFile
     archivoSha256: file.sha256,
   };
   if (!isObjectStorageConfigured()) {
-    throw Object.assign(new Error("Configure el almacenamiento S3/MinIO antes de guardar archivos en SQL."), { status: 503 });
+    throw Object.assign(new Error("Configure el almacenamiento de archivos antes de guardar descargas públicas."), { status: 503 });
   }
   const stored = await storePrivateObject(file);
   return {
@@ -152,48 +122,25 @@ async function storedFileFields(file: ReturnType<typeof decodePublicDownloadFile
 async function compensateUnreferencedObject(record: Partial<PublicDownloadDocumentRecord>): Promise<void> {
   if (record.archivoStorageProvider !== "s3" || !record.archivoStorageBucket || !record.archivoObjectKey) return;
   try {
-    await deletePrivateObjectIfUnreferenced({
-      bucket: record.archivoStorageBucket,
-      objectKey: record.archivoObjectKey,
-    });
+    await deletePrivateObjectIfUnreferenced({ bucket: record.archivoStorageBucket, objectKey: record.archivoObjectKey });
   } catch {
-    // The database error remains authoritative; an orphan scan can retry cleanup if SQL was unavailable.
+    // The SQL failure remains authoritative; the orphan scan can retry cleanup.
   }
 }
 
-async function readAll(): Promise<PublicDownloadRecord[]> {
-  return readSqlPublicDownloads();
+async function readDownloads(): Promise<PublicDownloadDocumentRecord[]> {
+  return (await readSqlPublicDownloads()).sort((a, b) => a.titulo.localeCompare(b.titulo, "es"));
 }
 
-async function readSections(): Promise<PublicDownloadSectionRecord[]> {
-  return (await readAll())
-    .filter((item): item is PublicDownloadSectionRecord => (item as any).type === "section")
-    .sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+async function readDownload(id: string): Promise<PublicDownloadDocumentRecord | null> {
+  return (await readDownloads()).find((record) => record.id === id) ?? null;
 }
 
-async function readDocuments(): Promise<PublicDownloadDocumentRecord[]> {
-  return (await readAll())
-    .filter((item): item is PublicDownloadDocumentRecord => (item as any).type === "document")
-    .sort((a, b) => a.titulo.localeCompare(b.titulo, "es"));
+async function hasDuplicateSlug(slug: string, exceptId?: string): Promise<boolean> {
+  return (await readDownloads()).some((item) => item.id !== exceptId && normalize(item.slug) === normalize(slug));
 }
 
-async function readSection(id: string): Promise<PublicDownloadSectionRecord | null> {
-  return (await readSections()).find((section) => section.id === id) ?? null;
-}
-
-async function readDocument(id: string): Promise<PublicDownloadDocumentRecord | null> {
-  return (await readDocuments()).find((document) => document.id === id) ?? null;
-}
-
-async function hasDuplicateSectionSlug(slug: string, exceptId?: string): Promise<boolean> {
-  return (await readSections()).some((item) => item.id !== exceptId && normalize(item.slug) === normalize(slug));
-}
-
-async function hasDuplicateDocumentSlug(slug: string, exceptId?: string): Promise<boolean> {
-  return (await readDocuments()).some((item) => item.id !== exceptId && normalize(item.slug) === normalize(slug));
-}
-
-async function downloadResponse(record: PublicDownloadDocumentRecord): Promise<HttpResponseInit> {
+async function forcedDownloadResponse(record: PublicDownloadDocumentRecord): Promise<HttpResponseInit> {
   if (record.archivoStorageProvider === "s3" && record.archivoStorageBucket && record.archivoObjectKey) {
     return {
       status: 302,
@@ -203,6 +150,7 @@ async function downloadResponse(record: PublicDownloadDocumentRecord): Promise<H
           objectKey: record.archivoObjectKey,
           mimeType: record.archivoMimeType,
           filename: record.archivoNombreOriginal,
+          disposition: "attachment",
         }),
         "Cache-Control": "private, no-store",
         "X-Content-Type-Options": "nosniff",
@@ -225,147 +173,40 @@ async function downloadResponse(record: PublicDownloadDocumentRecord): Promise<H
   };
 }
 
-app.http("adminPublicDownloadSectionsList", {
-  route: "public-downloads/admin/sections",
+app.http("adminPublicDownloadsList", {
+  route: "public-downloads/admin/files",
   methods: ["GET"],
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
       if (!canViewPublicDownloadsAdmin(user, await loadRoleDefinitions())) return forbidden();
-      return ok((await readSections()).map(sanitizeSection));
-    } catch (e) {
-      return serverError(e);
+      return ok((await readDownloads()).map(sanitizeDownload));
+    } catch (error) {
+      return serverError(error);
     }
   },
 });
 
-app.http("adminPublicDownloadSectionsCreate", {
-  route: "public-downloads/admin/sections",
-  methods: ["POST"],
-  authLevel: "anonymous",
-  handler: async (req): Promise<HttpResponseInit> => {
-    try {
-      const user = await getUserOrFail(req);
-      if (!canCreatePublicDownloadSection(user, await loadRoleDefinitions())) return forbidden();
-      const parsed = SectionSchema.safeParse(await req.json());
-      if (!parsed.success) return badRequest(parsed.error.issues[0].message);
-      const slug = slugify(parsed.data.slug || parsed.data.nombre);
-      if (await hasDuplicateSectionSlug(slug)) return conflict("Ya existe una sección con este endpoint.");
-      const now = new Date().toISOString();
-      const record: PublicDownloadSectionRecord & { type: "section" } = {
-        type: "section",
-        id: `public_download_section_${randomUUID()}`,
-        nombre: parsed.data.nombre.trim(),
-        slug,
-        descripcion: parsed.data.descripcion?.trim() || undefined,
-        activa: parsed.data.activa,
-        status: parsed.data.activa ? "active" : "inactive",
-        createdAt: now,
-        createdBy: user.id,
-        updatedAt: now,
-        updatedBy: user.id,
-      };
-      return created(sanitizeSection(await createSqlPublicDownloadSection(record, { id: user.id, email: user.email })));
-    } catch (e) {
-      return serverError(e);
-    }
-  },
-});
-
-app.http("adminPublicDownloadSectionsUpdate", {
-  route: "public-downloads/admin/sections/{id}",
-  methods: ["PUT"],
-  authLevel: "anonymous",
-  handler: async (req): Promise<HttpResponseInit> => {
-    try {
-      const user = await getUserOrFail(req);
-      if (!canEditPublicDownloadSection(user, await loadRoleDefinitions())) return forbidden();
-      const current = await readSection(req.params.id);
-      if (!current) return notFound("Sección no encontrada.");
-      const parsed = SectionUpdateSchema.safeParse(await req.json());
-      if (!parsed.success) return badRequest(parsed.error.issues[0].message);
-      const nextSlug = parsed.data.slug !== undefined || parsed.data.nombre !== undefined
-        ? slugify(parsed.data.slug || parsed.data.nombre || current.slug)
-        : current.slug;
-      if (await hasDuplicateSectionSlug(nextSlug, current.id)) return conflict("Ya existe una sección con este endpoint.");
-      const updated: PublicDownloadSectionRecord & { type: "section" } = {
-        ...(current as PublicDownloadSectionRecord & { type: "section" }),
-        ...(parsed.data.nombre !== undefined ? { nombre: parsed.data.nombre.trim() } : {}),
-        slug: nextSlug,
-        ...(parsed.data.descripcion !== undefined ? { descripcion: parsed.data.descripcion.trim() || undefined } : {}),
-        ...(parsed.data.activa !== undefined ? { activa: parsed.data.activa, status: parsed.data.activa ? "active" : "inactive" } : {}),
-        updatedAt: new Date().toISOString(),
-        updatedBy: user.id,
-      };
-      const result = await updateSqlPublicDownloadSection(updated, { id: user.id, email: user.email });
-      return result ? ok(sanitizeSection(result)) : notFound("Sección no encontrada.");
-    } catch (e) {
-      return serverError(e);
-    }
-  },
-});
-
-app.http("adminPublicDownloadSectionsDelete", {
-  route: "public-downloads/admin/sections/{id}",
-  methods: ["DELETE"],
-  authLevel: "anonymous",
-  handler: async (req): Promise<HttpResponseInit> => {
-    try {
-      const user = await getUserOrFail(req);
-      if (!canDeletePublicDownloadSection(user, await loadRoleDefinitions())) return forbidden();
-      const current = await readSection(req.params.id);
-      if (!current) return notFound("Sección no encontrada.");
-      const result = await deleteSqlPublicDownloadSection(current.id, { id: user.id, email: user.email });
-      if (!result.found) return notFound("Sección no encontrada.");
-      if (result.documents) return conflict("No se puede eliminar la sección porque tiene documentos asociados.", { dependencies: { documents: result.documents } });
-      return ok({ ok: true });
-    } catch (e) {
-      return serverError(e);
-    }
-  },
-});
-
-app.http("adminPublicDownloadDocumentsList", {
-  route: "public-downloads/admin/documents",
-  methods: ["GET"],
-  authLevel: "anonymous",
-  handler: async (req): Promise<HttpResponseInit> => {
-    try {
-      const user = await getUserOrFail(req);
-      if (!canViewPublicDownloadsAdmin(user, await loadRoleDefinitions())) return forbidden();
-      return ok((await readDocuments()).map(sanitizeDocument));
-    } catch (e) {
-      return serverError(e);
-    }
-  },
-});
-
-app.http("adminPublicDownloadDocumentsCreate", {
-  route: "public-downloads/admin/documents",
+app.http("adminPublicDownloadsCreate", {
+  route: "public-downloads/admin/files",
   methods: ["POST"],
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
       if (!canCreatePublicDownloadDocument(user, await loadRoleDefinitions())) return forbidden();
-      const parsed = DocumentSchema.safeParse(await req.json());
+      const parsed = DownloadSchema.safeParse(await req.json());
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
-      const section = await readSection(parsed.data.sectionId);
-      if (!section) return badRequest("La sección seleccionada no existe.");
-      if (!section.activa) return badRequest("Solo puede crear archivos en secciones activas.");
       const file = decodeFile(parsed.data);
       if (isHttpResponse(file)) return file;
       const slug = slugify(parsed.data.slug || parsed.data.titulo);
-      if (await hasDuplicateDocumentSlug(slug)) return conflict("Ya existe un documento con este endpoint.");
+      if (await hasDuplicateSlug(slug)) return conflict("Ya existe una descarga con este endpoint.");
       const now = new Date().toISOString();
       const fileFields = await storedFileFields(file);
       const record: PublicDownloadDocumentRecord & { type: "document" } = {
         type: "document",
-        id: `public_download_document_${randomUUID()}`,
-        sectionId: section.id,
-        sectionName: section.nombre,
-        sectionSlug: section.slug,
+        id: `public_download_${randomUUID()}`,
         titulo: parsed.data.titulo.trim(),
         slug,
         descripcion: parsed.data.descripcion?.trim() || undefined,
@@ -379,44 +220,46 @@ app.http("adminPublicDownloadDocumentsCreate", {
         updatedBy: user.id,
       };
       try {
-        return created(sanitizeDocument(await createSqlPublicDownloadDocument(record, { id: user.id, email: user.email })));
+        return created(sanitizeDownload(await createSqlPublicDownload(record, { id: user.id, email: user.email })));
       } catch (error) {
         await compensateUnreferencedObject(record);
         throw error;
       }
-    } catch (e) {
-      return serverError(e);
+    } catch (error) {
+      return serverError(error);
     }
   },
 });
 
-app.http("adminPublicDownloadDocumentsUpdate", {
-  route: "public-downloads/admin/documents/{id}",
+app.http("adminPublicDownloadsUpdate", {
+  route: "public-downloads/admin/files/{id}",
   methods: ["PUT"],
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
-      const body = await req.json() as any;
-      const replacingFile = body && (body.archivoBase64 !== undefined || body.archivoNombreOriginal !== undefined || body.archivoMimeType !== undefined);
+      const body = await req.json() as Record<string, unknown>;
+      const replacingFile = body && (
+        body.archivoBase64 !== undefined ||
+        body.archivoNombreOriginal !== undefined ||
+        body.archivoMimeType !== undefined
+      );
       if (!canEditPublicDownloadDocument(user, roleDefinitions)) return forbidden();
       if (replacingFile && !canReplacePublicDownloadFile(user, roleDefinitions)) return forbidden();
-      const current = await readDocument(req.params.id);
-      if (!current) return notFound("Archivo no encontrado.");
-      const parsed = DocumentUpdateSchema.safeParse(body);
+      const current = await readDownload(req.params.id);
+      if (!current) return notFound("Descarga no encontrada.");
+      const parsed = DownloadUpdateSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
-      const section = parsed.data.sectionId ? await readSection(parsed.data.sectionId) : await readSection(current.sectionId);
-      if (!section) return badRequest("La sección seleccionada no existe.");
-      if (parsed.data.sectionId && !section.activa) return badRequest("Solo puede mover archivos a secciones activas.");
       const nextSlug = parsed.data.slug !== undefined || parsed.data.titulo !== undefined
         ? slugify(parsed.data.slug || parsed.data.titulo || current.slug)
         : current.slug;
-      if (await hasDuplicateDocumentSlug(nextSlug, current.id)) return conflict("Ya existe un documento con este endpoint.");
+      if (await hasDuplicateSlug(nextSlug, current.id)) return conflict("Ya existe una descarga con este endpoint.");
       let fileFields: Partial<PublicDownloadDocumentRecord> = {};
-      let replacedFile = false;
-      if (parsed.data.archivoBase64 !== undefined || parsed.data.archivoNombreOriginal !== undefined || parsed.data.archivoMimeType !== undefined) {
-        if (!parsed.data.archivoBase64 || !parsed.data.archivoNombreOriginal) return badRequest("Para reemplazar el archivo debe enviar archivo y nombre.");
+      if (replacingFile) {
+        if (!parsed.data.archivoBase64 || !parsed.data.archivoNombreOriginal) {
+          return badRequest("Para reemplazar el archivo debe enviar archivo y nombre.");
+        }
         const file = decodeFile({
           archivoBase64: parsed.data.archivoBase64,
           archivoNombreOriginal: parsed.data.archivoNombreOriginal,
@@ -424,50 +267,47 @@ app.http("adminPublicDownloadDocumentsUpdate", {
         });
         if (isHttpResponse(file)) return file;
         fileFields = await storedFileFields(file);
-        replacedFile = true;
       }
-      const before = auditDocument(current);
       const updated: PublicDownloadDocumentRecord & { type: "document" } = {
         ...(current as PublicDownloadDocumentRecord & { type: "document" }),
-        sectionId: section.id,
-        sectionName: section.nombre,
-        sectionSlug: section.slug,
         ...(parsed.data.titulo !== undefined ? { titulo: parsed.data.titulo.trim() } : {}),
         slug: nextSlug,
         ...(parsed.data.descripcion !== undefined ? { descripcion: parsed.data.descripcion.trim() || undefined } : {}),
-        ...(parsed.data.activo !== undefined ? { activo: parsed.data.activo, status: parsed.data.activo ? "active" : "inactive" } : {}),
+        ...(parsed.data.activo !== undefined
+          ? { activo: parsed.data.activo, status: parsed.data.activo ? "active" : "inactive" }
+          : {}),
         ...fileFields,
         updatedAt: new Date().toISOString(),
         updatedBy: user.id,
       };
       try {
-        const result = await updateSqlPublicDownloadDocument(current, updated, { id: user.id, email: user.email }, replacedFile);
-        if (!result && replacedFile) await compensateUnreferencedObject(updated);
-        return result ? ok(sanitizeDocument(result)) : notFound("Archivo no encontrado.");
+        const result = await updateSqlPublicDownload(current, updated, { id: user.id, email: user.email }, replacingFile);
+        if (!result && replacingFile) await compensateUnreferencedObject(updated);
+        return result ? ok(sanitizeDownload(result)) : notFound("Descarga no encontrada.");
       } catch (error) {
-        if (replacedFile) await compensateUnreferencedObject(updated);
+        if (replacingFile) await compensateUnreferencedObject(updated);
         throw error;
       }
-    } catch (e) {
-      return serverError(e);
+    } catch (error) {
+      return serverError(error);
     }
   },
 });
 
-app.http("adminPublicDownloadDocumentsDelete", {
-  route: "public-downloads/admin/documents/{id}",
+app.http("adminPublicDownloadsDelete", {
+  route: "public-downloads/admin/files/{id}",
   methods: ["DELETE"],
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
       if (!canDeletePublicDownloadDocument(user, await loadRoleDefinitions())) return forbidden();
-      const current = await readDocument(req.params.id);
-      if (!current) return notFound("Archivo no encontrado.");
-      return (await deleteSqlPublicDownloadDocument(current, { id: user.id, email: user.email }))
-        ? ok({ ok: true }) : notFound("Archivo no encontrado.");
-    } catch (e) {
-      return serverError(e);
+      const current = await readDownload(req.params.id);
+      if (!current) return notFound("Descarga no encontrada.");
+      return (await deleteSqlPublicDownload(current, { id: user.id, email: user.email }))
+        ? ok({ ok: true }) : notFound("Descarga no encontrada.");
+    } catch (error) {
+      return serverError(error);
     }
   },
 });
@@ -478,56 +318,57 @@ app.http("publicDownloadsList", {
   authLevel: "anonymous",
   handler: async (): Promise<HttpResponseInit> => {
     try {
-      const sections = (await readSections()).filter((section) => section.activa);
-      const docs = (await readDocuments()).filter((doc) => doc.activo);
-      return ok(sections.map((section) => ({
-        ...sanitizeSection(section),
-        documents: docs.filter((doc) => doc.sectionId === section.id).map(sanitizeDocument),
-      })).filter((section) => section.documents.length > 0));
-    } catch (e) {
-      return serverError(e);
+      return ok((await readDownloads()).filter((record) => record.activo).map(sanitizeDownload));
+    } catch (error) {
+      return serverError(error);
     }
   },
 });
 
-async function findActiveDocument(sectionSlug: string | null, documentSlug: string): Promise<PublicDownloadDocumentRecord | null> {
-  const docs = await readDocuments();
-  const doc = docs.find((item) =>
-    item.activo &&
-    normalize(item.slug) === normalize(documentSlug) &&
-    (!sectionSlug || normalize(item.sectionSlug) === normalize(sectionSlug))
-  );
-  if (!doc) return null;
-  const section = await readSection(doc.sectionId);
-  return section?.activa ? doc : null;
+async function findActiveDownload(slug: string): Promise<PublicDownloadDocumentRecord | null> {
+  return (await readDownloads()).find((item) => item.activo && normalize(item.slug) === normalize(slug)) ?? null;
 }
 
-app.http("publicDownloadBySectionAndSlug", {
-  route: "public/downloads/{sectionSlug}/{documentSlug}",
+async function handleDownload(slug: string): Promise<HttpResponseInit> {
+  const record = await findActiveDownload(slug);
+  return record ? forcedDownloadResponse(record) : notFound("Descarga no encontrada.");
+}
+
+app.http("publicDownloadBySlug", {
+  route: "public/downloads/{downloadSlug}",
   methods: ["GET"],
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      const doc = await findActiveDocument(req.params.sectionSlug, req.params.documentSlug);
-      if (!doc) return notFound("Documento no encontrado.");
-      return await downloadResponse(doc);
-    } catch (e) {
-      return serverError(e);
+      return await handleDownload(req.params.downloadSlug);
+    } catch (error) {
+      return serverError(error);
     }
   },
 });
 
-app.http("publicDownloadBySlug", {
-  route: "public/descargas/{documentSlug}",
+app.http("publicDownloadLegacyBySectionAndSlug", {
+  route: "public/downloads/{sectionSlug}/{downloadSlug}",
   methods: ["GET"],
   authLevel: "anonymous",
   handler: async (req): Promise<HttpResponseInit> => {
     try {
-      const doc = await findActiveDocument(null, req.params.documentSlug);
-      if (!doc) return notFound("Documento no encontrado.");
-      return await downloadResponse(doc);
-    } catch (e) {
-      return serverError(e);
+      return await handleDownload(req.params.downloadSlug);
+    } catch (error) {
+      return serverError(error);
+    }
+  },
+});
+
+app.http("publicDownloadLegacySpanishBySlug", {
+  route: "public/descargas/{downloadSlug}",
+  methods: ["GET"],
+  authLevel: "anonymous",
+  handler: async (req): Promise<HttpResponseInit> => {
+    try {
+      return await handleDownload(req.params.downloadSlug);
+    } catch (error) {
+      return serverError(error);
     }
   },
 });

@@ -38,6 +38,7 @@ configuration.roles.manage_permissions
 configuration.print_formats.replace_pdf
 configuration.alerts.test_email
 implementation.public_downloads.replace_file
+implementation.public_files.replace_file
 visibility.audit.view
 ```
 
@@ -52,6 +53,7 @@ visibility.audit.view
 | Actualizaciones | Tareas | `updates.tasks` |
 | Actualizaciones | Programar Actualizaciones | `updates.schedules` |
 | Implementación | Descargas Públicas | `implementation.public_downloads` |
+| Implementación | Archivos Públicos | `implementation.public_files` |
 | Configuración | Alertas y Correos | `configuration.alerts` |
 | Configuración | Usuarios y Roles | `configuration.users`, `configuration.roles` |
 | Configuración | Formatos de Impresión | `configuration.print_formats` |
@@ -140,15 +142,22 @@ Task actions still require task visibility. For example, `updates.tasks.complete
 `implementation.public_downloads`
 
 - `view`
-- `create_section`
-- `edit_section`
-- `delete_section`
 - `create_document`
 - `edit_document`
 - `delete_document`
 - `replace_file`
 
-Las claves internas `*_document` se conservan por compatibilidad, pero en la interfaz representan archivos públicos y cubren tanto documentos como videos. Las secciones son categorías y prefijos de URL, no archivos duplicados.
+Las claves internas `*_document` se conservan por compatibilidad, pero en la interfaz representan archivos descargables y cubren documentos o videos. Todo endpoint de esta opción responde como `attachment`. Las secciones fueron retiradas del contrato activo; sus permisos quedan inactivos como evidencia histórica.
+
+`implementation.public_files`
+
+- `view`
+- `create_file`
+- `edit_file`
+- `delete_file`
+- `replace_file`
+
+Archivos Públicos usa endpoints separados con disposición `inline`. Solo admite PDF, imágenes raster seguras y videos validados; HTML y SVG no se publican inline.
 
 ### Configuración
 
@@ -326,7 +335,7 @@ Use two phases.
 - Allow authenticated users to read role definitions because the frontend needs them to resolve custom-role navigation.
 - Enforce granular `configuration.users.*` and `configuration.roles.*` permissions in user and role mutation endpoints.
 - Enforce granular `visibility.audit.view` and `configuration.alerts.*` permissions in audit, email-alert settings, and configured-report endpoints.
-- Enforce granular `implementation.public_downloads.*` and `configuration.print_formats.*` permissions in public-download and print-format admin endpoints.
+- Enforce granular `implementation.public_downloads.*`, `implementation.public_files.*` and `configuration.print_formats.*` permissions in their respective admin endpoints.
 - Enforce granular `updates.schedules.*` permissions in scheduled-update endpoints and manual task generation.
 - Enforce granular `clients.clients.*`, `clients.domains.*`, and `clients.databases.*` permissions in client/domain/database endpoints, while preserving task-bound database credential access through `updates.tasks.*` permissions.
 - Enforce granular `clients.licensing.*` permissions in license module and license assignment endpoints.

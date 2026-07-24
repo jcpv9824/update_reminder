@@ -234,6 +234,10 @@ const ACTION_METADATA_SCHEMAS: Record<string, AuditSchema> = {
   public_download_document_updated: fields(),
   public_download_document_file_replaced: fields("previousFileName", "newFileName", "assetKind"),
   public_download_document_deleted: fields(),
+  public_file_created: fields("fileLoaded", "assetKind"),
+  public_file_updated: fields(),
+  public_file_replaced: fields("previousFileName", "newFileName", "assetKind"),
+  public_file_deleted: fields(),
 };
 
 const SECRET_CONTENT_PATTERNS = [

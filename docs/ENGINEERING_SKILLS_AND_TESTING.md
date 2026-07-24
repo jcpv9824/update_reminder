@@ -58,7 +58,7 @@ Preserve route protection on the frontend and object/role authorization on the b
 
 ### 5. Data and Business Rules
 
-Respect the domain model: clients, domains, databases, licenses, schedules, tasks, users, roles, audit logs, settings, and public downloads. When changing task or schedule behavior, check deduplication, idempotency, recurrence, visibility, assignment, reminders, and audit side effects.
+Respect the domain model: clients, domains, databases, licenses, schedules, tasks, users, roles, audit logs, settings, forced public downloads, and inline public files. When changing task or schedule behavior, check deduplication, idempotency, recurrence, visibility, assignment, reminders, and audit side effects.
 
 ### 6. Testing Discipline
 

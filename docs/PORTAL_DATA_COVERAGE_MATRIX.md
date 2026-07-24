@@ -13,14 +13,16 @@ Propósito: demostrar que cada opción, ruta y proceso del portal tiene persiste
 | Clientes / Licenciamiento | `/licenciamiento` | `clients.licensing.view` | `licenseModules`, `licenseAssignments`, arrays en cliente | `licensing.license_modules`, `license_assignments` reconciliada | Cubierto |
 | Actualizaciones / Tareas | `/tareas` | `updates.tasks.view` + visibilidad | `updateTasks`, maestros, schedules | `workflow.*` + FK core/scheduling/security | Cubierto |
 | Actualizaciones / Programar Actualizaciones | `/frecuencias` | `updates.schedules.view` | `updateSchedules` y scopes embebidos | `scheduling.*` | Cubierto |
-| Implementación / Descargas Públicas | `/admin/descargas-publicas` | `implementation.public_downloads.view` | secciones + archivos/documentos legacy; Blob para nuevas cargas | `content.public_download_*` con `asset_kind`, `content.files` + Blob | Cubierto |
+| Implementación / Descargas Públicas | `/admin/descargas-publicas` | `implementation.public_downloads.view` | archivos document/video legacy; secciones solo históricas | `content.public_download_documents/files`; respuesta `attachment` | Cubierto |
+| Implementación / Archivos Públicos | `/admin/archivos-publicos` | `implementation.public_files.view` | módulo nuevo sin origen Cosmos | `content.public_files/public_file_versions`; respuesta `inline` | Preparado en migración 025 |
 | Configuración / Alertas y Correos | `/alertas-correos` | `configuration.alerts.view` | `appSettings`, `emailNotifications`, timers | `settings.*`, `notifications.*`, workflow alerts | Cubierto |
 | Configuración / Usuarios y Roles | `/usuarios` | users/roles view | `users`, `roles`, sessions, Key Vault | `security.users/roles/permissions/user_roles/auth_sessions` | Cubierto |
 | Configuración / Formatos de Impresión | `/admin/formatos-impresion` | `configuration.print_formats.view` | `fuentesFormatos`, `formatosImpresion` + Base64 | `content.print_format_*`, `content.files` + Blob | Cubierto |
 | Auditoría y Visibilidad / Auditoría | `/auditoria` | `visibility.audit.view` | `auditLogs` | `audit.audit_logs` | Cubierto |
 | Auditoría y Visibilidad / Tablero | `/tablero` | `visibility.dashboard.view` | agregaciones de maestros/schedules | índices y vistas sobre core/scheduling/workflow | Cubierto |
 | Público / Formatos de Impresión | `/formatos-impresion` | público | fuentes/formatos activos | vistas/queries de `content` sin metadata privada | Cubierto |
-| Público / Descargas | endpoints `/public/*` | público | secciones y archivos activos (documentos/videos) | `content.v_public_download_assets` + Blob privado | Cubierto |
+| Público / Descargas | `/public/downloads/{slug}` y aliases legacy | público | archivos activos document/video | metadata SQL + objeto privado; `attachment` obligatorio | Cubierto |
+| Público / Archivos | `/public/files/{slug}` | público | imágenes/PDF/videos activos | `content.v_public_files` + objeto privado; `inline` | Preparado en migración 025 |
 
 ## 2. Cobertura transversal no visible en sidebar
 
@@ -46,7 +48,7 @@ Propósito: demostrar que cada opción, ruta y proceso del portal tiene persiste
 | Generación automática/manual | Alta idempotente, sincronización de asignación, obsolescencia y cierre de `once` | Unique lógico por objetivo/fecha, historial y auditoría; reintentos no duplican. |
 | Seguridad | Usuarios, roles, permisos, sesiones, login, cambio/reset y setup | Revocación de sesiones y auditoría atómicas; reset por outbox y token generado al reclamar. |
 | Notificaciones | Configuración, alertas, recordatorios, pruebas y outbox | Dedupe, lease, backoff, cinco intentos y recuperación de lease vencido. |
-| Descargas y videos | Secciones, assets, archivos/versiones y Blob | SQL guarda metadata/hash; compensación elimina Blob nuevo no referenciado si falla SQL. |
+| Descargas y archivos públicos | Agregados separados, archivos/versiones y storage privado | SQL guarda metadata/hash; `attachment` e `inline` nunca comparten endpoint. |
 | Formatos de impresión | Fuentes, formatos, relación N:M, PDF/versiones y Blob | Cambio de fuente primaria compatible con trigger; compensación de Blob no referenciado. |
 | Cascadas core | Cliente, dominio y base, schedules, tareas y licencias dependientes | Soft-delete y cancelación de tareas de dominio/base en una sola transacción auditable. |
 
@@ -72,7 +74,7 @@ La implementación está local y no cambia por sí sola la fuente productiva. La
 | `roles` | roles/permissions/task visibility | Migrar definiciones y aliases aprobados. |
 | `fuentesFormatos` | `content.print_format_sources` | Migrar identidad/nombre/estado; `descripcion` legacy se excluye explícitamente. |
 | `formatosImpresion` | formatos, archivos/versiones | Extraer Base64 a Blob y verificar PDF/hash. |
-| `publicDownloads` | secciones, archivos document/video y versiones | `type=document` se conserva como discriminator legacy; derivar `asset_kind` del MIME; Base64 legacy a Blob. |
+| `publicDownloads` | descargas document/video y versiones; secciones históricas | `type=document` se conserva como discriminator legacy; derivar `asset_kind`; Base64 legacy a storage privado. |
 
 ## 4. Capacidades especificadas pero aún no implementadas
 

@@ -243,18 +243,6 @@ export function canViewPublicDownloadsAdmin(user: CurrentUser, roleDefinitions: 
   return hasPermissionWithRoleDefinitions(user, "implementation.public_downloads.view", roleDefinitions);
 }
 
-export function canCreatePublicDownloadSection(user: CurrentUser, roleDefinitions: RoleDefinition[]): boolean {
-  return hasPermissionWithRoleDefinitions(user, "implementation.public_downloads.create_section", roleDefinitions);
-}
-
-export function canEditPublicDownloadSection(user: CurrentUser, roleDefinitions: RoleDefinition[]): boolean {
-  return hasPermissionWithRoleDefinitions(user, "implementation.public_downloads.edit_section", roleDefinitions);
-}
-
-export function canDeletePublicDownloadSection(user: CurrentUser, roleDefinitions: RoleDefinition[]): boolean {
-  return hasPermissionWithRoleDefinitions(user, "implementation.public_downloads.delete_section", roleDefinitions);
-}
-
 export function canCreatePublicDownloadDocument(user: CurrentUser, roleDefinitions: RoleDefinition[]): boolean {
   return hasPermissionWithRoleDefinitions(user, "implementation.public_downloads.create_document", roleDefinitions);
 }
@@ -269,6 +257,26 @@ export function canDeletePublicDownloadDocument(user: CurrentUser, roleDefinitio
 
 export function canReplacePublicDownloadFile(user: CurrentUser, roleDefinitions: RoleDefinition[]): boolean {
   return hasPermissionWithRoleDefinitions(user, "implementation.public_downloads.replace_file", roleDefinitions);
+}
+
+export function canViewPublicFilesAdmin(user: CurrentUser, roleDefinitions: RoleDefinition[]): boolean {
+  return hasPermissionWithRoleDefinitions(user, "implementation.public_files.view", roleDefinitions);
+}
+
+export function canCreatePublicFile(user: CurrentUser, roleDefinitions: RoleDefinition[]): boolean {
+  return hasPermissionWithRoleDefinitions(user, "implementation.public_files.create_file", roleDefinitions);
+}
+
+export function canEditPublicFile(user: CurrentUser, roleDefinitions: RoleDefinition[]): boolean {
+  return hasPermissionWithRoleDefinitions(user, "implementation.public_files.edit_file", roleDefinitions);
+}
+
+export function canDeletePublicFile(user: CurrentUser, roleDefinitions: RoleDefinition[]): boolean {
+  return hasPermissionWithRoleDefinitions(user, "implementation.public_files.delete_file", roleDefinitions);
+}
+
+export function canReplacePublicFile(user: CurrentUser, roleDefinitions: RoleDefinition[]): boolean {
+  return hasPermissionWithRoleDefinitions(user, "implementation.public_files.replace_file", roleDefinitions);
 }
 
 export function canViewPrintFormats(user: CurrentUser, roleDefinitions: RoleDefinition[]): boolean {

@@ -211,9 +211,14 @@ migration/sql/
   018_expand_license_module_description.sql
   019_expand_notification_outbox_types.sql
   020_allow_outbox_attempt_completion.sql
+  021_atomic_operational_refresh.sql
+  022_refresh_print_source_assignments.sql
+  023_enable_masters_report_outbox.sql
+  024_s3_object_storage.sql
+  025_separate_public_downloads_and_inline_files.sql
 ```
 
-`001` se ejecuta por el build protegido antes del historial. `002..020` están en el manifiesto SHA-256 y pasan la gramática T-SQL 150. `009`, `010`, `011`, `015` y `016` crean objetos/checkpoints o procedimientos, pero no ejecutan una corrida por sí solas. `015` agrega la relación muchos-a-muchos de formatos/fuentes; `016` agrega clasificación document/video, la vista de assets y retira la descripción innecesaria del maestro de fuentes. `017` normaliza la identidad de dominios, `018` amplía descripciones de módulos, `019` habilita los tipos nuevos del outbox y `020` permite únicamente la transición terminal e inmutable de cada intento de entrega.
+`001` se ejecuta por el build protegido antes del historial. `002..025` están en el manifiesto SHA-256. `025` retira secciones del contrato activo de Descargas Públicas y crea el agregado separado de Archivos Públicos inline; requiere validar la gramática T-SQL 150 y ensayarse primero en QA.
 
 Cada script:
 

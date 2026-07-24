@@ -33,7 +33,7 @@ Este documento reemplaza las propuestas anteriores. Fue contrastado con el códi
 | Programación | `scheduling` | Actualizaciones programadas, alcance, frecuencia, asignación y recordatorios. |
 | Trabajo operativo | `workflow` | Tareas, fuentes, responsables, transiciones y alertas ya enviadas. |
 | Configuración | `settings` | Correo, alertas, recordatorios globales y destinatarios. |
-| Contenido | `content` | Fuentes/formatos de impresión, descargas públicas y versiones de archivos. |
+| Contenido | `content` | Fuentes/formatos de impresión, descargas forzadas, archivos públicos inline y versiones. |
 | Notificaciones | `notifications` | Intentos/envíos e idempotencia de correo. |
 | Implementaciones | `implementation` | Futuro flujo de migración, cliente nuevo y módulo especial. |
 | Auditoría | `audit` | Registro global sanitizado e inmutable. |
@@ -69,9 +69,10 @@ erDiagram
   UPDATE_SCHEDULES ||--o{ UPDATE_TASKS : produces
   UPDATE_TASKS ||--o{ TASK_STATUS_HISTORY : transitions
   PRINT_FORMAT_SOURCES ||--o{ PRINT_FORMATS : groups
-  PUBLIC_DOWNLOAD_SECTIONS ||--o{ PUBLIC_DOWNLOAD_DOCUMENTS : groups
   FILES ||--o{ PRINT_FORMAT_FILES : versions
   FILES ||--o{ PUBLIC_DOWNLOAD_FILES : versions
+  PUBLIC_FILES ||--o{ PUBLIC_FILE_VERSIONS : versions
+  FILES ||--o{ PUBLIC_FILE_VERSIONS : payloads
   CLIENTS ||--o{ IMPLEMENTATIONS : relates
   IMPLEMENTATIONS ||--o{ IMPLEMENTATION_STEPS : instantiates
   IMPLEMENTATIONS ||--o{ IMPLEMENTATION_EVENTS : traces
@@ -260,11 +261,18 @@ Checks: PDF; tamaño máximo actual 1.500.000 bytes; si tamaño=`personalizado`,
 
 ### Descargas públicas
 
-- `public_download_sections`: PK/AK estándar; nombre; `slug` normalizado único; descripción; activa/estado; auditoría/soft-delete/`row_version`.
-- `public_download_documents`: nombre físico conservado por compatibilidad; representa archivos públicos. PK/AK estándar; FK sección; `asset_kind=document|video`; título; slug global normalizado único por compatibilidad con `/public/descargas/{slug}`; descripción; activo/estado; auditoría/soft-delete/`row_version`.
+- `public_download_sections`: tabla histórica de la migración Cosmos. No forma parte del runtime ni admite nuevas escrituras.
+- `public_download_documents`: nombre físico conservado por compatibilidad; representa descargas forzadas. PK/AK estándar; `section_key` nullable/legacy; `asset_kind=document|video`; título; slug normalizado único para `/public/downloads/{slug}`; descripción; activo/estado; auditoría/soft-delete/`row_version`.
 - `public_download_files`: PK `(document_id,version_no)`; FK archivo; versión actual única.
 
-Una sección es la categoría y prefijo estable del endpoint; un archivo es el recurso descargable dentro de ella, por lo que ambas entidades son necesarias. No se duplican `sectionName/sectionSlug` ni `fuenteNombre/licenciaModuloNombre` como datos vigentes: se resuelven por join. La auditoría conserva snapshots históricos. Documentos admitidos: hasta 8.000.000 bytes; videos MP4/M4V/MOV/WebM: hasta 100.000.000 bytes, firma validada y payload únicamente en Blob privado.
+Todos los endpoints de Descargas Públicas responden `Content-Disposition: attachment`, incluso para videos. Se conservan los endpoints históricos con sección como aliases, pero el runtime identifica la descarga solo por su slug global.
+
+### Archivos públicos inline
+
+- `public_files`: PK/AK estándar; `asset_kind=image|video|pdf`; título; slug normalizado único para `/public/files/{slug}`; descripción; activo/estado; auditoría/soft-delete/`row_version`.
+- `public_file_versions`: PK `(public_file_key,version_no)`; FK a `content.files`; una sola versión actual.
+
+Estos endpoints responden `Content-Disposition: inline`. Solo permiten PDF, imágenes JPG/PNG/GIF/WebP y videos MP4/M4V/MOV/WebM con firma validada. HTML y SVG se excluyen para evitar contenido activo bajo el contexto público del portal.
 
 ## 12. Esquema `notifications`
 
@@ -323,7 +331,7 @@ Las plantillas del proceso siguen versionadas en código. Al crear una implement
 | Dedupe | `update_tasks(dedupe_key)` unique filtrado y destino/fecha. |
 | Timers | schedules `(active,start_date,end_date)`, tasks `(task_date,status)`, sessions/rate limits por expiración. |
 | Auditoría | fecha, entidad/id, cliente y acción. |
-| Descargas públicas | sección/slug y slug global únicos filtrados. |
+| Descargas y archivos públicos | slug único filtrado por cada espacio de endpoint; versión actual única. |
 | Formatos públicos | fuente/activo y módulo de licencia. |
 | Bandeja futura | implementations `(status,current_stage_id,attention_required,last_activity_at)`. |
 

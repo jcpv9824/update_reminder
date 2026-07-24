@@ -572,25 +572,25 @@ El contenedor es polimórfico. El campo runtime `type` es obligatorio aunque no 
 
 ### `type=section`
 
-Mapear `id`→`source_id`, `nombre`→`name/name_normalized`, `slug`→`slug/slug_normalized`, `descripcion`→`description`, `activa`→`active`, `status` y auditoría/soft delete a `content.public_download_sections`. Slug único entre no eliminadas.
+Mapear a `content.public_download_sections` únicamente como evidencia histórica de la migración. La migración 025 retira esta entidad del contrato runtime y desactiva sus permisos; no se crean ni editan secciones nuevas.
 
 ### `type=document` (discriminator legacy de archivo)
 
 | Campo | Destino | Regla |
 |---|---|---|
 | `id` | `content.public_download_documents.source_id` | Copiar; unique. El nombre físico se conserva por compatibilidad, aunque la entidad funcional es archivo público. |
-| `sectionId` | `section_key` | Lookup section source_id; FK. `sectionName/sectionSlug` solo validan snapshot. |
+| `sectionId` | `section_key` legacy nullable | Lookup durante la carga histórica para reconciliar el snapshot; el runtime 025 no lo usa y las escrituras nuevas dejan `NULL`. |
 | `titulo`, `slug`, `descripcion` | columnas del archivo | Slug global unique por endpoint legacy. |
 | `archivoMimeType` | `asset_kind`, `content.files.mime_type` | `video/*` permitido solo para MP4/M4V/MOV/WebM y firma válida; demás extensiones aprobadas se clasifican `document`. |
 | `archivoBase64` | Blob + `content.files` | Compatibilidad de cargas legacy: decodificar, validar extensión/MIME/firma y hash; documentos 1..8.000.000 bytes, videos 1..100.000.000. No llega a SQL operacional. |
 | `archivoBlobContainer`, `archivoBlobName`, `archivoSha256` | `content.files` | Campos de origen legado. Transferir al bucket S3/MinIO, verificar objeto/tamaño/hash y persistir `storage_bucket`/`object_key` sin guardar URL firmada. |
 | `archivoNombreOriginal`, `archivoMimeType`, `archivoBytes` | metadata `content.files` | Bytes deben coincidir con contenido real; discrepancia = error. |
 | `activo`, `status` | columnas de documento | Reconciliar; `active|inactive|deleted`. |
-| `sectionName`, `sectionSlug` | raw + validación | Comparar con sección; no duplicar como vigente. |
+| `sectionName`, `sectionSlug` | raw + validación histórica | Comparar durante migración; excluir del DTO y del endpoint vigente. |
 | `createdAt`, `createdBy`, `updatedAt`, `updatedBy`, `deletedAt`, `deletedBy` | auditoría/soft delete | Parsear UTC; preservar actor. |
 | archivo actual | `content.public_download_files` | `version_no=1`, current. |
 
-Registros con `type` ausente/unknown no se adivinan silenciosamente: inferencia por campos solo en staging, registrada como warning y sujeta a aprobación. Secciones siguen siendo categorías/segmentos de URL; los archivos son sus recursos descargables, por lo que no se fusionan.
+Registros con `type` ausente/unknown no se adivinan silenciosamente: inferencia por campos solo en staging, registrada como warning y sujeta a aprobación. `content.public_files` no tiene origen Cosmos: nace vacío en 025 y no debe poblarse desde secciones o descargas por inferencia.
 
 ## 22. Validación de round-trip de settings
 

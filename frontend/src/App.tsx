@@ -20,6 +20,7 @@ import NoAutorizadoPage from "./pages/NoAutorizadoPage";
 import FormatosImpresionAdminPage from "./pages/FormatosImpresionAdminPage";
 import FormatosImpresionPublicPage from "./pages/FormatosImpresionPublicPage";
 import DescargasPublicasAdminPage from "./pages/DescargasPublicasAdminPage";
+import ArchivosPublicosAdminPage from "./pages/ArchivosPublicosAdminPage";
 import { DEFAULT_ROLE_DEFINITIONS, type RoleDefinition } from "./permissionModel";
 import { hasPermissionForRoleIds } from "./permissionAccess";
 
@@ -64,6 +65,7 @@ function Enrutador() {
           <Route path="frecuencias" element={<Protegido permiso="updates.schedules.view" element={<FrecuenciasPage />} />} />
           <Route path="admin/formatos-impresion" element={<Protegido permiso="configuration.print_formats.view" element={<FormatosImpresionAdminPage />} />} />
           <Route path="admin/descargas-publicas" element={<Protegido permiso="implementation.public_downloads.view" element={<DescargasPublicasAdminPage />} />} />
+          <Route path="admin/archivos-publicos" element={<Protegido permiso="implementation.public_files.view" element={<ArchivosPublicosAdminPage />} />} />
           <Route path="alertas-correos" element={<Protegido permiso="configuration.alerts.view" element={<AlertasCorreosPage />} />} />
           <Route path="auditoria" element={<Protegido permiso="visibility.audit.view" element={<AuditoriaPage />} />} />
           <Route path="usuarios" element={<Protegido permisos={["configuration.users.view", "configuration.roles.view"]} element={<UsuariosPage />} />} />

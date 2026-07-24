@@ -159,24 +159,8 @@ export type FormatoImpresion = {
   updatedBy: string;
 };
 
-export type PublicDownloadSection = {
-  id: string;
-  nombre: string;
-  slug: string;
-  descripcion?: string;
-  activa: boolean;
-  status: "active" | "inactive" | "deleted";
-  createdAt: string;
-  createdBy: string;
-  updatedAt: string;
-  updatedBy: string;
-};
-
 export type PublicDownloadDocument = {
   id: string;
-  sectionId: string;
-  sectionName: string;
-  sectionSlug: string;
   titulo: string;
   slug: string;
   descripcion?: string;
@@ -186,6 +170,24 @@ export type PublicDownloadDocument = {
   archivoBytes: number;
   downloadUrl: string;
   legacyDownloadUrl: string;
+  activo: boolean;
+  status: "active" | "inactive" | "deleted";
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+};
+
+export type PublicFile = {
+  id: string;
+  titulo: string;
+  slug: string;
+  descripcion?: string;
+  assetKind: "image" | "video" | "pdf";
+  archivoNombreOriginal: string;
+  archivoMimeType: string;
+  archivoBytes: number;
+  viewUrl: string;
   activo: boolean;
   status: "active" | "inactive" | "deleted";
   createdAt: string;
@@ -422,4 +424,8 @@ export const ETIQUETAS_ACCION_AUDITORIA: Record<string, string> = {
   public_download_document_updated: "Documento público actualizado",
   public_download_document_file_replaced: "Archivo público reemplazado",
   public_download_document_deleted: "Documento público eliminado",
+  public_file_created: "Archivo público creado",
+  public_file_updated: "Archivo público actualizado",
+  public_file_replaced: "Archivo público reemplazado",
+  public_file_deleted: "Archivo público eliminado",
 };

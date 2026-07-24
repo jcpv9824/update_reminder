@@ -30,7 +30,7 @@ Current module contents:
 | --- | --- |
 | Clientes | Clientes, Dominios, Bases de Datos, Licenciamiento |
 | Actualizaciones | Tareas, Programar Actualizaciones |
-| Implementación | Descargas Públicas |
+| Implementación | Descargas Públicas, Archivos Públicos |
 | Configuración | Alertas y Correos, Usuarios y Roles, Formatos de Impresión |
 | Auditoría y Visibilidad | Auditoría, Tablero |
 

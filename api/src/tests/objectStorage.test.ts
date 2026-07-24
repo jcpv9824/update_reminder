@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { isObjectStorageConfigured } from "../lib/objectStorage";
+import {
+  buildObjectContentDisposition,
+  isObjectStorageConfigured,
+} from "../lib/objectStorage";
 
 const names = [
   "OBJECT_STORAGE_ENDPOINT",
@@ -49,5 +52,12 @@ describe("S3/MinIO object storage configuration", () => {
     process.env.OBJECT_STORAGE_SECRET_ACCESS_KEY = "secret";
     process.env.OBJECT_STORAGE_FORCE_PATH_STYLE = "true";
     expect(isObjectStorageConfigured()).toBe(true);
+  });
+
+  it("keeps forced downloads and inline public files as distinct response contracts", () => {
+    expect(buildObjectContentDisposition("attachment", "video demo.mp4"))
+      .toBe("attachment; filename*=UTF-8''video%20demo.mp4");
+    expect(buildObjectContentDisposition("inline", "video demo.mp4"))
+      .toBe("inline; filename*=UTF-8''video%20demo.mp4");
   });
 });

@@ -8,6 +8,7 @@ import {
   Database,
   DownloadCloud,
   Eye,
+  FileImage,
   FileText,
   Gauge,
   KeyRound,
@@ -68,6 +69,7 @@ const MODULOS: ModuloMenu[] = [
     Icono: ShieldCheck,
     elementos: [
       { ruta: "/admin/descargas-publicas", etiqueta: "Descargas Públicas", permiso: "implementation.public_downloads.view", Icono: DownloadCloud },
+      { ruta: "/admin/archivos-publicos", etiqueta: "Archivos Públicos", permiso: "implementation.public_files.view", Icono: FileImage },
     ],
   },
   {

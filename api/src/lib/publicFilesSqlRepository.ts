@@ -1,12 +1,12 @@
-import type { PublicDownloadDocumentRecord } from "../types/models";
+import type { PublicFileRecord } from "../types/models";
 import { getSqlPool } from "./sql";
 
-type SqlDownloadRow = {
+type SqlPublicFileRow = {
   source_id: string;
   title: string;
   slug: string;
   description: string | null;
-  asset_kind: "document" | "video";
+  asset_kind: "image" | "video" | "pdf";
   active: boolean;
   status: "active" | "inactive" | "deleted";
   storage_provider: "s3" | "azure_blob" | null;
@@ -29,14 +29,11 @@ function iso(value: Date | null): string | null {
   return value ? value.toISOString() : null;
 }
 
-export function mapSqlPublicDownload(
-  row: SqlDownloadRow,
-): PublicDownloadDocumentRecord & { type: "document" } {
+export function mapSqlPublicFile(row: SqlPublicFileRow): PublicFileRecord {
   if (!row.original_name || !row.mime_type || row.byte_count === null) {
-    throw new Error("Una descarga pública SQL no tiene una versión de archivo vigente.");
+    throw new Error("Un archivo público SQL no tiene una versión vigente.");
   }
   return {
-    type: "document",
     id: row.source_id,
     titulo: row.title,
     slug: row.slug,
@@ -61,19 +58,19 @@ export function mapSqlPublicDownload(
   };
 }
 
-export async function readSqlPublicDownloads(): Promise<Array<PublicDownloadDocumentRecord & { type: "document" }>> {
+export async function readSqlPublicFiles(): Promise<PublicFileRecord[]> {
   const pool = await getSqlPool();
-  const result = await pool.request().query<SqlDownloadRow>(`
-    SELECT d.source_id,d.title,d.slug,d.description,d.asset_kind,d.active,d.status,
+  const result = await pool.request().query<SqlPublicFileRow>(`
+    SELECT p.source_id,p.title,p.slug,p.description,p.asset_kind,p.active,p.status,
       f.storage_provider,f.storage_bucket,f.object_key,f.object_etag,f.original_name,f.mime_type,
-      f.byte_count,f.content_sha256,d.created_at,d.created_by,d.updated_at,d.updated_by,
-      d.deleted_at,d.deleted_by
-    FROM content.public_download_documents AS d
-    LEFT JOIN content.public_download_files AS v
-      ON v.document_key=d.document_key AND v.is_current=1
+      f.byte_count,f.content_sha256,p.created_at,p.created_by,p.updated_at,p.updated_by,
+      p.deleted_at,p.deleted_by
+    FROM content.public_files AS p
+    LEFT JOIN content.public_file_versions AS v
+      ON v.public_file_key=p.public_file_key AND v.is_current=1
     LEFT JOIN content.files AS f ON f.file_key=v.file_key
-    WHERE d.status<>'deleted'
-    ORDER BY d.title,d.source_id;
+    WHERE p.status<>'deleted'
+    ORDER BY p.title,p.source_id;
   `);
-  return result.recordset.map(mapSqlPublicDownload);
+  return result.recordset.map(mapSqlPublicFile);
 }

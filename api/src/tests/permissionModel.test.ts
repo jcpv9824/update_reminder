@@ -38,6 +38,28 @@ describe("permission model", () => {
     expect(optionPermissionKeys(dashboard)).toEqual(["visibility.dashboard.view"]);
   });
 
+  it("separates forced downloads from inline public files and retires section actions", () => {
+    const implementation = PERMISSION_CATALOG.find((module) => module.id === "implementation")!;
+    const downloads = implementation.options.find((option) => option.id === "public_downloads")!;
+    const publicFiles = implementation.options.find((option) => option.id === "public_files")!;
+
+    expect(optionPermissionKeys(downloads)).toEqual([
+      "implementation.public_downloads.view",
+      "implementation.public_downloads.create_document",
+      "implementation.public_downloads.edit_document",
+      "implementation.public_downloads.delete_document",
+      "implementation.public_downloads.replace_file",
+    ]);
+    expect(optionPermissionKeys(downloads)).not.toContain("implementation.public_downloads.create_section");
+    expect(optionPermissionKeys(publicFiles)).toEqual([
+      "implementation.public_files.view",
+      "implementation.public_files.create_file",
+      "implementation.public_files.edit_file",
+      "implementation.public_files.delete_file",
+      "implementation.public_files.replace_file",
+    ]);
+  });
+
   it("selecting a module resolves all supported child option actions", () => {
     const configurationKeys = modulePermissionKeys("configuration");
 

@@ -15,6 +15,7 @@ import "./functions/settings";
 import "./functions/reports";
 import "./functions/formatosImpresion";
 import "./functions/publicDownloads";
+import "./functions/publicFiles";
 import "./functions/generateDailyUpdateTasks";
 import "./functions/sendScheduledReminders";
 import "./functions/sendOverdueAlerts";

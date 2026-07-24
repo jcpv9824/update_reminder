@@ -2,12 +2,13 @@ import { FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, apiUrl } from "../api/client";
 import { Alerta, BotonCopiar, DialogoConfirmar, EtiquetaEstado, Modal } from "../components/Comunes";
-import type { PublicDownloadDocument } from "../types";
+import type { PublicFile } from "../types";
 
-const PUBLIC_FILE_ACCEPT = ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.vsd,.vsdx,.html,.htm,.md,.txt,.csv,.url,.mp4,.m4v,.mov,.webm,video/mp4,video/webm,video/quicktime,video/x-m4v";
+const INLINE_FILE_ACCEPT = ".pdf,.jpg,.jpeg,.png,.gif,.webp,.mp4,.m4v,.mov,.webm,application/pdf,image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm,video/quicktime,video/x-m4v";
+const MAX_IMAGE_BYTES = 12_000_000;
 const MAX_DOCUMENT_BYTES = 8_000_000;
 const MAX_VIDEO_BYTES = 100_000_000;
-const ADMIN_API = "/public-downloads/admin/files";
+const ADMIN_API = "/public-files/admin";
 
 type FilePayload = {
   archivoBase64: string;
@@ -15,22 +16,22 @@ type FilePayload = {
   archivoMimeType: string;
 };
 
-export default function DescargasPublicasAdminPage() {
+export default function ArchivosPublicosAdminPage() {
   const qc = useQueryClient();
   const [busqueda, setBusqueda] = useState("");
-  const [modal, setModal] = useState<PublicDownloadDocument | "nuevo" | null>(null);
-  const [eliminar, setEliminar] = useState<PublicDownloadDocument | null>(null);
+  const [modal, setModal] = useState<PublicFile | "nuevo" | null>(null);
+  const [eliminar, setEliminar] = useState<PublicFile | null>(null);
   const [mensaje, setMensaje] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const { data: archivos = [], isLoading } = useQuery({
-    queryKey: ["public-download-files-admin"],
-    queryFn: () => api.get<PublicDownloadDocument[]>(ADMIN_API),
+    queryKey: ["public-files-admin"],
+    queryFn: () => api.get<PublicFile[]>(ADMIN_API),
   });
   const filtrados = useMemo(() => filterFiles(archivos, busqueda), [archivos, busqueda]);
 
   function onSuccess(text: string) {
-    qc.invalidateQueries({ queryKey: ["public-download-files-admin"] });
+    qc.invalidateQueries({ queryKey: ["public-files-admin"] });
     setMensaje(text);
     setError(null);
     setModal(null);
@@ -52,14 +53,14 @@ export default function DescargasPublicasAdminPage() {
   return (
     <>
       <div className="encabezado-pagina">
-        <h2>Descargas públicas</h2>
+        <h2>Archivos públicos</h2>
         <button className="primario" onClick={() => setModal("nuevo")}>Nuevo archivo</button>
       </div>
       {mensaje && <Alerta tipo="exito">{mensaje}</Alerta>}
       {error && <Alerta tipo="error">{error}</Alerta>}
       <p className="texto-ayuda">
-        Todos los endpoints de esta opción fuerzan la descarga del archivo, incluidos los videos.
-        Para contenido que debe abrirse en el navegador use Archivos Públicos.
+        Estos endpoints se abren en el navegador y no fuerzan una descarga.
+        Se admiten imágenes, PDF y videos con formatos seguros para visualización.
       </p>
 
       <div className="barra-filtros">
@@ -79,14 +80,14 @@ export default function DescargasPublicasAdminPage() {
           </thead>
           <tbody>
             {filtrados.map((archivo) => {
-              const url = apiUrl(`/public/downloads/${archivo.slug}`);
+              const url = apiUrl(`/public/files/${archivo.slug}`);
               return (
                 <tr key={archivo.id}>
                   <td>
                     <strong>{archivo.titulo}</strong>
                     {archivo.descripcion && <div className="texto-ayuda">{archivo.descripcion}</div>}
                   </td>
-                  <td>{archivo.assetKind === "video" || archivo.archivoMimeType.startsWith("video/") ? "Video" : "Documento"}</td>
+                  <td>{assetLabel(archivo.assetKind)}</td>
                   <td>{archivo.archivoNombreOriginal}<div className="texto-ayuda">{formatBytes(archivo.archivoBytes)}</div></td>
                   <td>
                     <div className="endpoint-publico">
@@ -96,7 +97,7 @@ export default function DescargasPublicasAdminPage() {
                   </td>
                   <td><EtiquetaEstado estado={archivo.activo ? "active" : "inactive"} /></td>
                   <td className="acciones-tabla">
-                    <a href={url} target="_blank" rel="noreferrer">Descargar</a>
+                    <a href={url} target="_blank" rel="noreferrer">Visualizar</a>
                     <button onClick={() => setModal(archivo)}>Editar</button>
                     <button className="peligro" onClick={() => setEliminar(archivo)}>Eliminar</button>
                   </td>
@@ -108,8 +109,8 @@ export default function DescargasPublicasAdminPage() {
         </table>
       )}
 
-      <Modal titulo={modal === "nuevo" ? "Nuevo archivo descargable" : "Editar archivo descargable"} abierto={!!modal} onCerrar={() => setModal(null)} className="modal-descarga-publica">
-        <DownloadForm
+      <Modal titulo={modal === "nuevo" ? "Nuevo archivo público" : "Editar archivo público"} abierto={!!modal} onCerrar={() => setModal(null)} className="modal-descarga-publica">
+        <PublicFileForm
           initial={modal && modal !== "nuevo" ? modal : undefined}
           loading={guardar.isPending}
           onSubmit={(body) => guardar.mutate({ id: modal && modal !== "nuevo" ? modal.id : undefined, body })}
@@ -117,7 +118,7 @@ export default function DescargasPublicasAdminPage() {
       </Modal>
       <DialogoConfirmar
         abierto={!!eliminar}
-        titulo="Eliminar archivo"
+        titulo="Eliminar archivo público"
         mensaje={eliminar ? `¿Eliminar el archivo "${eliminar.titulo}"? El endpoint dejará de estar disponible.` : ""}
         textoConfirmar="Eliminar"
         variante="peligro"
@@ -128,12 +129,18 @@ export default function DescargasPublicasAdminPage() {
   );
 }
 
-function filterFiles(items: PublicDownloadDocument[], search: string): PublicDownloadDocument[] {
+function filterFiles(items: PublicFile[], search: string): PublicFile[] {
   const query = search.trim().toLowerCase();
   if (!query) return items;
   return items.filter((item) =>
     `${item.titulo} ${item.slug} ${item.descripcion ?? ""} ${item.archivoNombreOriginal}`.toLowerCase().includes(query)
   );
+}
+
+function assetLabel(kind: PublicFile["assetKind"]): string {
+  if (kind === "image") return "Imagen";
+  if (kind === "video") return "Video";
+  return "PDF";
 }
 
 function formatBytes(bytes: number): string {
@@ -143,12 +150,12 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function DownloadForm({
+function PublicFileForm({
   initial,
   loading,
   onSubmit,
 }: {
-  initial?: PublicDownloadDocument;
+  initial?: PublicFile;
   loading: boolean;
   onSubmit: (body: unknown) => void;
 }) {
@@ -163,7 +170,8 @@ function DownloadForm({
     setError(null);
     if (!selected) return setFile(null);
     const isVideo = selected.type.startsWith("video/") || /\.(mp4|m4v|mov|webm)$/i.test(selected.name);
-    const maxBytes = isVideo ? MAX_VIDEO_BYTES : MAX_DOCUMENT_BYTES;
+    const isImage = selected.type.startsWith("image/") || /\.(jpg|jpeg|png|gif|webp)$/i.test(selected.name);
+    const maxBytes = isVideo ? MAX_VIDEO_BYTES : isImage ? MAX_IMAGE_BYTES : MAX_DOCUMENT_BYTES;
     if (selected.size > maxBytes) {
       setFile(null);
       return setError(`El archivo supera el tamaño máximo permitido de ${Math.floor(maxBytes / 1_000_000)} MB.`);
@@ -189,8 +197,8 @@ function DownloadForm({
       <div className="fila-formulario"><label>Título *</label><input value={titulo} onChange={(e) => setTitulo(e.target.value)} /></div>
       <div className="fila-formulario"><label>Endpoint del archivo</label><input value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="Se genera desde el título si se deja vacío" /></div>
       <div className="fila-formulario"><label>Descripción</label><textarea value={descripcion} onChange={(e) => setDescripcion(e.target.value)} rows={3} /></div>
-      <div className="fila-formulario"><label htmlFor="public-download-file">Archivo {!initial ? "*" : ""}</label><input id="public-download-file" type="file" accept={PUBLIC_FILE_ACCEPT} onChange={(e) => loadFile(e.target.files?.[0])} /></div>
-      <p className="texto-ayuda">Documentos hasta 8 MB. Videos MP4, M4V, MOV o WebM hasta 100 MB. El endpoint siempre descargará el archivo.</p>
+      <div className="fila-formulario"><label htmlFor="public-inline-file">Archivo {!initial ? "*" : ""}</label><input id="public-inline-file" type="file" accept={INLINE_FILE_ACCEPT} onChange={(e) => loadFile(e.target.files?.[0])} /></div>
+      <p className="texto-ayuda">PDF hasta 8 MB, imágenes JPG/PNG/GIF/WebP hasta 12 MB y videos MP4/M4V/MOV/WebM hasta 100 MB.</p>
       {initial && <p className="texto-ayuda">Archivo actual: {initial.archivoNombreOriginal}</p>}
       {file && <p className="texto-ayuda">Archivo seleccionado: {file.archivoNombreOriginal}</p>}
       <div className="fila-formulario"><label><input type="checkbox" checked={activo} onChange={(e) => setActivo(e.target.checked)} style={{ width: "auto", marginRight: 6 }} />Activo</label></div>
