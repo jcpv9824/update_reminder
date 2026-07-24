@@ -87,17 +87,17 @@ try {
   $endpoint = "https://${hostName}:$port"
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.FileName = $node
-  $startInfo.ArgumentList.Add($probeScript)
+  $startInfo.Arguments = '"' + $probeScript + '"'
   $startInfo.WorkingDirectory = $apiDirectory
   $startInfo.UseShellExecute = $false
   $startInfo.RedirectStandardOutput = $true
   $startInfo.RedirectStandardError = $true
-  $startInfo.Environment['OBJECT_STORAGE_ENDPOINT'] = $endpoint
-  $startInfo.Environment['OBJECT_STORAGE_REGION'] = 'us-east-1'
-  $startInfo.Environment['OBJECT_STORAGE_BUCKET'] = $bucket
-  $startInfo.Environment['OBJECT_STORAGE_ACCESS_KEY_ID'] = $accessKey
-  $startInfo.Environment['OBJECT_STORAGE_SECRET_ACCESS_KEY'] = $secretKey
-  $startInfo.Environment['MINIO_PROBE_MODE'] = $probeMode
+  $startInfo.EnvironmentVariables['OBJECT_STORAGE_ENDPOINT'] = $endpoint
+  $startInfo.EnvironmentVariables['OBJECT_STORAGE_REGION'] = 'us-east-1'
+  $startInfo.EnvironmentVariables['OBJECT_STORAGE_BUCKET'] = $bucket
+  $startInfo.EnvironmentVariables['OBJECT_STORAGE_ACCESS_KEY_ID'] = $accessKey
+  $startInfo.EnvironmentVariables['OBJECT_STORAGE_SECRET_ACCESS_KEY'] = $secretKey
+  $startInfo.EnvironmentVariables['MINIO_PROBE_MODE'] = $probeMode
 
   Write-Host ''
   Write-Host 'Opening strict-TLS S3 connection...' -ForegroundColor Cyan
