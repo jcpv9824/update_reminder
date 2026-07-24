@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { assertCosmosRuntimeMutation, getDataBackend, sqlReadsEnabled, sqlSecurityRuntimeEnabled, sqlWritesEnabled } from "../lib/dataBackend";
-import { getContainer } from "../lib/cosmos";
+import { getDataBackend, sqlReadsEnabled, sqlSecurityRuntimeEnabled, sqlWritesEnabled } from "../lib/dataBackend";
 import { buildSqlConfigFromEnv, closeSqlPool } from "../lib/sql";
 
 const validEnv: NodeJS.ProcessEnv = {
@@ -47,34 +46,21 @@ describe("data backend gate", () => {
     expect(() => sqlWritesEnabled({})).toThrow(/Falta DATA_BACKEND/);
   });
 
-  it("separates dual-read verification from SQL writes", () => {
-    expect(sqlReadsEnabled({ DATA_BACKEND: "dual-read" })).toBe(true);
-    expect(sqlWritesEnabled({ DATA_BACKEND: "dual-read" })).toBe(false);
+  it("enables reads and writes only for the SQL backend", () => {
+    expect(() => sqlReadsEnabled({ DATA_BACKEND: "legacy" })).toThrow(/debe ser sql/);
+    expect(() => sqlWritesEnabled({ DATA_BACKEND: "legacy" })).toThrow(/debe ser sql/);
+    expect(sqlReadsEnabled({ DATA_BACKEND: "sql" })).toBe(true);
     expect(sqlWritesEnabled({ DATA_BACKEND: "sql" })).toBe(true);
     expect(() => sqlSecurityRuntimeEnabled({ DATA_BACKEND: "sql" })).toThrow(/SQL_SECURITY_RUNTIME_ENABLED/);
     expect(sqlSecurityRuntimeEnabled({ DATA_BACKEND: "sql", SQL_SECURITY_RUNTIME_ENABLED: "true" })).toBe(true);
-    expect(sqlSecurityRuntimeEnabled({ DATA_BACKEND: "dual-read", SQL_SECURITY_RUNTIME_ENABLED: "true" })).toBe(false);
   });
 
   it("rejects unknown backend modes", () => {
     expect(() => getDataBackend({ DATA_BACKEND: "automatic" })).toThrow(/DATA_BACKEND/);
   });
 
-  it("blocks mixed-database side effects after the SQL read cutover", () => {
-    expect(() => assertCosmosRuntimeMutation("El temporizador", { DATA_BACKEND: "sql" }))
-      .toThrow(/escritura SQL/);
-    expect(() => assertCosmosRuntimeMutation("El temporizador", { DATA_BACKEND: "dual-read" }))
-      .not.toThrow();
-  });
-
-  it("rejects every accidental Cosmos access while the SQL backend is active", () => {
-    const previous = process.env.DATA_BACKEND;
-    process.env.DATA_BACKEND = "sql";
-    try {
-      expect(() => getContainer("users")).toThrow(/Dependencia Cosmos inesperada/);
-    } finally {
-      if (previous === undefined) delete process.env.DATA_BACKEND;
-      else process.env.DATA_BACKEND = previous;
-    }
+  it("rejects retired backend modes", () => {
+    expect(() => getDataBackend({ DATA_BACKEND: "dual-read" })).toThrow(/debe ser sql/);
+    expect(() => getDataBackend({ DATA_BACKEND: "cosmos" })).toThrow(/debe ser sql/);
   });
 });

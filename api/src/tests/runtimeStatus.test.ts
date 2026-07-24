@@ -2,21 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 import { loadRuntimeStatus, TIMER_FUNCTION_NAMES } from "../lib/runtimeStatus";
 
 describe("runtime connection status", () => {
-  it("does not open SQL when Cosmos is the selected backend", async () => {
+  it("rejects any backend other than SQL", async () => {
     const verify = vi.fn(async () => undefined);
-    await expect(loadRuntimeStatus({ DATA_BACKEND: "cosmos" }, verify)).resolves.toEqual({
-      backend: "cosmos", sqlConnected: false, sqlSecurityEnabled: false,
-      maintenanceMode: false, timersExpectedDisabled: true, timerDisableState: "none",
-    });
+    await expect(loadRuntimeStatus({ DATA_BACKEND: "legacy" }, verify)).rejects.toThrow("DATA_BACKEND debe ser sql");
     expect(verify).not.toHaveBeenCalled();
   });
 
-  it("verifies SQL for dual-read without enabling SQL security", async () => {
+  it("requires the SQL security runtime gate", async () => {
     const verify = vi.fn(async () => undefined);
-    await expect(loadRuntimeStatus({ DATA_BACKEND: "dual-read" }, verify)).resolves.toEqual({
-      backend: "dual-read", sqlConnected: true, sqlSecurityEnabled: false,
-      maintenanceMode: false, timersExpectedDisabled: true, timerDisableState: "none",
-    });
+    await expect(loadRuntimeStatus({ DATA_BACKEND: "sql" }, verify))
+      .rejects.toThrow("SQL_SECURITY_RUNTIME_ENABLED debe ser true");
     expect(verify).toHaveBeenCalledOnce();
   });
 
@@ -47,7 +42,8 @@ describe("runtime connection status", () => {
 
   it("reports partially disabled timers instead of hiding a configuration gap", async () => {
     await expect(loadRuntimeStatus({
-      DATA_BACKEND: "dual-read",
+      DATA_BACKEND: "sql",
+      SQL_SECURITY_RUNTIME_ENABLED: "true",
       "AzureWebJobs.generateDailyUpdateTasks.Disabled": "true",
     }, async () => undefined)).resolves.toMatchObject({
       timerDisableState: "partial",

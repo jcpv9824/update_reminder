@@ -1,10 +1,6 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { requireUser, loadUserProfile } from "../lib/auth";
-import { writeAuditLog } from "../lib/audit";
-import { getContainer } from "../lib/cosmos";
-import { getDataBackend } from "../lib/dataBackend";
 import { badRequest, forbidden, notFound, ok, serverError } from "../lib/http";
-import { filterTasksForOperationalView } from "../lib/taskVisibility";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import {
   canPerformTaskActionWithRoleDefinitions,
@@ -13,9 +9,9 @@ import {
   isTaskAssignedToUserWithRoleDefinitions,
 } from "../lib/taskAccess";
 import { toPublicTask } from "../lib/publicDtos";
-import { normalizedLogicalTaskCount, readSqlWorkflowTasks, type WorkflowTaskFilters } from "../lib/workflowTasksSqlRepository";
+import { readSqlWorkflowTasks, type WorkflowTaskFilters } from "../lib/workflowTasksSqlRepository";
 import { changeSqlWorkflowTaskStatus } from "../lib/workflowTasksSqlWriteRepository";
-import type { DatabaseRecord, DomainRecord, UpdateTask } from "../types/models";
+import type { DatabaseRecord, UpdateTask } from "../types/models";
 import { readSqlRestrictedDatabase } from "../lib/coreMastersSqlRepository";
 import { enqueueSqlEmail } from "../lib/emailOutboxSqlRepository";
 
@@ -27,18 +23,8 @@ async function getUserOrFail(req: HttpRequest) {
 }
 
 async function findTask(id: string): Promise<UpdateTask | null> {
-  const backend = getDataBackend();
   const today = new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10);
-  if (backend === "sql") return (await readSqlWorkflowTasks({ sourceId: id, today, status: undefined, operationalOnly: false }))[0] ?? null;
-  const { resources } = await getContainer("updateTasks")
-    .items.query<UpdateTask>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })
-    .fetchAll();
-  const primary = resources[0] ?? null;
-  if (backend === "dual-read") {
-    const shadow = (await readSqlWorkflowTasks({ sourceId: id, today, status: primary?.status, operationalOnly: false }))[0] ?? null;
-    if (Boolean(primary) !== Boolean(shadow)) console.warn("Task detail dual-read parity mismatch.");
-  }
-  return primary;
+  return (await readSqlWorkflowTasks({ sourceId: id, today, status: undefined, operationalOnly: false }))[0] ?? null;
 }
 
 function actionIdForAuditAction(auditAction: string): string {
@@ -75,75 +61,9 @@ app.http("tasksList", {
       // backend reporte el día siguiente.
       const today = new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10);
       const sqlFilters: WorkflowTaskFilters = { date, targetType, status, clientId, domainId, dateFrom, dateTo, range, today };
-      const backend = getDataBackend();
       const roleDefinitions = await loadRoleDefinitions();
-      if (backend === "sql") {
-        let sqlItems = filterTasksWithRoleDefinitions(user, await readSqlWorkflowTasks(sqlFilters), roleDefinitions);
-        if (assignedToMe) sqlItems = sqlItems.filter((task) => isTaskAssignedToUserWithRoleDefinitions(user, task));
-        return ok(sqlItems.map(toPublicTask));
-      }
-      const conditions: string[] = [];
-      const parameters: { name: string; value: any }[] = [];
-      if (date) {
-        conditions.push("c.taskDate = @date");
-        parameters.push({ name: "@date", value: date });
-      }
-      if (dateFrom) {
-        conditions.push("c.taskDate >= @from");
-        parameters.push({ name: "@from", value: dateFrom });
-      }
-      if (dateTo) {
-        conditions.push("c.taskDate <= @to");
-        parameters.push({ name: "@to", value: dateTo });
-      }
-      if (range === "overdue") {
-        conditions.push("c.taskDate < @today AND c.status IN ('pending','in_progress','failed','blocked','reopened')");
-        parameters.push({ name: "@today", value: today });
-      } else if (range === "today") {
-        conditions.push("c.taskDate = @today");
-        parameters.push({ name: "@today", value: today });
-      } else if (range === "upcoming") {
-        conditions.push("c.taskDate > @today");
-        parameters.push({ name: "@today", value: today });
-      }
-      if (targetType) {
-        conditions.push("c.targetType = @t");
-        parameters.push({ name: "@t", value: targetType });
-      }
-      if (status) {
-        conditions.push("c.status = @s");
-        parameters.push({ name: "@s", value: status });
-      } else {
-        conditions.push("c.status != 'cancelled'");
-      }
-      if (clientId) {
-        conditions.push("c.clientId = @c");
-        parameters.push({ name: "@c", value: clientId });
-      }
-      if (domainId) {
-        conditions.push("c.domainId = @d");
-        parameters.push({ name: "@d", value: domainId });
-      }
-      const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-      const { resources } = await getContainer("updateTasks").items.query<UpdateTask>({ query: `SELECT * FROM c ${where}`, parameters }).fetchAll();
-      let items = resources;
-      const { resources: schedules } = await getContainer("updateSchedules").items
-        .query<{ id: string; active?: boolean }>({
-          query: "SELECT c.id, c.active FROM c WHERE (NOT IS_DEFINED(c.deletedAt) OR IS_NULL(c.deletedAt))",
-        })
-        .fetchAll();
-      const existingScheduleIds = new Set(schedules.map((schedule) => schedule.id));
-      const activeScheduleIds = new Set(
-        schedules.filter((schedule) => schedule.active !== false).map((schedule) => schedule.id)
-      );
-      items = filterTasksForOperationalView(items, { activeScheduleIds, existingScheduleIds });
-      items = filterTasksWithRoleDefinitions(user, items, roleDefinitions);
-      if (assignedToMe) items = items.filter((t) => isTaskAssignedToUserWithRoleDefinitions(user, t));
-      if (backend === "dual-read") {
-        let shadow = filterTasksWithRoleDefinitions(user, await readSqlWorkflowTasks(sqlFilters), roleDefinitions);
-        if (assignedToMe) shadow = shadow.filter((task) => isTaskAssignedToUserWithRoleDefinitions(user, task));
-        if (normalizedLogicalTaskCount(items) !== shadow.length) console.warn("Tasks dual-read normalized parity mismatch.");
-      }
+      let items = filterTasksWithRoleDefinitions(user, await readSqlWorkflowTasks(sqlFilters), roleDefinitions);
+      if (assignedToMe) items = items.filter((task) => isTaskAssignedToUserWithRoleDefinitions(user, task));
       return ok(items.map(toPublicTask));
     } catch (e) {
       return serverError(e);
@@ -171,7 +91,7 @@ app.http("tasksGet", {
 async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string): Promise<void> {
   try {
     const { loadEmailAlertsSettings } = await import("../lib/settingsService");
-    const { sendEmail, escapeHtml, formatDomainForPublishing } = await import("../lib/emailService");
+    const { escapeHtml, formatDomainForPublishing } = await import("../lib/emailService");
     const { normalizeBaseUrl } = await import("../lib/emailTemplates");
     const { resolveConfiguredRecipients } = await import("../lib/emailRecipients");
     const settings = await loadEmailAlertsSettings();
@@ -195,11 +115,7 @@ async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string):
     const dominioPublicable = formatDomainForPublishing(t.domainName);
     let dbInfo: DatabaseRecord | null = null;
     if (t.targetType === "database") {
-      dbInfo = getDataBackend() === "sql"
-        ? await readSqlRestrictedDatabase(t.targetId)
-        : (await getContainer("databases")
-          .items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: t.targetId }] })
-          .fetchAll()).resources[0] ?? null;
+      dbInfo = await readSqlRestrictedDatabase(t.targetId);
     }
     const html = `
       <h3>${escapeHtml(subject)}</h3>
@@ -225,17 +141,13 @@ async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string):
     `;
     const dbText = dbInfo ? ` Empresa: ${dbInfo.companyName}. Servidor y puerto: ${dbInfo.dbAccess.serverHostPort}. Base de datos: ${dbInfo.dbAccess.initialCatalog}. Usuario: ${dbInfo.dbAccess.userId}.` : "";
     const text = `${subject}. Tipo: ${tipo}. Cliente: ${t.clientName}. Dominio registrado: ${t.domainName}. Dominio para publicar: ${dominioPublicable}.${dbText} Fecha programada: ${t.taskDate}. Responsable: ${performedByEmail}. ${esFallida ? "Motivo" : "Problema"}: ${detalleProblema}`;
-    if (getDataBackend() === "sql") {
-      await enqueueSqlEmail({
-        type: "task_status_notification",
-        idempotencyKey: `task-status:${t.id}:${t.status}:${t.updatedAt}`,
-        entityType: "task", entityId: t.id, taskId: t.id, subject, html, text,
-        recipients: destinatarios.map((email) => ({ email })),
-        metadata: { status: t.status, targetType: t.targetType, problem: true },
-      });
-    } else {
-      await sendEmail({ to: destinatarios, subject, html, text }, settings);
-    }
+    await enqueueSqlEmail({
+      type: "task_status_notification",
+      idempotencyKey: `task-status:${t.id}:${t.status}:${t.updatedAt}`,
+      entityType: "task", entityId: t.id, taskId: t.id, subject, html, text,
+      recipients: destinatarios.map((email) => ({ email })),
+      metadata: { status: t.status, targetType: t.targetType, problem: true },
+    });
   } catch {/* no bloquear flujo de tarea */}
 }
 
@@ -245,7 +157,7 @@ async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string):
 async function notificarCompletadaConExito(t: UpdateTask, performedByEmail: string): Promise<void> {
   try {
     const { loadEmailAlertsSettings } = await import("../lib/settingsService");
-    const { sendEmail, escapeHtml, formatDomainForPublishing } = await import("../lib/emailService");
+    const { escapeHtml, formatDomainForPublishing } = await import("../lib/emailService");
     const { normalizeBaseUrl } = await import("../lib/emailTemplates");
     const { resolveConfiguredRecipients } = await import("../lib/emailRecipients");
     const settings = await loadEmailAlertsSettings();
@@ -280,17 +192,13 @@ async function notificarCompletadaConExito(t: UpdateTask, performedByEmail: stri
       ${linkApp}
     `;
     const text = `${subject}. Tipo: ${tipo}. Cliente: ${t.clientName}. Dominio para publicar: ${dominioPublicable}. Fecha programada: ${t.taskDate}. Completada por: ${performedByEmail}.${nota ? ` Nota: ${nota}` : ""}`;
-    if (getDataBackend() === "sql") {
-      await enqueueSqlEmail({
-        type: "task_status_notification",
-        idempotencyKey: `task-status:${t.id}:${t.status}:${t.updatedAt}`,
-        entityType: "task", entityId: t.id, taskId: t.id, subject, html, text,
-        recipients: destinatarios.map((email) => ({ email })),
-        metadata: { status: t.status, targetType: t.targetType, problem: false },
-      });
-    } else {
-      await sendEmail({ to: destinatarios, subject, html, text }, settings);
-    }
+    await enqueueSqlEmail({
+      type: "task_status_notification",
+      idempotencyKey: `task-status:${t.id}:${t.status}:${t.updatedAt}`,
+      entityType: "task", entityId: t.id, taskId: t.id, subject, html, text,
+      recipients: destinatarios.map((email) => ({ email })),
+      metadata: { status: t.status, targetType: t.targetType, problem: false },
+    });
   } catch {/* no bloquear flujo de tarea */}
 }
 
@@ -310,133 +218,25 @@ async function changeTaskStatus(
     if (!allowed) return forbidden("No puede cambiar el estado de esta tarea.");
 
     const body = providedBody ?? ((await req.json().catch(() => ({}))) as any);
-    const before = { ...t };
     if (newStatus === "blocked" && !String(body.notes ?? body.blockReason ?? "").trim()) {
       return badRequest("El motivo del bloqueo es obligatorio.");
     }
-    if (getDataBackend() === "sql") {
-      const updated = await changeSqlWorkflowTaskStatus(req.params.id, newStatus, auditAction, body, {
-        id: user.id, email: user.email,
-      });
-      if (!updated) return notFound("Tarea no encontrada.");
-      if (newStatus === "completed" || newStatus === "blocked" || newStatus === "failed") {
-        const settings = await (await import("../lib/settingsService")).loadEmailAlertsSettings();
-        const { decidirNotificacionPorEstado } = await import("../lib/taskNotifications");
-        const decision = decidirNotificacionPorEstado({
-          newStatus,
-          completedWithProblems: !!updated.completedWithProblems,
-          blockedAlertsEnabled: settings.blockedAlertsEnabled !== false,
-        });
-        if (decision === "problema") void notificarProblemaAdmins(updated, user.email);
-        else if (decision === "exito") void notificarCompletadaConExito(updated, user.email);
-      }
-      return ok(toPublicTask(updated));
-    }
-    t.status = newStatus;
-    t.updatedAt = new Date().toISOString();
-    t.updatedBy = user.id;
-    if (typeof body.notes === "string") t.notes = body.notes.slice(0, 4000);
-    if (typeof body.result === "string") t.result = body.result.slice(0, 200);
-
-    // Marca de "completada con problemas" cuando llega withProblems=true.
-    const conProblemas = newStatus === "completed" && body.withProblems === true;
-    if (newStatus === "completed") {
-      t.completedAt = new Date().toISOString();
-      t.completedBy = user.id;
-      t.completedWithProblems = conProblemas;
-      if (typeof body.completionNote === "string") t.completionNote = body.completionNote.slice(0, 4000);
-      if (conProblemas) {
-        t.problemNote = typeof body.problemNote === "string" ? body.problemNote.slice(0, 4000) : "";
-      } else {
-        t.problemNote = undefined;
-      }
-    }
-    if (newStatus === "blocked") {
-      t.blockedAt = new Date().toISOString();
-      t.blockedBy = user.id;
-      t.blockReason = String(body.blockReason ?? body.notes ?? "").slice(0, 4000);
-      t.problemNote = t.blockReason;
-    }
-    if (newStatus === "pending" && auditAction === "task_reopened") {
-      t.reopenedAt = new Date().toISOString();
-      t.reopenedBy = user.id;
-      t.reopenReason = typeof body.reopenReason === "string" && body.reopenReason.trim()
-        ? body.reopenReason.trim().slice(0, 4000)
-        : undefined;
-      t.completedWithProblems = false;
-    }
-    if (auditAction === "task_block_resolved") {
-      t.resolvedAt = new Date().toISOString();
-      t.resolvedBy = user.id;
-      t.resolutionComment = typeof body.resolutionComment === "string" && body.resolutionComment.trim()
-        ? body.resolutionComment.trim().slice(0, 4000)
-        : undefined;
-      if (newStatus !== "blocked") {
-        t.blockReason = t.blockReason ?? null;
-      }
-    }
-    await getContainer("updateTasks").item(t.id, t.taskBucket).replace(t);
-
-    // Si se completó, actualizar lastUpdatedAt del objetivo (database / domain).
-    if (newStatus === "completed") {
-      if (t.targetType === "database") {
-        const { resources } = await getContainer("databases")
-          .items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: t.targetId }] })
-          .fetchAll();
-        if (resources.length) {
-          const db = resources[0];
-          db.lastUpdatedAt = t.completedAt;
-          db.lastUpdatedBy = user.id;
-          await getContainer("databases").item(db.id, db.clientId).replace(db);
-        }
-      } else if (t.targetType === "domain") {
-        const { resources } = await getContainer("domains")
-          .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: t.targetId }] })
-          .fetchAll();
-        if (resources.length) {
-          const dom = resources[0];
-          dom.lastUpdatedAt = t.completedAt;
-          dom.lastUpdatedBy = user.id;
-          await getContainer("domains").item(dom.id, dom.clientId).replace(dom);
-        }
-      }
-    }
-
-    // Si fue completada con problemas, ajustamos la acción de auditoría
-    // a algo más explícito y disparamos email a admins.
-    const accionFinal = newStatus === "completed" && t.completedWithProblems
-      ? "task_completed_with_problems"
-      : auditAction;
-
-    await writeAuditLog({
-      entityType: "task",
-      entityId: t.id,
-      clientId: t.clientId,
-      clientName: t.clientName,
-      domainId: t.domainId,
-      domainName: t.domainName,
-      action: accionFinal,
-      performedBy: user.id,
-      performedByEmail: user.email,
-      before,
-      after: t,
-      metadata: { previousStatus: before.status, newStatus },
+    const updated = await changeSqlWorkflowTaskStatus(req.params.id, newStatus, auditAction, body, {
+      id: user.id, email: user.email,
     });
-
-    // Matriz de notificaciones por estado (decisión "Atención + fallida + éxito").
+    if (!updated) return notFound("Tarea no encontrada.");
     if (newStatus === "completed" || newStatus === "blocked" || newStatus === "failed") {
       const settings = await (await import("../lib/settingsService")).loadEmailAlertsSettings();
       const { decidirNotificacionPorEstado } = await import("../lib/taskNotifications");
       const decision = decidirNotificacionPorEstado({
         newStatus,
-        completedWithProblems: !!t.completedWithProblems,
+        completedWithProblems: !!updated.completedWithProblems,
         blockedAlertsEnabled: settings.blockedAlertsEnabled !== false,
       });
-      if (decision === "problema") void notificarProblemaAdmins(t, user.email);
-      else if (decision === "exito") void notificarCompletadaConExito(t, user.email);
+      if (decision === "problema") void notificarProblemaAdmins(updated, user.email);
+      else if (decision === "exito") void notificarCompletadaConExito(updated, user.email);
     }
-
-    return ok(toPublicTask(t));
+    return ok(toPublicTask(updated));
   } catch (e) {
     return serverError(e);
   }

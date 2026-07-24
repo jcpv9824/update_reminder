@@ -1,6 +1,4 @@
 import { app, InvocationContext, Timer } from "@azure/functions";
-import { getContainer } from "../lib/cosmos";
-import { getDataBackend } from "../lib/dataBackend";
 import { writeAuditLog } from "../lib/audit";
 import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, markOneTimeScheduleCompleted, obsoleteTasksOutsideExpected, oneTimeSchedulesReadyToComplete, summarizeTaskGenerationForDate } from "../lib/taskGenerator";
 import { isScheduleDueOnDate } from "../lib/scheduleEngine";
@@ -104,7 +102,6 @@ export async function runTaskGeneration(
   log: (msg: string) => void,
   opts: { windowStart?: string; windowEnd?: string } = {}
 ): Promise<GenerationResult> {
-  const sqlBackend = getDataBackend() === "sql";
   const windowStart = opts.windowStart ?? addDaysIso(isoDate, -7);
   const windowEnd = opts.windowEnd ?? addDaysIso(isoDate, 7);
   const ventana = listDatesInWindow(windowStart, windowEnd);
@@ -116,60 +113,35 @@ export async function runTaskGeneration(
   let databasesRaw: DatabaseRecord[];
   let allDomains: DomainRecord[];
   let allDatabases: DatabaseRecord[];
-  if (sqlBackend) {
-    const page = { enabled: false, page: 1, pageSize: 1000 };
-    const [scheduleResult, sqlClients, moduleResult, domainResult, databaseResult] = await Promise.all([
-      readSqlSchedules({}, page, isoDate),
-      readSqlClients(),
-      readSqlLicenseModules({ includeDeleted: false }, page),
-      readSqlDomains({}, page),
-      readSqlPublicDatabases({}, page),
-    ]);
-    schedules = (Array.isArray(scheduleResult) ? scheduleResult : scheduleResult.items).filter((schedule) => schedule.active);
-    clients = sqlClients.filter((client) => client.status === "active");
-    licenseModules = (Array.isArray(moduleResult) ? moduleResult : moduleResult.items).filter((module) => module.status === "active");
-    allDomains = Array.isArray(domainResult) ? domainResult : domainResult.items;
-    allDatabases = (Array.isArray(databaseResult) ? databaseResult : databaseResult.items) as DatabaseRecord[];
-    domainsRaw = allDomains.filter((domain) => domain.status === "active");
-    databasesRaw = allDatabases.filter((database) => database.status === "active");
-  } else {
-    schedules = (await getContainer("updateSchedules")
-      .items.query<UpdateSchedule>({ query: "SELECT * FROM c WHERE c.active = true" }).fetchAll()).resources;
-    clients = (await getContainer("clients")
-      .items.query<ClientRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll()).resources;
-    licenseModules = (await getContainer("licenseModules")
-      .items.query<LicenseModuleRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll()
-      .catch(() => ({ resources: [] as LicenseModuleRecord[] }))).resources;
-    domainsRaw = (await getContainer("domains")
-      .items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll()).resources;
-    databasesRaw = (await getContainer("databases")
-      .items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll()).resources;
-    allDomains = (await getContainer("domains").items.query<DomainRecord>({ query: "SELECT * FROM c" }).fetchAll()).resources;
-    allDatabases = (await getContainer("databases").items.query<DatabaseRecord>({ query: "SELECT * FROM c" }).fetchAll()).resources;
-  }
+  const page = { enabled: false, page: 1, pageSize: 1000 };
+  const [scheduleResult, sqlClients, moduleResult, domainResult, databaseResult] = await Promise.all([
+    readSqlSchedules({}, page, isoDate),
+    readSqlClients(),
+    readSqlLicenseModules({ includeDeleted: false }, page),
+    readSqlDomains({}, page),
+    readSqlPublicDatabases({}, page),
+  ]);
+  schedules = (Array.isArray(scheduleResult) ? scheduleResult : scheduleResult.items).filter((schedule) => schedule.active);
+  clients = sqlClients.filter((client) => client.status === "active");
+  licenseModules = (Array.isArray(moduleResult) ? moduleResult : moduleResult.items).filter((module) => module.status === "active");
+  allDomains = Array.isArray(domainResult) ? domainResult : domainResult.items;
+  allDatabases = (Array.isArray(databaseResult) ? databaseResult : databaseResult.items) as DatabaseRecord[];
+  domainsRaw = allDomains.filter((domain) => domain.status === "active");
+  databasesRaw = allDatabases.filter((database) => database.status === "active");
   const activeClientIds = new Set(clients.map((c: any) => c.id));
   const domains = domainsRaw.filter((d) => activeClientIds.has(d.clientId));
   const activeDomainIds = new Set(domains.map((d) => d.id));
   const databases = databasesRaw.filter((d) => activeClientIds.has(d.clientId) && activeDomainIds.has(d.domainId));
   const activeSchedules = schedules.filter((s) => activeClientIds.has(s.clientId));
 
-  // Cargar tareas existentes en TODOS los buckets de la ventana.
-  const buckets: string[] = [];
-  for (const d of ventana) {
-    buckets.push(`${d}_database`);
-    buckets.push(`${d}_domain`);
-  }
-  const existing: UpdateTask[] = sqlBackend
-    ? await readSqlWorkflowTasks({ today: isoDate, dateFrom: windowStart, dateTo: windowEnd, operationalOnly: false, includeCancelled: true })
-    : [];
-  if (!sqlBackend) {
-    for (const bucket of buckets) {
-      const { resources } = await getContainer("updateTasks")
-        .items.query<UpdateTask>({ query: "SELECT * FROM c WHERE c.taskBucket = @b", parameters: [{ name: "@b", value: bucket }] })
-        .fetchAll();
-      existing.push(...resources);
-    }
-  }
+  // Cargar tareas existentes en toda la ventana.
+  const existing: UpdateTask[] = await readSqlWorkflowTasks({
+    today: isoDate,
+    dateFrom: windowStart,
+    dateTo: windowEnd,
+    operationalOnly: false,
+    includeCancelled: true,
+  });
   const initialExistingTasks = existing.length;
 
   const expandedSchedules = expandSchedulesWithDomainInheritance(activeSchedules, domains, databases, clients, licenseModules);
@@ -225,36 +197,8 @@ export async function runTaskGeneration(
   const obsoletedTasks = obsoleteTasksOutsideExpected(existing, expectedKeys, new Date().toISOString(), isoDate);
   for (const task of obsoletedTasks) {
     try {
-      if (sqlBackend) {
-        await syncSqlGeneratedTask(task, "task_obsoleted");
-        reasons.push(`Tarea ${task.id} obsoleta: ${task.targetType} ${task.targetId} ya no corresponde al estado activo actual.`);
-        continue;
-      }
-      await getContainer("updateTasks").item(task.id, task.taskBucket).replace(task);
-      const reason = `Tarea ${task.id} obsoleta: ${task.targetType} ${task.targetId} ya no corresponde al estado activo actual.`;
-      reasons.push(reason);
-      await writeAuditLog({
-        entityType: "task",
-        entityId: task.id,
-        clientId: task.clientId,
-        clientName: task.clientName,
-        domainId: task.domainId,
-        domainName: task.domainName,
-        action: "task_obsoleted",
-        performedBy: "system",
-        performedByEmail: "system",
-        metadata: {
-          reason: "target_or_schedule_not_expected",
-          taskId: task.id,
-          targetType: task.targetType,
-          targetId: task.targetId,
-          domainId: task.domainId,
-          scheduledFor: task.taskDate,
-          generationWindowStart: windowStart,
-          generationWindowEnd: windowEnd,
-        },
-        after: { status: task.status, result: task.result },
-      });
+      await syncSqlGeneratedTask(task, "task_obsoleted");
+      reasons.push(`Tarea ${task.id} obsoleta: ${task.targetType} ${task.targetId} ya no corresponde al estado activo actual.`);
     } catch (e: any) {
       reasons.push(`Tarea ${task.id} no pudo marcarse obsoleta: ${e?.message ?? e}`);
     }
@@ -285,73 +229,27 @@ export async function runTaskGeneration(
 
     for (const task of summary.tasks) {
       try {
-        if (sqlBackend) {
-          const inserted = await createSqlGeneratedTask(task);
-          if (!inserted) {
-            totalSkipped++;
-            if (task.targetType === "domain") skippedDomainTasks++;
-            else skippedDatabaseTasks++;
-            reasons.push(`Tarea ${task.id} omitida: ya existe.`);
-            continue;
-          }
-          existing.push(task);
-          if (task.targetType === "domain") createdDomainTasks++;
-          else createdDatabaseTasks++;
-          totalCreated++;
-          continue;
-        }
-        await getContainer("updateTasks").items.create(task);
-        existing.push(task);
-        if (task.targetType === "domain") createdDomainTasks++;
-        else createdDatabaseTasks++;
-        totalCreated++;
-        await writeAuditLog({
-          entityType: "task",
-          entityId: task.id,
-          clientId: task.clientId,
-          clientName: task.clientName,
-          domainId: task.domainId,
-          domainName: task.domainName,
-          action: "task_generated",
-          performedBy: "system",
-          performedByEmail: "system",
-          after: { taskDate: task.taskDate, targetType: task.targetType, targetId: task.targetId },
-        });
-      } catch (e: any) {
-        // Si Cosmos rechaza por conflicto (409), tratamos como skip.
-        if (e?.code === 409) {
+        const inserted = await createSqlGeneratedTask(task);
+        if (!inserted) {
           totalSkipped++;
           if (task.targetType === "domain") skippedDomainTasks++;
           else skippedDatabaseTasks++;
           reasons.push(`Tarea ${task.id} omitida: ya existe.`);
-        } else {
-          reasons.push(`Tarea ${task.id} no creada: ${e?.message ?? e}`);
+          continue;
         }
+        existing.push(task);
+        if (task.targetType === "domain") createdDomainTasks++;
+        else createdDatabaseTasks++;
+        totalCreated++;
+      } catch (e: any) {
+        reasons.push(`Tarea ${task.id} no creada: ${e?.message ?? e}`);
       }
     }
 
     for (const synced of summary.syncedTasks) {
       try {
-        if (sqlBackend) {
-          if (await syncSqlGeneratedTask(synced, "task_assignment_synced")) totalUpdated++;
-          reasons.push(`Tarea ${synced.id} sincronizada con responsable actual de la frecuencia.`);
-          continue;
-        }
-        await getContainer("updateTasks").item(synced.id, synced.taskBucket).replace(synced);
-        totalUpdated++;
+        if (await syncSqlGeneratedTask(synced, "task_assignment_synced")) totalUpdated++;
         reasons.push(`Tarea ${synced.id} sincronizada con responsable actual de la frecuencia.`);
-        await writeAuditLog({
-          entityType: "task",
-          entityId: synced.id,
-          clientId: synced.clientId,
-          clientName: synced.clientName,
-          domainId: synced.domainId,
-          domainName: synced.domainName,
-          action: "task_assignment_synced",
-          performedBy: "system",
-          performedByEmail: "system",
-          after: { assignedRole: synced.assignedRole, assignedUserIds: synced.assignedUserIds, scheduleId: synced.scheduleId },
-        });
       } catch (e: any) {
         reasons.push(`Tarea ${synced.id} no sincronizada: ${e?.message ?? e}`);
       }
@@ -360,7 +258,7 @@ export async function runTaskGeneration(
     totalSkipped += summary.skipped;
     if (summary.skipped > 0) {
       // Distribuir skipped por tipo a partir de las fechas evaluadas.
-      // Ya se contabilizó arriba si Cosmos rechazó. Aquí solo marca razón general.
+      // La idempotencia ya se contabilizó arriba; aquí solo marca la razón general.
       reasons.push(`Fecha ${d}: ${summary.skipped} tarea(s) ya existían (idempotencia).`);
     }
   }
@@ -369,30 +267,8 @@ export async function runTaskGeneration(
   for (const schedule of oneTimeSchedulesToComplete) {
     try {
       const completed = markOneTimeScheduleCompleted(schedule, new Date().toISOString(), "system");
-      if (sqlBackend) {
-        if (await completeSqlOneTimeSchedule(completed)) completedOneTimeSchedules++;
-        reasons.push(`Programación única ${schedule.id} marcada como inactiva porque sus tareas ya están cerradas.`);
-        continue;
-      }
-      await getContainer("updateSchedules").item(schedule.id, schedule.clientId).replace(completed);
-      completedOneTimeSchedules++;
+      if (await completeSqlOneTimeSchedule(completed)) completedOneTimeSchedules++;
       reasons.push(`Programación única ${schedule.id} marcada como inactiva porque sus tareas ya están cerradas.`);
-      await writeAuditLog({
-        entityType: "schedule",
-        entityId: schedule.id,
-        clientId: schedule.clientId,
-        clientName: schedule.clientName,
-        action: "schedule_one_time_completed",
-        performedBy: "system",
-        performedByEmail: "system",
-        metadata: {
-          reason: "one_time_schedule_executed",
-          runDate: schedule.startDate,
-          generationWindowStart: windowStart,
-          generationWindowEnd: windowEnd,
-        },
-        after: { active: completed.active, completedAt: completed.completedAt, completedReason: completed.completedReason },
-      });
     } catch (e: any) {
       reasons.push(`Programación única ${schedule.id} no pudo marcarse como inactiva: ${e?.message ?? e}`);
     }

@@ -1,5 +1,3 @@
-import { getContainer } from "./cosmos";
-import { getDataBackend } from "./dataBackend";
 import { readSqlEmailAlertsSettings, type StoredEmailAlertsSettings } from "./emailSettingsSqlRepository";
 import { toKeyVaultSecretName } from "./keyVaultNames";
 import * as keyVault from "./keyVault";
@@ -86,58 +84,11 @@ export function mergeEmailAlertsSettings(stored: StoredEmailAlertsSettings): Ema
   };
 }
 
-function parityShape(settings: EmailAlertsSettings): string {
-  return JSON.stringify({
-    provider: settings.emailProvider,
-    remindersEnabled: settings.remindersEnabled,
-    defaultDays: settings.defaultReminderDaysBefore.length,
-    overdueEnabled: settings.overdueAlertsEnabled,
-    overdueRoles: settings.overdueAlertRecipientRoleIds?.length ?? 0,
-    overdueEmails: settings.overdueAlertCustomEmails?.length ?? 0,
-    legacyEmails: settings.customAdminAlertEmails?.length ?? 0,
-    weekdays: settings.overdueAlertWeekdays?.length ?? 0,
-    blockedEnabled: settings.blockedAlertsEnabled,
-    blockedRoles: settings.blockedAlertRecipientRoleIds?.length ?? 0,
-    blockedEmails: settings.blockedAlertCustomEmails?.length ?? 0,
-    blockedDays: settings.blockedReminderDaysAfter?.length ?? 0,
-    administrative: Object.values(settings.administrativeReminders ?? {}).filter((reminder) => reminder.enabled).length,
-    passwordNotificationEnabled: settings.passwordNotificationEnabled,
-  });
-}
-
-// Lee la configuración desde Cosmos. Si no existe, devuelve los defaults
-// combinados con valores de variables de entorno como respaldo.
+// Lee la configuración operacional desde SQL. La fila singleton es obligatoria.
 export async function loadEmailAlertsSettings(): Promise<EmailAlertsSettings> {
-  const backend = getDataBackend();
-  if (backend === "sql") {
-    const stored = await readSqlEmailAlertsSettings();
-    if (!stored) throw Object.assign(new Error("La configuración SQL email-alerts no existe."), { status: 503 });
-    return mergeEmailAlertsSettings(stored);
-  }
-  let primary: EmailAlertsSettings | null = null;
-  try {
-    const { resource } = await getContainer("appSettings").item(SETTINGS_ID, SETTINGS_ID).read<EmailAlertsSettings>();
-    if (resource) primary = mergeEmailAlertsSettings(resource);
-  } catch {/* ignorar — usar defaults */}
-  // Fallback a variables de entorno cuando no hay documento todavía.
-  primary ??= {
-    ...DEFAULTS,
-    emailProvider: (process.env.EMAIL_PROVIDER as any) ?? DEFAULTS.emailProvider,
-    emailFrom: process.env.EMAIL_FROM ?? DEFAULTS.emailFrom,
-    emailFromName: process.env.EMAIL_FROM_NAME ?? DEFAULTS.emailFromName,
-    frontendBaseUrl: process.env.FRONTEND_BASE_URL ?? DEFAULTS.frontendBaseUrl,
-    smtpHost: process.env.SMTP_HOST ?? DEFAULTS.smtpHost,
-    smtpPort: process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : DEFAULTS.smtpPort,
-    smtpSecure: process.env.SMTP_SECURE === "true",
-    smtpUser: process.env.SMTP_USER ?? DEFAULTS.smtpUser,
-  };
-  if (backend === "dual-read") {
-    const stored = await readSqlEmailAlertsSettings();
-    if (!stored || parityShape(primary) !== parityShape(mergeEmailAlertsSettings(stored))) {
-      console.warn("Email settings dual-read parity mismatch.");
-    }
-  }
-  return primary;
+  const stored = await readSqlEmailAlertsSettings();
+  if (!stored) throw Object.assign(new Error("La configuración SQL email-alerts no existe."), { status: 503 });
+  return mergeEmailAlertsSettings(stored);
 }
 
 // Devuelve la configuración SIN secretos para enviarla al frontend.
@@ -147,7 +98,7 @@ export function sanitizeForResponse(s: EmailAlertsSettings): Omit<EmailAlertsSet
 }
 
 // Guarda configuración. Si viene smtpPassword (texto), la persiste en Key Vault
-// y guarda solo el nombre del secreto + flag en Cosmos.
+// y guarda solo el nombre del secreto + flag en SQL.
 export async function saveEmailAlertsSettings(args: {
   patch: Partial<EmailAlertsSettings> & { smtpPassword?: string };
   performedBy: string;
@@ -186,24 +137,19 @@ export async function saveEmailAlertsSettings(args: {
     updatedBy: args.performedBy,
   };
 
-  if (getDataBackend() === "sql") {
-    try {
-      return await saveSqlEmailAlertsSettings(current, next, args.performedBy);
-    } catch (error) {
-      if (wroteSecret && smtpPasswordSecretName) {
-        try {
-          if (priorSecretValue !== null) await keyVault.setSecret(smtpPasswordSecretName, priorSecretValue);
-          else await keyVault.deleteSecret(smtpPasswordSecretName);
-        } catch {
-          throw Object.assign(new Error("La configuración SQL falló y no se pudo compensar el secreto SMTP; revise Key Vault antes de reintentar."), { cause: error });
-        }
+  try {
+    return await saveSqlEmailAlertsSettings(current, next, args.performedBy);
+  } catch (error) {
+    if (wroteSecret && smtpPasswordSecretName) {
+      try {
+        if (priorSecretValue !== null) await keyVault.setSecret(smtpPasswordSecretName, priorSecretValue);
+        else await keyVault.deleteSecret(smtpPasswordSecretName);
+      } catch {
+        throw Object.assign(new Error("La configuración SQL falló y no se pudo compensar el secreto SMTP; revise Key Vault antes de reintentar."), { cause: error });
       }
-      throw error;
     }
+    throw error;
   }
-
-  await getContainer("appSettings").items.upsert(next);
-  return next;
 }
 
 // Recupera la contraseña SMTP del Key Vault. Devuelve null si no está configurada

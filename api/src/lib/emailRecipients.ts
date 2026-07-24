@@ -1,8 +1,4 @@
-import { getContainer } from "./cosmos";
-import type { UserRecord } from "../types/models";
-
 import { isValidEmail } from "./inputValidation";
-import { getDataBackend } from "./dataBackend";
 import { readSqlPublicUsers } from "./securityUsersSqlRepository";
 
 const RECIPIENT_ROLE_ALIASES: Record<string, string[]> = {
@@ -39,18 +35,10 @@ export async function resolveEmailsByRoles(roleIds: string[] = []): Promise<stri
     roleIds.flatMap((role) => [role, ...(RECIPIENT_ROLE_ALIASES[role] ?? [])])
   ));
   if (effectiveRoleIds.length === 0) return [];
-  if (getDataBackend() === "sql") {
-    const result = await readSqlPublicUsers({ enabled: false, page: 1, pageSize: 500 });
-    const users = Array.isArray(result) ? result : result.items;
-    return users.filter((user) => user.active && user.roles.some((role) => effectiveRoleIds.includes(role)))
-      .map((user) => user.email).filter(Boolean);
-  }
-  const clauses = effectiveRoleIds.map((_, i) => `ARRAY_CONTAINS(c.roles, @r${i})`).join(" OR ");
-  const parameters = effectiveRoleIds.map((role, i) => ({ name: `@r${i}`, value: role }));
-  const { resources } = await getContainer("users")
-    .items.query<UserRecord>({ query: `SELECT * FROM c WHERE c.active = true AND (${clauses})`, parameters })
-    .fetchAll();
-  return resources.map((u) => u.email).filter(Boolean);
+  const result = await readSqlPublicUsers({ enabled: false, page: 1, pageSize: 500 });
+  const users = Array.isArray(result) ? result : result.items;
+  return users.filter((user) => user.active && user.roles.some((role) => effectiveRoleIds.includes(role)))
+    .map((user) => user.email).filter(Boolean);
 }
 
 export async function resolveConfiguredRecipients(roleIds: string[] = [], customEmails: string[] = []): Promise<string[]> {

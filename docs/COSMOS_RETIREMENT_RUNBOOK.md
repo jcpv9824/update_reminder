@@ -1,6 +1,6 @@
 # Retiro de Cosmos DB — Portal SAG Web
 
-Estado: **fase 1 desplegada como canary productivo; no autoriza eliminar la cuenta**
+Estado: **fase 2 terminada y validada localmente; lista para rehearsal, no autoriza eliminar la cuenta**
 
 ## Objetivo
 
@@ -37,6 +37,18 @@ Un error `Dependencia Cosmos inesperada durante la ejecución SQL` detiene el re
 5. Añadir una prueba CI que rechace `@azure/cosmos`, `getContainer`, `COSMOS_` y `dual-read` dentro del runtime.
 6. Desplegar sin `COSMOS_CONNECTION_STRING` ni `COSMOS_DATABASE_NAME`.
 
+### Evidencia fase 2 — 2026-07-23
+
+- Eliminadas todas las ramas `cosmos` y `dual-read` del runtime.
+- Eliminados `api/src/lib/cosmos.ts`, `api/src/lib/taskCleanup.ts` y `@azure/cosmos`.
+- Convertidos a SQL los maestros, seguridad, sesiones, rate limiting, auditoría, configuración, reportes, licencias, programaciones, tareas, timers, formatos y descargas.
+- Los binarios permanecen en Blob Storage privado; SQL conserva únicamente metadata y referencias.
+- Retirados los scripts de exportación, seed y saneamiento que dependían del SDK documental.
+- Añadido `npm run check:no-cosmos-runtime`.
+- API compilada y 379 pruebas backend aprobadas.
+- Frontend compilado y pruebas aprobadas.
+- Pendiente: construir el artefacto reproducible, desplegar el segundo canary sin las dos variables heredadas y ejecutar los smoke tests productivos.
+
 ## Fase 3 — recuperación y eliminación
 
 1. Generar un último snapshot read-only de los 17 contenedores.
@@ -45,6 +57,11 @@ Un error `Dependencia Cosmos inesperada durante la ejecución SQL` detiene el re
 4. Restaurar el backup SQL en QA y validar integridad y arranque.
 5. Rotar las claves Cosmos y comprobar que producción continúa saludable.
 6. Eliminar la cuenta Cosmos mediante una operación separada y explícitamente aprobada.
+
+La ventana de siete días iniciada el `2026-07-23T22:26:43Z` termina como mínimo el
+`2026-07-30T22:26:43Z`. Cualquier solicitud observada reinicia el conteo. Antes de
+esa fecha solo se permite el rehearsal y el canary SQL-only; no se permite eliminar
+la cuenta.
 
 ## Criterios de salida
 

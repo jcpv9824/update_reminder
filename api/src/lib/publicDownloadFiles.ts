@@ -4,8 +4,6 @@ export type PublicDownloadAssetKind = "document" | "video";
 
 export const MAX_PUBLIC_DOCUMENT_BYTES = 8_000_000;
 export const MAX_PUBLIC_VIDEO_BYTES = 100_000_000;
-export const MAX_LEGACY_COSMOS_FILE_BYTES = 1_000_000;
-
 type FileContract = {
   assetKind: PublicDownloadAssetKind;
   mimeType: string;

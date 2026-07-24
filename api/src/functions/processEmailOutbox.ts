@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { app, InvocationContext, Timer } from "@azure/functions";
-import { getDataBackend } from "../lib/dataBackend";
 import { claimSqlEmailBatch, completeSqlEmailAttempt } from "../lib/emailOutboxSqlRepository";
 import { sendEmail } from "../lib/emailService";
 import { loadEmailAlertsSettings } from "../lib/settingsService";
@@ -9,7 +8,6 @@ import { generateResetToken, resetExpirationIso } from "../lib/resetTokens";
 import { setSqlPasswordResetToken } from "../lib/securityManagementSqlWriteRepository";
 
 export async function processSqlEmailOutbox(log: (message: string) => void): Promise<{ claimed: number; sent: number; failed: number }> {
-  if (getDataBackend() !== "sql") return { claimed: 0, sent: 0, failed: 0 };
   const workerId = `email-worker-${randomUUID()}`;
   const settings = await loadEmailAlertsSettings();
   const claimed = await claimSqlEmailBatch(workerId, 10, 120);

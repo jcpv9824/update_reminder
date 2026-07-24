@@ -3,10 +3,9 @@ import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
 import { loadEmailAlertsSettings, sanitizeForResponse, saveEmailAlertsSettings } from "../lib/settingsService";
-import { buildTestEmail, sendEmail } from "../lib/emailService";
+import { buildTestEmail } from "../lib/emailService";
 import { badRequest, forbidden, ok, serverError } from "../lib/http";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
-import { assertCosmosRuntimeMutation, getDataBackend } from "../lib/dataBackend";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import { canEditEmailAlerts, canSendTestEmail, canViewEmailAlerts } from "../lib/managementAccess";
 import { enqueueSqlEmail } from "../lib/emailOutboxSqlRepository";
@@ -130,7 +129,6 @@ app.http("settingsEmailAlertsTestEmail", {
     try {
       const admin = await getProfile(req);
       if (!canSendTestEmail(admin, await loadRoleDefinitions())) return forbidden();
-      if (getDataBackend() !== "sql") assertCosmosRuntimeMutation("El envío de correos de prueba");
       const body = await req.json();
       const parsed = TestSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
@@ -145,32 +143,14 @@ app.http("settingsEmailAlertsTestEmail", {
         sentAt: new Date(),
         timezone: process.env.APP_TIMEZONE || "America/Bogota",
       });
-      if (getDataBackend() === "sql") {
-        const queued = await enqueueSqlEmail({
-          type: "test_email",
-          idempotencyKey: `test-email:${admin.id}:${randomUUID()}`,
-          entityType: "settings", entityId: "email-alerts", subject: email.subject,
-          text: email.text, html: email.html, recipients: [{ email: parsed.data.to, name: admin.displayName }],
-          metadata: { test: true, provider: settings.emailProvider }, createdBy: admin.id,
-        });
-        return ok({ ok: queued.created, message: queued.created ? "Correo de prueba puesto en cola correctamente." : "El correo de prueba ya estaba en cola." });
-      }
-      const r = await sendEmail({
-        to: parsed.data.to,
-        subject: email.subject,
-        text: email.text,
-        html: email.html,
-      }, settings);
-      await writeAuditLog({
-        entityType: "settings",
-        entityId: "email-alerts",
-        action: r.ok ? "test_email_sent" : "test_email_failed",
-        performedBy: admin.id,
-        performedByEmail: admin.email,
-        metadata: { to: parsed.data.to, provider: r.provider, error: r.ok ? undefined : r.error },
+      const queued = await enqueueSqlEmail({
+        type: "test_email",
+        idempotencyKey: `test-email:${admin.id}:${randomUUID()}`,
+        entityType: "settings", entityId: "email-alerts", subject: email.subject,
+        text: email.text, html: email.html, recipients: [{ email: parsed.data.to, name: admin.displayName }],
+        metadata: { test: true, provider: settings.emailProvider }, createdBy: admin.id,
       });
-      if (r.ok) return ok({ ok: true, message: "Correo de prueba enviado correctamente." });
-      return ok({ ok: false, message: "No se pudo enviar el correo de prueba.", details: r.error });
+      return ok({ ok: queued.created, message: queued.created ? "Correo de prueba puesto en cola correctamente." : "El correo de prueba ya estaba en cola." });
     } catch (e) { return serverError(e); }
   },
 });

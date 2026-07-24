@@ -2,9 +2,6 @@ import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
-import { writeAuditLog } from "../lib/audit";
-import { getContainer } from "../lib/cosmos";
-import { getDataBackend } from "../lib/dataBackend";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import {
   canCreatePublicDownloadDocument,
@@ -17,10 +14,7 @@ import {
   canViewPublicDownloadsAdmin,
 } from "../lib/managementAccess";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
-import {
-  decodePublicDownloadFile,
-  MAX_LEGACY_COSMOS_FILE_BYTES,
-} from "../lib/publicDownloadFiles";
+import { decodePublicDownloadFile } from "../lib/publicDownloadFiles";
 import {
   createPublicDownloadBlobUrl,
   deletePublicDownloadBlobIfUnreferenced,
@@ -37,8 +31,6 @@ import {
   updateSqlPublicDownloadSection,
 } from "../lib/publicDownloadsSqlWriteRepository";
 import type { PublicDownloadDocumentRecord, PublicDownloadSectionRecord } from "../types/models";
-
-const CONTAINER = "publicDownloads";
 
 const SectionSchema = z.object({
   nombre: z.string().min(1, "El nombre de la sección es obligatorio.").max(160),
@@ -142,20 +134,14 @@ async function storedFileFields(file: ReturnType<typeof decodePublicDownloadFile
     archivoBytes: file.byteCount,
     archivoSha256: file.sha256,
   };
-  if (isPublicDownloadBlobStorageConfigured()) {
-    return {
-      ...shared,
-      ...(await storePublicDownloadBlob(file)),
-      archivoBase64: undefined,
-    };
-  }
-  if (getDataBackend() === "sql") {
+  if (!isPublicDownloadBlobStorageConfigured()) {
     throw Object.assign(new Error("Configure Azure Blob Storage antes de guardar archivos en SQL."), { status: 503 });
   }
-  if (file.assetKind === "video" || file.byteCount > MAX_LEGACY_COSMOS_FILE_BYTES) {
-    throw Object.assign(new Error("Configure el almacenamiento privado de archivos para cargar videos o archivos de este tamaño."), { status: 503 });
-  }
-  return { ...shared, archivoBase64: file.bytes.toString("base64") };
+  return {
+    ...shared,
+    ...(await storePublicDownloadBlob(file)),
+    archivoBase64: undefined,
+  };
 }
 
 async function compensateUnreferencedBlob(record: Partial<PublicDownloadDocumentRecord>): Promise<void> {
@@ -170,35 +156,8 @@ async function compensateUnreferencedBlob(record: Partial<PublicDownloadDocument
   }
 }
 
-async function readAllCosmos(): Promise<PublicDownloadRecord[]> {
-  const { resources } = await getContainer(CONTAINER).items.readAll<PublicDownloadRecord>().fetchAll();
-  return resources.filter((item: any) => item.status !== "deleted");
-}
-
-function parityView(records: PublicDownloadRecord[]) {
-  return records.map((record) => ("sectionId" in record ? {
-    type: "document", id: record.id, sectionId: record.sectionId, sectionSlug: record.sectionSlug,
-    titulo: record.titulo, slug: record.slug, descripcion: record.descripcion ?? null,
-    assetKind: record.assetKind ?? (record.archivoMimeType.startsWith("video/") ? "video" : "document"),
-    archivoNombreOriginal: record.archivoNombreOriginal, archivoMimeType: record.archivoMimeType,
-    archivoBytes: record.archivoBytes, activo: record.activo, status: record.status,
-  } : {
-    type: "section", id: record.id, nombre: record.nombre, slug: record.slug,
-    descripcion: record.descripcion ?? null, activa: record.activa, status: record.status,
-  })).sort((left, right) => `${left.type}:${left.id}`.localeCompare(`${right.type}:${right.id}`, "en"));
-}
-
 async function readAll(): Promise<PublicDownloadRecord[]> {
-  const backend = getDataBackend();
-  if (backend === "sql") return readSqlPublicDownloads();
-  const cosmos = await readAllCosmos();
-  if (backend === "dual-read") {
-    const sqlRecords = await readSqlPublicDownloads();
-    if (JSON.stringify(parityView(cosmos)) !== JSON.stringify(parityView(sqlRecords))) {
-      console.warn("Public Downloads dual-read parity mismatch.");
-    }
-  }
-  return cosmos;
+  return readSqlPublicDownloads();
 }
 
 async function readSections(): Promise<PublicDownloadSectionRecord[]> {
@@ -214,15 +173,11 @@ async function readDocuments(): Promise<PublicDownloadDocumentRecord[]> {
 }
 
 async function readSection(id: string): Promise<PublicDownloadSectionRecord | null> {
-  if (getDataBackend() === "sql") return (await readSections()).find((section) => section.id === id) ?? null;
-  const { resource } = await getContainer(CONTAINER).item(id, id).read<PublicDownloadSectionRecord>();
-  return resource && (resource as any).type === "section" && resource.status !== "deleted" ? resource : null;
+  return (await readSections()).find((section) => section.id === id) ?? null;
 }
 
 async function readDocument(id: string): Promise<PublicDownloadDocumentRecord | null> {
-  if (getDataBackend() === "sql") return (await readDocuments()).find((document) => document.id === id) ?? null;
-  const { resource } = await getContainer(CONTAINER).item(id, id).read<PublicDownloadDocumentRecord>();
-  return resource && (resource as any).type === "document" && resource.status !== "deleted" ? resource : null;
+  return (await readDocuments()).find((document) => document.id === id) ?? null;
 }
 
 async function hasDuplicateSectionSlug(slug: string, exceptId?: string): Promise<boolean> {
@@ -231,17 +186,6 @@ async function hasDuplicateSectionSlug(slug: string, exceptId?: string): Promise
 
 async function hasDuplicateDocumentSlug(slug: string, exceptId?: string): Promise<boolean> {
   return (await readDocuments()).some((item) => item.id !== exceptId && normalize(item.slug) === normalize(slug));
-}
-
-async function syncSectionNameOnDocuments(section: PublicDownloadSectionRecord): Promise<void> {
-  const docs = (await readDocuments()).filter((doc) => doc.sectionId === section.id);
-  await Promise.all(docs.map((doc) => getContainer(CONTAINER).item(doc.id, doc.id).replace({
-    ...doc,
-    sectionName: section.nombre,
-    sectionSlug: section.slug,
-    updatedAt: section.updatedAt,
-    updatedBy: section.updatedBy,
-  })));
 }
 
 async function downloadResponse(record: PublicDownloadDocumentRecord): Promise<HttpResponseInit> {
@@ -317,12 +261,7 @@ app.http("adminPublicDownloadSectionsCreate", {
         updatedAt: now,
         updatedBy: user.id,
       };
-      if (getDataBackend() === "sql") {
-        return created(sanitizeSection(await createSqlPublicDownloadSection(record, { id: user.id, email: user.email })));
-      }
-      await getContainer(CONTAINER).items.create(record);
-      await writeAuditLog({ entityType: "publicDownloadSection", entityId: record.id, action: "public_download_section_created", performedBy: user.id, performedByEmail: user.email, after: record });
-      return created(sanitizeSection(record));
+      return created(sanitizeSection(await createSqlPublicDownloadSection(record, { id: user.id, email: user.email })));
     } catch (e) {
       return serverError(e);
     }
@@ -345,7 +284,6 @@ app.http("adminPublicDownloadSectionsUpdate", {
         ? slugify(parsed.data.slug || parsed.data.nombre || current.slug)
         : current.slug;
       if (await hasDuplicateSectionSlug(nextSlug, current.id)) return conflict("Ya existe una sección con este endpoint.");
-      const before = { ...current };
       const updated: PublicDownloadSectionRecord & { type: "section" } = {
         ...(current as PublicDownloadSectionRecord & { type: "section" }),
         ...(parsed.data.nombre !== undefined ? { nombre: parsed.data.nombre.trim() } : {}),
@@ -355,14 +293,8 @@ app.http("adminPublicDownloadSectionsUpdate", {
         updatedAt: new Date().toISOString(),
         updatedBy: user.id,
       };
-      if (getDataBackend() === "sql") {
-        const result = await updateSqlPublicDownloadSection(updated, { id: user.id, email: user.email });
-        return result ? ok(sanitizeSection(result)) : notFound("Sección no encontrada.");
-      }
-      await getContainer(CONTAINER).item(updated.id, updated.id).replace(updated);
-      if (before.nombre !== updated.nombre || before.slug !== updated.slug) await syncSectionNameOnDocuments(updated);
-      await writeAuditLog({ entityType: "publicDownloadSection", entityId: updated.id, action: "public_download_section_updated", performedBy: user.id, performedByEmail: user.email, before, after: updated });
-      return ok(sanitizeSection(updated));
+      const result = await updateSqlPublicDownloadSection(updated, { id: user.id, email: user.email });
+      return result ? ok(sanitizeSection(result)) : notFound("Sección no encontrada.");
     } catch (e) {
       return serverError(e);
     }
@@ -379,17 +311,9 @@ app.http("adminPublicDownloadSectionsDelete", {
       if (!canDeletePublicDownloadSection(user, await loadRoleDefinitions())) return forbidden();
       const current = await readSection(req.params.id);
       if (!current) return notFound("Sección no encontrada.");
-      if (getDataBackend() === "sql") {
-        const result = await deleteSqlPublicDownloadSection(current.id, { id: user.id, email: user.email });
-        if (!result.found) return notFound("Sección no encontrada.");
-        if (result.documents) return conflict("No se puede eliminar la sección porque tiene documentos asociados.", { dependencies: { documents: result.documents } });
-        return ok({ ok: true });
-      }
-      const docs = (await readDocuments()).filter((doc) => doc.sectionId === current.id);
-      if (docs.length > 0) return conflict("No se puede eliminar la sección porque tiene documentos asociados.", { dependencies: { documents: docs.length } });
-      const deleted = { ...(current as PublicDownloadSectionRecord & { type: "section" }), activa: false, status: "deleted" as const, deletedAt: new Date().toISOString(), deletedBy: user.id, updatedAt: new Date().toISOString(), updatedBy: user.id };
-      await getContainer(CONTAINER).item(deleted.id, deleted.id).replace(deleted);
-      await writeAuditLog({ entityType: "publicDownloadSection", entityId: deleted.id, action: "public_download_section_deleted", performedBy: user.id, performedByEmail: user.email, before: current, after: deleted });
+      const result = await deleteSqlPublicDownloadSection(current.id, { id: user.id, email: user.email });
+      if (!result.found) return notFound("Sección no encontrada.");
+      if (result.documents) return conflict("No se puede eliminar la sección porque tiene documentos asociados.", { dependencies: { documents: result.documents } });
       return ok({ ok: true });
     } catch (e) {
       return serverError(e);
@@ -449,17 +373,12 @@ app.http("adminPublicDownloadDocumentsCreate", {
         updatedAt: now,
         updatedBy: user.id,
       };
-      if (getDataBackend() === "sql") {
-        try {
-          return created(sanitizeDocument(await createSqlPublicDownloadDocument(record, { id: user.id, email: user.email })));
-        } catch (error) {
-          await compensateUnreferencedBlob(record);
-          throw error;
-        }
+      try {
+        return created(sanitizeDocument(await createSqlPublicDownloadDocument(record, { id: user.id, email: user.email })));
+      } catch (error) {
+        await compensateUnreferencedBlob(record);
+        throw error;
       }
-      await getContainer(CONTAINER).items.create(record);
-      await writeAuditLog({ entityType: "publicDownloadDocument", entityId: record.id, action: "public_download_document_created", performedBy: user.id, performedByEmail: user.email, after: auditDocument(record), metadata: { fileLoaded: true, assetKind: record.assetKind } });
-      return created(sanitizeDocument(record));
     } catch (e) {
       return serverError(e);
     }
@@ -516,28 +435,14 @@ app.http("adminPublicDownloadDocumentsUpdate", {
         updatedAt: new Date().toISOString(),
         updatedBy: user.id,
       };
-      if (getDataBackend() === "sql") {
-        try {
-          const result = await updateSqlPublicDownloadDocument(current, updated, { id: user.id, email: user.email }, replacedFile);
-          if (!result && replacedFile) await compensateUnreferencedBlob(updated);
-          return result ? ok(sanitizeDocument(result)) : notFound("Archivo no encontrado.");
-        } catch (error) {
-          if (replacedFile) await compensateUnreferencedBlob(updated);
-          throw error;
-        }
+      try {
+        const result = await updateSqlPublicDownloadDocument(current, updated, { id: user.id, email: user.email }, replacedFile);
+        if (!result && replacedFile) await compensateUnreferencedBlob(updated);
+        return result ? ok(sanitizeDocument(result)) : notFound("Archivo no encontrado.");
+      } catch (error) {
+        if (replacedFile) await compensateUnreferencedBlob(updated);
+        throw error;
       }
-      await getContainer(CONTAINER).item(updated.id, updated.id).replace(updated);
-      await writeAuditLog({
-        entityType: "publicDownloadDocument",
-        entityId: updated.id,
-        action: replacedFile ? "public_download_document_file_replaced" : "public_download_document_updated",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        before,
-        after: auditDocument(updated),
-        metadata: replacedFile ? { previousFileName: before.archivoNombreOriginal, newFileName: updated.archivoNombreOriginal, assetKind: updated.assetKind } : undefined,
-      });
-      return ok(sanitizeDocument(updated));
     } catch (e) {
       return serverError(e);
     }
@@ -554,14 +459,8 @@ app.http("adminPublicDownloadDocumentsDelete", {
       if (!canDeletePublicDownloadDocument(user, await loadRoleDefinitions())) return forbidden();
       const current = await readDocument(req.params.id);
       if (!current) return notFound("Archivo no encontrado.");
-      if (getDataBackend() === "sql") {
-        return (await deleteSqlPublicDownloadDocument(current, { id: user.id, email: user.email }))
-          ? ok({ ok: true }) : notFound("Archivo no encontrado.");
-      }
-      const deleted = { ...(current as PublicDownloadDocumentRecord & { type: "document" }), activo: false, status: "deleted" as const, deletedAt: new Date().toISOString(), deletedBy: user.id, updatedAt: new Date().toISOString(), updatedBy: user.id };
-      await getContainer(CONTAINER).item(deleted.id, deleted.id).replace(deleted);
-      await writeAuditLog({ entityType: "publicDownloadDocument", entityId: deleted.id, action: "public_download_document_deleted", performedBy: user.id, performedByEmail: user.email, before: auditDocument(current), after: auditDocument(deleted) });
-      return ok({ ok: true });
+      return (await deleteSqlPublicDownloadDocument(current, { id: user.id, email: user.email }))
+        ? ok({ ok: true }) : notFound("Archivo no encontrado.");
     } catch (e) {
       return serverError(e);
     }

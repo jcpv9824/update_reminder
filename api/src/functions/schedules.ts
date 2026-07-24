@@ -2,9 +2,6 @@ import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
-import { writeAuditLog } from "../lib/audit";
-import { getContainer } from "../lib/cosmos";
-import { getDataBackend } from "../lib/dataBackend";
 import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
 import {
   canCreateSchedule,
@@ -15,13 +12,10 @@ import {
   canReactivateSchedule,
   canViewSchedules,
 } from "../lib/managementAccess";
-import { getPagination, paginateArray, type PageResult } from "../lib/pagination";
-import { matchesScheduleSearch } from "../lib/listSearch";
+import { getPagination } from "../lib/pagination";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import { generateGenericScheduleName, inferScheduleRole, normalizeFrequencyResponsibility, validateFrequency, validateScheduleRoleAssignments } from "../lib/scheduleService";
-import { filterSchedulesByOrigin } from "../lib/scheduleFilters";
 import { previewLicensingScope } from "../lib/licensingScope";
-import { markTaskCancelledForOneTimeReschedule, shouldCancelTaskForOneTimeReschedule } from "../lib/scheduleReschedule";
 import { readSqlSchedules } from "../lib/schedulingSqlRepository";
 import {
   createSqlSchedule,
@@ -32,9 +26,8 @@ import {
 import { readSqlClients } from "../lib/clientsSqlRepository";
 import { readSqlDomains, readSqlPublicDatabases } from "../lib/coreMastersSqlRepository";
 import { readSqlLicenseModules } from "../lib/licensingSqlRepository";
-import { rootScheduleId } from "../lib/taskGenerator";
 import { runTaskGeneration } from "./generateDailyUpdateTasks";
-import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, LicensingScope, UpdateSchedule, UpdateTask } from "../types/models";
+import type { ClientRecord, DatabaseRecord, LicensingScope, UpdateSchedule } from "../types/models";
 
 function bogotaTodayIso(): string {
   const now = new Date();
@@ -42,16 +35,8 @@ function bogotaTodayIso(): string {
   return new Date(utcMs - 5 * 3600_000).toISOString().slice(0, 10);
 }
 
-function addDaysIso(isoDate: string, days: number): string {
-  const [y, m, d] = isoDate.split("-").map(Number);
-  const date = new Date(Date.UTC(y, m - 1, d));
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
-
 export async function loadScheduleClient(clientId: string): Promise<ClientRecord | null> {
-  if (getDataBackend() === "sql") return (await readSqlClients(clientId))[0] ?? null;
-  return (await getContainer("clients").item(clientId, clientId).read<ClientRecord>()).resource ?? null;
+  return (await readSqlClients(clientId))[0] ?? null;
 }
 
 // Genera/actualiza tareas inmediatamente tras guardar una actualización
@@ -63,96 +48,11 @@ async function regenerarTareasTrasGuardar(): Promise<void> {
   } catch {/* la generación no debe interrumpir el guardado */}
 }
 
-// Cancela (marca obsoletas) todas las tareas abiertas de una programación al
-// desactivarla o eliminarla. Incluye vencidas antiguas para que no queden
-// tareas huérfanas visibles cuando ya no existe actualización programada.
-// Considera el rootScheduleId nuevo y los scheduleId sintéticos heredados de
-// versiones anteriores.
-async function cancelarTareasAbiertasDeProgramacion(
-  schedule: UpdateSchedule,
-  user: { id: string; email: string }
-): Promise<number> {
-  const { resources } = await getContainer("updateTasks").items.query<UpdateTask>({
-    query: "SELECT * FROM c WHERE (c.rootScheduleId = @rid OR c.scheduleId = @rid OR STARTSWITH(c.scheduleId, @pref)) AND c.status IN ('pending','in_progress','blocked','reopened','failed')",
-    parameters: [
-      { name: "@rid", value: schedule.id },
-      { name: "@pref", value: `${schedule.id}__` },
-    ],
-  }).fetchAll();
-  const now = new Date().toISOString();
-  let cancelled = 0;
-  for (const task of resources) {
-    const beforeTask = { ...task };
-    task.status = "cancelled";
-    task.result = "obsolete";
-    task.notes = task.notes
-      ? `${task.notes}\nTarea cancelada porque su actualización programada fue desactivada o eliminada.`
-      : "Tarea cancelada porque su actualización programada fue desactivada o eliminada.";
-    task.updatedAt = now;
-    task.updatedBy = user.id;
-    try {
-      await getContainer("updateTasks").item(task.id, task.taskBucket).replace(task);
-    } catch (e: any) {
-      // La tarea pudo ser eliminada/movida por otra operación concurrente.
-      // No es un fallo: simplemente se omite.
-      if (e?.code === 404) continue;
-      throw e;
-    }
-    cancelled++;
-    await writeAuditLog({
-      entityType: "task", entityId: task.id, clientId: task.clientId, clientName: task.clientName,
-      domainId: task.domainId, domainName: task.domainName, action: "task_obsoleted",
-      performedBy: user.id, performedByEmail: user.email,
-      metadata: { reason: "schedule_deactivated_or_deleted", scheduleId: schedule.id },
-      before: beforeTask, after: { status: task.status, result: task.result },
-    });
-  }
-  return cancelled;
-}
-
-export type ScheduleSummary = {
-  proximas: number;
-  vencidas: number;
-  conError: number;
-  completadas: number;
-  requiereAtencion: boolean;
-};
-
-// Construye, con UNA sola consulta windowed, el resumen de tareas por
-// programación (agrupado por rootScheduleId). El estado de vida de la
-// programación (Activa/Inactiva/Completada) NO se deriva de aquí.
-async function buildScheduleSummaries(today: string): Promise<Map<string, ScheduleSummary>> {
-  const windowStart = addDaysIso(today, -30);
-  const windowEnd = addDaysIso(today, 30);
-  const { resources } = await getContainer("updateTasks").items.query<UpdateTask>({
-    query: "SELECT * FROM c WHERE c.taskDate >= @s AND c.taskDate <= @e",
-    parameters: [{ name: "@s", value: windowStart }, { name: "@e", value: windowEnd }],
-  }).fetchAll().catch(() => ({ resources: [] as UpdateTask[] }));
-  const map = new Map<string, ScheduleSummary>();
-  for (const t of resources) {
-    const rid = rootScheduleId(t);
-    if (!rid) continue;
-    const s = map.get(rid) ?? { proximas: 0, vencidas: 0, conError: 0, completadas: 0, requiereAtencion: false };
-    if (t.status === "completed") s.completadas++;
-    else if (t.status === "cancelled") { /* fuera del resumen operativo */ }
-    else if (t.status === "failed" || t.status === "blocked") s.conError++;
-    else if (t.taskDate < today) s.vencidas++;
-    else s.proximas++;
-    map.set(rid, s);
-  }
-  for (const s of map.values()) s.requiereAtencion = s.vencidas > 0 || s.conError > 0;
-  return map;
-}
-
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);
   const profile = await loadUserProfile(auth);
   if (!profile) throw Object.assign(new Error("Usuario no registrado."), { status: 403 });
   return profile;
-}
-
-function resultCount<T>(result: T[] | PageResult<T>): number {
-  return Array.isArray(result) ? result.length : result.total;
 }
 
 const Weekdays = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"] as const;
@@ -222,28 +122,19 @@ const LicensingPreviewSchema = z.union([
 ]);
 
 async function loadLicensingScopeData() {
-  if (getDataBackend() === "sql") {
-    const pagination = { enabled: false, page: 1, pageSize: 500 };
-    const [clients, domainsResult, databasesResult, modulesResult] = await Promise.all([
-      readSqlClients(),
-      readSqlDomains({ excludeDeleted: true }, pagination),
-      readSqlPublicDatabases({ visibility: "not-deleted" }, pagination),
-      readSqlLicenseModules({ includeDeleted: false }, pagination),
-    ]);
-    return {
-      clients,
-      domains: Array.isArray(domainsResult) ? domainsResult : domainsResult.items,
-      databases: (Array.isArray(databasesResult) ? databasesResult : databasesResult.items) as DatabaseRecord[],
-      licenseModules: Array.isArray(modulesResult) ? modulesResult : modulesResult.items,
-    };
-  }
-  const [{ resources: clients }, { resources: domains }, { resources: databases }, modulesResult] = await Promise.all([
-    getContainer("clients").items.readAll<ClientRecord>().fetchAll(),
-    getContainer("domains").items.readAll<DomainRecord>().fetchAll(),
-    getContainer("databases").items.readAll<DatabaseRecord>().fetchAll(),
-    getContainer("licenseModules").items.readAll<LicenseModuleRecord>().fetchAll().catch(() => ({ resources: [] as LicenseModuleRecord[] })),
+  const pagination = { enabled: false, page: 1, pageSize: 500 };
+  const [clients, domainsResult, databasesResult, modulesResult] = await Promise.all([
+    readSqlClients(),
+    readSqlDomains({ excludeDeleted: true }, pagination),
+    readSqlPublicDatabases({ visibility: "not-deleted" }, pagination),
+    readSqlLicenseModules({ includeDeleted: false }, pagination),
   ]);
-  return { clients, domains, databases, licenseModules: modulesResult.resources };
+  return {
+    clients,
+    domains: Array.isArray(domainsResult) ? domainsResult : domainsResult.items,
+    databases: (Array.isArray(databasesResult) ? databasesResult : databasesResult.items) as DatabaseRecord[],
+    licenseModules: Array.isArray(modulesResult) ? modulesResult : modulesResult.items,
+  };
 }
 
 function validateLicensingScope(scope?: LicensingScope): string | null {
@@ -285,50 +176,6 @@ async function validateActiveLicenseModules(ids: string[]): Promise<string | nul
   return null;
 }
 
-async function cancelOpenTasksForOneTimeReschedule(args: {
-  before: UpdateSchedule;
-  after: UpdateSchedule;
-  user: { id: string; email: string };
-}): Promise<number> {
-  if (args.before.frequencyType !== "once" || args.after.frequencyType !== "once") return 0;
-  if (args.before.startDate === args.after.startDate) return 0;
-  if (!args.before.active || args.before.completedAt || args.before.completedReason) return 0;
-  const { resources } = await getContainer("updateTasks")
-    .items.query<UpdateTask>({
-      query: "SELECT * FROM c WHERE c.taskDate = @date",
-      parameters: [{ name: "@date", value: args.before.startDate }],
-    })
-    .fetchAll();
-  const now = new Date().toISOString();
-  let cancelled = 0;
-  for (const task of resources.filter((task) => shouldCancelTaskForOneTimeReschedule(task, args.before, args.after))) {
-    const beforeTask = { ...task };
-    const cancelledTask = markTaskCancelledForOneTimeReschedule(task, args.before, args.after, args.user.id, now);
-    await getContainer("updateTasks").item(cancelledTask.id, cancelledTask.taskBucket).replace(cancelledTask);
-    cancelled++;
-    await writeAuditLog({
-      entityType: "task",
-      entityId: cancelledTask.id,
-      clientId: cancelledTask.clientId,
-      clientName: cancelledTask.clientName,
-      domainId: cancelledTask.domainId,
-      domainName: cancelledTask.domainName,
-      action: "task_obsoleted",
-      performedBy: args.user.id,
-      performedByEmail: args.user.email,
-      metadata: {
-        reason: "one_time_schedule_rescheduled",
-        scheduleId: args.before.id,
-        oldDate: args.before.startDate,
-        newDate: args.after.startDate,
-      },
-      before: beforeTask,
-      after: { status: cancelledTask.status, result: cancelledTask.result, taskDate: cancelledTask.taskDate },
-    });
-  }
-  return cancelled;
-}
-
 app.http("schedulesList", {
   route: "schedules",
   methods: ["GET"],
@@ -342,29 +189,8 @@ app.http("schedulesList", {
       const origin = req.query.get("origin");
       const search = req.query.get("search");
       const pagination = getPagination(req);
-      const backend = getDataBackend();
       const sqlFilters = { clientId, origin, search };
-      if (backend === "sql") return ok(await readSqlSchedules(sqlFilters, pagination, bogotaTodayIso()));
-      const querySpec = clientId
-        ? { query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: clientId }] }
-        : { query: "SELECT * FROM c" };
-      const { resources } = await getContainer("updateSchedules").items.query<UpdateSchedule>(querySpec).fetchAll();
-      let modulesById = new Map<string, LicenseModuleRecord>();
-      if (search) {
-        const { resources: modules } = await getContainer("licenseModules").items.readAll<LicenseModuleRecord>().fetchAll().catch(() => ({ resources: [] as LicenseModuleRecord[] }));
-        modulesById = new Map(modules.map((module) => [module.id, module]));
-      }
-      const filtered = filterSchedulesByOrigin(resources, origin).filter((schedule) => matchesScheduleSearch(schedule, search, modulesById));
-      // Adjuntar resumen derivado de tareas (1 sola consulta windowed).
-      const summaries = await buildScheduleSummaries(bogotaTodayIso());
-      const vacio: ScheduleSummary = { proximas: 0, vencidas: 0, conError: 0, completadas: 0, requiereAtencion: false };
-      const items = filtered.map((s) => ({ ...s, summary: summaries.get(s.id) ?? vacio }));
-      const primary = pagination.enabled ? paginateArray(items, pagination.page, pagination.pageSize) : items;
-      if (backend === "dual-read") {
-        const shadow = await readSqlSchedules(sqlFilters, pagination, bogotaTodayIso());
-        if (resultCount(primary) !== resultCount(shadow)) console.warn("Schedules dual-read parity mismatch.");
-      }
-      return ok(primary);
+      return ok(await readSqlSchedules(sqlFilters, pagination, bogotaTodayIso()));
     } catch (e) {
       return serverError(e);
     }
@@ -400,7 +226,6 @@ app.http("schedulesCreate", {
       } catch (e: any) {
         return badRequest(e?.message ?? "Frecuencia inválida.");
       }
-      const backend = getDataBackend();
       const client = await loadScheduleClient(parsed.data.clientId);
       if (!client) return badRequest("Cliente no encontrado.");
       const now = new Date().toISOString();
@@ -447,25 +272,9 @@ app.http("schedulesCreate", {
         updatedAt: now,
         updatedBy: user.id,
       };
-      if (backend === "sql") {
-        const createdSchedule = await createSqlSchedule(record, { id: user.id, email: user.email });
-        await regenerarTareasTrasGuardar();
-        return created(createdSchedule);
-      }
-      await getContainer("updateSchedules").items.create(record);
-      await writeAuditLog({
-        entityType: "schedule",
-        entityId: record.id,
-        clientId: client.id,
-        clientName: client.name,
-        action: "schedule_created",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        after: record,
-      });
-      // Generar tareas inmediatamente sin esperar al timer diario.
+      const createdSchedule = await createSqlSchedule(record, { id: user.id, email: user.email });
       await regenerarTareasTrasGuardar();
-      return created(record);
+      return created(createdSchedule);
     } catch (e) {
       return serverError(e);
     }
@@ -473,21 +282,8 @@ app.http("schedulesCreate", {
 });
 
 async function findSchedule(id: string): Promise<UpdateSchedule | null> {
-  const backend = getDataBackend();
-  if (backend === "sql") {
-    const result = await readSqlSchedules({ sourceId: id }, { enabled: false, page: 1, pageSize: 1 }, bogotaTodayIso());
-    return Array.isArray(result) ? result[0] ?? null : result.items[0] ?? null;
-  }
-  const { resources } = await getContainer("updateSchedules")
-    .items.query<UpdateSchedule>({ query: "SELECT * FROM c WHERE c.id = @id", parameters: [{ name: "@id", value: id }] })
-    .fetchAll();
-  const primary = resources[0] ?? null;
-  if (backend === "dual-read") {
-    const shadow = await readSqlSchedules({ sourceId: id }, { enabled: false, page: 1, pageSize: 1 }, bogotaTodayIso());
-    const sqlItem = Array.isArray(shadow) ? shadow[0] ?? null : shadow.items[0] ?? null;
-    if (Boolean(primary) !== Boolean(sqlItem)) console.warn("Schedule detail dual-read parity mismatch.");
-  }
-  return primary;
+  const result = await readSqlSchedules({ sourceId: id }, { enabled: false, page: 1, pageSize: 1 }, bogotaTodayIso());
+  return Array.isArray(result) ? result[0] ?? null : result.items[0] ?? null;
 }
 
 app.http("schedulesGet", {
@@ -538,7 +334,6 @@ app.http("schedulesUpdate", {
       } catch (e: any) {
         return badRequest(e?.message ?? "Frecuencia inválida.");
       }
-      const before = { ...existing };
       // Nombre: si el usuario envía uno, se respeta; si lo vacía, se regenera
       // un genérico; si no toca el campo, se conserva el actual.
       const nextName = typeof body.name === "string"
@@ -575,35 +370,10 @@ app.http("schedulesUpdate", {
         updatedAt: new Date().toISOString(),
         updatedBy: user.id,
       };
-      if (getDataBackend() === "sql") {
-        const result = await updateSqlSchedule(existing, merged, { id: user.id, email: user.email });
-        if (!result) return notFound();
-        await regenerarTareasTrasGuardar();
-        return ok(result.schedule);
-      }
-      await getContainer("updateSchedules").item(existing.id, existing.clientId).replace(merged);
-      const cancelledTasks = await cancelOpenTasksForOneTimeReschedule({ before: existing, after: merged, user });
-      await writeAuditLog({
-        entityType: "schedule",
-        entityId: existing.id,
-        clientId: existing.clientId,
-        clientName: existing.clientName,
-        action: "schedule_updated",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        before,
-        after: merged,
-        metadata: cancelledTasks > 0 ? {
-          oneTimeScheduleRescheduled: true,
-          oldDate: existing.startDate,
-          newDate: merged.startDate,
-          cancelledOpenTasks: cancelledTasks,
-        } : undefined,
-      });
-      // Regenerar tareas: crea las nuevas que correspondan y marca obsoletas
-      // las futuras que ya no apliquen al nuevo alcance/frecuencia.
+      const result = await updateSqlSchedule(existing, merged, { id: user.id, email: user.email });
+      if (!result) return notFound();
       await regenerarTareasTrasGuardar();
-      return ok(merged);
+      return ok(result.schedule);
     } catch (e) { return serverError(e); }
   },
 });
@@ -642,22 +412,10 @@ async function setScheduleStatus(req: HttpRequest, action: string, active: boole
   if (active) { s.completedAt = null; s.completedReason = null; }
   s.updatedAt = new Date().toISOString();
   s.updatedBy = user.id;
-  if (getDataBackend() === "sql") {
-    const updated = await setSqlScheduleActive(s, active, { id: user.id, email: user.email }, action);
-    if (!updated) return notFound();
-    if (active) await regenerarTareasTrasGuardar();
-    return ok(updated);
-  }
-  await getContainer("updateSchedules").item(s.id, s.clientId).replace(s);
-  await writeAuditLog({ entityType: "schedule", entityId: s.id, clientId: s.clientId, clientName: s.clientName, action, performedBy: user.id, performedByEmail: user.email, after: { active } });
-  if (active) {
-    // Reactivar → regenerar tareas (las obsoletas se reactivan en la generación).
-    await regenerarTareasTrasGuardar();
-  } else {
-    // Desactivar → cancelar tareas futuras/pendientes de esta programación.
-    await cancelarTareasAbiertasDeProgramacion(s, user);
-  }
-  return ok(s);
+  const updated = await setSqlScheduleActive(s, active, { id: user.id, email: user.email }, action);
+  if (!updated) return notFound();
+  if (active) await regenerarTareasTrasGuardar();
+  return ok(updated);
 }
 
 app.http("schedulesDeactivate", { route: "schedules/{id}/deactivate", methods: ["POST"], authLevel: "anonymous", handler: (req) => setScheduleStatus(req, "schedule_deactivated", false).catch(serverError) });
@@ -674,27 +432,8 @@ app.http("schedulesDelete", {
       if (!canDeleteSchedule(user, roleDefinitions)) return forbidden();
       const s = await findSchedule(req.params.id);
       if (!s) return notFound();
-      if (getDataBackend() === "sql") {
-        const result = await deleteSqlSchedule(s, { id: user.id, email: user.email });
-        if (!result.deleted) return notFound();
-        await regenerarTareasTrasGuardar();
-        return noContent();
-      }
-      // Cancelar tareas abiertas antes de eliminar la programación.
-      const cancelled = await cancelarTareasAbiertasDeProgramacion(s, user);
-      try {
-        await getContainer("updateSchedules").item(s.id, s.clientId).delete();
-      } catch (e: any) {
-        // Eliminación idempotente: si el documento ya no existe (p. ej. una
-        // segunda petición por doble clic o por una lectura previa
-        // eventualmente consistente), se considera ya eliminado y NO se
-        // propaga el error 404 crudo de Cosmos al usuario.
-        if (e?.code !== 404) throw e;
-      }
-      await writeAuditLog({ entityType: "schedule", entityId: s.id, clientId: s.clientId, clientName: s.clientName, action: "schedule_deleted", performedBy: user.id, performedByEmail: user.email, metadata: { cancelledOpenTasks: cancelled } });
-      // Regenerar: si una tarea era compartida por otra programación activa
-      // (p. ej. una copia con el mismo alcance), vuelve a vincularse de
-      // inmediato en lugar de quedar cancelada hasta el próximo timer.
+      const result = await deleteSqlSchedule(s, { id: user.id, email: user.email });
+      if (!result.deleted) return notFound();
       await regenerarTareasTrasGuardar();
       return noContent();
     } catch (e) { return serverError(e); }

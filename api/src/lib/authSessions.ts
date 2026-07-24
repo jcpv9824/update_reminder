@@ -1,9 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { HttpRequest } from "@azure/functions";
-import { getContainer } from "./cosmos";
 import type { AuthSessionRecord, UserRecord } from "../types/models";
 import type { JwtPayload } from "./jwt";
-import { sqlSecurityRuntimeEnabled } from "./dataBackend";
 
 export type AuthSessionCreation = { record: AuthSessionRecord; refreshToken: string };
 export type AtomicSessionRotation = {
@@ -49,48 +47,9 @@ function parseRefreshToken(token: string | null | undefined): { sessionId: strin
   return { sessionId: token.slice(0, separator), raw: token };
 }
 
-class CosmosAuthSessionStore implements AuthSessionStore {
-  async read(id: string): Promise<AuthSessionRecord | null> {
-    try {
-      const { resource } = await getContainer("authSessions").item(id, id).read<AuthSessionRecord>();
-      return resource ?? null;
-    } catch (error: any) {
-      if (error?.code === 404 || error?.statusCode === 404) return null;
-      throw error;
-    }
-  }
-
-  async create(record: AuthSessionRecord): Promise<void> {
-    const { _etag: _ignored, ...body } = record;
-    await getContainer("authSessions").items.create(body);
-  }
-
-  async replace(record: AuthSessionRecord, etag?: string): Promise<void> {
-    const { _etag: _ignored, ...body } = record;
-    await getContainer("authSessions").item(record.id, record.id).replace(body, etag ? {
-      accessCondition: { type: "IfMatch", condition: etag },
-    } : undefined);
-  }
-
-  async listByUser(userId: string): Promise<AuthSessionRecord[]> {
-    const { resources } = await getContainer("authSessions").items.query<AuthSessionRecord>({
-      query: "SELECT * FROM c WHERE c.userId = @userId",
-      parameters: [{ name: "@userId", value: userId }],
-    }).fetchAll();
-    return resources;
-  }
-}
-
-const cosmosStore = new CosmosAuthSessionStore();
-
 async function defaultLoadUser(id: string): Promise<UserRecord | null> {
-  try {
-    const { resource } = await getContainer("users").item(id, id).read<UserRecord>();
-    return resource ?? null;
-  } catch (error: any) {
-    if (error?.code === 404 || error?.statusCode === 404) return null;
-    throw error;
-  }
+  const { findSqlUserById } = await import("./securityManagementSqlWriteRepository");
+  return findSqlUserById(id);
 }
 
 export function makeAuthSession(user: UserRecord, nowMs: number): AuthSessionCreation {
@@ -118,11 +77,8 @@ export function makeAuthSession(user: UserRecord, nowMs: number): AuthSessionCre
 
 async function resolveSessionStore(explicit?: AuthSessionStore): Promise<AuthSessionStore> {
   if (explicit) return explicit;
-  if (sqlSecurityRuntimeEnabled()) {
-    const { sqlAuthSessionStore } = await import("./securityAuthSqlRepository");
-    return sqlAuthSessionStore;
-  }
-  return cosmosStore;
+  const { sqlAuthSessionStore } = await import("./securityAuthSqlRepository");
+  return sqlAuthSessionStore;
 }
 
 export async function createAuthSession(

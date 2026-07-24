@@ -14,7 +14,7 @@ export const TIMER_FUNCTION_NAMES = [
 export type TimerDisableState = "all" | "none" | "partial";
 
 export type RuntimeStatus = {
-  backend: "cosmos" | "dual-read" | "sql";
+  backend: "sql";
   sqlConnected: boolean;
   sqlSecurityEnabled: boolean;
   maintenanceMode: boolean;
@@ -39,13 +39,13 @@ export async function loadRuntimeStatus(
 ): Promise<RuntimeStatus> {
   const backend = getDataBackend(env);
   const maintenanceMode = maintenanceModeEnabled(env);
-  if (sqlReadsEnabled(env)) await verifySql();
+  await verifySql();
   return {
     backend,
-    sqlConnected: sqlReadsEnabled(env),
+    sqlConnected: true,
     sqlSecurityEnabled: sqlSecurityRuntimeEnabled(env),
     maintenanceMode,
-    timersExpectedDisabled: maintenanceMode || backend !== "sql",
+    timersExpectedDisabled: maintenanceMode,
     timerDisableState: loadTimerDisableState(env),
   };
 }

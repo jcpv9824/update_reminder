@@ -1,24 +1,17 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { UpdateTask } from "../types/models";
 
 const mocks = vi.hoisted(() => ({
   tasks: [] as UpdateTask[],
-  sentNotifications: new Set<string>(),
-  upsert: vi.fn(async (record: any) => { mocks.sentNotifications.add(record.id); }),
-  sendEmail: vi.fn(async () => ({ ok: true, provider: "mock", messageId: "message-1" })),
-  audit: vi.fn(async () => ({})),
+  enqueue: vi.fn(async () => ({ created: true, id: "outbox-1" })),
   timer: vi.fn(),
 }));
 
 vi.mock("@azure/functions", () => ({ app: { timer: mocks.timer } }));
-vi.mock("../lib/cosmos", () => ({
-  getContainer: (name: string) => name === "updateTasks" ? {
-    items: { query: () => ({ fetchAll: async () => ({ resources: mocks.tasks }) }) },
-  } : {
-    item: (id: string) => ({ read: async () => ({ resource: mocks.sentNotifications.has(id) ? { id } : undefined }) }),
-    items: { upsert: mocks.upsert },
-  },
+vi.mock("../lib/workflowTasksSqlRepository", () => ({
+  readSqlWorkflowTasks: vi.fn(async () => mocks.tasks),
 }));
+vi.mock("../lib/emailOutboxSqlRepository", () => ({ enqueueSqlEmail: mocks.enqueue }));
 vi.mock("../lib/settingsService", () => ({
   loadEmailAlertsSettings: vi.fn(async () => ({
     blockedReminderEnabled: true,
@@ -29,9 +22,9 @@ vi.mock("../lib/settingsService", () => ({
     frontendBaseUrl: "https://app.example.com",
   })),
 }));
-vi.mock("../lib/emailRecipients", () => ({ resolveConfiguredRecipients: vi.fn(async () => ["admin@example.com"]) }));
-vi.mock("../lib/emailService", () => ({ sendEmail: mocks.sendEmail }));
-vi.mock("../lib/audit", () => ({ writeAuditLog: mocks.audit }));
+vi.mock("../lib/emailRecipients", () => ({
+  resolveConfiguredRecipients: vi.fn(async () => ["admin@example.com"]),
+}));
 
 import { ejecutarRecordatoriosBloqueos } from "../functions/sendBlockedReminders";
 
@@ -44,33 +37,30 @@ function blockedTask(): UpdateTask {
     scheduleId: "s1", rootScheduleId: "s1", assignedRole: "database_updater", assignedUserIds: [],
     status: "blocked", result: null, notes: "", blockReason: `<svg onload=alert(4)>Tom & Jerry`,
     blockedAt: "2026-07-02T08:00:00.000Z", blockedBy: "u1",
-    createdAt: "2026-07-02T08:00:00.000Z", createdBy: "system", updatedAt: "2026-07-02T08:00:00.000Z", updatedBy: "u1",
+    createdAt: "2026-07-02T08:00:00.000Z", createdBy: "system",
+    updatedAt: "2026-07-02T08:00:00.000Z", updatedBy: "u1",
     completedAt: null, completedBy: null,
   };
 }
 
-describe("sendBlockedReminders seguro", () => {
+describe("sendBlockedReminders SQL", () => {
   beforeEach(() => {
-    process.env.DATA_BACKEND = "cosmos";
     mocks.tasks = [blockedTask()];
-    mocks.sentNotifications.clear();
-    mocks.upsert.mockClear(); mocks.sendEmail.mockClear(); mocks.audit.mockClear();
+    mocks.enqueue.mockClear();
+    mocks.enqueue.mockResolvedValue({ created: true, id: "outbox-1" });
   });
 
-  afterEach(() => {
-    delete process.env.DATA_BACKEND;
-  });
-
-  it("envía la plantilla central con todos los valores dinámicos escapados", async () => {
-    const result = await ejecutarRecordatoriosBloqueos(() => undefined, new Date("2026-07-03T08:00:00.000Z"));
-    expect(result).toEqual({ enviados: 1 });
-    expect(mocks.sendEmail).toHaveBeenCalledTimes(1);
-    const message = mocks.sendEmail.mock.calls[0][0];
-    expect(message.html).not.toMatch(/<script|<img|<svg|<a href="javascript:/i);
-    expect(message.html).toContain("&lt;script&gt;");
-    expect(message.html).toContain("ERP &amp; DB");
-    expect(message.html).toContain("Tom &amp; Jerry");
-    expect(message.text).toContain(`<script>alert("cliente")</script>`);
-    expect(mocks.upsert).toHaveBeenCalledWith(expect.objectContaining({ id: "blockedReminder:task_xss:1" }));
+  it("encola la plantilla con valores dinámicos escapados", async () => {
+    await expect(ejecutarRecordatoriosBloqueos(
+      () => undefined,
+      new Date("2026-07-03T08:00:00.000Z"),
+    )).resolves.toEqual({ enviados: 1 });
+    const request = mocks.enqueue.mock.calls[0][0];
+    expect(request.html).not.toMatch(/<script|<img|<svg|<a href="javascript:/i);
+    expect(request.html).toContain("&lt;script&gt;");
+    expect(request.html).toContain("ERP &amp; DB");
+    expect(request.html).toContain("Tom &amp; Jerry");
+    expect(request.text).toContain(`<script>alert("cliente")</script>`);
+    expect(request.idempotencyKey).toBe("blockedReminder:task_xss:1");
   });
 });

@@ -4,7 +4,6 @@
 //   sendgrid - usa @sendgrid/mail.
 //   acs      - placeholder, no implementado.
 import { loadEmailAlertsSettings, getSmtpPassword } from "./settingsService";
-import { assertCosmosRuntimeMutation } from "./dataBackend";
 import type { EmailAlertsSettings } from "../types/models";
 import {
   buildDatabaseReminderEmail,
@@ -83,7 +82,9 @@ export async function sendEmail(
   settings?: EmailAlertsSettings,
   options: { outboxClaimed?: boolean } = {},
 ): Promise<EmailResult> {
-  if (!options.outboxClaimed) assertCosmosRuntimeMutation("El envío directo de correo");
+  if (!options.outboxClaimed) {
+    throw Object.assign(new Error("El envío directo de correo no está permitido; use la bandeja de salida SQL."), { status: 503 });
+  }
   const recipients = Array.isArray(msg.to) ? msg.to : [msg.to];
   if (!recipients || recipients.length === 0) return { ok: false, provider: "n/a", error: "Sin destinatarios." };
   const s = settings ?? (await loadEmailAlertsSettings());

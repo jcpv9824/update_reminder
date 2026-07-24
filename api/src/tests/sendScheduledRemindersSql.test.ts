@@ -3,9 +3,6 @@ import type { UpdateSchedule, UpdateTask, UserRecord } from "../types/models";
 
 const mocks = vi.hoisted(() => ({
   timer: vi.fn(),
-  cosmosAccess: vi.fn(() => {
-    throw new Error("Cosmos must not be accessed in SQL mode.");
-  }),
   enqueue: vi.fn(async () => ({ created: true, outboxId: 1 })),
 }));
 
@@ -72,7 +69,6 @@ const user: UserRecord = {
 };
 
 vi.mock("@azure/functions", () => ({ app: { timer: mocks.timer } }));
-vi.mock("../lib/cosmos", () => ({ getContainer: mocks.cosmosAccess }));
 vi.mock("../lib/audit", () => ({ writeAuditLog: vi.fn(async () => undefined) }));
 vi.mock("../lib/settingsService", () => ({
   loadEmailAlertsSettings: vi.fn(async () => ({
@@ -100,11 +96,8 @@ describe("recordatorios programados SQL-only", () => {
   beforeEach(() => {
     process.env.DATA_BACKEND = "sql";
     process.env.SQL_SECURITY_RUNTIME_ENABLED = "true";
-    delete process.env.COSMOS_CONNECTION_STRING;
-    delete process.env.COSMOS_DATABASE_NAME;
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-10T13:00:00.000Z"));
-    mocks.cosmosAccess.mockClear();
     mocks.enqueue.mockClear();
   });
 
@@ -114,12 +107,11 @@ describe("recordatorios programados SQL-only", () => {
     vi.useRealTimers();
   });
 
-  it("resuelve usuarios y encola el correo sin inicializar Cosmos", async () => {
+  it("resuelve usuarios y encola el correo desde SQL", async () => {
     await expect(ejecutarRecordatorios(() => undefined)).resolves.toEqual({
       enviados: 1,
       fallidos: 0,
     });
-    expect(mocks.cosmosAccess).not.toHaveBeenCalled();
     expect(mocks.enqueue).toHaveBeenCalledWith(expect.objectContaining({
       type: "task_reminder",
       recipients: [{ email: user.email, name: user.displayName }],

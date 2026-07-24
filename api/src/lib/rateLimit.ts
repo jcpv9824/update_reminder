@@ -1,8 +1,6 @@
 import { createHmac } from "node:crypto";
 import type { HttpRequest, HttpResponseInit } from "@azure/functions";
-import { getContainer } from "./cosmos";
 import { writeAuditLog } from "./audit";
-import { sqlSecurityRuntimeEnabled } from "./dataBackend";
 
 export type RateLimitPolicy = {
   maxAttempts: number;
@@ -122,47 +120,10 @@ export function evaluateRateLimit(
   };
 }
 
-class CosmosRateLimitStore implements RateLimitStore {
-  async read(id: string): Promise<RateLimitRecord | null> {
-    try {
-      const { resource } = await getContainer("securityRateLimits").item(id, id).read<RateLimitRecord>();
-      return resource ?? null;
-    } catch (error: any) {
-      if (error?.code === 404 || error?.statusCode === 404) return null;
-      throw error;
-    }
-  }
-
-  async create(record: RateLimitRecord): Promise<void> {
-    const { _etag: _ignored, ...body } = record;
-    await getContainer("securityRateLimits").items.create(body);
-  }
-
-  async replace(record: RateLimitRecord, etag?: string): Promise<void> {
-    const { _etag: _ignored, ...body } = record;
-    await getContainer("securityRateLimits").item(record.id, record.id).replace(body, etag ? {
-      accessCondition: { type: "IfMatch", condition: etag },
-    } : undefined);
-  }
-
-  async delete(id: string): Promise<void> {
-    try {
-      await getContainer("securityRateLimits").item(id, id).delete();
-    } catch (error: any) {
-      if (error?.code !== 404 && error?.statusCode !== 404) throw error;
-    }
-  }
-}
-
-const cosmosStore = new CosmosRateLimitStore();
-
 async function resolveRateLimitStore(explicit?: RateLimitStore): Promise<RateLimitStore> {
   if (explicit) return explicit;
-  if (sqlSecurityRuntimeEnabled()) {
-    const { sqlRateLimitStore } = await import("./securityRateLimitSqlRepository");
-    return sqlRateLimitStore;
-  }
-  return cosmosStore;
+  const { sqlRateLimitStore } = await import("./securityRateLimitSqlRepository");
+  return sqlRateLimitStore;
 }
 
 function isConflict(error: any): boolean {

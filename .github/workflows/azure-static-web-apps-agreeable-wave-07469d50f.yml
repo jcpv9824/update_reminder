@@ -26,6 +26,9 @@ jobs:
       - name: Install backend dependencies
         working-directory: api
         run: npm ci
+      - name: Enforce SQL-only backend runtime
+        working-directory: api
+        run: npm run check:no-cosmos-runtime
       - name: Audit backend production dependencies
         working-directory: api
         run: npm run security:audit:prod

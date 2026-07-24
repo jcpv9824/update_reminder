@@ -1,7 +1,5 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { requireUser, loadUserProfile } from "../lib/auth";
-import { writeAuditLog } from "../lib/audit";
-import { getContainer } from "../lib/cosmos";
 import { badRequest, conflict, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
 import { DEFAULT_ROLE_DEFINITIONS } from "../lib/permissionModel";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
@@ -12,9 +10,7 @@ import {
 } from "../lib/roleDefinitions";
 import { canCreateRoleDefinition, canEditRoleDefinition, canListRoleDefinitions } from "../lib/managementAccess";
 import { canDeleteRoleDefinition } from "../lib/managementAccess";
-import { roleUsageMessage, roleUsageSummary } from "../lib/roleLifecycle";
-import type { UpdateSchedule, UpdateTask, UserRecord } from "../types/models";
-import { getDataBackend } from "../lib/dataBackend";
+import { roleUsageMessage } from "../lib/roleLifecycle";
 import {
   createSqlRole,
   deleteSqlRole,
@@ -29,23 +25,12 @@ async function getUserOrFail(req: HttpRequest) {
   return profile;
 }
 
-async function readStoredRoleRecords(): Promise<RoleDefinitionRecord[]> {
-  const { resources } = await getContainer("roles").items.readAll<RoleDefinitionRecord>().fetchAll();
-  return resources;
-}
-
 function defaultRoleById(id: string) {
   return DEFAULT_ROLE_DEFINITIONS.find((role) => role.id === id);
 }
 
 async function getRoleUsage(roleId: string) {
-  if (getDataBackend() === "sql") return getSqlRoleUsage(roleId);
-  const [users, schedules, tasks] = await Promise.all([
-    getContainer("users").items.readAll<UserRecord>().fetchAll(),
-    getContainer("updateSchedules").items.readAll<UpdateSchedule>().fetchAll(),
-    getContainer("updateTasks").items.readAll<UpdateTask>().fetchAll(),
-  ]);
-  return roleUsageSummary(roleId, users.resources, schedules.resources, tasks.resources);
+  return getSqlRoleUsage(roleId);
 }
 
 app.http("rolesList", {
@@ -80,31 +65,13 @@ app.http("rolesCreate", {
         return badRequest(error?.message ?? "Rol no válido.");
       }
 
-      if (getDataBackend() === "sql") {
-        try {
-          return created(await createSqlRole(record, { id: user.id, email: user.email }));
-        } catch (error: any) {
-          if (error?.status === 409) return conflict(error.message);
-          if (error?.status === 400) return badRequest(error.message);
-          throw error;
-        }
+      try {
+        return created(await createSqlRole(record, { id: user.id, email: user.email }));
+      } catch (error: any) {
+        if (error?.status === 409) return conflict(error.message);
+        if (error?.status === 400) return badRequest(error.message);
+        throw error;
       }
-
-      const stored = await readStoredRoleRecords();
-      if (defaultRoleById(record.id) || stored.some((role) => role.id === record.id)) {
-        return badRequest("Ya existe un rol con ese ID.");
-      }
-
-      await getContainer("roles").items.create(record);
-      await writeAuditLog({
-        entityType: "role",
-        entityId: record.id,
-        action: "role_created",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        after: record,
-      });
-      return created(record);
     } catch (e) {
       return serverError(e);
     }
@@ -137,27 +104,13 @@ app.http("rolesUpdate", {
         if (usage.hasReferences) return conflict(roleUsageMessage(usage), usage);
       }
 
-      if (getDataBackend() === "sql") {
-        try {
-          const result = await updateSqlRole(updated, { id: user.id, email: user.email });
-          return result ? ok(result) : notFound("Rol no encontrado.");
-        } catch (error: any) {
-          if (error?.status === 400) return badRequest(error.message);
-          throw error;
-        }
+      try {
+        const result = await updateSqlRole(updated, { id: user.id, email: user.email });
+        return result ? ok(result) : notFound("Rol no encontrado.");
+      } catch (error: any) {
+        if (error?.status === 400) return badRequest(error.message);
+        throw error;
       }
-
-      await getContainer("roles").items.upsert(updated);
-      await writeAuditLog({
-        entityType: "role",
-        entityId: updated.id,
-        action: "role_updated",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        before: existing,
-        after: updated,
-      });
-      return ok(updated);
     } catch (e) {
       return serverError(e);
     }
@@ -177,36 +130,20 @@ app.http("rolesDelete", {
       const id = req.params.id;
       if (defaultRoleById(id)) return badRequest("Los roles predeterminados no se eliminan; puede editar su configuración o desactivarlos cuando no tengan referencias.");
 
-      const backend = getDataBackend();
-      const existing = backend === "sql"
-        ? roleDefinitions.find((role) => role.id === id)
-        : (await readStoredRoleRecords()).find((role) => role.id === id);
+      const existing = roleDefinitions.find((role) => role.id === id);
       if (!existing) return notFound("Rol no encontrado.");
 
       const usage = await getRoleUsage(id);
       if (usage.hasReferences) return conflict(roleUsageMessage(usage), usage);
 
-      if (backend === "sql") {
-        try {
-          const deleted = await deleteSqlRole(id, { id: user.id, email: user.email });
-          return deleted ? noContent() : notFound("Rol no encontrado.");
-        } catch (error: any) {
-          if (error?.status === 409) return conflict(roleUsageMessage(error.usage), error.usage);
-          if (error?.status === 400) return badRequest(error.message);
-          throw error;
-        }
+      try {
+        const deleted = await deleteSqlRole(id, { id: user.id, email: user.email });
+        return deleted ? noContent() : notFound("Rol no encontrado.");
+      } catch (error: any) {
+        if (error?.status === 409) return conflict(roleUsageMessage(error.usage), error.usage);
+        if (error?.status === 400) return badRequest(error.message);
+        throw error;
       }
-
-      await getContainer("roles").item(id, id).delete();
-      await writeAuditLog({
-        entityType: "role",
-        entityId: id,
-        action: "role_deleted",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        before: existing,
-      });
-      return noContent();
     } catch (e) {
       return serverError(e);
     }

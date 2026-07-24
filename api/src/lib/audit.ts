@@ -344,14 +344,6 @@ export function sanitizeStoredAuditLogEntry(entry: AuditLog): AuditLog {
 // Solo este builder puede crear documentos de auditoria. Los handlers nunca
 // deben persistir req, headers, cookies ni cuerpos HTTP completos.
 export async function writeAuditLog(input: BuildAuditLogInput): Promise<AuditLog> {
-  const { getDataBackend } = await import("./dataBackend");
-  if (getDataBackend() === "sql") {
-    const { appendSqlAuditLog } = await import("./auditSqlWriter");
-    return appendSqlAuditLog(input);
-  }
-  const entry = buildAuditLogEntry(input);
-  const { getContainer } = await import("./cosmos");
-  const container = getContainer("auditLogs");
-  await container.items.create(entry);
-  return entry;
+  const { appendSqlAuditLog } = await import("./auditSqlWriter");
+  return appendSqlAuditLog(input);
 }

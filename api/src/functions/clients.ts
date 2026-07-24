@@ -2,9 +2,6 @@ import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
-import { writeAuditLog } from "../lib/audit";
-import { getContainer } from "../lib/cosmos";
-import { getDataBackend } from "../lib/dataBackend";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import {
   canAssignClientLicenses,
@@ -17,13 +14,11 @@ import {
   canViewClients,
 } from "../lib/managementAccess";
 import { getPagination, paginateArray } from "../lib/pagination";
-import { hasDuplicateClientExternalId, hasDuplicateClientName } from "../lib/duplicateValidation";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import { readSqlClients, readSqlClientTree } from "../lib/clientsSqlRepository";
 import { createSqlClient, updateSqlClient } from "../lib/clientsSqlWriteRepository";
 import { deleteSqlCoreCascade } from "../lib/coreCascadeSqlRepository";
-import { toPublicDatabase } from "../lib/publicDtos";
-import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseModuleRecord, UpdateSchedule, UpdateTask } from "../types/models";
+import type { ClientRecord } from "../types/models";
 
 const ClientSchema = z.object({
   externalId: z.string().max(100).optional(),
@@ -40,56 +35,12 @@ async function getUserOrFail(req: HttpRequest) {
   return profile;
 }
 
-async function readClientsCosmos(): Promise<ClientRecord[]> {
-  const { resources } = await getContainer("clients").items.readAll<ClientRecord>().fetchAll();
-  return resources;
-}
-
 async function readClients(): Promise<ClientRecord[]> {
-  const backend = getDataBackend();
-  if (backend === "sql") return readSqlClients();
-  const primary = await readClientsCosmos();
-  if (backend === "dual-read") {
-    const shadow = await readSqlClients();
-    if (primary.length !== shadow.length) console.warn("Clients dual-read parity mismatch.");
-  }
-  return primary;
+  return readSqlClients();
 }
 
 async function readClient(id: string): Promise<ClientRecord | null> {
-  if (getDataBackend() === "sql") return (await readSqlClients(id))[0] ?? null;
-  const { resource } = await getContainer("clients").item(id, id).read<ClientRecord>();
-  if (getDataBackend() === "dual-read") {
-    const shadow = (await readSqlClients(id))[0] ?? null;
-    if (Boolean(resource) !== Boolean(shadow)) console.warn("Client detail dual-read parity mismatch.");
-  }
-  return resource ?? null;
-}
-
-function uniqueIds(ids?: string[]): string[] {
-  return Array.from(new Set((ids ?? []).map((id) => id.trim()).filter(Boolean)));
-}
-
-async function resolveClientLicenses(ids?: string[], existingIds: string[] = []): Promise<{ ids: string[]; names: string[] } | HttpResponseInit> {
-  const unique = uniqueIds(ids);
-  if (unique.length === 0) return { ids: [], names: [] };
-  const { resources } = await getContainer("licenseModules").items.readAll<LicenseModuleRecord>().fetchAll();
-  const modulesById = new Map(resources.map((module) => [module.id, module]));
-  const previous = new Set(existingIds);
-  const names: string[] = [];
-  for (const id of unique) {
-    const module = modulesById.get(id);
-    if (!module || module.status === "deleted" || module.deletedAt) return badRequest("Una de las licencias seleccionadas no existe.");
-    if ((module.status !== "active" || module.active === false) && !previous.has(id)) {
-      return badRequest("Solo puede asignar licencias activas al cliente.");
-    }
-    names.push(module.name);
-  }
-  return { ids: unique, names };
-}
-
-function isHttpResponse(value: { ids: string[]; names: string[] } | HttpResponseInit): value is HttpResponseInit {
-  return typeof (value as HttpResponseInit).status === "number";
+  return (await readSqlClients(id))[0] ?? null;
 }
 
 app.http("clientsList", {
@@ -132,46 +83,12 @@ app.http("clientsCreate", {
       const parsed = ClientSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       if ((parsed.data.licenseModuleIds ?? []).length > 0 && !canAssignClientLicenses(user, roleDefinitions)) return forbidden();
-      if (getDataBackend() === "sql") {
-        const record = await createSqlClient(`client_${randomUUID()}`, {
-          externalId: parsed.data.externalId,
-          name: parsed.data.name,
-          notes: parsed.data.notes,
-          licenseModuleIds: parsed.data.licenseModuleIds,
-        }, { id: user.id, email: user.email });
-        return created(record);
-      }
-      const container = getContainer("clients");
-      const { resources: existingClients } = await container.items.readAll<ClientRecord>().fetchAll();
-      if (hasDuplicateClientName(existingClients, parsed.data.name)) return conflict("Ya existe un cliente con este nombre.");
-      if (hasDuplicateClientExternalId(existingClients, parsed.data.externalId)) return conflict("Ya existe un cliente con este ID.");
-      const licenses = await resolveClientLicenses(parsed.data.licenseModuleIds);
-      if (isHttpResponse(licenses)) return licenses;
-      const now = new Date().toISOString();
-      const record: ClientRecord = {
-        id: `client_${randomUUID()}`,
+      const record = await createSqlClient(`client_${randomUUID()}`, {
         externalId: parsed.data.externalId?.trim() || undefined,
-        name: parsed.data.name.trim(),
-        status: "active",
-        notes: parsed.data.notes?.trim(),
-        licenseModuleIds: licenses.ids,
-        licenseModuleNames: licenses.names,
-        createdAt: now,
-        createdBy: user.id,
-        updatedAt: now,
-        updatedBy: user.id,
-      };
-      await container.items.create(record);
-      await writeAuditLog({
-        entityType: "client",
-        entityId: record.id,
-        clientId: record.id,
-        clientName: record.name,
-        action: "client_created",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        after: record,
-      });
+        name: parsed.data.name,
+        notes: parsed.data.notes,
+        licenseModuleIds: parsed.data.licenseModuleIds,
+      }, { id: user.id, email: user.email });
       return created(record);
     } catch (e) {
       return serverError(e);
@@ -209,37 +126,8 @@ app.http("clientsTree", {
       const roleDefinitions = await loadRoleDefinitions();
       if (!canViewClientRelated(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
-      const backend = getDataBackend();
-      if (backend === "sql") {
-        const tree = await readSqlClientTree(id);
-        return tree ? ok(tree) : notFound("Cliente no encontrado.");
-      }
-      const { resource: client } = await getContainer("clients").item(id, id).read<ClientRecord>();
-      if (!client || client.status === "deleted") return notFound("Cliente no encontrado.");
-      const [{ resources: domains }, { resources: databases }] = await Promise.all([
-        getContainer("domains").items.query<DomainRecord>({
-          query: "SELECT * FROM c WHERE c.clientId = @c AND c.status != 'deleted'",
-          parameters: [{ name: "@c", value: id }],
-        }).fetchAll(),
-        getContainer("databases").items.query<DatabaseRecord>({
-          query: "SELECT * FROM c WHERE c.clientId = @c AND c.status != 'deleted'",
-          parameters: [{ name: "@c", value: id }],
-        }).fetchAll(),
-      ]);
-      const tree = {
-        client,
-        domains: domains.map((domain) => ({
-          domain,
-          databases: databases.filter((db) => db.domainId === domain.id).map(toPublicDatabase),
-        })),
-      };
-      if (backend === "dual-read") {
-        const shadow = await readSqlClientTree(id);
-        const primaryCounts = [tree.domains.length, tree.domains.reduce((sum, item) => sum + item.databases.length, 0)];
-        const shadowCounts = [shadow?.domains.length ?? -1, shadow?.domains.reduce((sum, item) => sum + item.databases.length, 0) ?? -1];
-        if (JSON.stringify(primaryCounts) !== JSON.stringify(shadowCounts)) console.warn("Client tree dual-read parity mismatch.");
-      }
-      return ok(tree);
+      const tree = await readSqlClientTree(id);
+      return tree ? ok(tree) : notFound("Cliente no encontrado.");
     } catch (e) {
       return serverError(e);
     }
@@ -260,57 +148,13 @@ app.http("clientsUpdate", {
       const parsed = ClientSchema.partial().safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       if (parsed.data.licenseModuleIds !== undefined && !canAssignClientLicenses(user, roleDefinitions)) return forbidden();
-      if (getDataBackend() === "sql") {
-        const resource = await readClient(id);
-        if (!resource) return notFound("Cliente no encontrado.");
-        if (parsed.data.status === "inactive" && resource.status !== "inactive" && !canDeactivateClient(user, roleDefinitions)) return forbidden();
-        if (parsed.data.status === "active" && resource.status !== "active" && !canReactivateClient(user, roleDefinitions)) return forbidden();
-        if (parsed.data.status === "deleted" && resource.status !== "deleted" && !canDeleteClient(user, roleDefinitions)) return forbidden();
-        const updated = await updateSqlClient(id, parsed.data, { id: user.id, email: user.email });
-        return updated ? ok(updated) : notFound("Cliente no encontrado.");
-      }
-      const container = getContainer("clients");
-      const { resource } = await container.item(id, id).read<ClientRecord>();
+      const resource = await readClient(id);
       if (!resource) return notFound("Cliente no encontrado.");
       if (parsed.data.status === "inactive" && resource.status !== "inactive" && !canDeactivateClient(user, roleDefinitions)) return forbidden();
       if (parsed.data.status === "active" && resource.status !== "active" && !canReactivateClient(user, roleDefinitions)) return forbidden();
       if (parsed.data.status === "deleted" && resource.status !== "deleted" && !canDeleteClient(user, roleDefinitions)) return forbidden();
-      if (typeof parsed.data.name === "string") {
-        const { resources: existingClients } = await container.items.readAll<ClientRecord>().fetchAll();
-        if (hasDuplicateClientName(existingClients, parsed.data.name, id)) return conflict("Ya existe un cliente con este nombre.");
-      }
-      if (typeof parsed.data.externalId === "string") {
-        const { resources: existingClients } = await container.items.readAll<ClientRecord>().fetchAll();
-        if (hasDuplicateClientExternalId(existingClients, parsed.data.externalId, id)) return conflict("Ya existe un cliente con este ID.");
-      }
-      const before = { ...resource };
-      const licenses = parsed.data.licenseModuleIds !== undefined
-        ? await resolveClientLicenses(parsed.data.licenseModuleIds, resource.licenseModuleIds ?? [])
-        : null;
-      if (licenses && isHttpResponse(licenses)) return licenses;
-      const updated: ClientRecord = {
-        ...resource,
-        ...(parsed.data.externalId !== undefined ? { externalId: parsed.data.externalId.trim() || undefined } : {}),
-        ...(parsed.data.name !== undefined ? { name: parsed.data.name.trim() } : {}),
-        ...(parsed.data.notes !== undefined ? { notes: parsed.data.notes.trim() } : {}),
-        ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
-        ...(licenses ? { licenseModuleIds: licenses.ids, licenseModuleNames: licenses.names } : {}),
-        updatedAt: new Date().toISOString(),
-        updatedBy: user.id,
-      };
-      await container.item(id, id).replace(updated);
-      await writeAuditLog({
-        entityType: "client",
-        entityId: id,
-        clientId: id,
-        clientName: updated.name,
-        action: "client_updated",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        before,
-        after: updated,
-      });
-      return ok(updated);
+      const updated = await updateSqlClient(id, parsed.data, { id: user.id, email: user.email });
+      return updated ? ok(updated) : notFound("Cliente no encontrado.");
     } catch (e) {
       return serverError(e);
     }
@@ -327,28 +171,8 @@ app.http("clientsDeactivate", {
       const roleDefinitions = await loadRoleDefinitions();
       if (!canDeactivateClient(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
-      if (getDataBackend() === "sql") {
-        const resource = await updateSqlClient(id, { status: "inactive" }, { id: user.id, email: user.email }, "client_deactivated");
-        return resource ? ok(resource) : notFound("Cliente no encontrado.");
-      }
-      const container = getContainer("clients");
-      const { resource } = await container.item(id, id).read<ClientRecord>();
-      if (!resource) return notFound("Cliente no encontrado.");
-      resource.status = "inactive";
-      resource.updatedAt = new Date().toISOString();
-      resource.updatedBy = user.id;
-      await container.item(id, id).replace(resource);
-      await writeAuditLog({
-        entityType: "client",
-        entityId: id,
-        clientId: id,
-        clientName: resource.name,
-        action: "client_deactivated",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        after: resource,
-      });
-      return ok(resource);
+      const resource = await updateSqlClient(id, { status: "inactive" }, { id: user.id, email: user.email }, "client_deactivated");
+      return resource ? ok(resource) : notFound("Cliente no encontrado.");
     } catch (e) {
       return serverError(e);
     }
@@ -365,28 +189,8 @@ app.http("clientsReactivate", {
       const roleDefinitions = await loadRoleDefinitions();
       if (!canReactivateClient(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
-      if (getDataBackend() === "sql") {
-        const resource = await updateSqlClient(id, { status: "active" }, { id: user.id, email: user.email }, "client_reactivated");
-        return resource ? ok(resource) : notFound("Cliente no encontrado.");
-      }
-      const container = getContainer("clients");
-      const { resource } = await container.item(id, id).read<ClientRecord>();
-      if (!resource) return notFound("Cliente no encontrado.");
-      resource.status = "active";
-      resource.updatedAt = new Date().toISOString();
-      resource.updatedBy = user.id;
-      await container.item(id, id).replace(resource);
-      await writeAuditLog({
-        entityType: "client",
-        entityId: id,
-        clientId: id,
-        clientName: resource.name,
-        action: "client_reactivated",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        after: resource,
-      });
-      return ok(resource);
+      const resource = await updateSqlClient(id, { status: "active" }, { id: user.id, email: user.email }, "client_reactivated");
+      return resource ? ok(resource) : notFound("Cliente no encontrado.");
     } catch (e) {
       return serverError(e);
     }
@@ -404,89 +208,10 @@ app.http("clientsDelete", {
       if (!canDeleteClient(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
       const cascade = req.query.get("cascade") === "true";
-      if (getDataBackend() === "sql") {
-        const result = await deleteSqlCoreCascade("client", id, cascade, { id: user.id, email: user.email });
-        if (!result.found) return notFound("Cliente no encontrado.");
-        if (result.requiresCascade) return conflict("El cliente tiene dependencias. Confirme eliminación en cascada.", { dependencies: result.dependencies });
-        return ok({ ok: true, deleted: { ...result.dependencies, obsoletedTasks: result.obsoletedTasks, cascadeSchedules: result.cascadeSchedules } });
-      }
-      const container = getContainer("clients");
-      const { resource } = await container.item(id, id).read<ClientRecord>();
-      if (!resource) return notFound("Cliente no encontrado.");
-
-      const [{ resources: domains }, { resources: databases }, { resources: schedules }, { resources: tasks }] = await Promise.all([
-        getContainer("domains").items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.clientId = @c AND c.status != 'deleted'", parameters: [{ name: "@c", value: id }] }).fetchAll(),
-        getContainer("databases").items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.clientId = @c AND c.status != 'deleted'", parameters: [{ name: "@c", value: id }] }).fetchAll(),
-        getContainer("updateSchedules").items.query<UpdateSchedule>({ query: "SELECT * FROM c WHERE c.clientId = @c", parameters: [{ name: "@c", value: id }] }).fetchAll(),
-        getContainer("updateTasks").items.query<UpdateTask>({ query: "SELECT * FROM c WHERE c.clientId = @c AND c.status NOT IN ('completed', 'cancelled')", parameters: [{ name: "@c", value: id }] }).fetchAll(),
-      ]);
-      const dependencies = { domains: domains.length, databases: databases.length, schedules: schedules.length, pendingTasks: tasks.length };
-      if (!cascade && (dependencies.domains > 0 || dependencies.databases > 0 || dependencies.schedules > 0 || dependencies.pendingTasks > 0)) {
-        return conflict("El cliente tiene dependencias. Confirme eliminación en cascada.", { dependencies });
-      }
-
-      const now = new Date().toISOString();
-      for (const schedule of schedules) {
-        await getContainer("updateSchedules").item(schedule.id, schedule.clientId).delete();
-        await writeAuditLog({
-          entityType: "schedule", entityId: schedule.id, clientId: id, clientName: resource.name,
-          action: "schedule_deleted_cascade", performedBy: user.id, performedByEmail: user.email,
-          metadata: { cascadeFromClient: id }, before: schedule,
-        });
-      }
-      for (const task of tasks) {
-        const before = { ...task };
-        task.status = "cancelled";
-        task.result = "obsolete";
-        task.notes = task.notes ? `${task.notes}\nCancelada por eliminación en cascada del cliente.` : "Cancelada por eliminación en cascada del cliente.";
-        task.updatedAt = now;
-        task.updatedBy = user.id;
-        await getContainer("updateTasks").item(task.id, task.taskBucket).replace(task);
-        await writeAuditLog({
-          entityType: "task", entityId: task.id, clientId: id, clientName: resource.name,
-          action: "task_cancelled", performedBy: user.id, performedByEmail: user.email,
-          metadata: { cascadeFromClient: id }, before, after: { status: task.status, result: task.result },
-        });
-      }
-      for (const db of databases) {
-        const before = { ...db };
-        const deleted = { ...db, status: "deleted" as const, deletedAt: now, deletedBy: user.id, updatedAt: now, updatedBy: user.id };
-        await getContainer("databases").item(db.id, db.clientId).replace(deleted);
-        await writeAuditLog({
-          entityType: "database", entityId: db.id, clientId: id, clientName: resource.name,
-          domainId: db.domainId, domainName: db.domainName, companyName: db.companyName,
-          action: "database_deleted_cascade", performedBy: user.id, performedByEmail: user.email,
-          metadata: { cascadeFromClient: id }, before: { ...before, dbAccess: { ...before.dbAccess, passwordSecretName: undefined } },
-          after: { status: "deleted" },
-        });
-      }
-      for (const domain of domains) {
-        const before = { ...domain };
-        const deleted = { ...domain, status: "deleted" as const, deletedAt: now, deletedBy: user.id, updatedAt: now, updatedBy: user.id };
-        await getContainer("domains").item(domain.id, domain.clientId).replace(deleted);
-        await writeAuditLog({
-          entityType: "domain", entityId: domain.id, clientId: id, clientName: resource.name,
-          domainId: domain.id, domainName: domain.domainName,
-          action: "domain_deleted_cascade", performedBy: user.id, performedByEmail: user.email,
-          metadata: { cascadeFromClient: id }, before, after: { status: "deleted" },
-        });
-      }
-      const beforeClient = { ...resource };
-      const deletedClient = { ...resource, status: "deleted" as const, deletedAt: now, deletedBy: user.id, updatedAt: now, updatedBy: user.id };
-      await container.item(id, id).replace(deletedClient);
-      await writeAuditLog({
-        entityType: "client",
-        entityId: id,
-        clientId: id,
-        clientName: resource.name,
-        action: "client_deleted_cascade",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        metadata: dependencies,
-        before: beforeClient,
-        after: { status: "deleted" },
-      });
-      return ok({ ok: true, deleted: dependencies });
+      const result = await deleteSqlCoreCascade("client", id, cascade, { id: user.id, email: user.email });
+      if (!result.found) return notFound("Cliente no encontrado.");
+      if (result.requiresCascade) return conflict("El cliente tiene dependencias. Confirme eliminación en cascada.", { dependencies: result.dependencies });
+      return ok({ ok: true, deleted: { ...result.dependencies, obsoletedTasks: result.obsoletedTasks, cascadeSchedules: result.cascadeSchedules } });
     } catch (e) {
       return serverError(e);
     }

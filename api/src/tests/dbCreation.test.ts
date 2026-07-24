@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { buildDatabaseRecordFromInput } from "../lib/databaseService";
 
 describe("buildDatabaseRecordFromInput", () => {
-  it("no almacena la contraseña en el documento de Cosmos", () => {
+  it("no almacena la contraseña en el registro persistente", () => {
     const result = buildDatabaseRecordFromInput({
       clientId: "c1",
       clientName: "Cliente",

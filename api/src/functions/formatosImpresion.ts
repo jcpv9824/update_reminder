@@ -2,9 +2,6 @@ import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
-import { writeAuditLog } from "../lib/audit";
-import { getContainer } from "../lib/cosmos";
-import { getDataBackend } from "../lib/dataBackend";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import { getPagination, paginateArray } from "../lib/pagination";
 import {
@@ -21,7 +18,7 @@ import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import { readSqlPrintFormats } from "../lib/printFormatsSqlRepository";
 import { createPublicDownloadBlobUrl, deletePublicDownloadBlobIfUnreferenced, isPublicDownloadBlobStorageConfigured, storePublicDownloadBlob } from "../lib/publicDownloadStorage";
 import { formatHasSource, getFormatSourceIds, getFormatSourceNames, normalizeSourceIds, withFormatSources } from "../lib/printFormatSources";
-import type { FormatoImpresionRecord, FuenteFormatoRecord, LicenseModuleRecord } from "../types/models";
+import type { FormatoImpresionRecord, FuenteFormatoRecord } from "../types/models";
 import { findSqlLicenseModule } from "../lib/licensingSqlWriteRepository";
 import {
   createSqlPrintFormat,
@@ -120,9 +117,7 @@ async function buildLicenciaFields(input: {
   }
   const id = input.licenciaModuloId?.trim();
   if (!id) return badRequest("Seleccione el tipo de licencia requerido para el formato.");
-  const resource = getDataBackend() === "sql"
-    ? await findSqlLicenseModule(id)
-    : (await getContainer("licenseModules").item(id, id).read<LicenseModuleRecord>()).resource;
+  const resource = await findSqlLicenseModule(id);
   if (!resource || resource.status !== "active" || resource.active === false || resource.deletedAt) {
     return badRequest("El tipo de licencia seleccionado no está activo.");
   }
@@ -168,27 +163,8 @@ function isHttpResponse(value: Buffer | HttpResponseInit): value is HttpResponse
   return typeof (value as HttpResponseInit).status === "number";
 }
 
-async function readFuentesCosmos(): Promise<FuenteFormatoRecord[]> {
-  const { resources } = await getContainer("fuentesFormatos").items.readAll<FuenteFormatoRecord>().fetchAll();
-  return resources.filter((item) => item.status !== "deleted");
-}
-
-async function readFormatosCosmos(): Promise<FormatoImpresionRecord[]> {
-  const { resources } = await getContainer("formatosImpresion").items.readAll<FormatoImpresionRecord>().fetchAll();
-  return resources.filter((item) => item.status !== "deleted");
-}
-
 async function readCatalog() {
-  const backend = getDataBackend();
-  if (backend === "sql") return readSqlPrintFormats();
-  const [sources, formats] = await Promise.all([readFuentesCosmos(), readFormatosCosmos()]);
-  if (backend === "dual-read") {
-    const shadow = await readSqlPrintFormats();
-    const primaryCounts = [sources.length, formats.length, formats.reduce((sum, item) => sum + getFormatSourceIds(item).length, 0)];
-    const shadowCounts = [shadow.sources.length, shadow.formats.length, shadow.formats.reduce((sum, item) => sum + getFormatSourceIds(item).length, 0)];
-    if (JSON.stringify(primaryCounts) !== JSON.stringify(shadowCounts)) console.warn("Print Formats dual-read parity mismatch.");
-  }
-  return { sources, formats };
+  return readSqlPrintFormats();
 }
 
 async function readFuentes(): Promise<FuenteFormatoRecord[]> {
@@ -208,7 +184,6 @@ async function readFormato(id: string): Promise<FormatoImpresionRecord | null> {
 }
 
 async function attachSqlPdfStorage(record: FormatoImpresionRecord, bytes: Buffer): Promise<FormatoImpresionRecord> {
-  if (getDataBackend() !== "sql") return record;
   if (!isPublicDownloadBlobStorageConfigured()) {
     throw Object.assign(new Error("Configure Azure Blob Storage antes de guardar formatos PDF en SQL."), { status: 503 });
   }
@@ -330,17 +305,7 @@ app.http("adminFuentesFormatosCreate", {
         updatedAt: now,
         updatedBy: user.id,
       };
-      if (getDataBackend() === "sql") return created(sanitizeFuente(await createSqlPrintSource(record, { id: user.id, email: user.email })));
-      await getContainer("fuentesFormatos").items.create(record);
-      await writeAuditLog({
-        entityType: "fuenteFormato",
-        entityId: record.id,
-        action: "fuente_formato_created",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        after: record,
-      });
-      return created(sanitizeFuente(record));
+      return created(sanitizeFuente(await createSqlPrintSource(record, { id: user.id, email: user.email })));
     } catch (e) {
       return serverError(e);
     }
@@ -389,38 +354,8 @@ app.http("adminFuentesFormatosUpdate", {
         updatedAt: new Date().toISOString(),
         updatedBy: user.id,
       };
-      if (getDataBackend() === "sql") {
-        const result = await updateSqlPrintSource(current, updated, { id: user.id, email: user.email });
-        return result ? ok(sanitizeFuente(result)) : notFound("Tipo de fuente no encontrado.");
-      }
-      await getContainer("fuentesFormatos").item(id, id).replace(updated);
-      if (before.nombre !== updated.nombre) {
-        const formatos = await readFormatos();
-        await Promise.all(formatos.filter((formato) => formatHasSource(formato, id)).map(async (formato) => {
-          const sourceIds = getFormatSourceIds(formato);
-          const sourceNames = getFormatSourceNames(formato);
-          const renamedSources = sourceIds.map((sourceId, index) => ({
-            id: sourceId,
-            nombre: sourceId === id ? updated.nombre : (sourceNames[index] ?? formato.fuenteNombre),
-          }));
-          const renamed = withFormatSources(formato, renamedSources);
-          return getContainer("formatosImpresion").item(formato.id, formato.id).replace({
-            ...renamed,
-            updatedAt: updated.updatedAt,
-            updatedBy: user.id,
-          });
-        }));
-      }
-      await writeAuditLog({
-        entityType: "fuenteFormato",
-        entityId: id,
-        action: "fuente_formato_updated",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        before,
-        after: updated,
-      });
-      return ok(sanitizeFuente(updated));
+      const result = await updateSqlPrintSource(current, updated, { id: user.id, email: user.email });
+      return result ? ok(sanitizeFuente(result)) : notFound("Tipo de fuente no encontrado.");
     } catch (e) {
       return serverError(e);
     }
@@ -438,34 +373,9 @@ app.http("adminFuentesFormatosDelete", {
       const id = req.params.id;
       const current = await readFuente(id);
       if (!current) return notFound("Tipo de fuente no encontrado.");
-      if (getDataBackend() === "sql") {
-        const result = await deleteSqlPrintSource(current, { id: user.id, email: user.email });
-        if (!result.found) return notFound("Tipo de fuente no encontrado.");
-        if (result.formats) return conflict("No se puede eliminar el tipo de fuente porque tiene formatos asociados.", { dependencies: { formatos: result.formats } });
-        return ok({ ok: true });
-      }
-      const formatos = await readFormatos();
-      const asociados = formatos.filter((formato) => formatHasSource(formato, id)).length;
-      if (asociados > 0) return conflict("No se puede eliminar el tipo de fuente porque tiene formatos asociados.", { dependencies: { formatos: asociados } });
-      const deleted: FuenteFormatoRecord = {
-        ...current,
-        activa: false,
-        status: "deleted",
-        deletedAt: new Date().toISOString(),
-        deletedBy: user.id,
-        updatedAt: new Date().toISOString(),
-        updatedBy: user.id,
-      };
-      await getContainer("fuentesFormatos").item(id, id).replace(deleted);
-      await writeAuditLog({
-        entityType: "fuenteFormato",
-        entityId: id,
-        action: "fuente_formato_deleted",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        before: current,
-        after: deleted,
-      });
+      const result = await deleteSqlPrintSource(current, { id: user.id, email: user.email });
+      if (!result.found) return notFound("Tipo de fuente no encontrado.");
+      if (result.formats) return conflict("No se puede eliminar el tipo de fuente porque tiene formatos asociados.", { dependencies: { formatos: result.formats } });
       return ok({ ok: true });
     } catch (e) {
       return serverError(e);
@@ -538,26 +448,13 @@ app.http("adminFormatosImpresionCreate", {
         updatedAt: now,
         updatedBy: user.id,
       }, fuentes);
-      if (getDataBackend() === "sql") {
-        record = await attachSqlPdfStorage(record, pdf);
-        try {
-          return created(sanitizeFormato(await createSqlPrintFormat(record, { id: user.id, email: user.email })));
-        } catch (error) {
-          await compensateUnreferencedPdf(record);
-          throw error;
-        }
+      record = await attachSqlPdfStorage(record, pdf);
+      try {
+        return created(sanitizeFormato(await createSqlPrintFormat(record, { id: user.id, email: user.email })));
+      } catch (error) {
+        await compensateUnreferencedPdf(record);
+        throw error;
       }
-      await getContainer("formatosImpresion").items.create(record);
-      await writeAuditLog({
-        entityType: "formatoImpresion",
-        entityId: record.id,
-        action: "formato_impresion_created",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        after: record,
-        metadata: { pdfLoaded: true },
-      });
-      return created(sanitizeFormato(record));
     } catch (e) {
       return serverError(e);
     }
@@ -644,29 +541,15 @@ app.http("adminFormatosImpresionUpdate", {
         updatedAt: new Date().toISOString(),
         updatedBy: user.id,
       }, fuentes);
-      if (getDataBackend() === "sql") {
-        if (replacedPdf) updated = await attachSqlPdfStorage(updated, Buffer.from(pdfBase64!, "base64"));
-        try {
-          const result = await updateSqlPrintFormat(current, updated, { id: user.id, email: user.email }, replacedPdf);
-          if (!result && replacedPdf) await compensateUnreferencedPdf(updated);
-          return result ? ok(sanitizeFormato(result)) : notFound("Formato no encontrado.");
-        } catch (error) {
-          if (replacedPdf) await compensateUnreferencedPdf(updated);
-          throw error;
-        }
+      if (replacedPdf) updated = await attachSqlPdfStorage(updated, Buffer.from(pdfBase64!, "base64"));
+      try {
+        const result = await updateSqlPrintFormat(current, updated, { id: user.id, email: user.email }, replacedPdf);
+        if (!result && replacedPdf) await compensateUnreferencedPdf(updated);
+        return result ? ok(sanitizeFormato(result)) : notFound("Formato no encontrado.");
+      } catch (error) {
+        if (replacedPdf) await compensateUnreferencedPdf(updated);
+        throw error;
       }
-      await getContainer("formatosImpresion").item(id, id).replace(updated);
-      await writeAuditLog({
-        entityType: "formatoImpresion",
-        entityId: id,
-        action: replacedPdf ? "formato_impresion_pdf_replaced" : "formato_impresion_updated",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        before,
-        after: updated,
-        metadata: replacedPdf ? { previousPdfName: before.pdfNombreOriginal, newPdfName: updated.pdfNombreOriginal } : undefined,
-      });
-      return ok(sanitizeFormato(updated));
     } catch (e) {
       return serverError(e);
     }
@@ -696,29 +579,15 @@ app.http("adminFormatosImpresionReplacePdf", {
         updatedAt: new Date().toISOString(),
         updatedBy: user.id,
       };
-      if (getDataBackend() === "sql") {
-        updated = await attachSqlPdfStorage(updated, pdf);
-        try {
-          const result = await updateSqlPrintFormat(current, updated, { id: user.id, email: user.email }, true);
-          if (!result) await compensateUnreferencedPdf(updated);
-          return result ? ok(sanitizeFormato(result)) : notFound("Formato no encontrado.");
-        } catch (error) {
-          await compensateUnreferencedPdf(updated);
-          throw error;
-        }
+      updated = await attachSqlPdfStorage(updated, pdf);
+      try {
+        const result = await updateSqlPrintFormat(current, updated, { id: user.id, email: user.email }, true);
+        if (!result) await compensateUnreferencedPdf(updated);
+        return result ? ok(sanitizeFormato(result)) : notFound("Formato no encontrado.");
+      } catch (error) {
+        await compensateUnreferencedPdf(updated);
+        throw error;
       }
-      await getContainer("formatosImpresion").item(id, id).replace(updated);
-      await writeAuditLog({
-        entityType: "formatoImpresion",
-        entityId: id,
-        action: "formato_impresion_pdf_replaced",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        before,
-        after: updated,
-        metadata: { previousPdfName: before.pdfNombreOriginal, newPdfName: updated.pdfNombreOriginal },
-      });
-      return ok(sanitizeFormato(updated));
     } catch (e) {
       return serverError(e);
     }
@@ -736,30 +605,8 @@ app.http("adminFormatosImpresionDelete", {
       const id = req.params.id;
       const current = await readFormato(id);
       if (!current) return notFound("Formato no encontrado.");
-      if (getDataBackend() === "sql") {
-        return (await deleteSqlPrintFormat(current, { id: user.id, email: user.email }))
-          ? ok({ ok: true }) : notFound("Formato no encontrado.");
-      }
-      const deleted: FormatoImpresionRecord = {
-        ...current,
-        activo: false,
-        status: "deleted",
-        deletedAt: new Date().toISOString(),
-        deletedBy: user.id,
-        updatedAt: new Date().toISOString(),
-        updatedBy: user.id,
-      };
-      await getContainer("formatosImpresion").item(id, id).replace(deleted);
-      await writeAuditLog({
-        entityType: "formatoImpresion",
-        entityId: id,
-        action: "formato_impresion_deleted",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        before: current,
-        after: deleted,
-      });
-      return ok({ ok: true });
+      return (await deleteSqlPrintFormat(current, { id: user.id, email: user.email }))
+        ? ok({ ok: true }) : notFound("Formato no encontrado.");
     } catch (e) {
       return serverError(e);
     }

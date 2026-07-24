@@ -2,9 +2,7 @@ import type { HttpRequest } from "@azure/functions";
 import type { CurrentUser } from "../types/models";
 import { verifyJwt } from "./jwt";
 import { validateAccessSession, type UserLoader, type AuthSessionStore } from "./authSessions";
-import { normalizeEmail } from "./password";
 import { migrateLegacyRoleIds } from "./permissionModel";
-import { sqlSecurityRuntimeEnabled } from "./dataBackend";
 
 // Extrae al usuario actual de la solicitud. En producción solo se acepta el
 // JWT emitido por el login de la aplicación. No se confía en
@@ -63,47 +61,19 @@ export type ProfileLoadResult =
   | { status: "not_registered" }
   | { status: "inactive" };
 
-// Carga el perfil persistido en Cosmos DB. Busca por id o por email
-// case-insensitive. Devuelve estado detallado.
+// Carga el perfil persistido en SQL por id o email y devuelve estado detallado.
 export async function loadUserProfileDetailed(user: CurrentUser): Promise<ProfileLoadResult> {
   try {
-    if (sqlSecurityRuntimeEnabled()) {
-      const { findSqlUserById, findSqlUserByEmail } = await import("./securityManagementSqlWriteRepository");
-      const resource = await findSqlUserById(user.id) ?? await findSqlUserByEmail(user.email);
-      if (!resource) return { status: "not_registered" };
-      if (resource.active === false) return { status: "inactive" };
-      return {
-        status: "ok",
-        user: {
-          id: resource.id,
-          email: resource.email,
-          displayName: resource.displayName,
-          roles: migrateLegacyRoleIds(resource.roles ?? []),
-        },
-      };
-    }
-    const { getContainer } = await import("./cosmos");
-    const container = getContainer("users");
-    let resource: any = null;
-    try {
-      const r = await container.item(user.id, user.id).read<any>();
-      resource = r.resource;
-    } catch {/* */}
-    const email = normalizeEmail(user.email);
-    if (!resource && email) {
-      const { resources } = await container.items
-        .query<any>({ query: "SELECT * FROM c WHERE LOWER(c.email) = @e", parameters: [{ name: "@e", value: email }] })
-        .fetchAll();
-      resource = resources[0];
-    }
+    const { findSqlUserById, findSqlUserByEmail } = await import("./securityManagementSqlWriteRepository");
+    const resource = await findSqlUserById(user.id) ?? await findSqlUserByEmail(user.email);
     if (!resource) return { status: "not_registered" };
     if (resource.active === false) return { status: "inactive" };
     return {
       status: "ok",
       user: {
         id: resource.id,
-        email: resource.email ?? user.email,
-        displayName: resource.displayName ?? user.displayName,
+        email: resource.email,
+        displayName: resource.displayName,
         roles: migrateLegacyRoleIds(resource.roles ?? []),
       },
     };

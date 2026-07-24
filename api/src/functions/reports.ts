@@ -3,14 +3,10 @@ import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { canSendConfiguredReport } from "../lib/managementAccess";
 import { writeAuditLog } from "../lib/audit";
-import { getContainer } from "../lib/cosmos";
-import { sendEmail } from "../lib/emailService";
 import { badRequest, forbidden, ok, serverError } from "../lib/http";
 import { buildMastersReportEmail, parseSemicolonEmails } from "../lib/reportsService";
-import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseAssignmentRecord, LicenseModuleRecord, UpdateSchedule } from "../types/models";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
-import { getDataBackend } from "../lib/dataBackend";
 import { loadSqlMastersReportData } from "../lib/mastersReportSqlData";
 import { enqueueSqlEmail } from "../lib/emailOutboxSqlRepository";
 import { randomUUID } from "node:crypto";
@@ -29,17 +25,6 @@ const SendMastersReportSchema = z.object({
   to: z.string().optional(),
   recipients: z.string().optional(),
 });
-
-async function queryOptionalContainer<T>(name: "licenseModules" | "licenseAssignments", query: string): Promise<T[]> {
-  try {
-    const { resources } = await getContainer(name).items.query<T>({ query }).fetchAll();
-    return resources;
-  } catch (e: any) {
-    const code = e?.code ?? e?.statusCode;
-    if (code === 404) return [];
-    throw e;
-  }
-}
 
 app.http("mastersReportSendEmail", {
   route: "reports/masters/send-email",
@@ -63,20 +48,7 @@ app.http("mastersReportSendEmail", {
       const limited = await enforceRequestRateLimit(req, "email_masters_report", user.id, RATE_LIMIT_POLICIES.mastersReport);
       if (limited) return limited;
 
-      const sqlBackend = getDataBackend() === "sql";
-      const data = sqlBackend
-        ? await loadSqlMastersReportData(new Date().toISOString().slice(0, 10))
-        : await (async () => {
-            const [{ resources: clients }, { resources: domains }, { resources: databases }, { resources: schedules }, licenseModules, licenseAssignments] = await Promise.all([
-              getContainer("clients").items.query<ClientRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll(),
-              getContainer("domains").items.query<DomainRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll(),
-              getContainer("databases").items.query<DatabaseRecord>({ query: "SELECT * FROM c WHERE c.status = 'active'" }).fetchAll(),
-              getContainer("updateSchedules").items.query<UpdateSchedule>({ query: "SELECT * FROM c WHERE c.active = true" }).fetchAll(),
-              queryOptionalContainer<LicenseModuleRecord>("licenseModules", "SELECT * FROM c"),
-              queryOptionalContainer<LicenseAssignmentRecord>("licenseAssignments", "SELECT * FROM c"),
-            ]);
-            return { clients, domains, databases, schedules, licenseModules, licenseAssignments };
-          })();
+      const data = await loadSqlMastersReportData(new Date().toISOString().slice(0, 10));
 
       const settings = await (await import("../lib/settingsService")).loadEmailAlertsSettings();
       const email = buildMastersReportEmail({
@@ -85,40 +57,25 @@ app.http("mastersReportSendEmail", {
         frontendBaseUrl: settings.frontendBaseUrl || process.env.FRONTEND_BASE_URL,
         timezone: process.env.APP_TIMEZONE || "America/Bogota",
       });
-      if (sqlBackend) {
-        const queued = await enqueueSqlEmail({
-          type: "masters_report",
-          idempotencyKey: `masters-report:${user.id}:${randomUUID()}`,
-          entityType: "report",
-          entityId: "masters",
-          subject: email.subject,
-          html: email.html,
-          text: email.text,
-          recipients: recipients.map((emailAddress) => ({ email: emailAddress })),
-          metadata: { recipientsCount: recipients.length },
-          createdBy: user.id,
-        });
-        return ok({
-          ok: queued.created,
-          sent: false,
-          queued: queued.created,
-          recipientsCount: recipients.length,
-          message: queued.created ? "Reporte puesto en cola correctamente." : "El reporte ya estaba en cola.",
-        });
-      }
-      const result = await sendEmail({ to: recipients, ...email });
-
-      await writeAuditLog({
+      const queued = await enqueueSqlEmail({
+        type: "masters_report",
+        idempotencyKey: `masters-report:${user.id}:${randomUUID()}`,
         entityType: "report",
         entityId: "masters",
-        action: result.ok ? "masters_report_email_sent" : "masters_report_email_failed",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        metadata: { recipientsCount: recipients.length, provider: result.provider, error: result.ok ? undefined : result.error },
+        subject: email.subject,
+        html: email.html,
+        text: email.text,
+        recipients: recipients.map((emailAddress) => ({ email: emailAddress })),
+        metadata: { recipientsCount: recipients.length },
+        createdBy: user.id,
       });
-
-      if (!result.ok) return ok({ ok: false, sent: false, recipientsCount: recipients.length, message: "No se pudo enviar el reporte.", details: result.error });
-      return ok({ ok: true, sent: true, recipientsCount: recipients.length, message: "Reporte enviado correctamente." });
+      return ok({
+        ok: queued.created,
+        sent: false,
+        queued: queued.created,
+        recipientsCount: recipients.length,
+        message: queued.created ? "Reporte puesto en cola correctamente." : "El reporte ya estaba en cola.",
+      });
     } catch (e: any) {
       if (user) {
         await writeAuditLog({

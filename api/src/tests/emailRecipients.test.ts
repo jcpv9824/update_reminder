@@ -1,23 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { UserRecord } from "../types/models";
 
 const mocks = vi.hoisted(() => ({
   users: [] as UserRecord[],
 }));
 
-vi.mock("../lib/cosmos", () => ({
-  getContainer: () => ({
-    items: {
-      query: (spec: { parameters?: Array<{ value: string }> }) => ({
-        fetchAll: async () => {
-          const roleIds = new Set((spec.parameters ?? []).map((parameter) => parameter.value));
-          return {
-            resources: mocks.users.filter((user) => user.active && (user.roles ?? []).some((role) => roleIds.has(role))),
-          };
-        },
-      }),
-    },
-  }),
+vi.mock("../lib/securityUsersSqlRepository", () => ({
+  readSqlPublicUsers: vi.fn(async () => mocks.users),
 }));
 
 import { resolveEmailsByRoles } from "../lib/emailRecipients";
@@ -36,12 +25,7 @@ function user(id: string, roles: string[], email = `${id}@example.com`): UserRec
 
 describe("email recipient role resolution", () => {
   beforeEach(() => {
-    process.env.DATA_BACKEND = "cosmos";
     mocks.users = [];
-  });
-
-  afterEach(() => {
-    delete process.env.DATA_BACKEND;
   });
 
   it("resolves super_admin recipients from both new and legacy admin role ids", async () => {

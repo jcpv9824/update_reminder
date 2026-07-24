@@ -1,20 +1,20 @@
 import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import type { EmailAlertsSettings } from "../types/models";
 
-// Mockear cosmos y keyVault para aislar pruebas (con vi.hoisted).
+// Mockear los repositorios SQL y Key Vault para aislar pruebas.
 const mocks = vi.hoisted(() => ({
-  upsertMock: vi.fn(async (_v: any) => ({})),
-  readMock: vi.fn(async () => ({ resource: undefined as any })),
+  saveMock: vi.fn(async (_current: any, next: any) => next),
+  readMock: vi.fn(async () => undefined as any),
   setSecretMock: vi.fn(async () => undefined),
   getSecretMock: vi.fn(async () => "secret-en-vault"),
 }));
-const { upsertMock, readMock, setSecretMock, getSecretMock } = mocks;
+const { saveMock, readMock, setSecretMock, getSecretMock } = mocks;
 
-vi.mock("../lib/cosmos", () => ({
-  getContainer: () => ({
-    item: () => ({ read: mocks.readMock }),
-    items: { upsert: mocks.upsertMock },
-  }),
+vi.mock("../lib/emailSettingsSqlRepository", () => ({
+  readSqlEmailAlertsSettings: mocks.readMock,
+}));
+vi.mock("../lib/emailSettingsSqlWriteRepository", () => ({
+  saveSqlEmailAlertsSettings: mocks.saveMock,
 }));
 vi.mock("../lib/keyVault", () => ({
   setSecret: mocks.setSecretMock,
@@ -24,12 +24,17 @@ vi.mock("../lib/keyVault", () => ({
 import { loadEmailAlertsSettings, saveEmailAlertsSettings, sanitizeForResponse, getSmtpPassword } from "../lib/settingsService";
 
 beforeEach(() => {
-  process.env.DATA_BACKEND = "cosmos";
-  upsertMock.mockClear();
+  process.env.DATA_BACKEND = "sql";
+  saveMock.mockClear();
   setSecretMock.mockClear();
   getSecretMock.mockClear();
   readMock.mockReset();
-  readMock.mockResolvedValue({ resource: undefined as any });
+  readMock.mockResolvedValue({
+    id: "email-alerts",
+    emailProvider: "mock",
+    emailFrom: "info@pya.com.co",
+    emailFromName: "Portal SAG Web",
+  } as any);
 });
 
 afterEach(() => {
@@ -37,7 +42,7 @@ afterEach(() => {
 });
 
 describe("settingsService", () => {
-  it("loadEmailAlertsSettings devuelve defaults cuando no hay documento", async () => {
+  it("loadEmailAlertsSettings combina la fila SQL con defaults", async () => {
     const s = await loadEmailAlertsSettings();
     expect(s.id).toBe("email-alerts");
     expect(s.emailProvider).toBeDefined();
@@ -75,7 +80,7 @@ describe("settingsService", () => {
     expect(r.smtpPasswordConfigured).toBe(true);
   });
 
-  it("saveEmailAlertsSettings guarda contraseña SMTP en Key Vault y NO en Cosmos", async () => {
+  it("saveEmailAlertsSettings guarda contraseña SMTP en Key Vault y no en SQL", async () => {
     const r = await saveEmailAlertsSettings({
       patch: { emailProvider: "smtp", smtpUser: "info@pya.com.co", smtpPassword: "valor-prueba-no-real" },
       performedBy: "admin",
@@ -86,8 +91,8 @@ describe("settingsService", () => {
     expect(secretName).toMatch(/^smtp-password-/);
     expect(secretName).not.toContain("@");
 
-    expect(upsertMock).toHaveBeenCalledTimes(1);
-    const persisted = upsertMock.mock.calls[0][0] as any;
+    expect(saveMock).toHaveBeenCalledTimes(1);
+    const persisted = saveMock.mock.calls[0][1] as any;
     expect(JSON.stringify(persisted)).not.toContain("valor-prueba-no-real");
     expect(persisted.smtpPasswordSecretName).toBe(secretName);
     expect(persisted.smtpPasswordConfigured).toBe(true);

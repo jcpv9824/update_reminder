@@ -15,16 +15,13 @@
     "clean": "rimraf dist",
     "prestart": "npm run build",
     "start": "func start",
-    "export:cosmos": "node scripts/export-cosmos-snapshot.js",
-    "seed:public-downloads": "node scripts/seed-public-downloads.js",
+    "check:no-cosmos-runtime": "node scripts/check-no-cosmos-runtime.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "security:audit:prod": "npm audit --omit=dev --audit-level=moderate",
-    "security:audit": "npm audit --audit-level=moderate",
-    "security:sanitize-audit": "node scripts/sanitize-audit-logs.js"
+    "security:audit": "npm audit --audit-level=moderate"
   },
   "dependencies": {
-    "@azure/cosmos": "^4.0.0",
     "@azure/functions": "^4.5.0",
     "@azure/identity": "^4.2.0",
     "@azure/keyvault-secrets": "^4.8.0",

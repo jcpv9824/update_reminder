@@ -1,6 +1,6 @@
 # Programador de Actualizaciones del ERP
 
-Aplicación web para gestionar las actualizaciones programadas de los clientes del ERP, sus dominios y bases de datos. Construida sobre Microsoft Azure (Static Web Apps, Azure Functions, Cosmos DB y Key Vault). Toda la interfaz está en español.
+Aplicación web para gestionar las actualizaciones programadas de los clientes del ERP, sus dominios y bases de datos. Construida sobre Microsoft Azure (Static Web Apps, Azure Functions, SQL Server, Azure Blob Storage y Key Vault). Toda la interfaz está en español.
 
 ## Características
 
@@ -96,6 +96,7 @@ El frontend queda disponible en `http://localhost:5173`.
 
 ```powershell
 cd api
+npm run check:no-cosmos-runtime
 npm test
 ```
 
@@ -128,16 +129,16 @@ El campo **ID del cliente** (`externalId`) es opcional por ahora. Si se captura,
 
 ### Protección contra abuso
 
-- Los endpoints sensibles usan rate limiting distribuido en Cosmos por IP e identidad.
+- Los endpoints sensibles usan rate limiting transaccional en SQL Server por IP e identidad seudonimizadas.
 - Login aplica lockout temporal tras cinco fallos en 15 minutos; las respuestas limitadas usan HTTP `429` y `Retry-After`.
 - Recuperación/restablecimiento, setup y envíos manuales de correo tienen límites independientes según su costo.
-- Los identificadores se guardan como HMAC; nunca se persisten IP, correo, token ni secreto en claro en `securityRateLimits`.
+- Los identificadores se guardan como HMAC; nunca se persisten IP, correo, token ni secreto en claro en `security.rate_limit_buckets`.
 - Los eventos bloqueados quedan en logs estructurados y auditoría. Consulte `SECURITY_RATE_LIMITING.md` para límites y operación.
 
 ### Sesiones seguras
 
 - Access JWT de 10 minutos almacenado exclusivamente en memoria del frontend.
-- Refresh token rotatorio en cookie `HttpOnly`, `Secure`, `SameSite=None`; Cosmos conserva solo su hash.
+- Refresh token rotatorio en cookie `HttpOnly`, `Secure`, `SameSite=None`; SQL Server conserva solo su hash.
 - Cada JWT incluye `issuer`, `audience`, `jti`, `sid` y `tokenVersion`, y solo se acepta HS256.
 - Logout, cambios de contraseña y desactivación revocan sesiones de inmediato.
 - `JWT_SECRET` debe contener al menos 32 bytes. Consulte `SECURITY_SESSIONS.md`.
@@ -155,7 +156,7 @@ El campo **ID del cliente** (`externalId`) es opcional por ahora. Si se captura,
 - Snapshots permitidos por tipo de entidad y metadata permitida por acción.
 - Nunca guarda cuerpos HTTP, headers, authorization, cookies, API keys, cadenas de conexión ni secretos.
 - Campos permitidos también detectan y redactan contenido con credenciales.
-- Los registros históricos se sanean con `npm run security:sanitize-audit -- --apply`.
+- Los registros migrados fueron saneados durante la carga certificada y las nuevas escrituras aplican allowlists antes de llegar a SQL.
 - Clasificación y procedimiento: `SECURITY_AUDIT_SANITIZATION.md`.
 
 ### Contrasenas y acceso
@@ -167,9 +168,9 @@ El campo **ID del cliente** (`externalId`) es opcional por ahora. Si se captura,
 - Las acciones sensibles conservan autorización backend por rol, cliente, asignación y objeto, además de auditoría.
 - Política, controles compensatorios y riesgo residual: `SECURITY_PASSWORD_POLICY.md`.
 
-- La contraseña SMTP se guarda en **Azure Key Vault**. El frontend nunca la recibe ni la muestra; Cosmos DB solo guarda el nombre del secreto y el indicador de configuración.
+- La contraseña SMTP se guarda en **Azure Key Vault**. El frontend nunca la recibe ni la muestra; SQL Server solo guarda el nombre del secreto y el indicador de configuración.
 - La contraseña de cada base de datos se guarda en **Azure Key Vault** con el nombre `db-{databaseId}-password`.
-- En Cosmos DB solo se guarda la **referencia** al secreto, nunca la contraseña.
+- En SQL Server solo se guarda la **referencia** al secreto, nunca la contraseña.
 - Los registros de auditoría usan allowlists por entidad y acción; campos no declarados nunca se persisten.
 - Cada acción de **revelar** o **copiar** la contraseña genera una entrada de auditoría con el usuario, la fecha y la base de datos asociada.
 - Los listados y detalles generales de bases usan DTOs sanitizados: nunca incluyen servidor, usuario SQL ni `passwordSecretName`. La conexión se consulta exclusivamente mediante **Ver acceso** y autorización backend.

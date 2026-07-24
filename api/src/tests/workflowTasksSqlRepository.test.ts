@@ -28,7 +28,7 @@ describe("Workflow tasks SQL mapping", () => {
     });
   });
 
-  it("counts consolidated logical target/date identities instead of physical Cosmos aliases", () => {
+  it("counts consolidated logical target/date identities instead of physical aliases", () => {
     const task = { targetType: "database", targetId: "db-1", taskDate: "2026-07-21" } as UpdateTask;
     expect(normalizedLogicalTaskCount([
       { ...task, id: "task-1" },
