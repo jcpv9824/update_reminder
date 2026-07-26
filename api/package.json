@@ -35,7 +35,7 @@
     "jsonwebtoken": "^9.0.2",
     "mssql": "12.7.0",
     "nodemailer": "^9.0.3",
-    "zod": "^3.23.8"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
