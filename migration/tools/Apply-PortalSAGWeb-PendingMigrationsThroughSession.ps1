@@ -62,7 +62,8 @@ $migrations=@(
   @{version='022';name='022_refresh_print_source_assignments.sql'},
   @{version='023';name='023_enable_masters_report_outbox.sql'},
   @{version='024';name='024_s3_object_storage.sql'},
-  @{version='025';name='025_separate_public_downloads_and_inline_files.sql'}
+  @{version='025';name='025_separate_public_downloads_and_inline_files.sql'},
+  @{version='026';name='026_guide_builder.sql'}
 )
 
 foreach($migration in $migrations){
@@ -111,7 +112,7 @@ COMMIT TRANSACTION;
 
 $verificationSql=@'
 SELECT
-  (SELECT COUNT(*) FROM migration.schema_migrations WHERE migration_version IN ('017','018','019','020','021','022','023','024','025') AND succeeded=1) AS applied_count,
+  (SELECT COUNT(*) FROM migration.schema_migrations WHERE migration_version IN ('017','018','019','020','021','022','023','024','025','026') AND succeeded=1) AS applied_count,
   (SELECT COUNT_BIG(*) FROM core.domains WHERE RIGHT(domain_name_normalized,1)=N'/') AS trailing_domain_identities,
   COL_LENGTH(N'licensing.license_modules',N'description') AS license_description_bytes,
   (SELECT COUNT(*) FROM sys.check_constraints
@@ -140,18 +141,25 @@ SELECT
   COLUMNPROPERTY(OBJECT_ID(N'content.public_download_documents'),N'section_key',N'AllowsNull')
     AS downloads_section_optional,
   (SELECT COUNT(*) FROM security.permissions
-    WHERE option_key=N'public_files' AND active=1) AS public_files_permission_count;
+    WHERE option_key=N'public_files' AND active=1) AS public_files_permission_count,
+  (SELECT COUNT(*) FROM sys.tables
+    WHERE schema_id=SCHEMA_ID(N'content') AND name LIKE N'guide[_]%') AS guide_table_count,
+  (SELECT COUNT(*) FROM security.permissions
+    WHERE module_key=N'help' AND option_key=N'guide_builder' AND active=1) AS guide_permission_count,
+  (SELECT COUNT(*) FROM security.role_permissions
+    WHERE role_id=N'super_admin' AND permission_key LIKE N'help.guide_builder.%') AS guide_super_admin_permission_count;
 '@
 $verification=Invoke-SessionSql -Sql $verificationSql -Mode read -TimeoutSeconds 120 -MaxRows 10
 $row=$verification.resultSets[0].rows[0]
-if($row.applied_count -ne 9 -or $row.trailing_domain_identities -ne 0 -or
+if($row.applied_count -ne 10 -or $row.trailing_domain_identities -ne 0 -or
    $row.license_description_bytes -ne 4000 -or $row.outbox_constraint_ready -ne 1 -or
    $row.untrusted_or_disabled_fks -ne 0 -or $row.untrusted_or_disabled_checks -ne 0 -or
    $row.attempt_completion_trigger_ready -ne 1 -or $row.per_run_blob_index_ready -ne 1 -or
    $row.atomic_refresh_ready -ne 1 -or $row.refresh_print_sources_ready -ne 1 -or
    $row.public_files_ready -ne 1 -or $row.downloads_section_optional -ne 1 -or
-   $row.public_files_permission_count -ne 5){
+   $row.public_files_permission_count -ne 5 -or $row.guide_table_count -ne 8 -or
+   $row.guide_permission_count -ne 8 -or $row.guide_super_admin_permission_count -ne 8){
   throw 'Pending-migration post-verification failed.'
 }
 
-Write-Host "$expectedDatabase migrations 017-025 are applied and verified." -ForegroundColor Green
+Write-Host "$expectedDatabase migrations 017-026 are applied and verified." -ForegroundColor Green

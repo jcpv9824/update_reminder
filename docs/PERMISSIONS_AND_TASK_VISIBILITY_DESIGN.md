@@ -59,6 +59,7 @@ visibility.audit.view
 | Configuración | Formatos de Impresión | `configuration.print_formats` |
 | Auditoría y Visibilidad | Auditoría | `visibility.audit` |
 | Auditoría y Visibilidad | Tablero | `visibility.dashboard` |
+| Ayudas SAG Web | Constructor de guías | `help.guide_builder` |
 
 ## Option Action Schemas
 
@@ -213,6 +214,25 @@ Archivos Públicos usa endpoints separados con disposición `inline`. Solo admit
 
 - `view`
 
+### Ayudas SAG Web
+
+`help.guide_builder`
+
+- `view`
+- `create`
+- `download_transcript`
+- `regenerate`
+- `finalize`
+- `download_manual`
+- `cancel`
+- `view_all`
+
+An ordinary user can act only on sessions they created. `view_all` adds
+cross-owner visibility but does not imply mutation actions. `super_admin`
+remains universal. Guide sessions do not participate in update-task visibility.
+Every session, artifact, answer, finalization, cancellation, and download
+endpoint must enforce both its action permission and object ownership.
+
 ## Task Visibility Contract
 
 Task visibility is not an access permission. It is a role parameter.
@@ -339,6 +359,9 @@ Use two phases.
 - Enforce granular `updates.schedules.*` permissions in scheduled-update endpoints and manual task generation.
 - Enforce granular `clients.clients.*`, `clients.domains.*`, and `clients.databases.*` permissions in client/domain/database endpoints, while preserving task-bound database credential access through `updates.tasks.*` permissions.
 - Enforce granular `clients.licensing.*` permissions in license module and license assignment endpoints.
+- Enforce granular `help.guide_builder.*` permissions and owner/`view_all`
+  object scope in guide-builder session, artifact, answer, finalization, and
+  cancellation endpoints.
 - Enforce `configuration.alerts.test_administrative_reminder` for administrative reminder test sends.
 - Resolve task "assigned to me" filtering through role-definition assignment helpers, including migrated legacy role IDs.
 - Store new setup-created administrators as `super_admin`, normalize setup-touched legacy `admin` roles, and use `super_admin` as the canonical alert-recipient role while resolving existing `admin` users through recipient aliases.

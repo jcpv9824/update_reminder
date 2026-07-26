@@ -13,6 +13,9 @@ import {
   generateBlobSASQueryParameters,
   type UserDelegationKey,
 } from "@azure/storage-blob";
+import { createWriteStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
 import sql from "mssql";
 import { runSqlTransaction } from "./sqlTransaction";
 
@@ -34,6 +37,20 @@ export type PrivateObjectLocator =
 
 export type StoredPrivateObject = PrivateObjectLocator & {
   storageSha256: string;
+};
+
+export type PrivateObjectUpload = {
+  locator: PrivateObjectLocator;
+  url: string;
+  method: "PUT";
+  headers: Record<string, string>;
+  expiresAt: string;
+};
+
+export type PrivateObjectStat = {
+  byteCount: number;
+  mimeType: string | null;
+  etag?: string;
 };
 
 type SharedConfig = {
@@ -275,6 +292,91 @@ export function getObjectStorageProvider(): ObjectStorageProvider | null {
   return readWriteProvider();
 }
 
+function validateGuideUploadInput(input: {
+  objectId: string;
+  extension: string;
+  mimeType: string;
+  sizeBytes: number;
+}): void {
+  if (!/^[a-zA-Z0-9_-]{8,150}$/.test(input.objectId)) {
+    throw Object.assign(new Error("El identificador de carga no es válido."), { status: 400 });
+  }
+  if (!/^\.[a-z0-9]{2,8}$/.test(input.extension)) {
+    throw Object.assign(new Error("La extensión de carga no es válida."), { status: 400 });
+  }
+  if (!/^[a-z0-9][a-z0-9.+-]+\/[a-z0-9][a-z0-9.+-]+$/i.test(input.mimeType)) {
+    throw Object.assign(new Error("El tipo de contenido de carga no es válido."), { status: 400 });
+  }
+  if (!Number.isSafeInteger(input.sizeBytes) || input.sizeBytes <= 0) {
+    throw Object.assign(new Error("El tamaño declarado de carga no es válido."), { status: 400 });
+  }
+}
+
+export async function createPrivateObjectUpload(input: {
+  objectId: string;
+  extension: string;
+  mimeType: string;
+  sizeBytes: number;
+}): Promise<PrivateObjectUpload> {
+  validateGuideUploadInput(input);
+  const config = getWriteConfig();
+  if (!config) {
+    throw Object.assign(new Error("El almacenamiento privado de archivos aún no está configurado."), { status: 503 });
+  }
+  const objectName = `${config.prefix}/guides/uploads/${input.objectId}${input.extension}`;
+  const expiresAt = new Date(Date.now() + config.signedUrlSeconds * 1000);
+  if (config.provider === "s3") {
+    const command = new PutObjectCommand({
+      Bucket: config.bucket,
+      Key: objectName,
+      ContentType: input.mimeType,
+      ContentLength: input.sizeBytes,
+      Metadata: { "declared-size": String(input.sizeBytes) },
+    });
+    return {
+      locator: {
+        storageProvider: "s3",
+        storageBucket: config.bucket,
+        storageObjectKey: objectName,
+      },
+      url: await getSignedUrl(getS3Client(config), command, { expiresIn: config.signedUrlSeconds }),
+      method: "PUT",
+      headers: {
+        "Content-Type": input.mimeType,
+        "x-amz-meta-declared-size": String(input.sizeBytes),
+      },
+      expiresAt: expiresAt.toISOString(),
+    };
+  }
+
+  const sas = generateBlobSASQueryParameters({
+    containerName: config.containerName,
+    blobName: objectName,
+    permissions: BlobSASPermissions.parse("cw"),
+    startsOn: new Date(Date.now() - 60_000),
+    expiresOn: expiresAt,
+  }, await getDelegationKey(config), config.accountName).toString();
+  const blobUrl = getAzureService(config)
+    .getContainerClient(config.containerName)
+    .getBlockBlobClient(objectName)
+    .url;
+  return {
+    locator: {
+      storageProvider: "azure_blob",
+      storageContainer: config.containerName,
+      storageBlobName: objectName,
+    },
+    url: `${blobUrl}?${sas}`,
+    method: "PUT",
+    headers: {
+      "Content-Type": input.mimeType,
+      "x-ms-blob-type": "BlockBlob",
+      "x-ms-meta-declared-size": String(input.sizeBytes),
+    },
+    expiresAt: expiresAt.toISOString(),
+  };
+}
+
 async function storeS3Object(
   config: S3Config,
   input: { bytes: Buffer; sha256: string; extension: string; mimeType: string },
@@ -360,6 +462,64 @@ export async function storePrivateObject(input: {
   return config.provider === "s3"
     ? storeS3Object(config, input)
     : storeAzureBlob(config, input);
+}
+
+export async function statPrivateObject(input: PrivateObjectLocator): Promise<PrivateObjectStat> {
+  if (input.storageProvider === "s3") {
+    const config = readS3Config(true)!;
+    if (config.bucket !== input.storageBucket) {
+      throw new Error("La ubicación privada del objeto no coincide con la configuración S3/MinIO activa.");
+    }
+    const properties = await getS3Client(config).send(new HeadObjectCommand({
+      Bucket: input.storageBucket,
+      Key: input.storageObjectKey,
+    }));
+    return {
+      byteCount: Number(properties.ContentLength ?? -1),
+      mimeType: properties.ContentType ?? null,
+      etag: properties.ETag?.replace(/^"|"$/g, ""),
+    };
+  }
+  const config = readAzureBlobConfig(true)!;
+  if (config.containerName !== input.storageContainer) {
+    throw new Error("La ubicación privada del blob no coincide con la configuración Azure activa.");
+  }
+  const properties = await getAzureService(config)
+    .getContainerClient(input.storageContainer)
+    .getBlobClient(input.storageBlobName)
+    .getProperties();
+  return {
+    byteCount: Number(properties.contentLength ?? -1),
+    mimeType: properties.contentType ?? null,
+    etag: properties.etag,
+  };
+}
+
+export async function downloadPrivateObjectToFile(
+  input: PrivateObjectLocator,
+  destinationPath: string,
+  maximumBytes: number,
+): Promise<PrivateObjectStat> {
+  const properties = await statPrivateObject(input);
+  if (properties.byteCount < 0 || properties.byteCount > maximumBytes) {
+    throw Object.assign(new Error("El objeto privado supera el límite permitido."), { status: 413 });
+  }
+  if (input.storageProvider === "s3") {
+    const config = readS3Config(true)!;
+    const response = await getS3Client(config).send(new GetObjectCommand({
+      Bucket: input.storageBucket,
+      Key: input.storageObjectKey,
+    }));
+    if (!response.Body) throw new Error("El objeto privado no tiene contenido.");
+    await pipeline(Readable.from(response.Body as AsyncIterable<Uint8Array>), createWriteStream(destinationPath, { flags: "wx" }));
+    return properties;
+  }
+  const config = readAzureBlobConfig(true)!;
+  await getAzureService(config)
+    .getContainerClient(input.storageContainer)
+    .getBlobClient(input.storageBlobName)
+    .downloadToFile(destinationPath);
+  return properties;
 }
 
 async function hasSqlReference(input: PrivateObjectLocator, transaction: sql.Transaction): Promise<boolean> {

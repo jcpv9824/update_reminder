@@ -310,3 +310,21 @@ export function canDeletePrintFormat(user: CurrentUser, roleDefinitions: RoleDef
 export function canReplacePrintFormatPdf(user: CurrentUser, roleDefinitions: RoleDefinition[]): boolean {
   return hasPermissionWithRoleDefinitions(user, "configuration.print_formats.replace_pdf", roleDefinitions);
 }
+
+export type GuideBuilderAction =
+  | "view"
+  | "create"
+  | "download_transcript"
+  | "regenerate"
+  | "finalize"
+  | "download_manual"
+  | "cancel"
+  | "view_all";
+
+export function canUseGuideBuilder(
+  user: CurrentUser,
+  action: GuideBuilderAction,
+  roleDefinitions: RoleDefinition[],
+): boolean {
+  return hasPermissionWithRoleDefinitions(user, `help.guide_builder.${action}`, roleDefinitions);
+}

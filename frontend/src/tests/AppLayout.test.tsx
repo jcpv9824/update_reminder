@@ -77,6 +77,16 @@ describe("AppLayout", () => {
     expect(screen.queryByRole("link", { name: "Dashboard" })).toBeNull();
   });
 
+  it("ubica Ayudas SAG Web después de Auditoría y Visibilidad", () => {
+    renderLayout();
+    const moduleButtons = screen.getAllByRole("button", { name: /Expandir / });
+    const auditIndex = moduleButtons.findIndex((button) => button.getAttribute("aria-label") === "Expandir Auditoría y Visibilidad");
+    const helpIndex = moduleButtons.findIndex((button) => button.getAttribute("aria-label") === "Expandir Ayudas SAG Web");
+    expect(helpIndex).toBe(auditIndex + 1);
+    expandModule("Ayudas SAG Web");
+    expect(screen.getByRole("link", { name: "Constructor de guías" })).toHaveAttribute("href", "/ayudas/constructor-guias");
+  });
+
   it("ubica Descargas Públicas y Archivos Públicos como opciones separadas de Implementación", () => {
     renderLayout();
     expect(screen.getByText("Implementación")).toBeInTheDocument();
@@ -120,5 +130,13 @@ describe("AppLayout", () => {
     expandModule("Actualizaciones");
     expect(screen.getByRole("link", { name: "Tareas" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Dominios" })).toBeNull();
+    expect(screen.queryByText("Ayudas SAG Web")).toBeNull();
+  });
+
+  it("encuentra Constructor de guías mediante la búsqueda", () => {
+    renderLayout();
+    fireEvent.change(screen.getByPlaceholderText("Buscar Opción"), { target: { value: "constructor de guias" } });
+    expect(screen.getByRole("link", { name: "Constructor de guías" })).toBeInTheDocument();
+    expect(screen.queryByText("Actualizaciones")).toBeNull();
   });
 });

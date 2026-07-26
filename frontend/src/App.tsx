@@ -21,8 +21,10 @@ import FormatosImpresionAdminPage from "./pages/FormatosImpresionAdminPage";
 import FormatosImpresionPublicPage from "./pages/FormatosImpresionPublicPage";
 import DescargasPublicasAdminPage from "./pages/DescargasPublicasAdminPage";
 import ArchivosPublicosAdminPage from "./pages/ArchivosPublicosAdminPage";
+import ConstructorGuiasPage from "./pages/ConstructorGuiasPage";
 import { DEFAULT_ROLE_DEFINITIONS, type RoleDefinition } from "./permissionModel";
 import { hasPermissionForRoleIds } from "./permissionAccess";
+import { GUIDE_BUILDER_UI_ENABLED } from "./featureFlags";
 
 function Protegido({ permiso, permisos, element }: { permiso?: string; permisos?: string[]; element: JSX.Element }) {
   const auth = useAuth();
@@ -70,6 +72,9 @@ function Enrutador() {
           <Route path="auditoria" element={<Protegido permiso="visibility.audit.view" element={<AuditoriaPage />} />} />
           <Route path="usuarios" element={<Protegido permisos={["configuration.users.view", "configuration.roles.view"]} element={<UsuariosPage />} />} />
           <Route path="tablero" element={<Protegido permiso="visibility.dashboard.view" element={<DashboardPage />} />} />
+          {GUIDE_BUILDER_UI_ENABLED ? (
+            <Route path="ayudas/constructor-guias" element={<Protegido permiso="help.guide_builder.view" element={<ConstructorGuiasPage />} />} />
+          ) : null}
           <Route path="*" element={<Navigate to="/tareas" replace />} />
         </Route>
       )}

@@ -62,6 +62,9 @@ OBJECT_STORAGE_ACCESS_KEY_ID=@Microsoft.KeyVault(SecretUri=<secreto-access-key>)
 OBJECT_STORAGE_SECRET_ACCESS_KEY=@Microsoft.KeyVault(SecretUri=<secreto-secret-key>)
 APP_TIMEZONE=America/Bogota
 DEV_AUTH_ENABLED=false
+GUIDE_BUILDER_ENABLED=false
+GUIDE_WORKER_ENABLED=false
+GUIDE_WORKER_PROCESSOR_CERTIFIED=false
 ```
 
 Para usar Azure Blob como destino de nuevas escrituras, conserve las variables S3 si aún existen objetos S3 y cambie:
@@ -73,6 +76,15 @@ AZURE_BLOB_STORAGE_CONTAINER=<container-privado>
 ```
 
 La identidad administrada requiere `Storage Blob Data Contributor` en el container y `Storage Blob Delegator` en la cuenta. El switch no mueve archivos existentes; consulte [docs/OBJECT_STORAGE_PROVIDER_SWITCH.md](docs/OBJECT_STORAGE_PROVIDER_SWITCH.md).
+
+`Constructor de guías` permanece apagado en producción. Su habilitación exige
+primero las puertas de `docs/GUIDE_BUILDER_DESIGN.md`; después se configuran
+`OPENAI_API_KEY` mediante Key Vault, `GUIDE_FFMPEG_PATH`,
+`GUIDE_FFPROBE_PATH`, `GUIDE_TRANSCRIPTION_MODEL=whisper-1`,
+`GUIDE_BUILDER_ENABLED=true`, `GUIDE_WORKER_ENABLED=true`,
+`GUIDE_WORKER_PROCESSOR_CERTIFIED=true` y el build del
+frontend con `VITE_GUIDE_BUILDER_ENABLED=true`. No active solo uno de los tres
+flags.
 
 También son obligatorios `JWT_SECRET`, `RATE_LIMIT_HASH_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`, `AUTH_COOKIE_SECURE=true` y la configuración del proveedor de correo aplicable.
 

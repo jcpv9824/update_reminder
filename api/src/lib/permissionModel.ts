@@ -159,6 +159,22 @@ export const PERMISSION_CATALOG: PermissionModule[] = [
       option("dashboard", "Tablero", "visibility.dashboard", [ACTIONS.view]),
     ],
   },
+  {
+    id: "help",
+    label: "Ayudas SAG Web",
+    options: [
+      option("guide_builder", "Constructor de guías", "help.guide_builder", [
+        ACTIONS.view,
+        ACTIONS.create,
+        { id: "download_transcript", label: "Descargar transcripción" },
+        { id: "regenerate", label: "Regenerar borrador" },
+        { id: "finalize", label: "Finalizar guía" },
+        { id: "download_manual", label: "Descargar manual" },
+        { id: "cancel", label: "Cancelar" },
+        { id: "view_all", label: "Ver todas las sesiones" },
+      ]),
+    ],
+  },
 ];
 
 export function permissionKey(option: Pick<PermissionOption, "permissionPrefix">, actionId: string): string {

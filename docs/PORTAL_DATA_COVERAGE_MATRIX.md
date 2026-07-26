@@ -1,6 +1,6 @@
 # Matriz de cobertura de datos de Portal SAG Web
 
-Revisión: **2026-07-22**
+Revisión: **2026-07-26**
 Propósito: demostrar que cada opción, ruta y proceso del portal tiene persistencia definida en el modelo SQL objetivo.
 
 ## 1. Cobertura de opciones visibles actuales
@@ -20,6 +20,7 @@ Propósito: demostrar que cada opción, ruta y proceso del portal tiene persiste
 | Configuración / Formatos de Impresión | `/admin/formatos-impresion` | `configuration.print_formats.view` | `fuentesFormatos`, `formatosImpresion` + Base64 | `content.print_format_*`, `content.files` + objeto privado | Cubierto |
 | Auditoría y Visibilidad / Auditoría | `/auditoria` | `visibility.audit.view` | `auditLogs` | `audit.audit_logs` | Cubierto |
 | Auditoría y Visibilidad / Tablero | `/tablero` | `visibility.dashboard.view` | agregaciones de maestros/schedules | índices y vistas sobre core/scheduling/workflow | Cubierto |
+| Ayudas SAG Web / Constructor de guías | `/ayudas/constructor-guias` | `help.guide_builder.view` + acción/propiedad | módulo nuevo sin origen Cosmos | `content.guide_*`, `content.files` + objeto privado | Preparado en migración 026; worker deshabilitado |
 | Público / Formatos de Impresión | `/formatos-impresion` | público | fuentes/formatos activos | vistas/queries de `content` sin metadata privada | Cubierto |
 | Público / Descargas | `/public/downloads/{slug}` y aliases legacy | público | archivos activos document/video | metadata SQL + objeto privado; `attachment` obligatorio | Cubierto |
 | Público / Archivos | `/public/files/{slug}` | público | imágenes/PDF/videos activos | `content.v_public_files` + objeto privado; `inline` | Preparado en migración 025 |
@@ -51,6 +52,7 @@ Propósito: demostrar que cada opción, ruta y proceso del portal tiene persiste
 | Descargas y archivos públicos | Agregados separados, archivos/versiones y storage privado | SQL guarda metadata/hash; `attachment` e `inline` nunca comparten endpoint. |
 | Formatos de impresión | Fuentes, formatos, relación N:M, PDF/versiones y objeto privado | Cambio de fuente primaria compatible con trigger; compensación provider-aware de objeto no referenciado. |
 | Cascadas core | Cliente, dominio y base, schedules, tareas y licencias dependientes | Soft-delete y cancelación de tareas de dominio/base en una sola transacción auditable. |
+| Constructor de guías | Sesiones, evidencia, preguntas/respuestas, borradores versionados, trabajos/leases/intentos y uso AI | Upload directo firmado y verificado; cola SQL durable; ninguna transacción abarca storage, ffmpeg u OpenAI. |
 
 La implementación está local y no cambia por sí sola la fuente productiva. La migración `019` debe aplicarse antes del ensayo porque amplía el constraint del outbox para `task_status_notification` y `test_email`.
 

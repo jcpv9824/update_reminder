@@ -69,6 +69,22 @@ describe("permission model", () => {
     expect(configurationKeys).not.toContain("configuration.dashboard.view");
   });
 
+  it("exposes the exact guide-builder action contract", () => {
+    const help = PERMISSION_CATALOG.find((module) => module.id === "help")!;
+    const guideBuilder = help.options.find((option) => option.id === "guide_builder")!;
+
+    expect(optionPermissionKeys(guideBuilder)).toEqual([
+      "help.guide_builder.view",
+      "help.guide_builder.create",
+      "help.guide_builder.download_transcript",
+      "help.guide_builder.regenerate",
+      "help.guide_builder.finalize",
+      "help.guide_builder.download_manual",
+      "help.guide_builder.cancel",
+      "help.guide_builder.view_all",
+    ]);
+  });
+
   it("super admin has every catalog permission and all task visibility", () => {
     const superAdmin = DEFAULT_ROLE_DEFINITIONS.find((role) => role.id === "super_admin")!;
 

@@ -2,7 +2,7 @@
 
 ## Product Direction
 
-Portal SAG Web is a multi-module operations portal for managing SAG Web customer work. Treat it as an operational workspace for clients, updates, implementations, configuration, audit, and visibility. Do not frame new product decisions as if the app were only an update scheduler.
+Portal SAG Web is a multi-module operations portal for managing SAG Web customer work. Treat it as an operational workspace for clients, updates, implementations, configuration, audit, visibility, and guided operational knowledge. Do not frame new product decisions as if the app were only an update scheduler.
 
 For engineering execution, follow `docs/ENGINEERING_SKILLS_AND_TESTING.md` before coding. In particular, choose the relevant tests before implementation and rerun the focused suite after the change.
 
@@ -23,6 +23,7 @@ Module order:
 3. Implementación
 4. Configuración
 5. Auditoría y Visibilidad
+6. Ayudas SAG Web
 
 Current module contents:
 
@@ -33,6 +34,7 @@ Current module contents:
 | Implementación | Descargas Públicas, Archivos Públicos |
 | Configuración | Alertas y Correos, Usuarios y Roles, Formatos de Impresión |
 | Auditoría y Visibilidad | Auditoría, Tablero |
+| Ayudas SAG Web | Constructor de guías |
 
 ## Navigation Rules
 

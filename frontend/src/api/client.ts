@@ -34,11 +34,16 @@ function devHeaders(): Record<string, string> {
   }
 }
 
-async function execute(method: string, path: string, body?: unknown): Promise<Response> {
+export type ApiRequestOptions = {
+  headers?: Record<string, string>;
+};
+
+async function execute(method: string, path: string, body?: unknown, options: ApiRequestOptions = {}): Promise<Response> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "X-Requested-With": "XMLHttpRequest",
     ...devHeaders(),
+    ...options.headers,
   };
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
   return fetch(`${API_BASE_URL}${path}`, {
@@ -47,6 +52,26 @@ async function execute(method: string, path: string, body?: unknown): Promise<Re
     body: body !== undefined ? JSON.stringify(body) : undefined,
     credentials: "include",
   });
+}
+
+function canRefreshRequest(status: number, path: string): boolean {
+  return status === 401
+    && path !== "/auth/login"
+    && path !== "/auth/refresh"
+    && path !== "/auth/forgot-password"
+    && path !== "/auth/reset-password";
+}
+
+async function responseError(response: Response): Promise<Error & { status?: number }> {
+  let message = `Error ${response.status}`;
+  try {
+    const data = await response.clone().json();
+    message = data.error ?? message;
+  } catch {/* respuesta no JSON */}
+  if (response.status === 401) setToken(null);
+  const error = new Error(message) as Error & { status?: number };
+  error.status = response.status;
+  return error;
 }
 
 export async function restoreSession(force = false): Promise<boolean> {
@@ -76,40 +101,90 @@ export async function restoreSession(force = false): Promise<boolean> {
   return refreshInFlight;
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  let response = await execute(method, path, body);
-  const canRefresh = response.status === 401
-    && path !== "/auth/login"
-    && path !== "/auth/refresh"
-    && path !== "/auth/forgot-password"
-    && path !== "/auth/reset-password";
-  if (canRefresh && await restoreSession(true)) {
-    response = await execute(method, path, body);
+async function authenticatedResponse(method: string, path: string, body?: unknown, options: ApiRequestOptions = {}): Promise<Response> {
+  let response = await execute(method, path, body, options);
+  if (canRefreshRequest(response.status, path) && await restoreSession(true)) {
+    response = await execute(method, path, body, options);
   }
-
   if (!response.ok) {
-    let message = `Error ${response.status}`;
-    try {
-      const data = await response.json();
-      message = data.error ?? message;
-    } catch {/* respuesta no JSON */}
-    if (response.status === 401) setToken(null);
-    const error = new Error(message) as Error & { status?: number };
-    error.status = response.status;
-    throw error;
+    throw await responseError(response);
   }
+  return response;
+}
+
+async function request<T>(method: string, path: string, body?: unknown, options: ApiRequestOptions = {}): Promise<T> {
+  const response = await authenticatedResponse(method, path, body, options);
   if (response.status === 204) return undefined as T;
   const text = await response.text();
   return text ? (JSON.parse(text) as T) : (undefined as T);
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>("GET", path),
-  post: <T>(path: string, body?: unknown) => request<T>("POST", path, body),
-  put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body),
-  del: <T>(path: string) => request<T>("DELETE", path),
+  get: <T>(path: string, options?: ApiRequestOptions) => request<T>("GET", path, undefined, options),
+  post: <T>(path: string, body?: unknown, options?: ApiRequestOptions) => request<T>("POST", path, body, options),
+  put: <T>(path: string, body?: unknown, options?: ApiRequestOptions) => request<T>("PUT", path, body, options),
+  del: <T>(path: string, options?: ApiRequestOptions) => request<T>("DELETE", path, undefined, options),
+  getText: async (path: string, options?: ApiRequestOptions) => (await authenticatedResponse("GET", path, undefined, options)).text(),
+  getBlob: async (path: string, options?: ApiRequestOptions) => (await authenticatedResponse("GET", path, undefined, options)).blob(),
 };
 
 export function apiUrl(path: string): string {
   return `${API_BASE_URL}${path}`;
+}
+
+export type SignedUploadRequest = {
+  url: string;
+  method: "PUT";
+  headers?: Record<string, string>;
+  file: File;
+  onProgress?: (percent: number) => void;
+  signal?: AbortSignal;
+};
+
+export function uploadToSignedUrl({
+  url,
+  method,
+  headers = {},
+  file,
+  onProgress,
+  signal,
+}: SignedUploadRequest): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let settled = false;
+
+    function finish(callback: () => void) {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", abort);
+      callback();
+    }
+    function abort() {
+      xhr.abort();
+      finish(() => reject(new DOMException("La carga fue cancelada.", "AbortError")));
+    }
+
+    xhr.open(method, url);
+    Object.entries(headers).forEach(([name, value]) => xhr.setRequestHeader(name, value));
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || event.total <= 0) return;
+      onProgress?.(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        finish(resolve);
+      } else {
+        finish(() => reject(new Error("No se pudo cargar el video al almacenamiento.")));
+      }
+    };
+    xhr.onerror = () => finish(() => reject(new Error("No se pudo cargar el video al almacenamiento.")));
+    xhr.onabort = () => finish(() => reject(new DOMException("La carga fue cancelada.", "AbortError")));
+
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
+    signal?.addEventListener("abort", abort, { once: true });
+    xhr.send(file);
+  });
 }

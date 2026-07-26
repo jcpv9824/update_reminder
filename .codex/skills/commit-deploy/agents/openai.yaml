@@ -1,0 +1,6 @@
+interface:
+  display_name: "Portal Commit and Deploy"
+  short_description: "Commit and deploy Portal SAG changes safely"
+  default_prompt: "Use $commit-deploy to prepare, publish, deploy, and verify this Portal SAG change."
+policy:
+  allow_implicit_invocation: true

@@ -72,6 +72,7 @@ import {
   canResetUserPassword,
   canResendUserCredentials,
   canUpdateUser,
+  canUseGuideBuilder,
 } from "../lib/managementAccess";
 import type { RoleDefinition } from "../lib/permissionModel";
 import type { CurrentUser } from "../types/models";
@@ -327,5 +328,20 @@ describe("management access", () => {
     expect(canEditPrintFormat(current, roles)).toBe(true);
     expect(canDeletePrintFormat(current, roles)).toBe(true);
     expect(canReplacePrintFormatPdf(current, roles)).toBe(true);
+  });
+
+  it("keeps guide-builder actions independent", () => {
+    const roles = [role("guide_author", [
+      "help.guide_builder.view",
+      "help.guide_builder.create",
+      "help.guide_builder.regenerate",
+    ])];
+    const current = user(["guide_author"]);
+
+    expect(canUseGuideBuilder(current, "view", roles)).toBe(true);
+    expect(canUseGuideBuilder(current, "create", roles)).toBe(true);
+    expect(canUseGuideBuilder(current, "regenerate", roles)).toBe(true);
+    expect(canUseGuideBuilder(current, "finalize", roles)).toBe(false);
+    expect(canUseGuideBuilder(current, "view_all", roles)).toBe(false);
   });
 });

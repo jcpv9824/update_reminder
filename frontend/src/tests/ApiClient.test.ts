@@ -64,4 +64,68 @@ describe("cliente API con sesión segura", () => {
     expect(client.getToken()).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("envía encabezados tipados de idempotencia y concurrencia", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = await import("../api/client");
+
+    await client.api.post("/guide-sessions/guide_1/finalize", { draftVersion: 3 }, {
+      headers: {
+        "Idempotency-Key": "guide-finalize-1",
+        "If-Match": "\"AQIDBAUGBwg=\"",
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/guide-sessions/guide_1/finalize", expect.objectContaining({
+      headers: expect.objectContaining({
+        "Idempotency-Key": "guide-finalize-1",
+        "If-Match": "\"AQIDBAUGBwg=\"",
+      }),
+    }));
+  });
+
+  it("carga a una URL firmada y reporta progreso sin enviar credenciales del portal", async () => {
+    const progress = vi.fn();
+    const state: {
+      method?: string;
+      url?: string;
+      headers: Record<string, string>;
+      body?: File;
+    } = { headers: {} };
+    class FakeXhr {
+      status = 201;
+      upload: { onprogress?: (event: ProgressEvent) => void } = {};
+      onload?: () => void;
+      onerror?: () => void;
+      onabort?: () => void;
+      open(method: string, url: string) { state.method = method; state.url = url; }
+      setRequestHeader(name: string, value: string) { state.headers[name] = value; }
+      send(body: File) {
+        state.body = body;
+        this.upload.onprogress?.({ lengthComputable: true, loaded: 5, total: 10 } as ProgressEvent);
+        this.onload?.();
+      }
+      abort() { this.onabort?.(); }
+    }
+    vi.stubGlobal("XMLHttpRequest", FakeXhr);
+    const client = await import("../api/client");
+    const file = new File(["video"], "video.mp4", { type: "video/mp4" });
+
+    await client.uploadToSignedUrl({
+      url: "https://storage.example/write",
+      method: "PUT",
+      headers: { "x-storage-token": "opaque" },
+      file,
+      onProgress: progress,
+    });
+
+    expect(state).toEqual(expect.objectContaining({
+      method: "PUT",
+      url: "https://storage.example/write",
+      headers: { "x-storage-token": "opaque" },
+      body: file,
+    }));
+    expect(progress).toHaveBeenCalledWith(50);
+  });
 });

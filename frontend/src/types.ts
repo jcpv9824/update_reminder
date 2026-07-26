@@ -317,6 +317,105 @@ export type RegistroAuditoria = {
   metadata?: Record<string, unknown>;
 };
 
+export type GuideSessionStatus =
+  | "upload_pending"
+  | "queued"
+  | "processing"
+  | "review"
+  | "finalizing"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "deleted";
+
+export type GuideProcessingStage =
+  | "ingest"
+  | "transcription"
+  | "frame_extraction"
+  | "vision"
+  | "draft"
+  | "questions"
+  | "reprocess"
+  | "finalize"
+  | "completed";
+
+export type GuideQuestion = {
+  id: string;
+  text: string;
+  required: boolean;
+  answered: boolean;
+};
+
+export type GuideFrame = {
+  id: string;
+  timestampMs: number;
+  caption: string;
+};
+
+export type GuideValidationCheck = {
+  id: string;
+  label: string;
+  passed: boolean;
+};
+
+export type GuideSession = {
+  id: string;
+  etag: string;
+  status: GuideSessionStatus;
+  stage: GuideProcessingStage;
+  sourceFile: {
+    name: string;
+    mimeType: string;
+    sizeBytes: number;
+  };
+  processing: {
+    progressPercent: number | null;
+    message: string;
+  } | null;
+  transcript: {
+    available: boolean;
+    segmentCount: number;
+  };
+  frames: GuideFrame[];
+  draft: {
+    available: boolean;
+    version: number;
+    pendingVerificationCount: number;
+  };
+  questions: GuideQuestion[];
+  answerRoundCount: number;
+  canFinalize: boolean;
+  validation: {
+    complete: boolean;
+    checks: GuideValidationCheck[];
+  } | null;
+  failure: {
+    code: string;
+    message: string;
+    retryable: boolean;
+  } | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type GuideUploadInitResponse = {
+  session: GuideSession;
+  upload: {
+    url: string;
+    method: "PUT";
+    headers: Record<string, string>;
+    expiresAt: string;
+  };
+};
+
+export type RegenerateGuideRequest = {
+  answers: Array<{ questionId: string; answer: string }>;
+};
+
+export type FinalizeGuideRequest = {
+  draftVersion: number;
+};
+
 export const ETIQUETAS_ROLES: Record<string, string> = {
   super_admin: "Super Administrador",
   admin: "Administrador",

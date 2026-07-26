@@ -2,8 +2,10 @@ import { useMemo, useState } from "react";
 import {
   BellRing,
   BookOpenCheck,
+  BookOpenText,
   BriefcaseBusiness,
   CalendarPlus,
+  CircleHelp,
   ClipboardList,
   Database,
   DownloadCloud,
@@ -30,6 +32,7 @@ import { useAuth } from "../auth/AuthContext";
 import { ETIQUETAS_ROLES } from "../types";
 import { DEFAULT_ROLE_DEFINITIONS, type RoleDefinition } from "../permissionModel";
 import { hasPermissionForRoleIds } from "../permissionAccess";
+import { GUIDE_BUILDER_UI_ENABLED } from "../featureFlags";
 
 type ElementoMenu = {
   ruta: string;
@@ -89,6 +92,13 @@ const MODULOS: ModuloMenu[] = [
       { ruta: "/tablero", etiqueta: "Tablero", permiso: "visibility.dashboard.view", Icono: Gauge },
     ],
   },
+  ...(GUIDE_BUILDER_UI_ENABLED ? [{
+    etiqueta: "Ayudas SAG Web",
+    Icono: CircleHelp,
+    elementos: [
+      { ruta: "/ayudas/constructor-guias", etiqueta: "Constructor de guías", permiso: "help.guide_builder.view", Icono: BookOpenText },
+    ],
+  }] : []),
 ];
 
 function normalizarBusqueda(texto: string) {
