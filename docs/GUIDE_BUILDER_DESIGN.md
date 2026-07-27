@@ -15,6 +15,9 @@ The API requires `GUIDE_BUILDER_ENABLED=true`, the worker additionally requires
 both `GUIDE_WORKER_ENABLED=true` and the deployment-controlled
 `GUIDE_WORKER_PROCESSOR_CERTIFIED=true`, and the production frontend includes
 the navigation/route only when `VITE_GUIDE_BUILDER_ENABLED=true`.
+The Azure Function App never runs Guide Builder jobs: its worker flags remain
+false. Processing is owned exclusively by the certified scheduled Container
+Apps Job.
 
 ## Product contract
 
@@ -48,8 +51,10 @@ All routes require authentication and the appropriate
    draft bodies are not embedded in session JSON.
 5. Session initialization and upload completion require idempotency keys.
    Regenerate, finalize, and cancel require the current version/ETag and are not
-   automatically retried. A durable request ledger for safe lost-response
-   replay is a production-enablement gate for those three operations.
+   automatically retried by the browser. Migration `026` persists an equivalent
+   per-session replay key for each operation; same-payload lost-response replay
+   returns current state without duplicating answers, jobs, events, or audit.
+   Different requests still require the current ETag.
 
 ## Persisted state
 
@@ -75,6 +80,46 @@ Processing stages are:
 Queue claims use `UPDLOCK`, `READPAST`, and `ROWLOCK`, a finite lease, heartbeat,
 maximum five attempts, and deterministic idempotency. No transaction spans a
 storage, media, or OpenAI call.
+
+Worker writes and completion are fenced by `(guide_job_key, attempt_no,
+claimed_by)` plus an unexpired lease. Heartbeats renew the lease every minute.
+Draft/final artifact registration, questions, AI usage, session transition, and
+status history commit atomically. A retry after a committed checkpoint detects
+the session version and completes the durable job without reapplying outputs.
+
+## Implemented processor checkpoint
+
+The worker now has a bounded CLI entry for a scheduled Azure Container Apps Job
+and an explicitly opt-in continuous mode. Its default execution remains closed
+unless the feature, worker, and processor-certification flags are all true.
+
+- Initial processing verifies the provider ETag, byte count, MIME, file
+  signature, codec, duration, dimensions, and frame rate; creates a streaming
+  source hash; extracts accepted M4A audio; persists timestamped transcription,
+  interval frames, bounded visual readings, an immutable evidence bundle,
+  draft, verification questions, and sanitized AI usage.
+- Reprocessing reuses persisted transcript/frame evidence and human answers. It
+  does not rerun media extraction or transcription.
+- Finalization loads the exact requested draft, uses a bounded structured
+  response, validates the fixed skeleton, safe links/HTML, evidence citations,
+  and unresolved placeholders, then atomically persists the final Markdown.
+- Default hard limits allow at most two active sessions and five creations per
+  owner/day. Visual analysis defaults to six frames (maximum twelve); prompt
+  characters and every model output are capped within code-controlled bounds.
+- Cancellation closes active attempts. The worker host removes uncommitted
+  upload objects from cancelled sessions and clears their pending locators.
+- Temporary directories are always removed. Derived objects created before a
+  failed SQL commit are deleted only when SQL confirms they are unreferenced.
+- A content-addressed writer reserves its locator in SQL before provider I/O;
+  registration consumes that reservation in the same transaction that creates
+  `content.files`. Cleanup cannot delete a locator while a writer owns it.
+- The initial upload authorization is single-issue: an idempotent replay returns
+  session state with `409` and never returns a new signed write URL.
+- Generated Markdown rejects HTML and accepts only fragment-only link
+  destinations. Backslash network paths, remote resources, nested-label image
+  links, and reference definitions pointing outside the document are rejected.
+- Every terminal worker failure and lease-exhaustion transition appends durable
+  status history in the same SQL transaction.
 
 ## Grounding and model contract
 
@@ -141,7 +186,11 @@ Do not expose the route or accept real uploads until all are proven:
 3. private provider CORS and signed-write behavior;
 4. Key Vault OpenAI secret and project spend/data controls;
 5. hard resource/cost limits, metrics, alerts, and runbook;
-6. heartbeat renewal, lease fencing, and durable replay for every mutation;
-7. retention, cancellation, expiry, and orphan cleanup;
+6. live SQL concurrency proof for heartbeat renewal, attempt fencing, and
+   replay under response loss;
+7. an approved retention window and scheduled sweep for expired completed
+   sessions and historical derived artifacts (cancelled pending uploads and
+   ordinary caught-failure orphans are covered; abrupt host-loss reconciliation
+   remains part of this gate);
 8. synthetic staging smoke test and rollback;
 9. explicit production deployment approval.

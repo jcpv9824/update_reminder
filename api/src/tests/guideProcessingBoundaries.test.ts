@@ -12,6 +12,7 @@ import {
   extractGuideFrames,
   probeGuideVideo,
 } from "../lib/guideMedia";
+import { createBoundedGuideResponse } from "../lib/guideStructuredAi";
 
 const originalKey = process.env.OPENAI_API_KEY;
 const originalFfmpeg = process.env.GUIDE_FFMPEG_PATH;
@@ -125,5 +126,48 @@ describe("guide processing provider boundaries", () => {
     expect(media.calls[1]).toEqual(expect.arrayContaining(["-frames:v", "100"]));
     expect(media.calls[2]).toEqual(expect.arrayContaining(["-frames:v", "100"]));
     expect(media.calls.flat()).toContain("select=gt(scene\\,0.30),scale=1280:-2");
+    for (const args of [validProbe.calls[0], invalidProbe.calls[0], ...media.calls]) {
+      expect(args).toEqual(expect.arrayContaining([
+        "-protocol_whitelist",
+        "file,pipe",
+        "-protocol_blacklist",
+        "http,https,tcp,tls,udp,rtp,ftp,sftp",
+      ]));
+    }
+  });
+
+  it("sends one bounded low-detail image without provider storage", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    let requestBody: any;
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        output: [{ content: [{ type: "output_text", text: "{\"caption\":\"Visible\"}" }] }],
+        usage: { input_tokens: 10, output_tokens: 2 },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    const result = await createBoundedGuideResponse<{ caption: string }>({
+      model: "gpt-5.6-sol",
+      system: "Describe only visible evidence.",
+      user: "Frame F:1",
+      images: [{ mimeType: "image/jpeg", bytes: Buffer.from("image") }],
+      schemaName: "vision",
+      schema: {
+        type: "object",
+        properties: { caption: { type: "string" } },
+        required: ["caption"],
+        additionalProperties: false,
+      },
+      safetyIdentifier: "session-1",
+      maxOutputTokens: 700,
+    }, fetchMock as typeof fetch);
+    expect(result.output.caption).toBe("Visible");
+    expect(requestBody.store).toBe(false);
+    expect(requestBody.max_output_tokens).toBe(700);
+    expect(requestBody.input[1].content[1]).toMatchObject({
+      type: "input_image",
+      detail: "low",
+    });
+    expect(requestBody.input[1].content[1].image_url).toMatch(/^data:image\/jpeg;base64,/);
   });
 });

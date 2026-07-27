@@ -23,5 +23,4 @@ import "./functions/sendOverdueAlerts";
 import "./functions/sendAdministrativeReminders";
 import "./functions/sendBlockedReminders";
 import "./functions/processEmailOutbox";
-import "./functions/processGuideJobs";
 import "./functions/runtimeStatus";

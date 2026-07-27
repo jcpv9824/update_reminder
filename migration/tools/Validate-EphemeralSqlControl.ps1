@@ -50,6 +50,7 @@ $requiredServerPatterns = @(
   'ownerApprovedElevatedRuntimeLogin = $ownerApprovedElevatedRuntimeLogin',
   "permissionMutationPolicy = 'preserve-existing'",
   "EXECUTE AS USER=N'dbo';",
+  "if (`$accessLevel -eq 'full-control' -and `$isPortalRuntime -eq 1)",
   "executionContext = `$(if (`$sessionExecutingAsDbo) { 'session-scoped-dbo' } else { 'login-user' })",
   'The QA controller refuses the known production server/database pair.',
   "elseif (`$Environment -eq 'qa' -and `$hasConnect -eq 1) { 'qa-readonly' }",

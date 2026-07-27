@@ -79,12 +79,17 @@ La identidad administrada requiere `Storage Blob Data Contributor` en el contain
 
 `Constructor de guías` permanece apagado en producción. Su habilitación exige
 primero las puertas de `docs/GUIDE_BUILDER_DESIGN.md`; después se configuran
-`OPENAI_API_KEY` mediante Key Vault, `GUIDE_FFMPEG_PATH`,
+`OPENAI_API_KEY` mediante Key Vault y
+`GUIDE_BUILDER_ENABLED=true` **solo en la Function App**. La Function App no
+incluye un temporizador de procesamiento y debe conservar
+`GUIDE_WORKER_ENABLED=false` y `GUIDE_WORKER_PROCESSOR_CERTIFIED=false`.
+
+El Container Apps Job certificado configura `GUIDE_FFMPEG_PATH`,
 `GUIDE_FFPROBE_PATH`, `GUIDE_TRANSCRIPTION_MODEL=whisper-1`,
-`GUIDE_BUILDER_ENABLED=true`, `GUIDE_WORKER_ENABLED=true`,
-`GUIDE_WORKER_PROCESSOR_CERTIFIED=true` y el build del
-frontend con `VITE_GUIDE_BUILDER_ENABLED=true`. No active solo uno de los tres
-flags.
+`GUIDE_BUILDER_ENABLED=true`, `GUIDE_WORKER_ENABLED=true` y
+`GUIDE_WORKER_PROCESSOR_CERTIFIED=true`. Finalmente, el frontend se compila con
+`VITE_GUIDE_BUILDER_ENABLED=true`. No habilite la navegación antes de probar
+API, migración y Job como una sola versión.
 
 También son obligatorios `JWT_SECRET`, `RATE_LIMIT_HASH_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`, `AUTH_COOKIE_SECURE=true` y la configuración del proveedor de correo aplicable.
 

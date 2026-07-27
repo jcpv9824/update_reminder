@@ -14,9 +14,11 @@ import {
   type UserDelegationKey,
 } from "@azure/storage-blob";
 import { createWriteStream } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import sql from "mssql";
+import { getSqlPool } from "./sql";
 import { runSqlTransaction } from "./sqlTransaction";
 
 export type ObjectStorageProvider = "s3" | "azure_blob";
@@ -39,6 +41,32 @@ export type StoredPrivateObject = PrivateObjectLocator & {
   storageSha256: string;
 };
 
+type RegistrationReservation = {
+  token: string;
+  expiresAt: number;
+};
+
+const registrationReservations = new Map<string, RegistrationReservation>();
+
+function locatorKey(input: PrivateObjectLocator): string {
+  return input.storageProvider === "s3"
+    ? `s3\0${input.storageBucket}\0${input.storageObjectKey}`
+    : `azure_blob\0${input.storageContainer}\0${input.storageBlobName}`;
+}
+
+export function getPrivateObjectRegistrationToken(
+  input: PrivateObjectLocator,
+): string | undefined {
+  const key = locatorKey(input);
+  const reservation = registrationReservations.get(key);
+  if (!reservation) return undefined;
+  if (reservation.expiresAt <= Date.now()) {
+    registrationReservations.delete(key);
+    return undefined;
+  }
+  return reservation.token;
+}
+
 export type PrivateObjectUpload = {
   locator: PrivateObjectLocator;
   url: string;
@@ -52,6 +80,12 @@ export type PrivateObjectStat = {
   mimeType: string | null;
   etag?: string;
 };
+
+function quotedEtag(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.replace(/^"|"$/g, "");
+  return normalized ? `"${normalized}"` : undefined;
+}
 
 type SharedConfig = {
   prefix: string;
@@ -459,9 +493,33 @@ export async function storePrivateObject(input: {
   if (!config) {
     throw Object.assign(new Error("El almacenamiento privado de archivos aún no está configurado."), { status: 503 });
   }
-  return config.provider === "s3"
-    ? storeS3Object(config, input)
-    : storeAzureBlob(config, input);
+  const locator: PrivateObjectLocator = config.provider === "s3"
+    ? {
+        storageProvider: "s3",
+        storageBucket: config.bucket,
+        storageObjectKey: `${config.prefix}/content/${input.sha256}${input.extension}`,
+      }
+    : {
+        storageProvider: "azure_blob",
+        storageContainer: config.containerName,
+        storageBlobName: `${config.prefix}/content/${input.sha256}${input.extension}`,
+      };
+  const registrationToken = await tryReserveObjectRegistration(locator);
+  try {
+    const stored = config.provider === "s3"
+      ? await storeS3Object(config, input)
+      : await storeAzureBlob(config, input);
+    if (registrationToken) {
+      registrationReservations.set(locatorKey(stored), {
+        token: registrationToken,
+        expiresAt: Date.now() + 30 * 60_000,
+      });
+    }
+    return stored;
+  } catch (error) {
+    if (registrationToken) await releaseObjectDeletionClaim(locator, registrationToken);
+    throw error;
+  }
 }
 
 export async function statPrivateObject(input: PrivateObjectLocator): Promise<PrivateObjectStat> {
@@ -509,6 +567,7 @@ export async function downloadPrivateObjectToFile(
     const response = await getS3Client(config).send(new GetObjectCommand({
       Bucket: input.storageBucket,
       Key: input.storageObjectKey,
+      IfMatch: quotedEtag(input.storageObjectEtag),
     }));
     if (!response.Body) throw new Error("El objeto privado no tiene contenido.");
     await pipeline(Readable.from(response.Body as AsyncIterable<Uint8Array>), createWriteStream(destinationPath, { flags: "wx" }));
@@ -518,48 +577,190 @@ export async function downloadPrivateObjectToFile(
   await getAzureService(config)
     .getContainerClient(input.storageContainer)
     .getBlobClient(input.storageBlobName)
-    .downloadToFile(destinationPath);
+    .downloadToFile(destinationPath, 0, undefined, {
+      conditions: input.storageBlobEtag ? { ifMatch: input.storageBlobEtag } : undefined,
+    });
   return properties;
 }
 
-async function hasSqlReference(input: PrivateObjectLocator, transaction: sql.Transaction): Promise<boolean> {
-  const request = new sql.Request(transaction);
-  if (input.storageProvider === "s3") {
-    request.input("bucket", sql.NVarChar(255), input.storageBucket);
-    request.input("objectKey", sql.NVarChar(1024), input.storageObjectKey);
-    const result = await request.query<{ reference_count: number }>(`
-      SELECT COUNT_BIG(*) AS reference_count
-      FROM content.files WITH (UPDLOCK,HOLDLOCK)
-      WHERE storage_provider='s3' AND storage_bucket=@bucket AND object_key=@objectKey;
-    `);
-    return Number(result.recordset[0]?.reference_count ?? 0) > 0;
-  }
-  request.input("container", sql.NVarChar(100), input.storageContainer);
-  request.input("blobName", sql.NVarChar(1024), input.storageBlobName);
-  const result = await request.query<{ reference_count: number }>(`
-    SELECT COUNT_BIG(*) AS reference_count
-    FROM content.files WITH (UPDLOCK,HOLDLOCK)
-    WHERE storage_provider='azure_blob' AND storage_container=@container AND blob_name=@blobName;
+async function tryClaimUnreferencedObject(input: PrivateObjectLocator): Promise<string | null> {
+  const capability = await (await getSqlPool()).request().query<{ supported: boolean }>(`
+    SELECT CONVERT(bit,CASE WHEN OBJECT_ID(N'content.object_deletion_claims',N'U') IS NOT NULL
+      THEN 1 ELSE 0 END) AS supported;
   `);
-  return Number(result.recordset[0]?.reference_count ?? 0) > 0;
+  if (!capability.recordset[0]?.supported) return null;
+  const claimedBy = `object-cleanup:${randomUUID()}`;
+  return runSqlTransaction(async (transaction) => {
+    const request = new sql.Request(transaction);
+    request.input("provider", sql.VarChar(30), input.storageProvider);
+    request.input("container", sql.NVarChar(100), input.storageProvider === "azure_blob" ? input.storageContainer : null);
+    request.input("blobName", sql.NVarChar(1024), input.storageProvider === "azure_blob" ? input.storageBlobName : null);
+    request.input("bucket", sql.NVarChar(255), input.storageProvider === "s3" ? input.storageBucket : null);
+    request.input("objectKey", sql.NVarChar(1024), input.storageProvider === "s3" ? input.storageObjectKey : null);
+    request.input("claimedBy", sql.NVarChar(150), claimedBy);
+    const result = await request.query<{ claimed: boolean }>(`
+      DELETE content.object_deletion_claims
+      WHERE claimed_at<DATEADD(minute,-30,SYSUTCDATETIME())
+        AND
+        (
+          (@provider='s3' AND storage_provider='s3'
+            AND storage_bucket=@bucket AND object_key=@objectKey)
+          OR
+          (@provider='azure_blob' AND storage_provider='azure_blob'
+            AND storage_container=@container AND blob_name=@blobName)
+        );
+      IF EXISTS
+      (
+        SELECT 1 FROM content.files WITH (UPDLOCK,HOLDLOCK)
+        WHERE
+          (@provider='s3' AND storage_provider='s3'
+            AND storage_bucket=@bucket AND object_key=@objectKey)
+          OR
+          (@provider='azure_blob' AND storage_provider='azure_blob'
+            AND storage_container=@container AND blob_name=@blobName)
+      )
+      BEGIN
+        SELECT CONVERT(bit,0) AS claimed;
+        RETURN;
+      END;
+      IF EXISTS
+      (
+        SELECT 1 FROM content.object_deletion_claims WITH (UPDLOCK,HOLDLOCK)
+        WHERE
+          (@provider='s3' AND storage_provider='s3'
+            AND storage_bucket=@bucket AND object_key=@objectKey)
+          OR
+          (@provider='azure_blob' AND storage_provider='azure_blob'
+            AND storage_container=@container AND blob_name=@blobName)
+      )
+      BEGIN
+        SELECT CONVERT(bit,0) AS claimed;
+        RETURN;
+      END;
+      INSERT content.object_deletion_claims
+        (storage_provider,storage_container,blob_name,storage_bucket,object_key,claimed_by)
+      VALUES(@provider,@container,@blobName,@bucket,@objectKey,@claimedBy);
+      SELECT CONVERT(bit,1) AS claimed;
+    `);
+    return result.recordset[0]?.claimed ? claimedBy : null;
+  });
+}
+
+async function tryReserveObjectRegistration(input: PrivateObjectLocator): Promise<string | null> {
+  const capability = await (await getSqlPool()).request().query<{ supported: boolean }>(`
+    SELECT CONVERT(bit,CASE WHEN OBJECT_ID(N'content.object_deletion_claims',N'U') IS NOT NULL
+      THEN 1 ELSE 0 END) AS supported;
+  `);
+  if (!capability.recordset[0]?.supported) return null;
+  const token = `object-registration:${randomUUID()}`;
+  try {
+    return await runSqlTransaction(async (transaction) => {
+      const request = new sql.Request(transaction);
+      request.input("provider", sql.VarChar(30), input.storageProvider);
+      request.input("container", sql.NVarChar(100), input.storageProvider === "azure_blob" ? input.storageContainer : null);
+      request.input("blobName", sql.NVarChar(1024), input.storageProvider === "azure_blob" ? input.storageBlobName : null);
+      request.input("bucket", sql.NVarChar(255), input.storageProvider === "s3" ? input.storageBucket : null);
+      request.input("objectKey", sql.NVarChar(1024), input.storageProvider === "s3" ? input.storageObjectKey : null);
+      request.input("token", sql.NVarChar(150), token);
+      const result = await request.query<{ reserved: boolean }>(`
+        DELETE content.object_deletion_claims
+        WHERE claimed_at<DATEADD(minute,-30,SYSUTCDATETIME())
+          AND ((@provider='s3' AND storage_provider='s3'
+              AND storage_bucket=@bucket AND object_key=@objectKey)
+            OR (@provider='azure_blob' AND storage_provider='azure_blob'
+              AND storage_container=@container AND blob_name=@blobName));
+        IF EXISTS
+        (
+          SELECT 1 FROM content.files WITH (UPDLOCK,HOLDLOCK)
+          WHERE (@provider='s3' AND storage_provider='s3'
+              AND storage_bucket=@bucket AND object_key=@objectKey)
+            OR (@provider='azure_blob' AND storage_provider='azure_blob'
+              AND storage_container=@container AND blob_name=@blobName)
+        )
+        BEGIN
+          SELECT CONVERT(bit,0) AS reserved;
+          RETURN;
+        END;
+        IF EXISTS
+        (
+          SELECT 1 FROM content.object_deletion_claims WITH (UPDLOCK,HOLDLOCK)
+          WHERE (@provider='s3' AND storage_provider='s3'
+              AND storage_bucket=@bucket AND object_key=@objectKey)
+            OR (@provider='azure_blob' AND storage_provider='azure_blob'
+              AND storage_container=@container AND blob_name=@blobName)
+        )
+          THROW 51074,N'El objeto está reservado por otra operación.',1;
+        INSERT content.object_deletion_claims
+          (storage_provider,storage_container,blob_name,storage_bucket,object_key,claimed_by)
+        VALUES(@provider,@container,@blobName,@bucket,@objectKey,@token);
+        SELECT CONVERT(bit,1) AS reserved;
+      `);
+      return result.recordset[0]?.reserved ? token : null;
+    });
+  } catch (error) {
+    const candidate = error as { number?: number; originalError?: { info?: { number?: number } } };
+    if ((candidate.number ?? candidate.originalError?.info?.number) === 51074) {
+      throw Object.assign(new Error("El archivo idéntico está siendo procesado por otra operación."), { status: 409 });
+    }
+    throw error;
+  }
+}
+
+async function releaseObjectDeletionClaim(input: PrivateObjectLocator, claimedBy: string): Promise<void> {
+  const request = (await getSqlPool()).request();
+  request.input("provider", sql.VarChar(30), input.storageProvider);
+  request.input("container", sql.NVarChar(100), input.storageProvider === "azure_blob" ? input.storageContainer : null);
+  request.input("blobName", sql.NVarChar(1024), input.storageProvider === "azure_blob" ? input.storageBlobName : null);
+  request.input("bucket", sql.NVarChar(255), input.storageProvider === "s3" ? input.storageBucket : null);
+  request.input("objectKey", sql.NVarChar(1024), input.storageProvider === "s3" ? input.storageObjectKey : null);
+  request.input("claimedBy", sql.NVarChar(150), claimedBy);
+  await request.query(`
+    DELETE content.object_deletion_claims
+    WHERE claimed_by=@claimedBy AND storage_provider=@provider
+      AND ISNULL(storage_container,N'')=ISNULL(@container,N'')
+      AND ISNULL(blob_name,N'')=ISNULL(@blobName,N'')
+      AND ISNULL(storage_bucket,N'')=ISNULL(@bucket,N'')
+      AND ISNULL(object_key,N'')=ISNULL(@objectKey,N'');
+  `);
+}
+
+function storageStatusCode(error: unknown): number | undefined {
+  const candidate = error as { statusCode?: number; $metadata?: { httpStatusCode?: number } };
+  return candidate.statusCode ?? candidate.$metadata?.httpStatusCode;
 }
 
 export async function deletePrivateObjectIfUnreferenced(input: PrivateObjectLocator): Promise<boolean> {
-  return runSqlTransaction(async (transaction) => {
-    if (await hasSqlReference(input, transaction)) return false;
+  const claimedBy = await tryClaimUnreferencedObject(input);
+  if (!claimedBy) return false;
 
+  try {
     if (input.storageProvider === "s3") {
       const config = readS3Config(true)!;
       if (config.bucket !== input.storageBucket) return false;
       const client = getS3Client(config);
       try {
-        await client.send(new HeadObjectCommand({ Bucket: input.storageBucket, Key: input.storageObjectKey }));
+        await client.send(new HeadObjectCommand({
+          Bucket: input.storageBucket,
+          Key: input.storageObjectKey,
+          IfMatch: quotedEtag(input.storageObjectEtag),
+        }));
       } catch (error) {
-        if ((error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 404) return false;
+        if (storageStatusCode(error) === 404) return true;
+        if (storageStatusCode(error) === 412) return false;
         throw error;
       }
-      await client.send(new DeleteObjectCommand({ Bucket: input.storageBucket, Key: input.storageObjectKey }));
-      return true;
+      try {
+        await client.send(new DeleteObjectCommand({
+          Bucket: input.storageBucket,
+          Key: input.storageObjectKey,
+          IfMatch: quotedEtag(input.storageObjectEtag),
+        }));
+        return true;
+      } catch (error) {
+        if (storageStatusCode(error) === 404) return true;
+        if (storageStatusCode(error) === 412) return false;
+        throw error;
+      }
     }
 
     const config = readAzureBlobConfig(true)!;
@@ -567,8 +768,22 @@ export async function deletePrivateObjectIfUnreferenced(input: PrivateObjectLoca
     const blob = getAzureService(config)
       .getContainerClient(input.storageContainer)
       .getBlockBlobClient(input.storageBlobName);
-    return (await blob.deleteIfExists({ deleteSnapshots: "include" })).succeeded;
-  }, sql.ISOLATION_LEVEL.SERIALIZABLE);
+    try {
+      await blob.deleteIfExists({
+        deleteSnapshots: "include",
+        conditions: quotedEtag(input.storageBlobEtag)
+          ? { ifMatch: quotedEtag(input.storageBlobEtag)! }
+          : undefined,
+      });
+      return true;
+    } catch (error) {
+      if (storageStatusCode(error) === 404) return true;
+      if (storageStatusCode(error) === 412) return false;
+      throw error;
+    }
+  } finally {
+    await releaseObjectDeletionClaim(input, claimedBy);
+  }
 }
 
 async function getDelegationKey(config: AzureBlobConfig): Promise<UserDelegationKey> {

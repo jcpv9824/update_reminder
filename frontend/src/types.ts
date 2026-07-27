@@ -317,27 +317,33 @@ export type RegistroAuditoria = {
   metadata?: Record<string, unknown>;
 };
 
-export type GuideSessionStatus =
-  | "upload_pending"
-  | "queued"
-  | "processing"
-  | "review"
-  | "finalizing"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "deleted";
+export const GUIDE_SESSION_STATUSES = [
+  "upload_pending",
+  "queued",
+  "processing",
+  "review",
+  "finalizing",
+  "completed",
+  "failed",
+  "cancelled",
+  "deleted",
+] as const;
 
-export type GuideProcessingStage =
-  | "ingest"
-  | "transcription"
-  | "frame_extraction"
-  | "vision"
-  | "draft"
-  | "questions"
-  | "reprocess"
-  | "finalize"
-  | "completed";
+export type GuideSessionStatus = (typeof GUIDE_SESSION_STATUSES)[number];
+
+export const GUIDE_PROCESSING_STAGES = [
+  "ingest",
+  "transcription",
+  "frame_extraction",
+  "vision",
+  "draft",
+  "questions",
+  "reprocess",
+  "finalize",
+  "completed",
+] as const;
+
+export type GuideProcessingStage = (typeof GUIDE_PROCESSING_STAGES)[number];
 
 export type GuideQuestion = {
   id: string;

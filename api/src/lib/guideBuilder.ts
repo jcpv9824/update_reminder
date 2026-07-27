@@ -92,6 +92,14 @@ export function guideWorkerEnabled(): boolean {
     && process.env.GUIDE_WORKER_PROCESSOR_CERTIFIED === "true";
 }
 
+export function canAccessGuideOwnerScope(
+  currentUserId: string,
+  sessionOwnerId: string,
+  canViewAll: boolean,
+): boolean {
+  return currentUserId === sessionOwnerId || canViewAll;
+}
+
 export function canFinalizeGuide(input: {
   status: GuideSessionStatus;
   answeredRoundCount: number;

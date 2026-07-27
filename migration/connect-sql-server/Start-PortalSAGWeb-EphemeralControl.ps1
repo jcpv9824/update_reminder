@@ -258,7 +258,7 @@ WHERE d.database_id=DB_ID();
   if ($sessionAuthorization -cne 'AUTHORIZE DATABASE ACCESS FOR THIS SESSION') {
     throw 'Database session authorization did not match; the session was not opened.'
   }
-  if ($ownerApprovedElevatedRuntimeLogin -and $isPortalRuntime -eq 1) {
+  if ($accessLevel -eq 'full-control' -and $isPortalRuntime -eq 1) {
     $executeAsCommand = $connection.CreateCommand()
     try {
       $executeAsCommand.CommandText = "EXECUTE AS USER=N'dbo';"

@@ -3,6 +3,7 @@ import sql from "mssql";
 type ContentSchemaCapabilities = {
   provider_neutral_locators: boolean;
   public_files: boolean;
+  object_deletion_claims: boolean;
 };
 
 export async function readContentSchemaCapabilities(
@@ -11,6 +12,7 @@ export async function readContentSchemaCapabilities(
   const result = await request.query<{
     provider_neutral_locators: boolean;
     public_files: boolean;
+    object_deletion_claims: boolean;
   }>(`
     SELECT
       CONVERT(bit,CASE WHEN
@@ -21,11 +23,15 @@ export async function readContentSchemaCapabilities(
       CONVERT(bit,CASE WHEN
         OBJECT_ID(N'content.public_files',N'U') IS NOT NULL
         AND OBJECT_ID(N'content.public_file_versions',N'U') IS NOT NULL
-        THEN 1 ELSE 0 END) AS public_files;
+        THEN 1 ELSE 0 END) AS public_files,
+      CONVERT(bit,CASE WHEN
+        OBJECT_ID(N'content.object_deletion_claims',N'U') IS NOT NULL
+        THEN 1 ELSE 0 END) AS object_deletion_claims;
   `);
   return {
     provider_neutral_locators: Boolean(result.recordset[0]?.provider_neutral_locators),
     public_files: Boolean(result.recordset[0]?.public_files),
+    object_deletion_claims: Boolean(result.recordset[0]?.object_deletion_claims),
   };
 }
 

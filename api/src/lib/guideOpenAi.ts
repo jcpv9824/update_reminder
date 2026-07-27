@@ -3,6 +3,11 @@ import { readFile } from "node:fs/promises";
 
 type FetchLike = typeof fetch;
 
+function boundedSignal(signal: AbortSignal | undefined, milliseconds: number): AbortSignal {
+  const timeout = AbortSignal.timeout(milliseconds);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
 function apiKey(): string {
   const value = process.env.OPENAI_API_KEY?.trim();
   if (!value) throw Object.assign(new Error("OPENAI_API_KEY no está configurado."), { code: "openai_not_configured" });
@@ -21,6 +26,7 @@ async function checkedJson(response: Response): Promise<Record<string, any>> {
 export async function transcribeGuideAudio(
   audioPath: string,
   fetchImpl: FetchLike = fetch,
+  signal?: AbortSignal,
 ): Promise<{ text: string; segments: Array<{ start: number; end: number; text: string }>; requestIdHash?: string }> {
   const bytes = await readFile(audioPath);
   if (bytes.length > 25_000_000) {
@@ -36,7 +42,7 @@ export async function transcribeGuideAudio(
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey()}` },
     body: form,
-    signal: AbortSignal.timeout(120_000),
+    signal: boundedSignal(signal, 120_000),
   });
   const body = await checkedJson(response);
   return {
@@ -62,6 +68,7 @@ export async function createGuideStructuredResponse<T>(input: {
   schema: Record<string, unknown>;
   safetyIdentifier: string;
   reasoningEffort?: "none" | "low" | "medium" | "high";
+  signal?: AbortSignal;
 }, fetchImpl: FetchLike = fetch): Promise<{ output: T; usage: Record<string, number>; requestIdHash?: string }> {
   const response = await fetchImpl("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -87,7 +94,7 @@ export async function createGuideStructuredResponse<T>(input: {
         },
       },
     }),
-    signal: AbortSignal.timeout(180_000),
+    signal: boundedSignal(input.signal, 180_000),
   });
   const body = await checkedJson(response);
   const text = typeof body.output_text === "string"

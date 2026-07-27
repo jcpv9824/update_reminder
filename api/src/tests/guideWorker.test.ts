@@ -48,7 +48,39 @@ describe("guide worker lease adapter", () => {
     expect(complete).toHaveBeenCalledWith(job, "worker-1", {
       ok: false,
       errorCode: "media_host_unproven",
-      errorSummary: "ffmpeg missing",
+      errorSummary: "El procesamiento de la guía falló de forma controlada.",
     });
+  });
+
+  it("renews the fenced lease before and after processing", async () => {
+    const renew = vi.fn().mockResolvedValue(undefined);
+    const complete = vi.fn().mockResolvedValue(undefined);
+    await runGuideWorkerOnce("worker-1", vi.fn(), {
+      enabled: true,
+      claim: vi.fn().mockResolvedValue([job]),
+      renew,
+      complete,
+      processor: { process: vi.fn().mockResolvedValue({ ok: true }) },
+    });
+    expect(renew).toHaveBeenCalledTimes(2);
+    expect(renew).toHaveBeenNthCalledWith(1, job, "worker-1", 600);
+    expect(complete).toHaveBeenCalledWith(job, "worker-1", {
+      ok: true,
+      metrics: { ok: true },
+    });
+  });
+
+  it("does not let a stale worker complete after lease renewal fails", async () => {
+    const complete = vi.fn();
+    const renew = vi.fn().mockRejectedValue(Object.assign(new Error("expired"), { code: "guide_lease_lost" }));
+    const result = await runGuideWorkerOnce("worker-1", vi.fn(), {
+      enabled: true,
+      claim: vi.fn().mockResolvedValue([job]),
+      renew,
+      complete,
+      processor: { process: vi.fn() },
+    });
+    expect(result).toEqual({ disabled: false, claimed: 1, succeeded: 0, failed: 1 });
+    expect(complete).not.toHaveBeenCalled();
   });
 });

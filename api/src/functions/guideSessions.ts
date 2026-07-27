@@ -3,6 +3,7 @@ import { app, type HttpRequest, type HttpResponseInit } from "@azure/functions";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import {
   AnswerRoundSchema,
+  canAccessGuideOwnerScope,
   canFinalizeGuide,
   decodeIfMatch,
   FinalizeGuideSchema,
@@ -26,7 +27,7 @@ import {
   readSqlGuideSession,
   readSqlGuideSessions,
 } from "../lib/guideBuilderSqlRepository";
-import { badRequest, forbidden, notFound, serverError } from "../lib/http";
+import { badRequest, forbidden, notFound } from "../lib/http";
 import { canUseGuideBuilder } from "../lib/managementAccess";
 import {
   createPrivateObjectUpload,
@@ -156,7 +157,22 @@ function guideError(error: unknown): HttpResponseInit {
   if ([52622, 52623, 52624, 52625, 52626].includes(number ?? 0)) {
     return { status: 409, jsonBody: { error: (error as Error).message } };
   }
-  return serverError(error);
+  const status = Number((error as { status?: unknown })?.status);
+  const safeMessages: Record<number, string> = {
+    400: "La solicitud no es válida.",
+    403: "No tiene permisos.",
+    404: "Sesión de guía no encontrada.",
+    409: "La operación entra en conflicto con el estado actual.",
+    412: "La sesión cambió; actualice la página.",
+    413: "El archivo supera el límite permitido.",
+    429: "Se alcanzó temporalmente el límite de procesamiento.",
+    503: "El Constructor de guías no está disponible temporalmente.",
+  };
+  const safeStatus = safeMessages[status] ? status : 500;
+  return {
+    status: safeStatus,
+    jsonBody: { error: safeMessages[safeStatus] ?? "Error interno del servidor." },
+  };
 }
 
 async function authorizeSession(
@@ -169,7 +185,7 @@ async function authorizeSession(
   const session = await readSqlGuideSession(req.params.id);
   if (!session) throw Object.assign(new Error("Sesión de guía no encontrada."), { status: 404 });
   const canViewAll = canUseGuideBuilder(user, "view_all", roles);
-  if (session.ownerId !== user.id && !canViewAll) {
+  if (!canAccessGuideOwnerScope(user.id, session.ownerId, canViewAll)) {
     throw Object.assign(new Error("Sesión de guía no encontrada."), { status: 404 });
   }
   return { user, session };
@@ -226,6 +242,19 @@ app.http("guideSessionsCollection", {
         idempotencyKey,
         locator: upload.locator,
       });
+      if (!result.created) {
+        return {
+          status: 409,
+          headers: {
+            ETag: result.session.rowVersion,
+            "Cache-Control": "private, no-store",
+          },
+          jsonBody: {
+            error: "La autorización de carga ya fue emitida y no puede volver a generarse.",
+            session: sessionDto(result.session),
+          },
+        };
+      }
       return withEtag(result.created ? 201 : 200, result.session, {
         session: sessionDto(result.session),
         upload: {

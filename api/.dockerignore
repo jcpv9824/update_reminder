@@ -1,0 +1,10 @@
+.deploy-*
+api-deploy-*.zip
+api-deploy-full.zip
+coverage
+dist
+local.settings.json
+node_modules
+npm-debug.log*
+src/tests
+*.tsbuildinfo

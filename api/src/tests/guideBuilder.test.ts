@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   canFinalizeGuide,
+  canAccessGuideOwnerScope,
   decodeIfMatch,
   encodeRowVersion,
   guideFeatureEnabled,
@@ -130,5 +131,11 @@ describe("guide builder transport contract", () => {
       sizeBytes: 2_048,
       locator: session.uploadLocator,
     })).toBe(false);
+  });
+
+  it("enforces owner scope unless view_all was granted", () => {
+    expect(canAccessGuideOwnerScope("user_1", "user_1", false)).toBe(true);
+    expect(canAccessGuideOwnerScope("user_1", "user_2", false)).toBe(false);
+    expect(canAccessGuideOwnerScope("user_1", "user_2", true)).toBe(true);
   });
 });

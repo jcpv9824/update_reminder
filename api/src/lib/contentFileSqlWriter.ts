@@ -1,5 +1,9 @@
 import sql from "mssql";
-import type { ObjectStorageProvider } from "./objectStorage";
+import {
+  getPrivateObjectRegistrationToken,
+  type ObjectStorageProvider,
+  type PrivateObjectLocator,
+} from "./objectStorage";
 import { readContentSchemaCapabilities } from "./contentFileSqlSchema";
 
 export type ContentFileInput = {
@@ -36,6 +40,20 @@ export async function ensureSqlContentFile(
   }
 
   const capabilities = await readContentSchemaCapabilities(new sql.Request(transaction));
+  const locator: PrivateObjectLocator = input.storageProvider === "s3"
+    ? {
+        storageProvider: "s3",
+        storageBucket: input.storageBucket!,
+        storageObjectKey: input.storageObjectKey!,
+        storageObjectEtag: input.storageObjectEtag,
+      }
+    : {
+        storageProvider: "azure_blob",
+        storageContainer: input.storageContainer!,
+        storageBlobName: input.storageBlobName!,
+        storageBlobEtag: input.storageBlobEtag,
+      };
+  const registrationToken = getPrivateObjectRegistrationToken(locator);
   if (!capabilities.provider_neutral_locators) {
     if (input.storageProvider !== "azure_blob") {
       throw Object.assign(
@@ -51,7 +69,26 @@ export async function ensureSqlContentFile(
     legacy.input("byteCount", sql.BigInt, input.byteCount);
     legacy.input("sha", sql.VarBinary(32), Buffer.from(input.sha256, "hex"));
     legacy.input("createdBy", sql.NVarChar(150), actorId);
+    legacy.input("registrationToken", sql.NVarChar(150), registrationToken ?? null);
+    const legacyDeletionClaimGuard = capabilities.object_deletion_claims
+      ? `
+      IF EXISTS
+      (
+        SELECT 1 FROM content.object_deletion_claims WITH (UPDLOCK,HOLDLOCK)
+        WHERE storage_provider='azure_blob'
+          AND storage_container=@container
+          AND blob_name=@blobName
+          AND (@registrationToken IS NULL OR claimed_by<>@registrationToken)
+      )
+        THROW 51073,N'El blob está reservado para eliminación y no puede registrarse.',1;
+      IF @registrationToken IS NOT NULL
+        DELETE content.object_deletion_claims
+        WHERE storage_provider='azure_blob' AND storage_container=@container
+          AND blob_name=@blobName AND claimed_by=@registrationToken;
+      `
+      : "";
     const result = await legacy.query<{ file_key: number }>(`
+      ${legacyDeletionClaimGuard}
       DECLARE @fileKey BIGINT=
       (
         SELECT file_key FROM content.files WITH (UPDLOCK,HOLDLOCK)
@@ -93,8 +130,36 @@ export async function ensureSqlContentFile(
   request.input("byteCount", sql.BigInt, input.byteCount);
   request.input("sha", sql.VarBinary(32), Buffer.from(input.sha256, "hex"));
   request.input("createdBy", sql.NVarChar(150), actorId);
+  request.input("registrationToken", sql.NVarChar(150), registrationToken ?? null);
+  const deletionClaimGuard = capabilities.object_deletion_claims
+    ? `
+    IF EXISTS
+    (
+      SELECT 1
+      FROM content.object_deletion_claims WITH (UPDLOCK,HOLDLOCK)
+      WHERE
+        (
+          (@provider='s3' AND storage_provider='s3'
+            AND storage_bucket=@bucket AND object_key=@objectKey)
+          OR
+          (@provider='azure_blob' AND storage_provider='azure_blob'
+            AND storage_container=@container AND blob_name=@blobName)
+        )
+        AND (@registrationToken IS NULL OR claimed_by<>@registrationToken)
+    )
+      THROW 51073,N'El objeto está reservado para eliminación y no puede registrarse.',1;
+    IF @registrationToken IS NOT NULL
+      DELETE content.object_deletion_claims
+      WHERE claimed_by=@registrationToken
+        AND ((@provider='s3' AND storage_provider='s3'
+            AND storage_bucket=@bucket AND object_key=@objectKey)
+          OR (@provider='azure_blob' AND storage_provider='azure_blob'
+            AND storage_container=@container AND blob_name=@blobName));
+    `
+    : "";
   const result = await request.query<{ file_key: number }>(`
     DECLARE @fileKey BIGINT;
+    ${deletionClaimGuard}
     IF @provider='s3'
       SELECT @fileKey=file_key FROM content.files WITH (UPDLOCK,HOLDLOCK)
       WHERE storage_provider='s3' AND storage_bucket=@bucket AND object_key=@objectKey;

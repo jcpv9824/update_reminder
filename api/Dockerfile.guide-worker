@@ -1,0 +1,45 @@
+ARG NODE_IMAGE=node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d
+
+FROM ${NODE_IMAGE} AS build
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+FROM ${NODE_IMAGE} AS runtime
+
+ARG FFMPEG_VERSION=7:5.1.9-0+deb12u1
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        ca-certificates \
+        "ffmpeg=${FFMPEG_VERSION}" \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts \
+    && npm cache clean --force
+
+COPY --from=build /app/dist ./dist
+
+RUN groupadd --gid 10001 guideworker \
+    && useradd --uid 10001 --gid guideworker --no-create-home --shell /usr/sbin/nologin guideworker \
+    && chmod -R a+rX,go-w /app
+
+ENV NODE_ENV=production \
+    GUIDE_WORKER_ENABLED=false \
+    GUIDE_WORKER_PROCESSOR_CERTIFIED=false \
+    GUIDE_FFMPEG_PATH=/usr/bin/ffmpeg \
+    GUIDE_FFPROBE_PATH=/usr/bin/ffprobe \
+    TMPDIR=/tmp
+
+USER 10001:10001
+
+ENTRYPOINT ["node", "dist/src/workers/guideWorkerHost.js"]

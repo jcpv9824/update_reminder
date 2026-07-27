@@ -51,6 +51,9 @@ BEGIN
     finalized_draft_no         INT NULL,
     create_idempotency_key     NVARCHAR(200) NOT NULL,
     upload_complete_idempotency_key NVARCHAR(200) NULL,
+    last_regenerate_idempotency_key NVARCHAR(200) NULL,
+    last_finalize_idempotency_key NVARCHAR(200) NULL,
+    cancel_idempotency_key     NVARCHAR(200) NULL,
     failure_code               NVARCHAR(80) NULL,
     failure_summary            NVARCHAR(1000) NULL,
     created_at                 DATETIME2(3) NOT NULL,
@@ -107,6 +110,13 @@ BEGIN
   );
 END;
 
+IF COL_LENGTH(N'content.guide_sessions',N'last_regenerate_idempotency_key') IS NULL
+  ALTER TABLE content.guide_sessions ADD last_regenerate_idempotency_key NVARCHAR(200) NULL;
+IF COL_LENGTH(N'content.guide_sessions',N'last_finalize_idempotency_key') IS NULL
+  ALTER TABLE content.guide_sessions ADD last_finalize_idempotency_key NVARCHAR(200) NULL;
+IF COL_LENGTH(N'content.guide_sessions',N'cancel_idempotency_key') IS NULL
+  ALTER TABLE content.guide_sessions ADD cancel_idempotency_key NVARCHAR(200) NULL;
+
 IF OBJECT_ID(N'content.guide_artifacts',N'U') IS NULL
 BEGIN
   CREATE TABLE content.guide_artifacts
@@ -136,6 +146,39 @@ BEGIN
   CREATE UNIQUE INDEX UX_guide_artifacts_current
     ON content.guide_artifacts(guide_session_key,artifact_kind,ordinal_no)
     WHERE is_current=1;
+END;
+
+IF OBJECT_ID(N'content.object_deletion_claims',N'U') IS NULL
+BEGIN
+  CREATE TABLE content.object_deletion_claims
+  (
+    object_deletion_claim_key BIGINT IDENTITY(1,1) NOT NULL,
+    storage_provider          VARCHAR(30) NOT NULL,
+    storage_container         NVARCHAR(100) NULL,
+    blob_name                 NVARCHAR(1024) NULL,
+    storage_bucket            NVARCHAR(255) NULL,
+    object_key                NVARCHAR(1024) NULL,
+    claimed_at                DATETIME2(3) NOT NULL
+      CONSTRAINT DF_object_deletion_claims_claimed_at DEFAULT SYSUTCDATETIME(),
+    claimed_by                NVARCHAR(150) NOT NULL,
+    CONSTRAINT PK_object_deletion_claims
+      PRIMARY KEY CLUSTERED(object_deletion_claim_key),
+    CONSTRAINT CK_object_deletion_claims_provider
+      CHECK
+      (
+        (storage_provider='azure_blob' AND storage_container IS NOT NULL AND blob_name IS NOT NULL
+          AND storage_bucket IS NULL AND object_key IS NULL)
+        OR
+        (storage_provider='s3' AND storage_bucket IS NOT NULL AND object_key IS NOT NULL
+          AND storage_container IS NULL AND blob_name IS NULL)
+      )
+  );
+  CREATE UNIQUE INDEX UX_object_deletion_claims_azure
+    ON content.object_deletion_claims(storage_container,blob_name)
+    WHERE storage_provider='azure_blob';
+  CREATE UNIQUE INDEX UX_object_deletion_claims_s3
+    ON content.object_deletion_claims(storage_bucket,object_key)
+    WHERE storage_provider='s3';
 END;
 
 IF OBJECT_ID(N'content.guide_questions',N'U') IS NULL
@@ -364,7 +407,7 @@ WHERE NOT EXISTS
   WHERE role_permission.role_id=N'super_admin' AND role_permission.permission_key=source_record.permission_key
 );
 
-COMMIT TRANSACTION;
+DENY UPDATE, DELETE ON OBJECT::content.guide_status_events TO portal_runtime;
 
 IF (SELECT COUNT(*) FROM security.permissions WHERE module_key=N'help' AND option_key=N'guide_builder' AND active=1)<>8
   THROW 52604,N'The guide-builder permission contract is incomplete.',1;
@@ -378,6 +421,8 @@ IF EXISTS
   )
 )
   THROW 52605,N'Super Administrador is missing a guide-builder permission.',1;
+
+COMMIT TRANSACTION;
 
 PRINT N'026 complete: guide-builder sessions, artifacts, jobs, history, AI usage, and permissions are available.';
 GO

@@ -7,6 +7,7 @@ async function runFixedProcess(
   args: string[],
   timeoutMs: number,
   spawnImpl: SpawnLike = spawn,
+  signal?: AbortSignal,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const options: SpawnOptions = {
@@ -15,26 +16,42 @@ async function runFixedProcess(
       stdio: ["ignore", "pipe", "pipe"],
     };
     const child = spawnImpl(executable, args, options);
+    let settled = false;
     let stdout = "";
     let stderr = "";
     const append = (current: string, chunk: Buffer) => (current + chunk.toString("utf8")).slice(-32_000);
     child.stdout?.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk); });
     child.stderr?.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk); });
+    const finish = (work: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      work();
+    };
+    const abort = () => {
+      child.kill("SIGKILL");
+      finish(() => reject(Object.assign(new Error("El proceso multimedia fue cancelado."), {
+        code: "guide_processing_cancelled",
+      })));
+    };
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      reject(Object.assign(new Error("El proceso multimedia superó el tiempo permitido."), { code: "media_timeout" }));
+      finish(() => reject(Object.assign(new Error("El proceso multimedia superó el tiempo permitido."), { code: "media_timeout" })));
     }, timeoutMs);
+    if (signal?.aborted) abort();
+    else signal?.addEventListener("abort", abort, { once: true });
     child.once("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
+      finish(() => reject(error));
     });
     child.once("close", (code) => {
-      clearTimeout(timer);
-      if (code === 0) resolve(stdout);
-      else reject(Object.assign(new Error(`El proceso multimedia falló (${code}).`), {
-        code: "media_failed",
-        diagnostic: stderr,
-      }));
+      finish(() => {
+        if (code === 0) resolve(stdout);
+        else reject(Object.assign(new Error(`El proceso multimedia falló (${code}).`), {
+          code: "media_failed",
+          diagnostic: stderr,
+        }));
+      });
     });
   });
 }
@@ -58,14 +75,17 @@ export type GuideVideoProbe = {
 export async function probeGuideVideo(
   inputPath: string,
   spawnImpl: SpawnLike = spawn,
+  signal?: AbortSignal,
 ): Promise<GuideVideoProbe> {
   const output = await runFixedProcess(binary("ffprobe"), [
     "-v", "error",
+    "-protocol_whitelist", "file,pipe",
+    "-protocol_blacklist", "http,https,tcp,tls,udp,rtp,ftp,sftp",
     "-select_streams", "v:0",
     "-show_entries", "stream=codec_name,width,height,avg_frame_rate:format=duration",
     "-of", "json",
     inputPath,
-  ], 30_000, spawnImpl);
+  ], 30_000, spawnImpl, signal);
   const parsed = JSON.parse(output) as {
     streams?: Array<{ codec_name?: string; width?: number; height?: number; avg_frame_rate?: string }>;
     format?: { duration?: string };
@@ -97,12 +117,15 @@ export async function extractGuideAudio(
   inputPath: string,
   outputPath: string,
   spawnImpl: SpawnLike = spawn,
+  signal?: AbortSignal,
 ): Promise<void> {
   await runFixedProcess(binary("ffmpeg"), [
     "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+    "-protocol_whitelist", "file,pipe",
+    "-protocol_blacklist", "http,https,tcp,tls,udp,rtp,ftp,sftp",
     "-i", inputPath, "-vn", "-ac", "1", "-ar", "16000",
     "-c:a", "aac", "-b:a", "48k", outputPath,
-  ], 5 * 60_000, spawnImpl);
+  ], 5 * 60_000, spawnImpl, signal);
 }
 
 export async function extractGuideFrames(
@@ -110,14 +133,19 @@ export async function extractGuideFrames(
   scenePattern: string,
   intervalPattern: string,
   spawnImpl: SpawnLike = spawn,
+  signal?: AbortSignal,
 ): Promise<void> {
   await runFixedProcess(binary("ffmpeg"), [
     "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+    "-protocol_whitelist", "file,pipe",
+    "-protocol_blacklist", "http,https,tcp,tls,udp,rtp,ftp,sftp",
     "-i", inputPath, "-vf", "select=gt(scene\\,0.30),scale=1280:-2", "-vsync", "vfr",
     "-frames:v", "100", scenePattern,
-  ], 5 * 60_000, spawnImpl);
+  ], 5 * 60_000, spawnImpl, signal);
   await runFixedProcess(binary("ffmpeg"), [
     "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+    "-protocol_whitelist", "file,pipe",
+    "-protocol_blacklist", "http,https,tcp,tls,udp,rtp,ftp,sftp",
     "-i", inputPath, "-vf", "fps=1/10,scale=1280:-2", "-frames:v", "100", intervalPattern,
-  ], 5 * 60_000, spawnImpl);
+  ], 5 * 60_000, spawnImpl, signal);
 }

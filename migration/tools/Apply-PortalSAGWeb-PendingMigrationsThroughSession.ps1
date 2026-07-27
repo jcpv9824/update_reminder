@@ -144,6 +144,8 @@ SELECT
     WHERE option_key=N'public_files' AND active=1) AS public_files_permission_count,
   (SELECT COUNT(*) FROM sys.tables
     WHERE schema_id=SCHEMA_ID(N'content') AND name LIKE N'guide[_]%') AS guide_table_count,
+  CASE WHEN OBJECT_ID(N'content.object_deletion_claims',N'U') IS NULL
+    THEN 0 ELSE 1 END AS deletion_claims_ready,
   (SELECT COUNT(*) FROM security.permissions
     WHERE module_key=N'help' AND option_key=N'guide_builder' AND active=1) AS guide_permission_count,
   (SELECT COUNT(*) FROM security.role_permissions
@@ -158,6 +160,7 @@ if($row.applied_count -ne 10 -or $row.trailing_domain_identities -ne 0 -or
    $row.atomic_refresh_ready -ne 1 -or $row.refresh_print_sources_ready -ne 1 -or
    $row.public_files_ready -ne 1 -or $row.downloads_section_optional -ne 1 -or
    $row.public_files_permission_count -ne 5 -or $row.guide_table_count -ne 8 -or
+   $row.deletion_claims_ready -ne 1 -or
    $row.guide_permission_count -ne 8 -or $row.guide_super_admin_permission_count -ne 8){
   throw 'Pending-migration post-verification failed.'
 }

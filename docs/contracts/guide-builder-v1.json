@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "statuses": [
+    "upload_pending",
+    "queued",
+    "processing",
+    "review",
+    "finalizing",
+    "completed",
+    "failed",
+    "cancelled",
+    "deleted"
+  ],
+  "stages": [
+    "ingest",
+    "transcription",
+    "frame_extraction",
+    "vision",
+    "draft",
+    "questions",
+    "reprocess",
+    "finalize",
+    "completed"
+  ],
+  "permissions": [
+    "help.guide_builder.view",
+    "help.guide_builder.create",
+    "help.guide_builder.download_transcript",
+    "help.guide_builder.regenerate",
+    "help.guide_builder.finalize",
+    "help.guide_builder.download_manual",
+    "help.guide_builder.cancel",
+    "help.guide_builder.view_all"
+  ]
+}
