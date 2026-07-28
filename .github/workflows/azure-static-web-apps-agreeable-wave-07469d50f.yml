@@ -49,6 +49,8 @@ jobs:
         run: npm run security:audit
       - name: Test and build frontend
         working-directory: frontend
+        env:
+          VITE_GUIDE_BUILDER_ENABLED: "true"
         run: npm test && npm run build
 
   build_and_deploy_job:
@@ -79,6 +81,7 @@ jobs:
         uses: Azure/static-web-apps-deploy@v1
         env:
           VITE_API_BASE_URL: https://erpupdsch4645-api.azurewebsites.net/api
+          VITE_GUIDE_BUILDER_ENABLED: "true"
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_AGREEABLE_WAVE_07469D50F }}
           action: "upload"
@@ -87,7 +90,7 @@ jobs:
           app_location: "./frontend" # App source code path
           api_location: "" # Api source code path - optional
           output_location: "dist" # Built app content directory - optional
-          app_build_command: "VITE_API_BASE_URL=https://erpupdsch4645-api.azurewebsites.net/api npm run build"
+          app_build_command: "VITE_API_BASE_URL=https://erpupdsch4645-api.azurewebsites.net/api VITE_GUIDE_BUILDER_ENABLED=true npm run build"
           github_id_token: ${{ steps.idtoken.outputs.result }}
           ###### End of Repository/Build Configurations ######
 
