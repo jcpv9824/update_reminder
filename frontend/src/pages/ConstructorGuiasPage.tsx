@@ -115,7 +115,7 @@ export default function ConstructorGuiasPage() {
       queryClient.setQueryData(["guide-session", sessionId], updated);
       queryClient.invalidateQueries({ queryKey: ["guide-session", sessionId, "draft"] });
       setAnswers({});
-      setAnnouncement(`Borrador v${updated.draft.version} generado con las respuestas.`);
+      setAnnouncement("Respuestas recibidas. El borrador se está actualizando.");
       setError(null);
     },
     onError: (cause: any) => setError(cause?.message ?? "No se pudo regenerar el borrador."),
@@ -128,7 +128,7 @@ export default function ConstructorGuiasPage() {
     ),
     onSuccess: (updated) => {
       queryClient.setQueryData(["guide-session", sessionId], updated);
-      setAnnouncement("El manual se finalizó correctamente.");
+      setAnnouncement("Finalización iniciada. El manual aparecerá aquí al terminar.");
       setError(null);
     },
     onError: (cause: any) => setError(cause?.message ?? "No se pudo finalizar el manual."),
@@ -289,6 +289,9 @@ export default function ConstructorGuiasPage() {
         <section className="tarjeta constructor-guias-procesamiento" aria-live="polite" aria-labelledby="constructor-guias-procesando">
           <h3 id="constructor-guias-procesando">Procesando…</h3>
           <p>{processing.message}</p>
+          <p className="texto-ayuda">
+            La sesión se actualiza automáticamente. Normalmente tarda entre 1 y 5 minutos; puede salir de esta página y volver después.
+          </p>
           {processing.progressPercent !== null ? <progress max={100} value={processing.progressPercent} /> : null}
           {session && CANCELLABLE_STATUSES.has(session.status) && has("cancel") ? (
             <button type="button" onClick={cancelCurrent} disabled={cancel.isPending}>Cancelar</button>
@@ -310,9 +313,12 @@ export default function ConstructorGuiasPage() {
         <DraftAndQuestions
           draft={draftQuery.data ?? ""}
           draftVersion={session.draft.version}
-          questions={session.questions}
+          questions={session.questions.filter((question) => !question.answered)}
           answers={answers}
           pendingCount={session.draft.pendingVerificationCount}
+          draftLoading={draftQuery.isLoading}
+          draftError={draftQuery.isError}
+          onRetryDraft={() => draftQuery.refetch()}
           canRegenerate={has("regenerate")}
           showFinalize={has("finalize")}
           canFinalize={has("finalize") && session.canFinalize}

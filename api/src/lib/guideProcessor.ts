@@ -690,8 +690,7 @@ export function createGuideProcessor(
           });
         }
         const draftStarted = Date.now();
-        const finalClarificationRound = job.jobType === "reprocess"
-          && context.answeredRoundCount >= boundedLimit("GUIDE_MAX_ANSWER_ROUNDS", 3, 5);
+        const finalClarificationRound = job.jobType === "reprocess";
         const response = await dependency.structured<DraftResult>({
           model: modelId(),
           system: finalClarificationRound
@@ -718,11 +717,9 @@ export function createGuideProcessor(
           signal: control.signal,
         });
         const draft = validateDraftResult(response.output, evidenceIds);
-        if (finalClarificationRound && draft.questions.length > 0) {
-          throw Object.assign(new Error("La última ronda conserva aclaraciones sin resolver."), {
-            code: "guide_answer_round_limit",
-          });
-        }
+        // A human answer round is authoritative. Do not create another loop of
+        // questions after regenerating; the user can review and finalize.
+        if (finalClarificationRound) draft.questions = [];
         if (job.jobType === "initial_process" && draft.questions.length === 0) {
           draft.questions.push({
             targetField: "verification",

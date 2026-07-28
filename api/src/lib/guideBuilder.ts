@@ -108,8 +108,7 @@ export function canFinalizeGuide(input: {
 }): boolean {
   return input.status === "review"
     && input.answeredRoundCount >= 1
-    && input.draftAvailable
-    && input.unresolvedQuestionCount === 0;
+    && input.draftAvailable;
 }
 
 export function matchesGuideCreateReplay(

@@ -6,6 +6,9 @@ export function DraftAndQuestions({
   questions,
   answers,
   pendingCount,
+  draftLoading,
+  draftError,
+  onRetryDraft,
   canRegenerate,
   showFinalize,
   canFinalize,
@@ -20,6 +23,9 @@ export function DraftAndQuestions({
   questions: GuideQuestion[];
   answers: Record<string, string>;
   pendingCount: number;
+  draftLoading: boolean;
+  draftError: boolean;
+  onRetryDraft: () => void;
   canRegenerate: boolean;
   showFinalize: boolean;
   canFinalize: boolean;
@@ -32,12 +38,19 @@ export function DraftAndQuestions({
   const hasAnswers = Object.values(answers).some((answer) => answer.trim());
   return (
     <section className="constructor-guias-paso" aria-labelledby="constructor-guias-borrador">
-      <p className="constructor-guias-etiqueta-paso">Paso 3 · Borrador + preguntas (se repite)</p>
+      <p className="constructor-guias-etiqueta-paso">Paso 3 · Revise el borrador y responda una ronda de aclaraciones</p>
       <h3 id="constructor-guias-borrador" className="sr-only">Borrador y preguntas</h3>
       <div className="constructor-guias-grid-borrador">
         <article className="tarjeta constructor-guias-panel">
           <h4 tabIndex={-1}>Borrador v{draftVersion} · manual .md</h4>
-          <pre className="constructor-guias-borrador">{draft || "Preparando borrador…"}</pre>
+          {draftError ? (
+            <div className="alerta alerta-error" role="alert">
+              No se pudo mostrar el borrador.
+              <button type="button" onClick={onRetryDraft}>Reintentar</button>
+            </div>
+          ) : (
+            <pre className="constructor-guias-borrador">{draft || (draftLoading ? "Cargando borrador…" : "El borrador está vacío.")}</pre>
+          )}
           {pendingCount > 0 ? <p className="alerta alerta-info">{pendingCount} punto(s) pendiente(s) de verificación.</p> : null}
         </article>
         <article className="tarjeta constructor-guias-panel">

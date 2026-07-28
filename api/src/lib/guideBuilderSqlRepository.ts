@@ -581,7 +581,7 @@ export async function readSqlGuideQuestions(sessionId: string): Promise<GuideQue
     DECLARE @round INT=(SELECT MAX(round_no) FROM content.guide_questions WHERE guide_session_key=@sessionKey);
     SELECT source_id,round_no,question_no,target_field,question_text,question_status
     FROM content.guide_questions
-    WHERE guide_session_key=@sessionKey AND round_no=@round
+    WHERE guide_session_key=@sessionKey AND round_no=@round AND question_status='open'
     ORDER BY question_no;
   `);
   return result.recordset.map((row) => ({
@@ -795,8 +795,11 @@ export async function queueSqlGuideFinalization(input: {
         THROW 52628,N'La sesión cambió; actualice la página.',1;
       SELECT @openQuestions=COUNT(*) FROM content.guide_questions
       WHERE guide_session_key=@sessionKey AND question_status='open';
-      IF @status<>'review' OR @rounds<1 OR @latestDraft<>@draftVersion OR @openQuestions>0
+      IF @status<>'review' OR @rounds<1 OR @latestDraft<>@draftVersion
         THROW 52625,N'La sesión aún no puede finalizarse.',1;
+      UPDATE content.guide_questions
+      SET question_status='superseded'
+      WHERE guide_session_key=@sessionKey AND question_status='open';
       UPDATE content.guide_sessions
       SET status='finalizing',current_stage='finalize',last_finalize_idempotency_key=@requestKey,
         updated_at=SYSUTCDATETIME(),updated_by=@actorId

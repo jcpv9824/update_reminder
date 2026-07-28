@@ -61,6 +61,8 @@ export default function ArchivosPublicosAdminPage() {
       <p className="texto-ayuda">
         Estos endpoints se abren en el navegador y no fuerzan una descarga.
         Se admiten imágenes, PDF y videos con formatos seguros para visualización.
+        La URL copiada no vence, no requiere iniciar sesión y funciona aunque este computador esté apagado.
+        Después de un periodo sin uso, Azure puede tardar unos segundos en abrirla.
       </p>
 
       <div className="barra-filtros">

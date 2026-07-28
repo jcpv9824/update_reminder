@@ -158,6 +158,17 @@ describe("ConstructorGuiasPage", () => {
     expect(screen.getByRole("button", { name: "Finalizar manual" })).toBeDisabled();
   });
 
+  it("muestra un error recuperable cuando el borrador no puede descargarse", async () => {
+    apiMock.getText.mockImplementation(async (path: string) => {
+      if (path.endsWith("/drafts/current")) throw new Error("redirect blocked");
+      return "[00:04] Ingrese a Configuración";
+    });
+    renderPage("/ayudas/constructor-guias?session=guide_1");
+    expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo mostrar el borrador.");
+    fireEvent.click(screen.getByRole("button", { name: "Reintentar" }));
+    await waitFor(() => expect(apiMock.getText).toHaveBeenCalledTimes(3));
+  });
+
   it("envía respuestas no vacías con la versión esperada", async () => {
     apiMock.post.mockResolvedValue(session({ draft: { available: true, version: 2, pendingVerificationCount: 0 }, answerRoundCount: 1 }));
     renderPage("/ayudas/constructor-guias?session=guide_1");

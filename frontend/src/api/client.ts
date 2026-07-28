@@ -40,11 +40,15 @@ export type ApiRequestOptions = {
 
 async function execute(method: string, path: string, body?: unknown, options: ApiRequestOptions = {}): Promise<Response> {
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    "X-Requested-With": "XMLHttpRequest",
     ...devHeaders(),
     ...options.headers,
   };
+  // Keep bodyless reads "simple" so authenticated API redirects can continue
+  // to private Blob SAS URLs without triggering a cross-origin preflight.
+  if (body !== undefined || !["GET", "HEAD"].includes(method.toUpperCase())) {
+    headers["Content-Type"] = "application/json";
+    headers["X-Requested-With"] = "XMLHttpRequest";
+  }
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
   return fetch(`${API_BASE_URL}${path}`, {
     method,

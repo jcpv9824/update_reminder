@@ -55,6 +55,19 @@ describe("cliente API con sesión segura", () => {
     }));
   });
 
+  it("mantiene GET sin encabezados que fuercen preflight al seguir un redirect a Blob", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("borrador", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = await import("../api/client");
+    client.setToken("access-vigente");
+
+    await expect(client.api.getText("/guide-sessions/guide_1/drafts/current")).resolves.toBe("borrador");
+    const headers = fetchMock.mock.calls[0][1]?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer access-vigente");
+    expect(headers["Content-Type"]).toBeUndefined();
+    expect(headers["X-Requested-With"]).toBeUndefined();
+  });
+
   it("no intenta refresh recursivo si el propio refresh devuelve 401", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(401, { error: "Sesión expirada." }));
     vi.stubGlobal("fetch", fetchMock);

@@ -33,11 +33,16 @@ describe("guide SQL repository safety contract", () => {
     expect(source).toContain('"guide_answer_round_limit"');
   });
 
-  it("requires the final clarification round to close without new questions", async () => {
+  it("makes the first human answer round authoritative and closes the question loop", async () => {
     const source = await readFile(resolve(process.cwd(), "src/lib/guideProcessor.ts"), "utf8");
-    expect(source).toContain('boundedLimit("GUIDE_MAX_ANSWER_ROUNDS", 3, 5)');
-    expect(source).toContain("finalClarificationRound && draft.questions.length > 0");
-    expect(source).toContain('code: "guide_answer_round_limit"');
+    expect(source).toContain('const finalClarificationRound = job.jobType === "reprocess"');
+    expect(source).toContain("if (finalClarificationRound) draft.questions = []");
+  });
+
+  it("permits finalization after an answer round and supersedes stale open questions", async () => {
+    const source = await repositorySource();
+    expect(source).toContain("SET question_status='superseded'");
+    expect(source).toContain("IF @status<>'review' OR @rounds<1 OR @latestDraft<>@draftVersion");
   });
 
   it("serializes claims and permits only one unexpired processing lease globally", async () => {

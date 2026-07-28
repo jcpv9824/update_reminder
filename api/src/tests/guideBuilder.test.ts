@@ -78,7 +78,7 @@ describe("guide builder transport contract", () => {
     expect(() => requireIdempotencyKey("línea")).toThrow(/ASCII/);
   });
 
-  it("requires an answered round, a draft, and no unresolved question before finalization", () => {
+  it("requires an answered round and a draft before finalization", () => {
     expect(canFinalizeGuide({
       status: "review",
       answeredRoundCount: 1,
@@ -90,7 +90,7 @@ describe("guide builder transport contract", () => {
       answeredRoundCount: 1,
       draftAvailable: true,
       unresolvedQuestionCount: 1,
-    })).toBe(false);
+    })).toBe(true);
     expect(canFinalizeGuide({
       status: "review",
       answeredRoundCount: 0,
