@@ -160,6 +160,7 @@ function guideError(error: unknown): HttpResponseInit {
   const status = Number((error as { status?: unknown })?.status);
   const safeMessages: Record<number, string> = {
     400: "La solicitud no es válida.",
+    401: "No autenticado.",
     403: "No tiene permisos.",
     404: "Sesión de guía no encontrada.",
     409: "La operación entra en conflicto con el estado actual.",
