@@ -695,6 +695,13 @@ export async function appendSqlGuideAnswerRound(input: {
       `);
       return mapSession(prior.recordset[0]);
     }
+    const answerRoundLimit = boundedGuideLimit("GUIDE_MAX_ANSWER_ROUNDS", 3, 5);
+    if (current.answered_round_count >= answerRoundLimit) {
+      throw Object.assign(new Error("La sesión alcanzó el límite de rondas de aclaración."), {
+        status: 409,
+        code: "guide_answer_round_limit",
+      });
+    }
     if (!current.row_version.equals(input.expectedRowVersion)) {
       throw Object.assign(new Error("La sesión cambió; actualice la página."), { status: 412 });
     }
@@ -1172,7 +1179,7 @@ export async function expireSqlPendingGuideUploads(limit = 20, minimumAgeMinutes
       );
     }
     return result.recordset.length;
-  });
+  }, sql.ISOLATION_LEVEL.READ_COMMITTED);
 }
 
 export async function renewSqlGuideJobLease(
@@ -1406,7 +1413,7 @@ export async function completeSqlGuideJobAttempt(
         (N'invalid_video_signature',N'invalid_video_codec',N'invalid_duration',N'invalid_video_shape',
          N'guide_source_mismatch',N'guide_prompt_too_large',N'unsafe_manual_output',
          N'invalid_manual_structure',N'unresolved_evidence_citation',N'unresolved_final_content',
-         N'empty_transcript',N'audio_too_large',N'guide_frame_too_large')
+         N'empty_transcript',N'audio_too_large',N'guide_frame_too_large',N'guide_answer_round_limit')
         THEN 1 ELSE 0 END;
       DECLARE @terminal BIT=CASE WHEN @ok=0 AND (@attemptCount>=@maxAttempts OR @permanent=1) THEN 1 ELSE 0 END;
       UPDATE content.guide_jobs

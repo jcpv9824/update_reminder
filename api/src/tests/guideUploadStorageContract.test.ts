@@ -21,6 +21,15 @@ describe("guide upload immutability contract", () => {
     expect(source).toContain("ifMatch: input.storageBlobEtag");
   });
 
+  it("uses an Azure-valid metadata identifier for direct uploads", async () => {
+    const source = await readFile(
+      resolve(process.cwd(), "src/lib/objectStorage.ts"),
+      "utf8",
+    );
+    expect(source).toContain('"x-ms-meta-declaredsize"');
+    expect(source).not.toContain('"x-ms-meta-declared-size"');
+  });
+
   it("claims an unreferenced locator in SQL before deleting provider bytes", async () => {
     const [storage, writer] = await Promise.all([
       readFile(resolve(process.cwd(), "src/lib/objectStorage.ts"), "utf8"),
@@ -30,6 +39,10 @@ describe("guide upload immutability contract", () => {
     expect(storage).toContain("INSERT content.object_deletion_claims");
     expect(storage).toContain("tryReserveObjectRegistration");
     expect(storage).toContain("registrationReservations.set");
+    expect(storage).toContain("async function abandonObjectRegistration");
+    expect(storage).toContain("await abandonObjectRegistration(input)");
+    expect(storage).toContain("registrationReservations.delete(key)");
+    expect(storage).toContain('"object_registration_busy"');
     expect(writer).toContain("getPrivateObjectRegistrationToken");
     expect(writer).toContain("claimed_by<>@registrationToken");
     expect(writer).toContain("FROM content.object_deletion_claims WITH (UPDLOCK,HOLDLOCK)");

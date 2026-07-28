@@ -37,6 +37,23 @@ describe("SQL runtime configuration", () => {
     expect(() => buildSqlConfigFromEnv({ ...validEnv, SQL_POOL_MAX: "0" }))
       .toThrow(/SQL_POOL_MAX/);
   });
+
+  it("allows only the reviewed QA database behind an explicit environment gate", () => {
+    const config = buildSqlConfigFromEnv({
+      ...validEnv,
+      PORTAL_SAG_ENVIRONMENT: "qa",
+      SQL_DATABASE: "PortalSAGWeb-TEST",
+    });
+    expect(config.database).toBe("PortalSAGWeb-TEST");
+    expect(() => buildSqlConfigFromEnv({
+      ...validEnv,
+      PORTAL_SAG_ENVIRONMENT: "qa",
+    })).toThrow(/PortalSAGWeb-TEST/);
+    expect(() => buildSqlConfigFromEnv({
+      ...validEnv,
+      PORTAL_SAG_ENVIRONMENT: "staging",
+    })).toThrow(/production o qa/);
+  });
 });
 
 describe("data backend gate", () => {

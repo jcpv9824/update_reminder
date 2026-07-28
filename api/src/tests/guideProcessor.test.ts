@@ -191,9 +191,10 @@ describe("guide processor orchestration", () => {
   it("does not trust spoken frame-like tokens as persisted evidence identifiers", () => {
     expect([
       ...parsePersistedTranscriptEvidenceIds(
-        "[T:seg-0123456789ab-0001 0-1000ms] El narrador dice [F:inventada].",
+        "[T:seg-0123456789ab-0001] (0-1000 ms) Texto.\n"
+        + "[T:seg-0123456789ab-0002 1000-2000ms] Texto legado [F:inventada].",
       ),
-    ]).toEqual(["T:seg-0123456789ab-0001"]);
+    ]).toEqual(["T:seg-0123456789ab-0001", "T:seg-0123456789ab-0002"]);
   });
 
   it("finalizes the exact draft without touching transcription or media", async () => {
@@ -264,5 +265,14 @@ describe("guide processor orchestration", () => {
       "Procedimiento basado",
       "[Ir a metadatos](#metadatos) Procedimiento basado",
     ))).toContain("(#metadatos)");
+    expect(validateMarkdown(
+      markdown.replace("[T:seg-0001]", "[T:seg-0001 0-1000ms]"),
+      new Set(["T:seg-0001"]),
+    )).toContain("[T:seg-0001 0-1000ms]");
+    expect(() => validateMarkdown(markdown, new Set(["T:otra"]))).toThrow(/evidencia/i);
+    expect(() => validateMarkdown(
+      markdown.replace(" [T:seg-0001]", ""),
+      new Set(["T:seg-0001"]),
+    )).toThrow(/evidencia/i);
   });
 });

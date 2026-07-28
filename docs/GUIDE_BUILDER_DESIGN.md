@@ -16,8 +16,9 @@ both `GUIDE_WORKER_ENABLED=true` and the deployment-controlled
 `GUIDE_WORKER_PROCESSOR_CERTIFIED=true`, and the production frontend includes
 the navigation/route only when `VITE_GUIDE_BUILDER_ENABLED=true`.
 The Azure Function App never runs Guide Builder jobs: its worker flags remain
-false. Processing is owned exclusively by the certified scheduled Container
-Apps Job.
+false. Processing is owned exclusively by the certified Container Apps Job.
+QA and dark production deployments use a manual trigger. The reviewed
+production schedule is optional and remains disabled until cutover approval.
 
 ## Product contract
 
@@ -100,6 +101,10 @@ unless the feature, worker, and processor-certification flags are all true.
   draft, verification questions, and sanitized AI usage.
 - Reprocessing reuses persisted transcript/frame evidence and human answers. It
   does not rerun media extraction or transcription.
+- A session accepts at most three answer rounds. On the third round, human
+  answers are authoritative and the processor must return no further questions;
+  a non-compliant model response terminates with
+  `guide_answer_round_limit`.
 - Finalization loads the exact requested draft, uses a bounded structured
   response, validates the fixed skeleton, safe links/HTML, evidence citations,
   and unresolved placeholders, then atomically persists the final Markdown.
@@ -120,6 +125,10 @@ unless the feature, worker, and processor-certification flags are all true.
   links, and reference definitions pointing outside the document are rejected.
 - Every terminal worker failure and lease-exhaustion transition appends durable
   status history in the same SQL transaction.
+- Scheduled executions use bounded drain mode: one job is claimed at a time
+  until the queue is empty or ten jobs have been processed. The deployment
+  hard-caps this value at 25. Continuous mode exists only as an explicit
+  operational override.
 
 ## Grounding and model contract
 
@@ -177,11 +186,36 @@ Focused acceptance includes:
 - migration static validation, API tests/build/no-Cosmos guard, frontend
   tests/build, and a disabled-by-default feature flag.
 
+## QA certification evidence — 2026-07-28
+
+The isolated `PortalSAGWeb-TEST` rehearsal used a synthetic 22.72-second
+H.264/AAC video containing no customer data. Direct signed upload returned
+HTTP 201 and the durable worker recovered a deliberately retried initial job
+without duplicating state.
+
+- one completed synthetic session;
+- five successful durable jobs: one initial process, three reprocess rounds,
+  and one finalization;
+- one transcription run and two visual readings, unchanged during all three
+  reprocess rounds;
+- eleven answered questions and zero open questions;
+- eleven current artifacts with no invalid file references;
+- zero active jobs and zero orphan object-registration claims;
+- final Markdown persisted at 1,720 bytes;
+- idempotent replay proven for answers and finalization;
+- private Blob upload/read/delete, exact-origin CORS, managed-identity data
+  access, and user-delegation signing proven.
+
+The QA environment remains manual and synthetic-only. This evidence certifies
+the application behavior; it does not authorize production SQL DDL or feature
+exposure.
+
 ## Production enablement gates
 
 Do not expose the route or accept real uploads until all are proven:
 
-1. migration `026` rehearsed with rollback evidence;
+1. a fresh verified production restore point, followed by explicit approval
+   and application of migration `026`;
 2. worker host and release path with pinned, patched `ffmpeg`/`ffprobe`;
 3. private provider CORS and signed-write behavior;
 4. Key Vault OpenAI secret and project spend/data controls;
@@ -194,3 +228,8 @@ Do not expose the route or accept real uploads until all are proven:
    remains part of this gate);
 8. synthetic staging smoke test and rollback;
 9. explicit production deployment approval.
+
+Gates 2, 3, 6, and 8 have QA evidence. The production route, API feature flag,
+worker schedule, and real uploads must remain off until gates 1, 4, 5, 7, and 9
+are closed. The current production database lacks a recent verified restore
+point suitable for this DDL change.

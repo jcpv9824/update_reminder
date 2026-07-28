@@ -251,7 +251,9 @@ export function validateMarkdown(
       code: "unsafe_manual_output",
     });
   }
-  const citations = [...normalized.matchAll(/\[((?:T|F|U):[A-Za-z0-9_.-]+)\]/g)].map((match) => match[1]);
+  const citations = [
+    ...normalized.matchAll(/\[((?:T|F|U):[A-Za-z0-9_.-]+)(?:\s+\d+-\d+ms)?\]/g),
+  ].map((match) => match[1]);
   if (allowedEvidenceIds) {
     if (allowedEvidenceIds.size > 0 && citations.length === 0) {
       throw Object.assign(new Error("El manual no contiene citas de evidencia."), {
@@ -294,7 +296,7 @@ function parseEvidenceIds(text: string): Set<string> {
 
 export function parsePersistedTranscriptEvidenceIds(text: string): Set<string> {
   return new Set(
-    [...text.matchAll(/\[(T:seg-[a-f0-9]{12}-\d{4})\s+\d+-\d+ms\]/g)]
+    [...text.matchAll(/\[(T:seg-[a-f0-9]{12}-\d{4})(?:\s+\d+-\d+ms)?\]/g)]
       .map((match) => match[1]),
   );
 }
@@ -505,7 +507,7 @@ export function createGuideProcessor(
             .filter((segment) => segment.text);
           for (const segment of segments) evidenceIds.add(`T:${segment.id}`);
           transcriptText = segments
-            .map((segment) => `[T:${segment.id} ${segment.startMs}-${segment.endMs}ms] ${segment.text}`)
+            .map((segment) => `[T:${segment.id}] (${segment.startMs}-${segment.endMs} ms) ${segment.text}`)
             .join("\n");
           if (!transcriptText) {
             throw Object.assign(new Error("La transcripción no produjo segmentos utilizables."), {
@@ -688,10 +690,17 @@ export function createGuideProcessor(
           });
         }
         const draftStarted = Date.now();
+        const finalClarificationRound = job.jobType === "reprocess"
+          && context.answeredRoundCount >= boundedLimit("GUIDE_MAX_ANSWER_ROUNDS", 3, 5);
         const response = await dependency.structured<DraftResult>({
           model: modelId(),
-          system: GUIDE_STYLE_GUIDE,
+          system: finalClarificationRound
+            ? `${GUIDE_STYLE_GUIDE}\nEsta es la última ronda de aclaración. Las respuestas humanas son evidencia autoritativa. Resuelva los campos con esas respuestas y devuelva questions como una lista vacía.`
+            : GUIDE_STYLE_GUIDE,
           user: [
+            "<identificadores-evidencia-permitidos>",
+            [...evidenceIds].sort().map((id) => `[${id}]`).join("\n"),
+            "</identificadores-evidencia-permitidos>",
             "<transcripcion-no-confiable>",
             transcriptText,
             "</transcripcion-no-confiable>",
@@ -709,6 +718,11 @@ export function createGuideProcessor(
           signal: control.signal,
         });
         const draft = validateDraftResult(response.output, evidenceIds);
+        if (finalClarificationRound && draft.questions.length > 0) {
+          throw Object.assign(new Error("La última ronda conserva aclaraciones sin resolver."), {
+            code: "guide_answer_round_limit",
+          });
+        }
         if (job.jobType === "initial_process" && draft.questions.length === 0) {
           draft.questions.push({
             targetField: "verification",

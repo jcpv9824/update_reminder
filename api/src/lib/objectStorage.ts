@@ -405,7 +405,7 @@ export async function createPrivateObjectUpload(input: {
     headers: {
       "Content-Type": input.mimeType,
       "x-ms-blob-type": "BlockBlob",
-      "x-ms-meta-declared-size": String(input.sizeBytes),
+      "x-ms-meta-declaredsize": String(input.sizeBytes),
     },
     expiresAt: expiresAt.toISOString(),
   };
@@ -700,7 +700,10 @@ async function tryReserveObjectRegistration(input: PrivateObjectLocator): Promis
   } catch (error) {
     const candidate = error as { number?: number; originalError?: { info?: { number?: number } } };
     if ((candidate.number ?? candidate.originalError?.info?.number) === 51074) {
-      throw Object.assign(new Error("El archivo idéntico está siendo procesado por otra operación."), { status: 409 });
+      throw Object.assign(new Error("El archivo idéntico está siendo procesado por otra operación."), {
+        status: 409,
+        code: "object_registration_busy",
+      });
     }
     throw error;
   }
@@ -724,12 +727,21 @@ async function releaseObjectDeletionClaim(input: PrivateObjectLocator, claimedBy
   `);
 }
 
+async function abandonObjectRegistration(input: PrivateObjectLocator): Promise<void> {
+  const key = locatorKey(input);
+  const reservation = registrationReservations.get(key);
+  if (!reservation) return;
+  registrationReservations.delete(key);
+  await releaseObjectDeletionClaim(input, reservation.token);
+}
+
 function storageStatusCode(error: unknown): number | undefined {
   const candidate = error as { statusCode?: number; $metadata?: { httpStatusCode?: number } };
   return candidate.statusCode ?? candidate.$metadata?.httpStatusCode;
 }
 
 export async function deletePrivateObjectIfUnreferenced(input: PrivateObjectLocator): Promise<boolean> {
+  await abandonObjectRegistration(input);
   const claimedBy = await tryClaimUnreferencedObject(input);
   if (!claimedBy) return false;
 

@@ -1,6 +1,7 @@
 import sql, { ConnectionPool, config as SqlConfig } from "mssql";
 
-const REQUIRED_DATABASE = "PortalSAGWeb";
+const PRODUCTION_DATABASE = "PortalSAGWeb";
+const QA_DATABASE = "PortalSAGWeb-TEST";
 const REQUIRED_ENGINE_MAJOR = 15;
 const REQUIRED_COMPATIBILITY = 150;
 const REQUIRED_COLLATION = "Modern_Spanish_CI_AS";
@@ -9,6 +10,13 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name]?.trim();
   if (!value) throw new Error(`Falta la variable de entorno ${name}.`);
   return value;
+}
+
+function expectedDatabase(env: NodeJS.ProcessEnv): string {
+  const environment = env.PORTAL_SAG_ENVIRONMENT?.trim().toLowerCase() || "production";
+  if (environment === "production") return PRODUCTION_DATABASE;
+  if (environment === "qa") return QA_DATABASE;
+  throw new Error("PORTAL_SAG_ENVIRONMENT debe ser production o qa.");
 }
 
 function integerSetting(
@@ -46,8 +54,9 @@ function parseServer(env: NodeJS.ProcessEnv): { server: string; port: number } {
 export function buildSqlConfigFromEnv(env: NodeJS.ProcessEnv = process.env): SqlConfig {
   const { server, port } = parseServer(env);
   const database = required(env, "SQL_DATABASE");
-  if (database !== REQUIRED_DATABASE) {
-    throw new Error(`SQL_DATABASE debe ser ${REQUIRED_DATABASE}.`);
+  const requiredDatabase = expectedDatabase(env);
+  if (database !== requiredDatabase) {
+    throw new Error(`SQL_DATABASE debe ser ${requiredDatabase} para PORTAL_SAG_ENVIRONMENT.`);
   }
 
   return {
@@ -88,6 +97,7 @@ export function getSqlPool(): Promise<ConnectionPool> {
 }
 
 export async function assertSqlRuntimeReady(): Promise<void> {
+  const requiredDatabase = expectedDatabase(process.env);
   const pool = await getSqlPool();
   const result = await pool.request().query<{
     major_version: number;
@@ -108,7 +118,7 @@ export async function assertSqlRuntimeReady(): Promise<void> {
       || row.major_version !== REQUIRED_ENGINE_MAJOR
       || row.compatibility_level !== REQUIRED_COMPATIBILITY
       || row.collation_name !== REQUIRED_COLLATION
-      || row.database_name !== REQUIRED_DATABASE) {
+      || row.database_name !== requiredDatabase) {
     throw new Error("La conexión SQL no coincide con el contrato certificado de Portal SAG Web.");
   }
 }

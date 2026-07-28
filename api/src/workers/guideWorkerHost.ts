@@ -11,6 +11,7 @@ export type GuideWorkerHostOptions = {
   signal: AbortSignal;
   workerId?: string;
   pollIntervalMs?: number;
+  maxJobsPerExecution?: number;
   log?: (message: string) => void;
   runOnce?: typeof runGuideWorkerOnce;
   cleanup?: () => Promise<number>;
@@ -57,15 +58,31 @@ export async function runGuideWorkerHost(options: GuideWorkerHostOptions): Promi
   const runOnce = options.runOnce ?? runGuideWorkerOnce;
   const cleanup = options.cleanup ?? cleanupCancelledUploads;
   const expirePending = options.expirePending ?? (() => expireSqlPendingGuideUploads());
+  const configuredMaximum = Number(process.env.GUIDE_WORKER_MAX_JOBS_PER_EXECUTION || "10");
+  const maxJobsPerExecution = Math.max(
+    1,
+    Math.min(
+      25,
+      options.maxJobsPerExecution
+        ?? (Number.isInteger(configuredMaximum) ? configuredMaximum : 10),
+    ),
+  );
+  const continuous = process.env.GUIDE_WORKER_HOST_MODE === "continuous";
+  let claimedThisExecution = 0;
   while (!options.signal.aborted) {
     const result = await runOnce(workerId, log);
+    if (result.disabled) return;
+    claimedThisExecution += result.claimed;
+    if (!continuous && result.claimed > 0 && claimedThisExecution < maxJobsPerExecution) {
+      continue;
+    }
     if (!result.disabled) {
       const expired = await expirePending();
       if (expired > 0) log(`Trabajador de guías: cargas pendientes expiradas=${expired}.`);
       const cleaned = await cleanup();
       if (cleaned > 0) log(`Trabajador de guías: cargas canceladas limpiadas=${cleaned}.`);
     }
-    if (process.env.GUIDE_WORKER_HOST_MODE !== "continuous") return;
+    if (!continuous) return;
     await waitForNextPoll(options.signal, pollIntervalMs);
   }
 }

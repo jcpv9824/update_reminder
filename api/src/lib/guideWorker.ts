@@ -35,6 +35,7 @@ function controlledFailure(error: unknown): { code: string; summary: string } {
     openai_invalid_output: "El proveedor de IA devolvió una respuesta inválida.",
     invalid_manual_structure: "El manual generado no cumple la estructura requerida.",
     unsafe_manual_output: "El manual generado contiene contenido inseguro.",
+    guide_answer_round_limit: "La guía agotó las rondas de aclaración permitidas.",
   };
   return { code, summary: summaries[code] ?? "El procesamiento de la guía falló de forma controlada." };
 }

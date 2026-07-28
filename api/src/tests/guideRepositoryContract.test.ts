@@ -29,6 +29,15 @@ describe("guide SQL repository safety contract", () => {
     expect(source).toContain("GUIDE_MAX_ACTIVE_SESSIONS_PER_OWNER");
     expect(source).toContain("GUIDE_MAX_CREATIONS_PER_OWNER_DAY");
     expect(source).toContain("Debe responder exactamente todas las preguntas abiertas una sola vez.");
+    expect(source).toContain('boundedGuideLimit("GUIDE_MAX_ANSWER_ROUNDS", 3, 5)');
+    expect(source).toContain('"guide_answer_round_limit"');
+  });
+
+  it("requires the final clarification round to close without new questions", async () => {
+    const source = await readFile(resolve(process.cwd(), "src/lib/guideProcessor.ts"), "utf8");
+    expect(source).toContain('boundedLimit("GUIDE_MAX_ANSWER_ROUNDS", 3, 5)');
+    expect(source).toContain("finalClarificationRound && draft.questions.length > 0");
+    expect(source).toContain('code: "guide_answer_round_limit"');
   });
 
   it("serializes claims and permits only one unexpired processing lease globally", async () => {
@@ -67,10 +76,15 @@ describe("guide SQL repository safety contract", () => {
 
   it("expires abandoned direct uploads and delays cleanup beyond signed URL expiry", async () => {
     const source = await repositorySource();
+    const expiryImplementation = source.slice(
+      source.indexOf("export async function expireSqlPendingGuideUploads"),
+      source.indexOf("export async function renewSqlGuideJobLease"),
+    );
     expect(source).toContain("expireSqlPendingGuideUploads");
     expect(source).toContain("created_at<=DATEADD(minute,-@minimumAgeMinutes");
     expect(source).toContain("Math.max(30");
     expect(source).toContain("updated_at<=DATEADD(minute,-@minimumAgeMinutes");
     expect(source).toContain("(status='cancelled' OR source_file_key IS NOT NULL)");
+    expect(expiryImplementation).toContain("sql.ISOLATION_LEVEL.READ_COMMITTED");
   });
 });
