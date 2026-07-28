@@ -210,6 +210,20 @@ The QA environment remains manual and synthetic-only. This evidence certifies
 the application behavior; it does not authorize production SQL DDL or feature
 exposure.
 
+Release candidate provenance:
+
+- certified source commit: `0dba9b388b0d90bc0e267b7daa49a07bc272dcc1`;
+- immutable worker image:
+  `erpupdschguideacr.azurecr.io/portal-sag-guide-worker@sha256:2ad787b2a10bc685c68d3ae562ab2090e15cb63143cf28b9796b7db00a7d3730`;
+- empty-queue QA execution:
+  `erpupdsch4645-guide-qa-job-erscac3`, `Succeeded`, zero claimed/failed jobs;
+- production worker: deployed as `erpupdsch4645-guide-prod-job`, manual trigger,
+  schedule disabled, never executed;
+- production Function App: certified API deployed with all Guide feature and
+  worker flags explicitly disabled;
+- production Static Web App: certified frontend deployed without the Guide
+  route or navigation flag.
+
 ## Production enablement gates
 
 Do not expose the route or accept real uploads until all are proven:
