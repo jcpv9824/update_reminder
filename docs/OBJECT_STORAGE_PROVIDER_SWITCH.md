@@ -1,38 +1,57 @@
-# Switch de almacenamiento privado: MinIO/S3 y Azure Blob
+# Switch de almacenamiento privado: SeaweedFS S3 y Azure Blob
 
 Estado: **implementado en runtime; pendiente de configurar y ensayar en QA**.
 
 Portal SAG Web admite dos proveedores privados simultáneamente:
 
-- `s3`: MinIO o cualquier endpoint S3 compatible con TLS.
+- `seaweedfs`: nuevas escrituras mediante el gateway S3 de SeaweedFS con TLS.
 - `azure_blob`: Azure Blob Storage mediante identidad administrada.
 
 `OBJECT_STORAGE_PROVIDER` selecciona únicamente el proveedor de **nuevas escrituras**. Las lecturas, URLs firmadas y limpiezas compensatorias usan el `storage_provider` guardado en `content.files`, por lo que los objetos históricos pueden permanecer en el proveedor donde fueron creados.
+
+El valor runtime `seaweedfs` es deliberadamente distinto del locator SQL
+`storage_provider='s3'`. El primero selecciona la implementación actual de
+escritura; el segundo conserva el contrato relacional compatible con objetos
+S3 históricos.
 
 ## Contrato de configuración
 
 Configuración común:
 
 ```text
-OBJECT_STORAGE_PROVIDER=s3
+OBJECT_STORAGE_PROVIDER=seaweedfs
 OBJECT_STORAGE_PREFIX=portal-sag/runtime
 OBJECT_STORAGE_SIGNED_URL_SECONDS=300
 ```
 
-El switch solo acepta `s3` o `azure_blob`. Si hay variables de un proveedor pero falta el switch, el runtime falla de forma cerrada.
+El switch solo acepta `seaweedfs` o `azure_blob`. Si hay variables de un proveedor pero falta el switch, el runtime falla de forma cerrada. El valor legado `s3` ya no se acepta como selector de escritura.
 
-### MinIO/S3
+### SeaweedFS mediante gateway S3
 
 ```text
-OBJECT_STORAGE_ENDPOINT=https://<endpoint>
-OBJECT_STORAGE_REGION=us-east-1
-OBJECT_STORAGE_BUCKET=<bucket-privado>
-OBJECT_STORAGE_FORCE_PATH_STYLE=true
-OBJECT_STORAGE_ACCESS_KEY_ID=@Microsoft.KeyVault(SecretUri=<secret-uri>)
-OBJECT_STORAGE_SECRET_ACCESS_KEY=@Microsoft.KeyVault(SecretUri=<secret-uri>)
+SEAWEEDFS_ENDPOINT=https://<endpoint-raiz-del-gateway-s3-seaweedfs>
+SEAWEEDFS_REGION=us-east-1
+SEAWEEDFS_BUCKET=<bucket-privado>
+SEAWEEDFS_FORCE_PATH_STYLE=true
+SEAWEEDFS_ACCESS_KEY_ID=@Microsoft.KeyVault(SecretUri=<secret-uri>)
+SEAWEEDFS_SECRET_ACCESS_KEY=@Microsoft.KeyVault(SecretUri=<secret-uri>)
 ```
 
-Las credenciales deben limitarse al bucket/prefijo del portal y mantenerse en Key Vault. El endpoint debe ser HTTPS raíz, sin credenciales, path, query ni fragment.
+Las credenciales deben limitarse al bucket/prefijo del portal y mantenerse en Key Vault. El endpoint es el gateway S3 de SeaweedFS, no el endpoint Filer ni el Master; debe ser una raíz HTTPS sin credenciales, path, query ni fragment. `SEAWEEDFS_FORCE_PATH_STYLE=true` es parte del contrato y la región usada para firmar debe coincidir con la entregada por infraestructura.
+
+La comprobación local segura se inicia con:
+
+```text
+migration\connect-object-storage\Connect-PortalSAGWeb-SeaweedFS.cmd
+```
+
+El launcher solicita endpoint, puerto, bucket, región y credenciales en memoria. El probe reversible de escritura crea, verifica por tamaño/SHA-256, lee y elimina un objeto aleatorio bajo `portal-sag/runtime/connection-tests`; nunca muestra nombres ni valores existentes. `HeadBucket`, listado limitado y consulta de versionado se reportan como diagnósticos opcionales: su ausencia no bloquea porque la cuenta runtime puede estar restringida a objetos/prefijos. El modo de solo lectura no puede demostrar acceso a un objeto sin recibir un locator conocido; para certificar permisos use el probe reversible.
+
+El gateway y su proxy TLS deben permitir las operaciones S3 que usa el portal:
+firma SigV4, `ListBucket` limitado al prefijo, `PUT`, `HEAD`, `GET`, `DELETE`,
+metadata `x-amz-meta-sha256`, URLs prefirmadas y lectura `Range`. La
+compatibilidad se demuestra contra la versión exacta administrada por
+infraestructura; no se presupone por el rótulo “S3 compatible”.
 
 ### Azure Blob
 
@@ -50,6 +69,27 @@ No se configura una clave de cuenta. La Function App usa `DefaultAzureCredential
 
 El container debe tener acceso público deshabilitado.
 
+### Paridad entre API y worker de guías
+
+La Function App y el Container Apps Job del Constructor de guías son dos hosts
+independientes. Antes de cambiar `OBJECT_STORAGE_PROVIDER` ambos deben recibir:
+
+- configuración Azure Blob mientras existan locators Blob;
+- las seis variables `SEAWEEDFS_*`;
+- referencias independientes a los mismos secretos SeaweedFS en Key Vault;
+- el mismo prefijo y tiempo de URL firmada.
+
+No se cambia el selector si solo uno de los dos hosts puede leer ambos
+proveedores. El worker necesita leer el video fuente y escribir evidencia,
+borradores y artefactos; una configuración incompleta deja trabajos durables
+en cola pero no procesables.
+
+Para upload directo desde navegador, CORS del gateway SeaweedFS/proxy debe
+aceptar únicamente los orígenes exactos de producción y QA, los métodos
+`PUT`, `GET` y `HEAD`, y los headers firmados requeridos (`Content-Type`,
+`Range` y los `x-amz-*` usados por metadata/checksum). No usar `*` con
+credenciales ni abrir el bucket al público.
+
 ## Semántica que no cambia
 
 - `Descargas Públicas` genera `Content-Disposition: attachment`, incluso para videos.
@@ -59,7 +99,7 @@ El container debe tener acceso público deshabilitado.
 
 ## Procedimiento seguro de cambio
 
-1. Mantener configurados ambos proveedores mientras existan filas de ambos tipos en `content.files`.
+1. Mantener configurados SeaweedFS y Azure Blob mientras existan filas de ambos tipos en `content.files`.
 2. Probar conectividad y permisos reversibles en QA.
 3. Crear un archivo pequeño con el proveedor actual y verificar carga, lectura, disposición y SHA-256.
 4. Cambiar solo `OBJECT_STORAGE_PROVIDER`.
@@ -68,16 +108,44 @@ El container debe tener acceso público deshabilitado.
 7. Ensayar rollback restaurando el valor anterior del switch.
 8. Promover el mismo cambio mediante slot de producción y health gates; no editar filas SQL para cambiar el proveedor de nuevas escrituras.
 
-Cambiar el switch no migra objetos existentes. Una transferencia entre proveedores es una operación independiente que exige copia, verificación byte count/SHA-256, actualización transaccional del locator SQL y rollback probado.
+Cambiar el switch no migra objetos existentes. Una transferencia entre proveedores es una operación independiente que exige inventario, copia, verificación de conteo/bytes/SHA-256, actualización transaccional del locator SQL y rollback probado.
+
+En un rollback del Guide Builder, restaurar
+`objectStorageProvider=azure_blob` no autoriza desactivar
+`configureSeaweedFS`. Debe permanecer `true` mientras existan uploads o
+artefactos con `storage_provider='s3'`, porque el worker todavía necesita la
+configuración y los secretos SeaweedFS para leerlos.
+
+## Retiro futuro de Azure Blob
+
+La adopción de SeaweedFS no autoriza deshabilitar o eliminar Azure Blob. Blob
+debe permanecer configurado y accesible mientras una fila SQL conserve
+`storage_provider='azure_blob'`.
+
+El retiro requiere una operación posterior y explícita:
+
+1. congelar reemplazos y cargas durante la ventana de transferencia;
+2. inventariar todas las versiones Blob referenciadas por SQL;
+3. copiar cada objeto a SeaweedFS conservando MIME, tamaño y SHA-256;
+4. verificar `HEAD` y lectura byte a byte antes de cambiar SQL;
+5. cambiar los locators reconciliados en una transacción versionada;
+6. demostrar lectura histórica, `Range`, inline, attachment y rollback;
+7. observar una ventana aprobada de cero lecturas Blob;
+8. retirar App Settings/RBAC y después el servicio Blob como acciones separadas.
+
+Nunca se elimina el container Blob como efecto automático de
+`OBJECT_STORAGE_PROVIDER=seaweedfs`.
 
 ## Puertas antes de producción
 
 - API tests y build correctos.
-- Para MinIO/S3: migración `024` aplicada y constraints de `content.files` trusted. Azure Blob puede operar de forma compatible con el schema Azure legado mientras se pospone esa migración.
+- Para SeaweedFS S3: migración `024` aplicada y constraints de `content.files` trusted. Azure Blob puede operar de forma compatible con el schema Azure legado mientras se pospone esa migración.
 - Identidad/credenciales con mínimo alcance.
 - TLS estricto y acceso público deshabilitado.
+- Function App y Guide Builder worker configurados y probados con ambos proveedores.
+- CORS de upload/lectura firmado limitado a los orígenes exactos de producción y QA.
 - Pruebas de attachment, inline y video Range en QA.
 - Carga, lectura, reemplazo, compensación y rollback con ambos proveedores.
 - Backup/restore SQL y restauración del switch probados.
 
-Azure Blob conserva compatibilidad de lectura y escritura con el schema legado anterior a `024`. MinIO/S3 sigue bloqueado hasta que existan sus columnas provider-neutral; el switch nunca intenta guardar un locator S3 en columnas Azure.
+Azure Blob conserva compatibilidad de lectura y escritura con el schema legado anterior a `024`. SeaweedFS S3 sigue bloqueado hasta que existan sus columnas provider-neutral; el switch nunca intenta guardar un locator S3 en columnas Azure.

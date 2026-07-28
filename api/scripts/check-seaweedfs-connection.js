@@ -16,11 +16,27 @@ function required(name) {
   return value;
 }
 
+function objectPrefix() {
+  const prefix = (process.env.OBJECT_STORAGE_PREFIX?.trim() || "portal-sag/runtime")
+    .replace(/^\/+|\/+$/g, "");
+  if (!prefix || prefix.includes("..") || !/^[a-zA-Z0-9/_-]+$/.test(prefix)) {
+    throw new Error("OBJECT_STORAGE_PREFIX is invalid.");
+  }
+  return prefix;
+}
+
 function safeError(error) {
+  let message = String(error?.message || "SeaweedFS S3 request failed.");
+  for (const secret of [
+    process.env.SEAWEEDFS_ACCESS_KEY_ID,
+    process.env.SEAWEEDFS_SECRET_ACCESS_KEY,
+  ]) {
+    if (secret) message = message.split(secret).join("[redacted]");
+  }
   return {
     name: error?.name || "Error",
     statusCode: error?.$metadata?.httpStatusCode || null,
-    message: String(error?.message || "MinIO request failed.")
+    message: message
       .replace(/AKIA[A-Z0-9]+/g, "[redacted]")
       .slice(0, 300),
   };
@@ -43,13 +59,18 @@ function isNotFound(error) {
 }
 
 async function main() {
-  const endpoint = required("OBJECT_STORAGE_ENDPOINT");
-  const region = required("OBJECT_STORAGE_REGION");
-  const bucket = required("OBJECT_STORAGE_BUCKET");
-  const accessKeyId = required("OBJECT_STORAGE_ACCESS_KEY_ID");
-  const secretAccessKey = required("OBJECT_STORAGE_SECRET_ACCESS_KEY");
-  const mode = process.env.MINIO_PROBE_MODE === "write" ? "write" : "readonly";
-  const prefix = "portal-sag/connection-tests";
+  const endpoint = required("SEAWEEDFS_ENDPOINT");
+  const region = required("SEAWEEDFS_REGION");
+  const bucket = required("SEAWEEDFS_BUCKET");
+  const accessKeyId = required("SEAWEEDFS_ACCESS_KEY_ID");
+  const secretAccessKey = required("SEAWEEDFS_SECRET_ACCESS_KEY");
+  const mode = process.env.SEAWEEDFS_PROBE_MODE === "write" ? "write" : "readonly";
+  const forcePathStyle = required("SEAWEEDFS_FORCE_PATH_STYLE").toLowerCase();
+  if (forcePathStyle !== "true") {
+    throw new Error("SEAWEEDFS_FORCE_PATH_STYLE must be true.");
+  }
+  const prefix = objectPrefix();
+  const connectionTestPrefix = `${prefix}/connection-tests`;
 
   const client = new S3Client({
     endpoint,
@@ -60,12 +81,27 @@ async function main() {
 
   let temporaryKey = null;
   try {
-    await client.send(new HeadBucketCommand({ Bucket: bucket }));
-    const list = await client.send(new ListObjectsV2Command({
-      Bucket: bucket,
-      Prefix: "portal-sag/",
-      MaxKeys: 1,
-    }));
+    let bucketHeadAllowed = false;
+    try {
+      await client.send(new HeadBucketCommand({ Bucket: bucket }));
+      bucketHeadAllowed = true;
+    } catch {
+      // Bucket-level diagnostics are optional; runtime access is object-scoped.
+    }
+
+    let listPrefixAllowed = false;
+    let prefixHasObjects = null;
+    try {
+      const list = await client.send(new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: `${prefix}/`,
+        MaxKeys: 1,
+      }));
+      listPrefixAllowed = true;
+      prefixHasObjects = Number(list.KeyCount || 0) > 0;
+    } catch {
+      // Least-privilege runtime credentials may intentionally omit ListBucket.
+    }
 
     let versioning = "not_authorized";
     try {
@@ -76,18 +112,19 @@ async function main() {
     }
 
     const result = {
-      authenticated: true,
-      bucketReachable: true,
-      listPrefixAllowed: true,
-      prefixHasObjects: Number(list.KeyCount || 0) > 0,
+      authenticated: bucketHeadAllowed || listPrefixAllowed,
+      bucketHeadAllowed,
+      listPrefixAllowed,
+      prefixHasObjects,
       versioning,
       writeReadDeleteProbe: "not_requested",
+      readonlyObjectAccess: "not_tested_without_known_object_key",
     };
 
     if (mode === "write") {
       const bytes = crypto.randomBytes(48);
       const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
-      temporaryKey = `${prefix}/${crypto.randomUUID()}.bin`;
+      temporaryKey = `${connectionTestPrefix}/${crypto.randomUUID()}.bin`;
 
       await client.send(new PutObjectCommand({
         Bucket: bucket,
@@ -96,7 +133,6 @@ async function main() {
         ContentLength: bytes.length,
         ContentType: "application/octet-stream",
         Metadata: { sha256 },
-        IfNoneMatch: "*",
       }));
 
       const head = await client.send(new HeadObjectCommand({
@@ -127,13 +163,14 @@ async function main() {
         if (!isNotFound(error)) throw error;
       }
       temporaryKey = null;
+      result.authenticated = true;
       result.writeReadDeleteProbe = "passed";
     }
 
-    console.log("MinIO connection succeeded.");
+    console.log("SeaweedFS S3 validation completed.");
     console.log(JSON.stringify(result));
   } catch (error) {
-    console.error("MinIO connection failed.");
+    console.error("SeaweedFS S3 connection failed.");
     console.error(JSON.stringify(safeError(error)));
     process.exitCode = 1;
   } finally {
@@ -149,7 +186,7 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error("MinIO connection failed.");
+  console.error("SeaweedFS S3 connection failed.");
   console.error(JSON.stringify(safeError(error)));
   process.exitCode = 1;
 });

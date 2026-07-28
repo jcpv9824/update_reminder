@@ -1,13 +1,13 @@
 # Despliegue de Portal SAG Web
 
-Portal SAG Web usa SQL Server como única base operacional, un bucket privado S3 compatible con MinIO para archivos y Azure Key Vault para secretos. El runtime no requiere ni aprovisiona una base documental.
+Portal SAG Web usa SQL Server como única base operacional, almacenamiento privado seleccionable entre Azure Blob y SeaweedFS mediante su gateway S3, y Azure Key Vault para secretos. El runtime no requiere ni aprovisiona una base documental.
 
 ## Componentes
 
 - Frontend React en Azure Static Web Apps.
 - API Node.js 20 en Azure Functions.
 - SQL Server 2019 `PortalSAGWeb`.
-- Bucket privado S3/MinIO del proveedor de infraestructura para documentos, videos y PDF.
+- Bucket privado SeaweedFS accesible mediante su gateway S3 y/o container privado Azure Blob para documentos, videos y PDF.
 - Azure Key Vault para la contraseña SQL, SMTP y accesos técnicos de las bases administradas.
 
 ## Requisitos
@@ -18,7 +18,7 @@ Portal SAG Web usa SQL Server como única base operacional, un bucket privado S3
 - Azure Functions Core Tools v4.
 - Esquema SQL al día y login de runtime con el rol `portal_runtime`.
 - Identidad administrada de la Function App con acceso de lectura a los secretos requeridos en Key Vault.
-- Endpoint S3/MinIO HTTPS, región, bucket privado y credenciales limitadas al prefijo `portal-sag/runtime/`.
+- Endpoint HTTPS del gateway S3 de SeaweedFS, región, bucket privado y credenciales limitadas al prefijo `portal-sag/runtime/`.
 
 ## Validación obligatoria
 
@@ -51,15 +51,15 @@ SQL_DATABASE=PortalSAGWeb
 SQL_USERNAME=<login-runtime>
 SQL_PASSWORD=@Microsoft.KeyVault(SecretUri=<uri-versionada-o-sin-version-del-secreto>)
 KEY_VAULT_URL=https://<vault>.vault.azure.net/
-OBJECT_STORAGE_PROVIDER=s3
-OBJECT_STORAGE_ENDPOINT=https://<endpoint-minio>
-OBJECT_STORAGE_REGION=us-east-1
-OBJECT_STORAGE_BUCKET=<bucket>
+OBJECT_STORAGE_PROVIDER=seaweedfs
 OBJECT_STORAGE_PREFIX=portal-sag/runtime
-OBJECT_STORAGE_FORCE_PATH_STYLE=true
 OBJECT_STORAGE_SIGNED_URL_SECONDS=300
-OBJECT_STORAGE_ACCESS_KEY_ID=@Microsoft.KeyVault(SecretUri=<secreto-access-key>)
-OBJECT_STORAGE_SECRET_ACCESS_KEY=@Microsoft.KeyVault(SecretUri=<secreto-secret-key>)
+SEAWEEDFS_ENDPOINT=https://<endpoint-gateway-s3-seaweedfs>
+SEAWEEDFS_REGION=us-east-1
+SEAWEEDFS_BUCKET=<bucket>
+SEAWEEDFS_FORCE_PATH_STYLE=true
+SEAWEEDFS_ACCESS_KEY_ID=@Microsoft.KeyVault(SecretUri=<secreto-access-key>)
+SEAWEEDFS_SECRET_ACCESS_KEY=@Microsoft.KeyVault(SecretUri=<secreto-secret-key>)
 APP_TIMEZONE=America/Bogota
 DEV_AUTH_ENABLED=false
 GUIDE_BUILDER_ENABLED=false
@@ -76,6 +76,12 @@ AZURE_BLOB_STORAGE_CONTAINER=<container-privado>
 ```
 
 La identidad administrada requiere `Storage Blob Data Contributor` en el container y `Storage Blob Delegator` en la cuenta. El switch no mueve archivos existentes; consulte [docs/OBJECT_STORAGE_PROVIDER_SWITCH.md](docs/OBJECT_STORAGE_PROVIDER_SWITCH.md).
+
+El Container Apps Job del Constructor de guías es un runtime separado. Antes
+de seleccionar `seaweedfs`, la Function App y el job deben tener las variables
+SeaweedFS, referencias Key Vault y configuración Blob para lecturas históricas.
+El gateway/proxy SeaweedFS debe aplicar CORS solo a los orígenes exactos de
+producción y QA y a los métodos/headers firmados documentados en el runbook.
 
 `Constructor de guías` permanece apagado en producción. Su habilitación exige
 primero las puertas de `docs/GUIDE_BUILDER_DESIGN.md`; después se configuran
@@ -127,22 +133,22 @@ El workflow de Static Web Apps debe ejecutar las pruebas y el build antes de pub
 5. La generación manual y automática de tareas es idempotente.
 6. Cambios de estado de tareas generan auditoría y mensajes en el outbox.
 7. Correo de prueba, reporte maestro y recordatorios se procesan desde el outbox SQL.
-8. Descargas, videos y PDF se sirven desde el bucket privado S3/MinIO mediante URLs firmadas de corta duración.
+8. Descargas, videos y PDF se sirven desde Azure Blob o el bucket privado SeaweedFS mediante URLs firmadas de corta duración.
 9. Rutas protegidas sin sesión devuelven `401`.
 10. Application Insights no muestra `5xx`, excepciones ni errores de SQL/S3.
 
 ## Rollback
 
-El rollback vigente restaura una versión anterior del paquete SQL-only y los App Settings previamente exportados. La recuperación de datos se hace mediante backup/restore de SQL Server y versionado/retención del bucket S3/MinIO.
+El rollback vigente restaura una versión anterior del paquete SQL-only y los App Settings previamente exportados. La recuperación de datos se hace mediante backup/restore de SQL Server y versionado/retención del bucket SeaweedFS o del container Azure Blob correspondiente.
 
 No use una base documental retirada como mecanismo de rollback.
 
-La transferencia del almacenamiento legado al bucket del proveedor se ejecuta con las puertas de [docs/S3_MINIO_OBJECT_STORAGE_CUTOVER.md](docs/S3_MINIO_OBJECT_STORAGE_CUTOVER.md).
+La transferencia del almacenamiento legado al bucket del proveedor se ejecuta con las puertas de [docs/SEAWEEDFS_OBJECT_STORAGE_CUTOVER.md](docs/SEAWEEDFS_OBJECT_STORAGE_CUTOVER.md).
 
 ## Backups
 
 - SQL Server: backup completo, diferenciales/log según el RPO/RTO acordado y restauración probada en QA.
-- S3/MinIO: versionado, política de retención y restauración de una versión probada.
+- SeaweedFS S3: versionado o estrategia de retención acordada con infraestructura y restauración probada.
 - Key Vault: soft delete y purge protection.
 - Los snapshots históricos de migración se conservan cifrados e inmutables durante la retención aprobada; no son una fuente operacional.
 

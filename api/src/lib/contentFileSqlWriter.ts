@@ -57,7 +57,7 @@ export async function ensureSqlContentFile(
   if (!capabilities.provider_neutral_locators) {
     if (input.storageProvider !== "azure_blob") {
       throw Object.assign(
-        new Error("La base de datos aún no admite locators S3/MinIO."),
+        new Error("La base de datos aún no admite locators S3/SeaweedFS."),
         { status: 503 },
       );
     }

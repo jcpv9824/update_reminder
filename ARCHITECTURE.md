@@ -12,7 +12,7 @@ Browser
   → Node.js 20 Azure Functions v4
       → SQL Server 2019 (operational data)
       → Azure Key Vault (secret values)
-      → Azure Blob or S3/MinIO (private object bytes)
+      → Azure Blob or SeaweedFS through its S3 gateway (private object bytes)
       → OpenAI API (guide transcription and grounded drafting)
       → configured email provider
 ```
@@ -191,7 +191,7 @@ the present behavior as atomic.
 `OBJECT_STORAGE_PROVIDER` selects the destination for new writes:
 
 - `azure_blob`
-- `s3` (including MinIO)
+- `seaweedfs` (new writes through the SeaweedFS S3 gateway)
 
 Each stored record retains its provider and immutable locator. Reads,
 replacements, cleanup, signed URLs, inline display, attachment delivery, and
@@ -209,6 +209,16 @@ to the portal origin and required methods/headers.
 Provider switching does not migrate bytes. A physical transfer requires its
 own inventory, hash/size reconciliation, QA proof, rollback window, and explicit
 production authority. Never store object bytes in SQL.
+
+The write-provider name `seaweedfs` is an explicit runtime choice. SQL keeps
+the provider-neutral historical S3 locator value `s3` for SeaweedFS objects so
+existing schema constraints and rows are not rewritten merely because the S3
+implementation changed.
+
+Azure Blob remains selectable while SeaweedFS is introduced. Retiring Blob is
+a separate gated migration: copy and reconcile every Blob-backed object, update
+its SQL locator transactionally, prove historical reads and rollback, then
+remove Blob configuration and RBAC only after an approved zero-read window.
 
 ## SQL migrations
 

@@ -84,8 +84,10 @@ agent explicitly coordinates ownership.
   adapters, settings, fallbacks, dual-read, or Cosmos rollback logic.
 - The production SQL contract is SQL Server 2019, compatibility level 150.
 - Do not store file bytes or secrets in SQL.
-- Private object storage may be Azure Blob or S3/MinIO. Persist the provider and
-  locator so historical objects remain readable after a provider switch.
+- Private object storage may be Azure Blob or SeaweedFS through its S3 gateway.
+  Persist the provider and locator so historical objects remain readable after
+  a provider switch. A write-provider switch never authorizes deleting Blob or
+  rewriting historical locators.
 - Backend authorization is authoritative. Sidebar and route hiding are UX only.
 - Keep option access, option-specific actions, and task visibility as separate
   authorization concepts.

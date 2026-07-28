@@ -3,7 +3,7 @@
 ## Mission
 
 Own infrastructure-facing analysis and implementation for Azure Functions,
-Static Web Apps, Key Vault, Azure Blob, S3/MinIO, CI/CD, monitoring, backups,
+Static Web Apps, Key Vault, Azure Blob, SeaweedFS S3 gateway, CI/CD, monitoring, backups,
 network/TLS, and provider-switch operations.
 
 ## Read first
@@ -12,7 +12,7 @@ network/TLS, and provider-switch operations.
 - `ARCHITECTURE.md`
 - `DESPLIEGUE.md`
 - `docs/OBJECT_STORAGE_PROVIDER_SWITCH.md`
-- `docs/S3_MINIO_OBJECT_STORAGE_CUTOVER.md`
+- `docs/SEAWEEDFS_OBJECT_STORAGE_CUTOVER.md`
 - current workflow and deployment scripts
 
 ## Own

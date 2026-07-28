@@ -59,6 +59,37 @@ param blobStorageAccountName string = 'sagwebiastorage'
 @description('Azure Blob container used by Portal SAG Web private content.')
 param blobStorageContainer string = 'portal-sag-content'
 
+@allowed([
+  'azure_blob'
+  'seaweedfs'
+])
+@description('Provider selected only for new Guide Builder object writes.')
+param objectStorageProvider string = 'azure_blob'
+
+@description('Configure SeaweedFS alongside Blob so historical and future S3 locators remain readable.')
+param configureSeaweedFS bool = false
+
+@description('Root HTTPS endpoint of the provider-managed SeaweedFS S3 gateway.')
+param seaweedFsEndpoint string = ''
+
+@description('S3 signing region used by the SeaweedFS gateway.')
+param seaweedFsRegion string = 'us-east-1'
+
+@description('Private SeaweedFS bucket reserved for Portal SAG Web.')
+param seaweedFsBucket string = ''
+
+@description('Use path-style S3 requests for the SeaweedFS gateway.')
+param seaweedFsForcePathStyle bool = true
+
+@description('Existing application Key Vault holding the SeaweedFS credentials.')
+param objectStorageKeyVaultName string = 'erpupdsch4645-kv'
+
+@description('Key Vault secret name for the SeaweedFS S3 access key.')
+param seaweedFsAccessKeySecretName string = 'portal-sag-seaweedfs-access-key'
+
+@description('Key Vault secret name for the SeaweedFS S3 secret key.')
+param seaweedFsSecretKeySecretName string = 'portal-sag-seaweedfs-secret-key'
+
 @description('Private object prefix reserved for runtime content.')
 param objectStoragePrefix string = 'portal-sag/runtime'
 
@@ -73,6 +104,52 @@ var keyVaultUri = 'https://${keyVaultName}${environment().suffixes.keyvaultDns}'
 var sqlPasswordSecretUri = '${keyVaultUri}/secrets/${sqlPasswordSecretName}'
 var openAiSecretUri = '${keyVaultUri}/secrets/${openAiSecretName}'
 var blobStorageAccountUrl = 'https://${blobStorageAccountName}.blob.${environment().suffixes.storage}'
+var seaweedFsConfigured = configureSeaweedFS || objectStorageProvider == 'seaweedfs'
+var objectStorageKeyVaultUri = 'https://${objectStorageKeyVaultName}${environment().suffixes.keyvaultDns}'
+var seaweedFsAccessKeySecretUri = '${objectStorageKeyVaultUri}/secrets/${seaweedFsAccessKeySecretName}'
+var seaweedFsSecretKeySecretUri = '${objectStorageKeyVaultUri}/secrets/${seaweedFsSecretKeySecretName}'
+var seaweedSecrets = seaweedFsConfigured
+  ? [
+      {
+        name: 'seaweedfs-access-key'
+        keyVaultUrl: seaweedFsAccessKeySecretUri
+        identity: workerIdentity.id
+      }
+      {
+        name: 'seaweedfs-secret-key'
+        keyVaultUrl: seaweedFsSecretKeySecretUri
+        identity: workerIdentity.id
+      }
+    ]
+  : []
+var seaweedEnvironment = seaweedFsConfigured
+  ? [
+      {
+        name: 'SEAWEEDFS_ENDPOINT'
+        value: seaweedFsEndpoint
+      }
+      {
+        name: 'SEAWEEDFS_REGION'
+        value: seaweedFsRegion
+      }
+      {
+        name: 'SEAWEEDFS_BUCKET'
+        value: seaweedFsBucket
+      }
+      {
+        name: 'SEAWEEDFS_FORCE_PATH_STYLE'
+        value: string(seaweedFsForcePathStyle)
+      }
+      {
+        name: 'SEAWEEDFS_ACCESS_KEY_ID'
+        secretRef: 'seaweedfs-access-key'
+      }
+      {
+        name: 'SEAWEEDFS_SECRET_ACCESS_KEY'
+        secretRef: 'seaweedfs-secret-key'
+      }
+    ]
+  : []
 var scheduleEnabled = portalEnvironment == 'production' && enableSchedule
 var triggerConfiguration = scheduleEnabled
   ? {
@@ -95,6 +172,46 @@ resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01'
 
 resource workerIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
   name: workerIdentityName
+}
+
+resource objectStorageKeyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = if (seaweedFsConfigured) {
+  name: objectStorageKeyVaultName
+}
+
+resource seaweedFsAccessKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = if (seaweedFsConfigured) {
+  parent: objectStorageKeyVault
+  name: seaweedFsAccessKeySecretName
+}
+
+resource seaweedFsSecretKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = if (seaweedFsConfigured) {
+  parent: objectStorageKeyVault
+  name: seaweedFsSecretKeySecretName
+}
+
+resource workerSeaweedFsAccessKeyReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (seaweedFsConfigured) {
+  name: guid(seaweedFsAccessKeySecret.id, workerIdentity.id, 'seaweedfs-access-key-reader')
+  scope: seaweedFsAccessKeySecret
+  properties: {
+    principalId: workerIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      '4633458b-17de-408a-b874-0445c86b69e6'
+    )
+  }
+}
+
+resource workerSeaweedFsSecretKeyReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (seaweedFsConfigured) {
+  name: guid(seaweedFsSecretKeySecret.id, workerIdentity.id, 'seaweedfs-secret-key-reader')
+  scope: seaweedFsSecretKeySecret
+  properties: {
+    principalId: workerIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      '4633458b-17de-408a-b874-0445c86b69e6'
+    )
+  }
 }
 
 resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
@@ -122,7 +239,7 @@ resource workerJob 'Microsoft.App/jobs@2024-03-01' = {
           identity: workerIdentity.id
         }
       ]
-      secrets: [
+      secrets: concat([
         {
           name: 'sql-password'
           keyVaultUrl: sqlPasswordSecretUri
@@ -133,14 +250,14 @@ resource workerJob 'Microsoft.App/jobs@2024-03-01' = {
           keyVaultUrl: openAiSecretUri
           identity: workerIdentity.id
         }
-      ]
+      ], seaweedSecrets)
     }, triggerConfiguration)
     template: {
       containers: [
         {
           name: 'guide-worker'
           image: workerImage
-          env: [
+          env: concat([
             {
               name: 'NODE_ENV'
               value: 'production'
@@ -179,7 +296,7 @@ resource workerJob 'Microsoft.App/jobs@2024-03-01' = {
             }
             {
               name: 'OBJECT_STORAGE_PROVIDER'
-              value: 'azure_blob'
+              value: objectStorageProvider
             }
             {
               name: 'OBJECT_STORAGE_PREFIX'
@@ -249,7 +366,7 @@ resource workerJob 'Microsoft.App/jobs@2024-03-01' = {
               name: 'GUIDE_MAX_ANSWER_ROUNDS'
               value: '3'
             }
-          ]
+          ], seaweedEnvironment)
           resources: {
             cpu: 2
             memory: '4Gi'

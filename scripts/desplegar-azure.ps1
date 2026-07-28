@@ -9,14 +9,38 @@ param(
   [string]$SqlDatabase    = "PortalSAGWeb",
   [string]$SqlUsername    = "SAGWebDev",
   [string]$SqlPasswordSecretName = "portal-sag-sql-runtime-password",
-  [Parameter(Mandatory=$true)][string]$ObjectStorageEndpoint,
-  [Parameter(Mandatory=$true)][string]$ObjectStorageBucket,
-  [string]$ObjectStorageRegion = "us-east-1",
-  [string]$ObjectStorageAccessKeySecretName = "portal-sag-object-storage-access-key",
-  [string]$ObjectStorageSecretKeySecretName = "portal-sag-object-storage-secret-key"
+  [ValidateSet("azure_blob", "seaweedfs")]
+  [string]$ObjectStorageProvider = "azure_blob",
+  [Parameter(Mandatory=$true)][string]$SeaweedFSEndpoint,
+  [Parameter(Mandatory=$true)][string]$SeaweedFSBucket,
+  [string]$SeaweedFSRegion = "us-east-1",
+  [string]$SeaweedFSAccessKeySecretName = "portal-sag-seaweedfs-access-key",
+  [string]$SeaweedFSSecretKeySecretName = "portal-sag-seaweedfs-secret-key",
+  [string]$AzureBlobContainer = "portal-sag-content"
 )
 
 $ErrorActionPreference = "Stop"
+
+$seaweedFSUri = [Uri]$SeaweedFSEndpoint
+if (
+  $seaweedFSUri.Scheme -cne "https" -or
+  $seaweedFSUri.UserInfo -or
+  $seaweedFSUri.Query -or
+  $seaweedFSUri.Fragment -or
+  $seaweedFSUri.AbsolutePath -ne "/"
+) {
+  throw "SeaweedFSEndpoint debe ser una raíz HTTPS sin credenciales, ruta, query ni fragment."
+}
+if ($SeaweedFSBucket -notmatch '^(?!.*\.\.)(?!-)[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$') {
+  throw "SeaweedFSBucket no es un nombre de bucket S3 válido."
+}
+if ($SeaweedFSRegion -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$') {
+  throw "SeaweedFSRegion no es válido."
+}
+if ($AzureBlobContainer -notmatch '^(?!.*--)[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$') {
+  throw "AzureBlobContainer no es un nombre de container válido."
+}
+$SeaweedFSEndpoint = $seaweedFSUri.AbsoluteUri.TrimEnd("/")
 
 $keyVaultName   = "$AppPrefix-kv"
 $storageAccount = ($AppPrefix -replace "-","").ToLower() + "stg"
@@ -39,16 +63,18 @@ $sqlSecretUri = az keyvault secret show --vault-name $keyVaultName --name $SqlPa
 if (-not $sqlSecretUri) {
   throw "Cree primero el secreto '$SqlPasswordSecretName' en Key Vault con la contraseña del login SQL de runtime."
 }
-Write-Host "Cree también en Key Vault los secretos '$ObjectStorageAccessKeySecretName' y '$ObjectStorageSecretKeySecretName'."
-Read-Host "Presione Enter cuando ambos secretos S3/MinIO existan" | Out-Null
-$objectAccessKeyUri = az keyvault secret show --vault-name $keyVaultName --name $ObjectStorageAccessKeySecretName --query id --output tsv
-$objectSecretKeyUri = az keyvault secret show --vault-name $keyVaultName --name $ObjectStorageSecretKeySecretName --query id --output tsv
-if (-not $objectAccessKeyUri -or -not $objectSecretKeyUri) {
-  throw "Cree primero ambos secretos S3/MinIO en Key Vault."
+Write-Host "Cree también en Key Vault los secretos '$SeaweedFSAccessKeySecretName' y '$SeaweedFSSecretKeySecretName'."
+Read-Host "Presione Enter cuando ambos secretos del gateway S3 de SeaweedFS existan" | Out-Null
+$seaweedFSAccessKeyUri = az keyvault secret show --vault-name $keyVaultName --name $SeaweedFSAccessKeySecretName --query id --output tsv
+$seaweedFSSecretKeyUri = az keyvault secret show --vault-name $keyVaultName --name $SeaweedFSSecretKeySecretName --query id --output tsv
+if (-not $seaweedFSAccessKeyUri -or -not $seaweedFSSecretKeyUri) {
+  throw "Cree primero ambos secretos del gateway S3 de SeaweedFS en Key Vault."
 }
 
 Write-Host "==> Creando cuenta de almacenamiento $storageAccount..."
 az storage account create --name $storageAccount --resource-group $ResourceGroup --location $Location --sku Standard_LRS | Out-Null
+Write-Host "==> Creando container Blob privado $AzureBlobContainer..."
+az storage container create --account-name $storageAccount --name $AzureBlobContainer --auth-mode key --public-access off | Out-Null
 
 Write-Host "==> Creando Function App $functionApp..."
 az functionapp create --resource-group $ResourceGroup --consumption-plan-location $Location `
@@ -62,9 +88,14 @@ az resource update --ids $functionAppId --set properties.httpsOnly=true --output
 az functionapp config set --name $functionApp --resource-group $ResourceGroup --ftps-state Disabled --min-tls-version 1.2 --output none
 $functionPrincipalId = az functionapp identity show --name $functionApp --resource-group $ResourceGroup --query principalId --output tsv
 $keyVaultId          = az keyvault show --name $keyVaultName --resource-group $ResourceGroup --query id --output tsv
+$storageAccountId    = az storage account show --name $storageAccount --resource-group $ResourceGroup --query id --output tsv
+$blobContainerScope  = "$storageAccountId/blobServices/default/containers/$AzureBlobContainer"
 
 Write-Host "==> Asignando rol Key Vault Secrets Officer..."
 az role assignment create --assignee $functionPrincipalId --role "Key Vault Secrets Officer" --scope $keyVaultId | Out-Null
+Write-Host "==> Asignando acceso Blob de mínimo alcance..."
+az role assignment create --assignee $functionPrincipalId --role "Storage Blob Data Contributor" --scope $blobContainerScope | Out-Null
+az role assignment create --assignee $functionPrincipalId --role "Storage Blob Delegator" --scope $storageAccountId | Out-Null
 Write-Host "==> Configurando variables de entorno..."
 $setupSecret = [Guid]::NewGuid().ToString("N")
 $rateLimitHashSecret = [Guid]::NewGuid().ToString("N") + [Guid]::NewGuid().ToString("N")
@@ -78,15 +109,17 @@ az functionapp config appsettings set --name $functionApp --resource-group $Reso
   "SQL_USERNAME=$SqlUsername" `
   "SQL_PASSWORD=@Microsoft.KeyVault(SecretUri=$sqlSecretUri)" `
   "KEY_VAULT_URL=https://$keyVaultName.vault.azure.net/" `
-  "OBJECT_STORAGE_PROVIDER=s3" `
-  "OBJECT_STORAGE_ENDPOINT=$ObjectStorageEndpoint" `
-  "OBJECT_STORAGE_REGION=$ObjectStorageRegion" `
-  "OBJECT_STORAGE_BUCKET=$ObjectStorageBucket" `
+  "OBJECT_STORAGE_PROVIDER=$ObjectStorageProvider" `
   "OBJECT_STORAGE_PREFIX=portal-sag/runtime" `
-  "OBJECT_STORAGE_FORCE_PATH_STYLE=true" `
   "OBJECT_STORAGE_SIGNED_URL_SECONDS=300" `
-  "OBJECT_STORAGE_ACCESS_KEY_ID=@Microsoft.KeyVault(SecretUri=$objectAccessKeyUri)" `
-  "OBJECT_STORAGE_SECRET_ACCESS_KEY=@Microsoft.KeyVault(SecretUri=$objectSecretKeyUri)" `
+  "SEAWEEDFS_ENDPOINT=$SeaweedFSEndpoint" `
+  "SEAWEEDFS_REGION=$SeaweedFSRegion" `
+  "SEAWEEDFS_BUCKET=$SeaweedFSBucket" `
+  "SEAWEEDFS_FORCE_PATH_STYLE=true" `
+  "SEAWEEDFS_ACCESS_KEY_ID=@Microsoft.KeyVault(SecretUri=$seaweedFSAccessKeyUri)" `
+  "SEAWEEDFS_SECRET_ACCESS_KEY=@Microsoft.KeyVault(SecretUri=$seaweedFSSecretKeyUri)" `
+  "AZURE_BLOB_STORAGE_ACCOUNT_URL=https://$storageAccount.blob.core.windows.net" `
+  "AZURE_BLOB_STORAGE_CONTAINER=$AzureBlobContainer" `
   "APP_TIMEZONE=America/Bogota" `
   "DEV_AUTH_ENABLED=false" `
   "RATE_LIMIT_HASH_SECRET=$rateLimitHashSecret" `

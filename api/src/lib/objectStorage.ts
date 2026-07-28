@@ -22,6 +22,7 @@ import { getSqlPool } from "./sql";
 import { runSqlTransaction } from "./sqlTransaction";
 
 export type ObjectStorageProvider = "s3" | "azure_blob";
+export type ObjectStorageWriteProvider = "seaweedfs" | "azure_blob";
 
 export type PrivateObjectLocator =
   | {
@@ -92,8 +93,8 @@ type SharedConfig = {
   signedUrlSeconds: number;
 };
 
-type S3Config = SharedConfig & {
-  provider: "s3";
+type SeaweedFSConfig = SharedConfig & {
+  provider: "seaweedfs";
   endpoint: string;
   region: string;
   bucket: string;
@@ -109,13 +110,13 @@ type AzureBlobConfig = SharedConfig & {
   containerName: string;
 };
 
-const S3_SETTING_NAMES = [
-  "OBJECT_STORAGE_ENDPOINT",
-  "OBJECT_STORAGE_REGION",
-  "OBJECT_STORAGE_BUCKET",
-  "OBJECT_STORAGE_FORCE_PATH_STYLE",
-  "OBJECT_STORAGE_ACCESS_KEY_ID",
-  "OBJECT_STORAGE_SECRET_ACCESS_KEY",
+const SEAWEEDFS_SETTING_NAMES = [
+  "SEAWEEDFS_ENDPOINT",
+  "SEAWEEDFS_REGION",
+  "SEAWEEDFS_BUCKET",
+  "SEAWEEDFS_FORCE_PATH_STYLE",
+  "SEAWEEDFS_ACCESS_KEY_ID",
+  "SEAWEEDFS_SECRET_ACCESS_KEY",
 ] as const;
 
 const AZURE_SETTING_NAMES = [
@@ -125,7 +126,7 @@ const AZURE_SETTING_NAMES = [
   "PUBLIC_DOWNLOADS_STORAGE_CONTAINER",
 ] as const;
 
-let cachedS3Client: { signature: string; client: S3Client } | null = null;
+let cachedSeaweedFSClient: { signature: string; client: S3Client } | null = null;
 let cachedAzureService: { accountUrl: string; client: BlobServiceClient } | null = null;
 let cachedDelegation: { accountUrl: string; key: UserDelegationKey; expiresAt: Date } | null = null;
 
@@ -174,34 +175,39 @@ function readSharedConfig(): SharedConfig {
   return { prefix, signedUrlSeconds };
 }
 
-function readWriteProvider(): ObjectStorageProvider | null {
+function readWriteProvider(): ObjectStorageWriteProvider | null {
   const raw = configured("OBJECT_STORAGE_PROVIDER")?.toLowerCase();
   if (!raw) {
     if (
-      hasAny(S3_SETTING_NAMES) ||
+      hasAny(SEAWEEDFS_SETTING_NAMES) ||
       hasAny(AZURE_SETTING_NAMES) ||
       configured("OBJECT_STORAGE_PREFIX") ||
       configured("OBJECT_STORAGE_SIGNED_URL_SECONDS")
     ) {
-      throw new Error("OBJECT_STORAGE_PROVIDER debe seleccionar explícitamente s3 o azure_blob.");
+      throw new Error("OBJECT_STORAGE_PROVIDER debe seleccionar explícitamente seaweedfs o azure_blob.");
     }
     return null;
   }
-  if (raw !== "s3" && raw !== "azure_blob") {
-    throw new Error("OBJECT_STORAGE_PROVIDER debe ser s3 o azure_blob.");
+  if (raw !== "seaweedfs" && raw !== "azure_blob") {
+    throw new Error("OBJECT_STORAGE_PROVIDER debe ser seaweedfs o azure_blob.");
   }
   return raw;
 }
 
-function readS3Config(requiredForOperation = false): S3Config | null {
-  if (!hasAny(S3_SETTING_NAMES)) {
+function readSeaweedFSConfig(requiredForOperation = false): SeaweedFSConfig | null {
+  if (!hasAny(SEAWEEDFS_SETTING_NAMES)) {
     if (requiredForOperation) {
-      throw Object.assign(new Error("El almacenamiento S3/MinIO no está configurado."), { status: 503 });
+      throw Object.assign(new Error("SeaweedFS no está configurado."), { status: 503 });
     }
     return null;
   }
 
-  const endpointUrl = new URL(required("OBJECT_STORAGE_ENDPOINT"));
+  let endpointUrl: URL;
+  try {
+    endpointUrl = new URL(required("SEAWEEDFS_ENDPOINT"));
+  } catch {
+    throw new Error("SEAWEEDFS_ENDPOINT debe ser un endpoint HTTPS raíz válido.");
+  }
   if (
     endpointUrl.protocol !== "https:" ||
     endpointUrl.username ||
@@ -210,22 +216,22 @@ function readS3Config(requiredForOperation = false): S3Config | null {
     endpointUrl.hash ||
     !["", "/"].includes(endpointUrl.pathname)
   ) {
-    throw new Error("OBJECT_STORAGE_ENDPOINT debe ser un endpoint HTTPS raíz sin credenciales, ruta ni query string.");
+    throw new Error("SEAWEEDFS_ENDPOINT debe ser un endpoint HTTPS raíz sin credenciales, ruta ni query string.");
   }
-  const bucket = required("OBJECT_STORAGE_BUCKET");
+  const bucket = required("SEAWEEDFS_BUCKET");
   if (!/^(?!.*\.\.)(?!-)[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket)) {
-    throw new Error("OBJECT_STORAGE_BUCKET no es un nombre de bucket S3 válido.");
+    throw new Error("SEAWEEDFS_BUCKET no es un nombre de bucket S3 válido.");
   }
 
   return {
-    provider: "s3",
+    provider: "seaweedfs",
     ...readSharedConfig(),
     endpoint: endpointUrl.origin,
-    region: configured("OBJECT_STORAGE_REGION") || "us-east-1",
+    region: configured("SEAWEEDFS_REGION") || "us-east-1",
     bucket,
-    accessKeyId: required("OBJECT_STORAGE_ACCESS_KEY_ID"),
-    secretAccessKey: required("OBJECT_STORAGE_SECRET_ACCESS_KEY"),
-    forcePathStyle: parseBoolean("OBJECT_STORAGE_FORCE_PATH_STYLE", true),
+    accessKeyId: required("SEAWEEDFS_ACCESS_KEY_ID"),
+    secretAccessKey: required("SEAWEEDFS_SECRET_ACCESS_KEY"),
+    forcePathStyle: parseBoolean("SEAWEEDFS_FORCE_PATH_STYLE", true),
   };
 }
 
@@ -265,24 +271,24 @@ function readAzureBlobConfig(requiredForOperation = false): AzureBlobConfig | nu
   };
 }
 
-function getWriteConfig(): S3Config | AzureBlobConfig | null {
+function getWriteConfig(): SeaweedFSConfig | AzureBlobConfig | null {
   const provider = readWriteProvider();
   if (!provider) return null;
-  return provider === "s3"
-    ? readS3Config(true)
+  return provider === "seaweedfs"
+    ? readSeaweedFSConfig(true)
     : readAzureBlobConfig(true);
 }
 
-function getS3Client(config: S3Config): S3Client {
+function getSeaweedFSClient(config: SeaweedFSConfig): S3Client {
   const signature = [
     config.endpoint,
     config.region,
     config.accessKeyId,
     config.forcePathStyle ? "path" : "virtual",
   ].join("|");
-  if (!cachedS3Client || cachedS3Client.signature !== signature) {
-    cachedS3Client?.client.destroy();
-    cachedS3Client = {
+  if (!cachedSeaweedFSClient || cachedSeaweedFSClient.signature !== signature) {
+    cachedSeaweedFSClient?.client.destroy();
+    cachedSeaweedFSClient = {
       signature,
       client: new S3Client({
         endpoint: config.endpoint,
@@ -295,7 +301,7 @@ function getS3Client(config: S3Config): S3Client {
       }),
     };
   }
-  return cachedS3Client.client;
+  return cachedSeaweedFSClient.client;
 }
 
 function getAzureService(config: AzureBlobConfig): BlobServiceClient {
@@ -309,11 +315,6 @@ function getAzureService(config: AzureBlobConfig): BlobServiceClient {
   return cachedAzureService.client;
 }
 
-function isS3PreconditionFailure(error: unknown): boolean {
-  const candidate = error as { name?: string; $metadata?: { httpStatusCode?: number } };
-  return candidate.name === "PreconditionFailed" || candidate.$metadata?.httpStatusCode === 412;
-}
-
 function isAzureConflict(error: unknown): boolean {
   return (error as { statusCode?: number }).statusCode === 409;
 }
@@ -322,7 +323,7 @@ export function isObjectStorageConfigured(): boolean {
   return getWriteConfig() !== null;
 }
 
-export function getObjectStorageProvider(): ObjectStorageProvider | null {
+export function getObjectStorageProvider(): ObjectStorageWriteProvider | null {
   return readWriteProvider();
 }
 
@@ -359,7 +360,7 @@ export async function createPrivateObjectUpload(input: {
   }
   const objectName = `${config.prefix}/guides/uploads/${input.objectId}${input.extension}`;
   const expiresAt = new Date(Date.now() + config.signedUrlSeconds * 1000);
-  if (config.provider === "s3") {
+  if (config.provider === "seaweedfs") {
     const command = new PutObjectCommand({
       Bucket: config.bucket,
       Key: objectName,
@@ -373,7 +374,7 @@ export async function createPrivateObjectUpload(input: {
         storageBucket: config.bucket,
         storageObjectKey: objectName,
       },
-      url: await getSignedUrl(getS3Client(config), command, { expiresIn: config.signedUrlSeconds }),
+      url: await getSignedUrl(getSeaweedFSClient(config), command, { expiresIn: config.signedUrlSeconds }),
       method: "PUT",
       headers: {
         "Content-Type": input.mimeType,
@@ -411,25 +412,20 @@ export async function createPrivateObjectUpload(input: {
   };
 }
 
-async function storeS3Object(
-  config: S3Config,
+async function storeSeaweedFSObject(
+  config: SeaweedFSConfig,
   input: { bytes: Buffer; sha256: string; extension: string; mimeType: string },
 ): Promise<StoredPrivateObject> {
-  const client = getS3Client(config);
+  const client = getSeaweedFSClient(config);
   const objectKey = `${config.prefix}/content/${input.sha256}${input.extension}`;
-  try {
-    await client.send(new PutObjectCommand({
-      Bucket: config.bucket,
-      Key: objectKey,
-      Body: input.bytes,
-      ContentLength: input.bytes.length,
-      ContentType: input.mimeType,
-      Metadata: { sha256: input.sha256 },
-      IfNoneMatch: "*",
-    }));
-  } catch (error) {
-    if (!isS3PreconditionFailure(error)) throw error;
-  }
+  await client.send(new PutObjectCommand({
+    Bucket: config.bucket,
+    Key: objectKey,
+    Body: input.bytes,
+    ContentLength: input.bytes.length,
+    ContentType: input.mimeType,
+    Metadata: { sha256: input.sha256 },
+  }));
 
   const properties = await client.send(new HeadObjectCommand({
     Bucket: config.bucket,
@@ -493,7 +489,7 @@ export async function storePrivateObject(input: {
   if (!config) {
     throw Object.assign(new Error("El almacenamiento privado de archivos aún no está configurado."), { status: 503 });
   }
-  const locator: PrivateObjectLocator = config.provider === "s3"
+  const locator: PrivateObjectLocator = config.provider === "seaweedfs"
     ? {
         storageProvider: "s3",
         storageBucket: config.bucket,
@@ -506,8 +502,8 @@ export async function storePrivateObject(input: {
       };
   const registrationToken = await tryReserveObjectRegistration(locator);
   try {
-    const stored = config.provider === "s3"
-      ? await storeS3Object(config, input)
+    const stored = config.provider === "seaweedfs"
+      ? await storeSeaweedFSObject(config, input)
       : await storeAzureBlob(config, input);
     if (registrationToken) {
       registrationReservations.set(locatorKey(stored), {
@@ -524,11 +520,11 @@ export async function storePrivateObject(input: {
 
 export async function statPrivateObject(input: PrivateObjectLocator): Promise<PrivateObjectStat> {
   if (input.storageProvider === "s3") {
-    const config = readS3Config(true)!;
+    const config = readSeaweedFSConfig(true)!;
     if (config.bucket !== input.storageBucket) {
-      throw new Error("La ubicación privada del objeto no coincide con la configuración S3/MinIO activa.");
+      throw new Error("La ubicación privada del objeto no coincide con la configuración SeaweedFS activa.");
     }
-    const properties = await getS3Client(config).send(new HeadObjectCommand({
+    const properties = await getSeaweedFSClient(config).send(new HeadObjectCommand({
       Bucket: input.storageBucket,
       Key: input.storageObjectKey,
     }));
@@ -563,8 +559,8 @@ export async function downloadPrivateObjectToFile(
     throw Object.assign(new Error("El objeto privado supera el límite permitido."), { status: 413 });
   }
   if (input.storageProvider === "s3") {
-    const config = readS3Config(true)!;
-    const response = await getS3Client(config).send(new GetObjectCommand({
+    const config = readSeaweedFSConfig(true)!;
+    const response = await getSeaweedFSClient(config).send(new GetObjectCommand({
       Bucket: input.storageBucket,
       Key: input.storageObjectKey,
       IfMatch: quotedEtag(input.storageObjectEtag),
@@ -747,9 +743,9 @@ export async function deletePrivateObjectIfUnreferenced(input: PrivateObjectLoca
 
   try {
     if (input.storageProvider === "s3") {
-      const config = readS3Config(true)!;
+      const config = readSeaweedFSConfig(true)!;
       if (config.bucket !== input.storageBucket) return false;
-      const client = getS3Client(config);
+      const client = getSeaweedFSClient(config);
       try {
         await client.send(new HeadObjectCommand({
           Bucket: input.storageBucket,
@@ -851,12 +847,12 @@ export async function createPrivateObjectUrl(
   },
 ): Promise<string> {
   if (input.storageProvider === "s3") {
-    const config = readS3Config(true)!;
+    const config = readSeaweedFSConfig(true)!;
     if (config.bucket !== input.storageBucket) {
-      throw new Error("La ubicación privada del objeto no coincide con la configuración S3/MinIO activa.");
+      throw new Error("La ubicación privada del objeto no coincide con la configuración SeaweedFS activa.");
     }
     return getSignedUrl(
-      getS3Client(config),
+      getSeaweedFSClient(config),
       new GetObjectCommand({
         Bucket: input.storageBucket,
         Key: input.storageObjectKey,
