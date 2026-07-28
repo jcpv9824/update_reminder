@@ -36,6 +36,7 @@ function devHeaders(): Record<string, string> {
 
 export type ApiRequestOptions = {
   headers?: Record<string, string>;
+  credentials?: RequestCredentials;
 };
 
 async function execute(method: string, path: string, body?: unknown, options: ApiRequestOptions = {}): Promise<Response> {
@@ -54,7 +55,7 @@ async function execute(method: string, path: string, body?: unknown, options: Ap
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
-    credentials: "include",
+    credentials: options.credentials ?? "include",
   });
 }
 
@@ -128,8 +129,12 @@ export const api = {
   post: <T>(path: string, body?: unknown, options?: ApiRequestOptions) => request<T>("POST", path, body, options),
   put: <T>(path: string, body?: unknown, options?: ApiRequestOptions) => request<T>("PUT", path, body, options),
   del: <T>(path: string, options?: ApiRequestOptions) => request<T>("DELETE", path, undefined, options),
-  getText: async (path: string, options?: ApiRequestOptions) => (await authenticatedResponse("GET", path, undefined, options)).text(),
-  getBlob: async (path: string, options?: ApiRequestOptions) => (await authenticatedResponse("GET", path, undefined, options)).blob(),
+  getText: async (path: string, options: ApiRequestOptions = {}) => (
+    await authenticatedResponse("GET", path, undefined, { credentials: "omit", ...options })
+  ).text(),
+  getBlob: async (path: string, options: ApiRequestOptions = {}) => (
+    await authenticatedResponse("GET", path, undefined, { credentials: "omit", ...options })
+  ).blob(),
 };
 
 export function apiUrl(path: string): string {

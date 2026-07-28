@@ -66,6 +66,7 @@ describe("cliente API con sesión segura", () => {
     expect(headers.Authorization).toBe("Bearer access-vigente");
     expect(headers["Content-Type"]).toBeUndefined();
     expect(headers["X-Requested-With"]).toBeUndefined();
+    expect(fetchMock.mock.calls[0][1]?.credentials).toBe("omit");
   });
 
   it("no intenta refresh recursivo si el propio refresh devuelve 401", async () => {
