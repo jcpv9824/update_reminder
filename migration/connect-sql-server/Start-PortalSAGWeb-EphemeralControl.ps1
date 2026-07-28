@@ -111,6 +111,94 @@ function New-CurrentUserPipe {
   )
 }
 
+function Test-SqlSessionConnection {
+  param([System.Data.SqlClient.SqlConnection]$Connection)
+
+  if ($null -eq $Connection -or $Connection.State -ne [Data.ConnectionState]::Open) {
+    return $false
+  }
+  $probe = $Connection.CreateCommand()
+  try {
+    $probe.CommandTimeout = 15
+    $probe.CommandText = 'SELECT 1;'
+    return [Convert]::ToInt32($probe.ExecuteScalar()) -eq 1
+  }
+  catch {
+    return $false
+  }
+  finally {
+    $probe.Dispose()
+  }
+}
+
+function Restore-SqlSessionConnection {
+  param(
+    [ref]$Connection,
+    [string]$ConnectionString,
+    [System.Data.SqlClient.SqlCredential]$Credential,
+    [string]$ExpectedDatabase,
+    [bool]$ExecuteAsDbo
+  )
+
+  $previous = $Connection.Value
+  if ($null -ne $previous) {
+    try { $previous.Close() } catch {}
+    $previous.Dispose()
+  }
+
+  $replacement = [System.Data.SqlClient.SqlConnection]::new()
+  $replacement.ConnectionString = $ConnectionString
+  $replacement.Credential = $Credential
+  try {
+    $replacement.Open()
+    $validation = $replacement.CreateCommand()
+    try {
+      $validation.CommandTimeout = 15
+      $validation.CommandText = @'
+SELECT
+  CAST(SERVERPROPERTY('ProductMajorVersion') AS INT),
+  d.compatibility_level,
+  d.collation_name,
+  DB_NAME()
+FROM sys.databases AS d
+WHERE d.database_id=DB_ID();
+'@
+      $reader = $validation.ExecuteReader()
+      try {
+        if (-not $reader.Read()) { throw 'Reconnection validation returned no row.' }
+        if ([Convert]::ToInt32($reader.GetValue(0)) -ne 15 -or
+            [Convert]::ToInt32($reader.GetValue(1)) -ne 150 -or
+            $reader.GetString(2) -ne 'Modern_Spanish_CI_AS' -or
+            $reader.GetString(3) -ne $ExpectedDatabase) {
+          throw 'Reconnection target does not match the certified Portal SAG Web database.'
+        }
+      }
+      finally {
+        $reader.Dispose()
+      }
+    }
+    finally {
+      $validation.Dispose()
+    }
+
+    if ($ExecuteAsDbo) {
+      $impersonate = $replacement.CreateCommand()
+      try {
+        $impersonate.CommandText = "EXECUTE AS USER=N'dbo';"
+        $null = $impersonate.ExecuteNonQuery()
+      }
+      finally {
+        $impersonate.Dispose()
+      }
+    }
+    $Connection.Value = $replacement
+  }
+  catch {
+    $replacement.Dispose()
+    throw
+  }
+}
+
 $sessionTitle = if ($Environment -eq 'qa' -and $RequireFullControl) { 'Portal SAG Web QA - EPHEMERAL FULL-CONTROL MIGRATION SESSION' }
   elseif ($Environment -eq 'qa') { 'Portal SAG Web QA - EPHEMERAL DATABASE SESSION' }
   elseif ($RequireFullControl) { 'Portal SAG Web - EPHEMERAL FULL-CONTROL MIGRATION SESSION' }
@@ -354,7 +442,7 @@ WHERE d.database_id=DB_ID();
   Write-Host 'Write authorization: active for this terminal session; no per-request prompts.'
   Write-Host 'Leave this window open. Close it at any time to revoke access.' -ForegroundColor Yellow
 
-  while ($keepRunning -and $connection.State -eq [Data.ConnectionState]::Open) {
+  while ($keepRunning) {
     $pipe = New-CurrentUserPipe $pipeName
     $streamReader = $null
     $streamWriter = $null
@@ -393,6 +481,16 @@ WHERE d.database_id=DB_ID();
       Write-Host "Request $requestId | mode=$mode | batches=$($batches.Count) | sha256=$requestHash"
 
       if ($mode -eq 'write') { Write-Host 'Write authorized by the active terminal session.' -ForegroundColor Yellow }
+      if (-not (Test-SqlSessionConnection -Connection $connection)) {
+        Write-Host 'The idle SQL connection expired; reopening it inside this authorized terminal session...' -ForegroundColor Yellow
+        Restore-SqlSessionConnection `
+          -Connection ([ref]$connection) `
+          -ConnectionString $builder.ConnectionString `
+          -Credential $sqlCredential `
+          -ExpectedDatabase $connectedDatabase `
+          -ExecuteAsDbo $sessionExecutingAsDbo
+        Write-Host 'Encrypted SQL connection restored; no credential prompt was required.' -ForegroundColor Green
+      }
 
       try {
         $execution = Invoke-SqlBatches -Connection $connection -Batches $batches -TimeoutSeconds $timeoutSeconds -MaxRows $maxRows
