@@ -39,6 +39,13 @@ SEAWEEDFS_SECRET_ACCESS_KEY=@Microsoft.KeyVault(SecretUri=<secret-uri>)
 
 Las credenciales deben limitarse al bucket/prefijo del portal y mantenerse en Key Vault. El endpoint es el gateway S3 de SeaweedFS, no el endpoint Filer ni el Master; debe ser una raíz HTTPS sin credenciales, path, query ni fragment. `SEAWEEDFS_FORCE_PATH_STYLE=true` es parte del contrato y la región usada para firmar debe coincidir con la entregada por infraestructura.
 
+La opción protegida `Configuración → Conexiones` permite ingresar y validar
+esta configuración sin exponer los secretos. La validación ejecuta el mismo
+probe reversible y solo guarda después de una prueba satisfactoria. Guardar el
+perfil no cambia `OBJECT_STORAGE_PROVIDER`, no modifica Function App settings
+y no habilita SeaweedFS en producción; esos pasos siguen siendo un gate de
+despliegue separado.
+
 La comprobación local segura se inicia con:
 
 ```text

@@ -146,6 +146,15 @@ export const PERMISSION_CATALOG: PermissionModule[] = [
         { id: "delete_format", label: "Eliminar Formato" },
         { id: "replace_pdf", label: "Reemplazar PDF" },
       ]),
+      option("integrations", "Conexiones", "configuration.integrations", [
+        ACTIONS.view,
+        { id: "edit_object_storage", label: "Configurar Almacenamiento" },
+        { id: "test_object_storage", label: "Probar Almacenamiento" },
+        { id: "create_database", label: "Crear Conexión de Base" },
+        { id: "edit_database", label: "Editar Conexión de Base" },
+        { id: "delete_database", label: "Eliminar Conexión de Base" },
+        { id: "test_database", label: "Probar Conexión de Base" },
+      ]),
     ],
   },
   {

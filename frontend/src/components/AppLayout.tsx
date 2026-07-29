@@ -20,6 +20,7 @@ import {
   Search,
   Server,
   Settings,
+  PlugZap,
   ShieldCheck,
   UserCircle,
   Users,
@@ -82,6 +83,7 @@ const MODULOS: ModuloMenu[] = [
       { ruta: "/alertas-correos", etiqueta: "Alertas y Correos", permiso: "configuration.alerts.view", Icono: BellRing },
       { ruta: "/usuarios", etiqueta: "Usuarios y Roles", permisos: ["configuration.users.view", "configuration.roles.view"], Icono: Users },
       { ruta: "/admin/formatos-impresion", etiqueta: "Formatos de Impresión", permiso: "configuration.print_formats.view", Icono: FileText },
+      { ruta: "/configuracion/conexiones", etiqueta: "Conexiones", permiso: "configuration.integrations.view", Icono: PlugZap },
     ],
   },
   {

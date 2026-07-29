@@ -66,6 +66,8 @@ describe("permission model", () => {
     expect(configurationKeys).toContain("configuration.users.reset_password");
     expect(configurationKeys).toContain("configuration.roles.manage_task_visibility");
     expect(configurationKeys).toContain("configuration.print_formats.replace_pdf");
+    expect(configurationKeys).toContain("configuration.integrations.edit_object_storage");
+    expect(configurationKeys).toContain("configuration.integrations.test_database");
     expect(configurationKeys).not.toContain("configuration.dashboard.view");
   });
 

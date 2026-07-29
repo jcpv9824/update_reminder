@@ -31,6 +31,56 @@ export type RespuestaPaginada<T> = {
   total: number;
 };
 
+export type ConnectionTestStatus = {
+  succeeded: boolean;
+  testedAt: string;
+  testedBy: string;
+  message: string;
+};
+
+export type SeaweedFSConnection = {
+  id: string;
+  etag: string;
+  provider: "seaweedfs";
+  displayName: string;
+  endpoint: string;
+  region: string;
+  bucket: string;
+  forcePathStyle: boolean;
+  credentialsConfigured: boolean;
+  active: boolean;
+  lastTest?: ConnectionTestStatus | null;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+};
+
+export type ExternalDatabaseConnection = {
+  id: string;
+  etag: string;
+  displayName: string;
+  purpose?: string;
+  serverHost: string;
+  serverPort: number;
+  databaseName: string;
+  username: string;
+  passwordConfigured: boolean;
+  encrypt: true;
+  active: boolean;
+  status: "active" | "inactive";
+  lastTest?: ConnectionTestStatus | null;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+};
+
+export type IntegrationConnections = {
+  objectStorage: SeaweedFSConnection | null;
+  externalDatabases: ExternalDatabaseConnection[];
+};
+
 export type Cliente = {
   id: string;
   externalId?: string;

@@ -121,6 +121,7 @@ describe("AppLayout", () => {
     expandModule("Configuración");
     expect(screen.getByRole("link", { name: "Usuarios y Roles" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Formatos de Impresión" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Conexiones" })).toHaveAttribute("href", "/configuracion/conexiones");
   });
 
   it("oculta Licenciamiento para actualizadores", () => {

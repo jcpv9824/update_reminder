@@ -311,6 +311,23 @@ export function canReplacePrintFormatPdf(user: CurrentUser, roleDefinitions: Rol
   return hasPermissionWithRoleDefinitions(user, "configuration.print_formats.replace_pdf", roleDefinitions);
 }
 
+export type IntegrationAction =
+  | "view"
+  | "edit_object_storage"
+  | "test_object_storage"
+  | "create_database"
+  | "edit_database"
+  | "delete_database"
+  | "test_database";
+
+export function canManageIntegration(
+  user: CurrentUser,
+  action: IntegrationAction,
+  roleDefinitions: RoleDefinition[],
+): boolean {
+  return hasPermissionWithRoleDefinitions(user, `configuration.integrations.${action}`, roleDefinitions);
+}
+
 export type GuideBuilderAction =
   | "view"
   | "create"

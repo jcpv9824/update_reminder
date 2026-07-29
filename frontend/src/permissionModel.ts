@@ -99,6 +99,15 @@ export const PERMISSION_CATALOG: PermissionModule[] = [
       option("users", "Usuarios", "configuration.users", [ACTIONS.view, ACTIONS.create, ACTIONS.edit, ACTIONS.deactivate, ACTIONS.reactivate, { id: "reset_password", label: "Restablecer Contraseña" }, { id: "resend_credentials", label: "Reenviar Credenciales" }, { id: "assign_roles", label: "Asignar Roles" }]),
       option("roles", "Roles", "configuration.roles", [ACTIONS.view, ACTIONS.create, ACTIONS.edit, ACTIONS.delete, ACTIONS.deactivate, ACTIONS.reactivate, { id: "manage_permissions", label: "Gestionar Permisos" }, { id: "manage_task_visibility", label: "Gestionar Visibilidad de Tareas" }]),
       option("print_formats", "Formatos de Impresión", "configuration.print_formats", [ACTIONS.view, { id: "create_source", label: "Crear Fuente" }, { id: "edit_source", label: "Editar Fuente" }, { id: "delete_source", label: "Eliminar Fuente" }, { id: "create_format", label: "Crear Formato" }, { id: "edit_format", label: "Editar Formato" }, { id: "delete_format", label: "Eliminar Formato" }, { id: "replace_pdf", label: "Reemplazar PDF" }]),
+      option("integrations", "Conexiones", "configuration.integrations", [
+        ACTIONS.view,
+        { id: "edit_object_storage", label: "Configurar Almacenamiento" },
+        { id: "test_object_storage", label: "Probar Almacenamiento" },
+        { id: "create_database", label: "Crear Conexión de Base" },
+        { id: "edit_database", label: "Editar Conexión de Base" },
+        { id: "delete_database", label: "Eliminar Conexión de Base" },
+        { id: "test_database", label: "Probar Conexión de Base" },
+      ]),
     ],
   },
   {

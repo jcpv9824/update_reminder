@@ -57,6 +57,7 @@ visibility.audit.view
 | Configuración | Alertas y Correos | `configuration.alerts` |
 | Configuración | Usuarios y Roles | `configuration.users`, `configuration.roles` |
 | Configuración | Formatos de Impresión | `configuration.print_formats` |
+| Configuración | Conexiones | `configuration.integrations` |
 | Auditoría y Visibilidad | Auditoría | `visibility.audit` |
 | Auditoría y Visibilidad | Tablero | `visibility.dashboard` |
 | Ayudas SAG Web | Constructor de guías | `help.guide_builder` |
@@ -202,6 +203,22 @@ Archivos Públicos usa endpoints separados con disposición `inline`. Solo admit
 - `edit_format`
 - `delete_format`
 - `replace_pdf`
+
+`configuration.integrations`
+
+- `view`
+- `edit_object_storage`
+- `test_object_storage`
+- `create_database`
+- `edit_database`
+- `delete_database`
+- `test_database`
+
+Conexiones guarda únicamente metadatos operativos, indicadores de
+configuración y referencias a secretos. Access keys, secret keys, contraseñas
+y cadenas de conexión completas pertenecen a Key Vault y nunca se devuelven al
+navegador. Guardar un perfil no activa el proveedor ni conecta automáticamente
+un flujo de negocio; la activación requiere su propio cambio controlado.
 
 ### Auditoría y Visibilidad
 

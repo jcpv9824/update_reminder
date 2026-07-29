@@ -12,6 +12,7 @@ import "./functions/tasks";
 import "./functions/auditLogs";
 import "./functions/setup";
 import "./functions/settings";
+import "./functions/integrationConnections";
 import "./functions/reports";
 import "./functions/formatosImpresion";
 import "./functions/publicDownloads";

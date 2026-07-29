@@ -220,13 +220,22 @@ a separate gated migration: copy and reconcile every Blob-backed object, update
 its SQL locator transactionally, prove historical reads and rollback, then
 remove Blob configuration and RBAC only after an approved zero-read window.
 
+The protected `Configuración → Conexiones` page manages the SeaweedFS preflight
+profile and independent external SQL Server profiles. SQL stores only safe
+connection metadata, optimistic-concurrency versions, test status and Key Vault
+secret references. Secret values stay in Key Vault and are never returned by
+the API. A save validates the proposed connection before persisting it. This
+page intentionally does not change `OBJECT_STORAGE_PROVIDER` and external
+database profiles are not consumed by runtime workflows until a separately
+reviewed feature explicitly binds one.
+
 ## SQL migrations
 
 - Keep ordered scripts in `migration/sql`. Compute the reviewed script SHA-256
   with `Get-FileHash`, update `MANIFEST.sha256`, and run the validators.
-- Applied migrations `002` through `025` are historical; migration `026`
-  introduces the guide-builder schema. Add later changes as new numbered
-  migrations rather than rewriting them.
+- Applied migrations `002` through `026` are historical; migration `027`
+  introduces protected integration connection metadata and permissions. Add
+  later changes as new numbered migrations rather than rewriting them.
 - Target SQL Server 2019 syntax and compatibility 150.
 - Make schema changes additive when possible and preserve history.
 - Include preconditions, transactional behavior where valid, and postconditions.

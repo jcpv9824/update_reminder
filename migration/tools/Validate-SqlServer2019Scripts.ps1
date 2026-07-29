@@ -34,7 +34,8 @@ $expected = @(
   '023_enable_masters_report_outbox.sql',
   '024_s3_object_storage.sql',
   '025_separate_public_downloads_and_inline_files.sql',
-  '026_guide_builder.sql'
+  '026_guide_builder.sql',
+  '027_integration_connections.sql'
 )
 
 $resolvedSqlDirectory = (Resolve-Path -LiteralPath $SqlDirectory).Path

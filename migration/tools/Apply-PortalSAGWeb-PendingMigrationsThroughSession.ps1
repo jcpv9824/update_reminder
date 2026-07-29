@@ -63,7 +63,8 @@ $migrations=@(
   @{version='023';name='023_enable_masters_report_outbox.sql'},
   @{version='024';name='024_s3_object_storage.sql'},
   @{version='025';name='025_separate_public_downloads_and_inline_files.sql'},
-  @{version='026';name='026_guide_builder.sql'}
+  @{version='026';name='026_guide_builder.sql'},
+  @{version='027';name='027_integration_connections.sql'}
 )
 
 foreach($migration in $migrations){
@@ -112,7 +113,7 @@ COMMIT TRANSACTION;
 
 $verificationSql=@'
 SELECT
-  (SELECT COUNT(*) FROM migration.schema_migrations WHERE migration_version IN ('017','018','019','020','021','022','023','024','025','026') AND succeeded=1) AS applied_count,
+  (SELECT COUNT(*) FROM migration.schema_migrations WHERE migration_version IN ('017','018','019','020','021','022','023','024','025','026','027') AND succeeded=1) AS applied_count,
   (SELECT COUNT_BIG(*) FROM core.domains WHERE RIGHT(domain_name_normalized,1)=N'/') AS trailing_domain_identities,
   COL_LENGTH(N'licensing.license_modules',N'description') AS license_description_bytes,
   (SELECT COUNT(*) FROM sys.check_constraints
@@ -149,11 +150,18 @@ SELECT
   (SELECT COUNT(*) FROM security.permissions
     WHERE module_key=N'help' AND option_key=N'guide_builder' AND active=1) AS guide_permission_count,
   (SELECT COUNT(*) FROM security.role_permissions
-    WHERE role_id=N'super_admin' AND permission_key LIKE N'help.guide_builder.%') AS guide_super_admin_permission_count;
+    WHERE role_id=N'super_admin' AND permission_key LIKE N'help.guide_builder.%') AS guide_super_admin_permission_count,
+  CASE WHEN OBJECT_ID(N'settings.object_storage_connections',N'U') IS NOT NULL
+      AND OBJECT_ID(N'settings.external_database_connections',N'U') IS NOT NULL
+    THEN 1 ELSE 0 END AS integration_tables_ready,
+  (SELECT COUNT(*) FROM security.permissions
+    WHERE module_key=N'configuration' AND option_key=N'integrations' AND active=1) AS integration_permission_count,
+  (SELECT COUNT(*) FROM security.role_permissions
+    WHERE role_id=N'super_admin' AND permission_key LIKE N'configuration.integrations.%') AS integration_super_admin_permission_count;
 '@
 $verification=Invoke-SessionSql -Sql $verificationSql -Mode read -TimeoutSeconds 120 -MaxRows 10
 $row=$verification.resultSets[0].rows[0]
-if($row.applied_count -ne 10 -or $row.trailing_domain_identities -ne 0 -or
+if($row.applied_count -ne 11 -or $row.trailing_domain_identities -ne 0 -or
    $row.license_description_bytes -ne 4000 -or $row.outbox_constraint_ready -ne 1 -or
    $row.untrusted_or_disabled_fks -ne 0 -or $row.untrusted_or_disabled_checks -ne 0 -or
    $row.attempt_completion_trigger_ready -ne 1 -or $row.per_run_blob_index_ready -ne 1 -or
@@ -161,8 +169,10 @@ if($row.applied_count -ne 10 -or $row.trailing_domain_identities -ne 0 -or
    $row.public_files_ready -ne 1 -or $row.downloads_section_optional -ne 1 -or
    $row.public_files_permission_count -ne 5 -or $row.guide_table_count -ne 8 -or
    $row.deletion_claims_ready -ne 1 -or
-   $row.guide_permission_count -ne 8 -or $row.guide_super_admin_permission_count -ne 8){
+   $row.guide_permission_count -ne 8 -or $row.guide_super_admin_permission_count -ne 8 -or
+   $row.integration_tables_ready -ne 1 -or $row.integration_permission_count -ne 7 -or
+   $row.integration_super_admin_permission_count -ne 7){
   throw 'Pending-migration post-verification failed.'
 }
 
-Write-Host "$expectedDatabase migrations 017-026 are applied and verified." -ForegroundColor Green
+Write-Host "$expectedDatabase migrations 017-027 are applied and verified." -ForegroundColor Green

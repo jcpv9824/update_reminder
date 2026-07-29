@@ -48,6 +48,7 @@ export const RATE_LIMIT_POLICIES = {
   resetPassword: { maxAttempts: 10, windowSeconds: 3600, blockSeconds: 3600 },
   setup: { maxAttempts: 5, windowSeconds: 3600, blockSeconds: 3600 },
   testEmail: { maxAttempts: 10, windowSeconds: 600, blockSeconds: 1800 },
+  integrationTest: { maxAttempts: 10, windowSeconds: 600, blockSeconds: 1800 },
   mastersReport: { maxAttempts: 5, windowSeconds: 3600, blockSeconds: 3600 },
   userEmail: { maxAttempts: 10, windowSeconds: 3600, blockSeconds: 3600 },
 } satisfies Record<string, RateLimitPolicy>;

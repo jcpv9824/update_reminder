@@ -32,7 +32,7 @@ Current module contents:
 | Clientes | Clientes, Dominios, Bases de Datos, Licenciamiento |
 | Actualizaciones | Tareas, Programar Actualizaciones |
 | Implementación | Descargas Públicas, Archivos Públicos |
-| Configuración | Alertas y Correos, Usuarios y Roles, Formatos de Impresión |
+| Configuración | Alertas y Correos, Usuarios y Roles, Formatos de Impresión, Conexiones |
 | Auditoría y Visibilidad | Auditoría, Tablero |
 | Ayudas SAG Web | Constructor de guías |
 
