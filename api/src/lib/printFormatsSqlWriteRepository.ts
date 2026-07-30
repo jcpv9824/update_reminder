@@ -1,4 +1,5 @@
 import sql from "mssql";
+import { randomUUID } from "node:crypto";
 import type { FormatoImpresionRecord, FuenteFormatoRecord } from "../types/models";
 import { writeSqlAuditLog } from "./auditSqlWriter";
 import { isSqlUniqueConstraintError } from "./clientsSqlWriteRepository";
@@ -12,9 +13,57 @@ export function dedupeResolvedSourceKeys(keys: number[]): number[] {
   return [...new Set(keys)];
 }
 
+function sqlErrorDetails(error: unknown): { number?: number; message: string } {
+  const candidate = error as {
+    number?: number;
+    message?: string;
+    originalError?: { info?: { number?: number; message?: string } };
+  };
+  return {
+    number: candidate?.number ?? candidate?.originalError?.info?.number,
+    message: `${candidate?.message ?? ""} ${candidate?.originalError?.info?.message ?? ""}`,
+  };
+}
+
 export function printFormatSqlConflictMessage(error: unknown): string | null {
+  const details = sqlErrorDetails(error);
+  const message = details.message.toLowerCase();
+  if (
+    details.number === 51512
+    || details.number === 51514
+    || message.includes("ux_print_formats_source_name_active")
+  ) {
+    return "Ya existe otro formato con el mismo nombre para uno de los tipos de fuente seleccionados.";
+  }
+  if (
+    message.includes("pk_print_format_source_assignments")
+    || message.includes("ux_print_format_source_assignments_order")
+  ) {
+    return "La misma fuente fue enviada más de una vez dentro de este formato.";
+  }
+  if (
+    message.includes("pk_print_format_files")
+    || message.includes("ux_print_format_files_current")
+  ) {
+    return "No fue posible registrar la nueva versión del PDF. Actualice la página e intente nuevamente.";
+  }
   if (!isSqlUniqueConstraintError(error)) return null;
-  return "No fue posible guardar el formato porque la misma fuente se envió más de una vez dentro de este formato o ya existe otro formato con el mismo nombre para esa fuente.";
+  return "No fue posible guardar el formato por un conflicto concurrente. Actualice la página e intente nuevamente.";
+}
+
+export function resolvedSourceAssignmentsChanged(
+  currentKeys: number[],
+  desiredKeys: number[],
+  currentPrimaryKey: number,
+  desiredPrimaryKey: number,
+): boolean {
+  return currentPrimaryKey !== desiredPrimaryKey
+    || currentKeys.length !== desiredKeys.length
+    || currentKeys.some((key, index) => key !== desiredKeys[index]);
+}
+
+export function temporaryPrintFormatNormalizedName(formatKey: number, nonce = randomUUID()): string {
+  return `__portal_sag_update_${formatKey}_${nonce}`.slice(0, 240);
 }
 
 async function runPrintFormatTransaction<T>(
@@ -135,6 +184,18 @@ async function resolveSourceKeys(transaction: sql.Transaction, sourceIds: string
   if (!uniqueKeys.length) throw Object.assign(new Error("Seleccione al menos un tipo de fuente."), { status: 400 });
   if (uniqueKeys.length > 50) throw Object.assign(new Error("Un formato no puede tener más de 50 tipos de fuente."), { status: 400 });
   return uniqueKeys;
+}
+
+async function assignedSourceKeys(transaction: sql.Transaction, formatKey: number): Promise<number[]> {
+  const request = new sql.Request(transaction);
+  request.input("formatKey", sql.BigInt, formatKey);
+  const result = await request.query<{ print_format_source_key: number }>(`
+    SELECT print_format_source_key
+    FROM content.print_format_source_assignments WITH (UPDLOCK,HOLDLOCK)
+    WHERE print_format_key=@formatKey
+    ORDER BY display_order,print_format_source_key;
+  `);
+  return result.recordset.map((row) => Number(row.print_format_source_key));
 }
 
 async function replaceSources(transaction: sql.Transaction, formatKey: number, sourceIds: string[], actorId: string, at: Date): Promise<number> {
@@ -283,19 +344,48 @@ export async function updateSqlPrintFormat(before: FormatoImpresionRecord, after
     const primarySource = await sourceKey(transaction, after.fuenteId); if (!primarySource) throw Object.assign(new Error("El tipo de fuente principal no existe."), { status: 400 });
     const desiredSourceKeys = await resolveSourceKeys(transaction, formatSourceIds(after));
     if (desiredSourceKeys[0] !== primarySource) throw Object.assign(new Error("La fuente principal debe ser la primera fuente asignada."), { status: 400 });
-    await preparePrimarySourceForUpdate(transaction, formatKey, Number(found.recordset[0].print_format_source_key),
-      primarySource, actor.id, new Date(after.updatedAt));
+    const currentPrimarySource = Number(found.recordset[0].print_format_source_key);
+    const currentSourceKeys = await assignedSourceKeys(transaction, formatKey);
+    const sourcesChanged = resolvedSourceAssignmentsChanged(
+      currentSourceKeys,
+      desiredSourceKeys,
+      currentPrimarySource,
+      primarySource,
+    );
+    let temporaryNormalized: string | null = null;
+    if (sourcesChanged) {
+      temporaryNormalized = temporaryPrintFormatNormalizedName(formatKey);
+      const reserve = new sql.Request(transaction);
+      reserve.input("formatKey", sql.BigInt, formatKey);
+      reserve.input("temporaryNormalized", sql.NVarChar(240), temporaryNormalized);
+      await reserve.query(`
+        UPDATE content.print_formats SET name_normalized=@temporaryNormalized
+        WHERE print_format_key=@formatKey;
+      `);
+      await preparePrimarySourceForUpdate(transaction, formatKey, currentPrimarySource,
+        primarySource, actor.id, new Date(after.updatedAt));
+    }
     const license = await moduleKey(transaction, after);
     const request = new sql.Request(transaction);
     request.input("formatKey", sql.BigInt, formatKey); request.input("primarySource", sql.BigInt, primarySource);
-    request.input("name", sql.NVarChar(240), after.nombre); request.input("normalized", sql.NVarChar(240), normalized(after.nombre)); request.input("description", sql.NVarChar(sql.MAX), after.descripcion);
+    request.input("name", sql.NVarChar(240), after.nombre); request.input("description", sql.NVarChar(sql.MAX), after.descripcion);
+    request.input("storedNormalized", sql.NVarChar(240), temporaryNormalized ?? normalized(after.nombre));
     request.input("size", sql.VarChar(30), after.tamanoFormato ?? null); request.input("customSize", sql.NVarChar(100), after.tamanoFormatoPersonalizado ?? null);
     request.input("requiresLicense", sql.Bit, !!after.requiereLicencia); request.input("moduleKey", sql.BigInt, license); request.input("active", sql.Bit, after.activo); request.input("status", sql.VarChar(20), after.status);
     request.input("updatedAt", sql.DateTime2(3), new Date(after.updatedAt)); request.input("updatedBy", sql.NVarChar(150), actor.id);
-    await request.query(`UPDATE content.print_formats SET print_format_source_key=@primarySource,name=@name,name_normalized=@normalized,
+    await request.query(`UPDATE content.print_formats SET print_format_source_key=@primarySource,name=@name,name_normalized=@storedNormalized,
       description=@description,format_size=@size,custom_format_size=@customSize,requires_license=@requiresLicense,module_key=@moduleKey,
       active=@active,status=@status,updated_at=@updatedAt,updated_by=@updatedBy WHERE print_format_key=@formatKey;`);
-    await finalizeSourcesAfterPrimaryUpdate(transaction, formatKey, desiredSourceKeys, actor.id, new Date(after.updatedAt));
+    if (sourcesChanged) {
+      await finalizeSourcesAfterPrimaryUpdate(transaction, formatKey, desiredSourceKeys, actor.id, new Date(after.updatedAt));
+      const finalizeName = new sql.Request(transaction);
+      finalizeName.input("formatKey", sql.BigInt, formatKey);
+      finalizeName.input("normalized", sql.NVarChar(240), normalized(after.nombre));
+      await finalizeName.query(`
+        UPDATE content.print_formats SET name_normalized=@normalized
+        WHERE print_format_key=@formatKey;
+      `);
+    }
     if (replacePdf) {
       const file = await ensurePdfFile(transaction, after, actor.id); const version = new sql.Request(transaction);
       version.input("formatKey", sql.BigInt, formatKey); version.input("fileKey", sql.BigInt, file); version.input("now", sql.DateTime2(3), new Date(after.updatedAt)); version.input("actorId", sql.NVarChar(150), actor.id);

@@ -80,6 +80,7 @@ export function DialogoConfirmar({
   onCancelar,
   textoConfirmar = "Confirmar",
   variante = "primario",
+  cargando = false,
 }: {
   abierto: boolean;
   titulo: string;
@@ -88,14 +89,17 @@ export function DialogoConfirmar({
   onCancelar: () => void;
   textoConfirmar?: string;
   variante?: "primario" | "peligro";
+  cargando?: boolean;
 }) {
   if (!abierto) return null;
   return (
     <Modal titulo={titulo} abierto onCerrar={onCancelar}>
       <p>{mensaje}</p>
       <div className="acciones-formulario">
-        <button onClick={onCancelar}>Cancelar</button>
-        <button className={variante} onClick={onConfirmar}>{textoConfirmar}</button>
+        <button onClick={onCancelar} disabled={cargando}>Cancelar</button>
+        <button className={variante} onClick={onConfirmar} disabled={cargando}>
+          {cargando ? "Procesando..." : textoConfirmar}
+        </button>
       </div>
     </Modal>
   );

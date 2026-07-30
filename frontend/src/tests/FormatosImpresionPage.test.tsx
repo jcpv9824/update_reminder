@@ -304,6 +304,30 @@ describe("FormatosImpresionAdminPage", () => {
     expect(body).not.toHaveProperty("pdfNombreOriginal");
   });
 
+  it("elimina un formato una sola vez aunque se repita la confirmación", async () => {
+    let finishDelete!: () => void;
+    apiMock.del.mockReturnValue(new Promise<void>((resolve) => {
+      finishDelete = resolve;
+    }));
+    renderWithQuery(<FormatosImpresionAdminPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Formatos" }));
+    const row = (await screen.findByText("Factura de Venta - Resumido")).closest("tr");
+    await userEvent.click(within(row!).getByRole("button", { name: "Eliminar" }));
+    const dialog = screen.getByRole("heading", { name: "Eliminar formato" }).closest(".modal") as HTMLElement;
+    const confirm = within(dialog).getByRole("button", { name: "Eliminar" });
+
+    await userEvent.click(confirm);
+    expect(confirm).toBeDisabled();
+    await userEvent.click(confirm);
+    expect(apiMock.del).toHaveBeenCalledTimes(1);
+    expect(apiMock.del).toHaveBeenCalledWith(
+      "/catalogo-formatos/admin/formatos-impresion/formato_resumido",
+    );
+
+    finishDelete();
+    expect(await screen.findByText("Formato eliminado.")).toBeInTheDocument();
+  });
+
   it("rechaza un archivo que no es PDF antes de llamar al API", async () => {
     renderWithQuery(<FormatosImpresionAdminPage />);
     fireEvent.click(await screen.findByRole("button", { name: "Formatos" }));

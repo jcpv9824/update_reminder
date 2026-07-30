@@ -113,8 +113,8 @@ export default function FormatosImpresionAdminPage() {
                   <td>{fuente.nombre}</td>
                   <td><EtiquetaEstado estado={fuente.activa ? "active" : "inactive"} /></td>
                   <td className="acciones-tabla">
-                    <button onClick={() => setModalFuente(fuente)}>Editar</button>
-                    <button className="peligro" onClick={() => setEliminarFuente(fuente)}>Eliminar</button>
+                    <button onClick={() => { setError(null); setModalFuente(fuente); }}>Editar</button>
+                    <button className="peligro" onClick={() => { setError(null); setEliminarFuente(fuente); }}>Eliminar</button>
                   </td>
                 </tr>
               ))}
@@ -137,8 +137,8 @@ export default function FormatosImpresionAdminPage() {
                   <td><a href={apiUrl(`/public/formatos-impresion/${formato.id}/pdf`)} target="_blank" rel="noreferrer">Ver PDF</a></td>
                   <td><EtiquetaEstado estado={formato.activo ? "active" : "inactive"} /></td>
                   <td className="acciones-tabla">
-                    <button onClick={() => setModalFormato(formato)}>Editar</button>
-                    <button className="peligro" onClick={() => setEliminarFormato(formato)}>Eliminar</button>
+                    <button onClick={() => { setError(null); setModalFormato(formato); }}>Editar</button>
+                    <button className="peligro" onClick={() => { setError(null); setEliminarFormato(formato); }}>Eliminar</button>
                   </td>
                 </tr>
               ))}
@@ -172,7 +172,8 @@ export default function FormatosImpresionAdminPage() {
         mensaje={eliminarFuente ? `¿Eliminar el tipo de fuente "${eliminarFuente.nombre}"? Solo se permite si no tiene formatos asociados.` : ""}
         textoConfirmar="Eliminar"
         variante="peligro"
-        onConfirmar={() => eliminarFuente && borrarFuente.mutate(eliminarFuente.id)}
+        cargando={borrarFuente.isPending}
+        onConfirmar={() => eliminarFuente && !borrarFuente.isPending && borrarFuente.mutate(eliminarFuente.id)}
         onCancelar={() => setEliminarFuente(null)}
       />
       <DialogoConfirmar
@@ -181,7 +182,8 @@ export default function FormatosImpresionAdminPage() {
         mensaje={eliminarFormato ? `¿Eliminar el formato "${eliminarFormato.nombre}"?` : ""}
         textoConfirmar="Eliminar"
         variante="peligro"
-        onConfirmar={() => eliminarFormato && borrarFormato.mutate(eliminarFormato.id)}
+        cargando={borrarFormato.isPending}
+        onConfirmar={() => eliminarFormato && !borrarFormato.isPending && borrarFormato.mutate(eliminarFormato.id)}
         onCancelar={() => setEliminarFormato(null)}
       />
     </>
