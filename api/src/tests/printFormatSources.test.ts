@@ -36,4 +36,22 @@ describe("printFormatSources", () => {
     });
     expect(formatHasSource(updated, "fuente_2")).toBe(true);
   });
+
+  it("deduplica alias de fuente sin distinguir mayúsculas al construir el agregado", () => {
+    const updated = withFormatSources(legacyFormat, [
+      { id: "fuente_1", nombre: "Factura" },
+      { id: "FUENTE_1", nombre: "Factura duplicada" },
+      { id: "fuente_2", nombre: "Remisión" },
+    ]);
+    expect(updated.fuenteIds).toEqual(["fuente_1", "fuente_2"]);
+    expect(updated.fuenteNombres).toEqual(["Factura", "Remisión"]);
+  });
+
+  it("usa la fuente primaria heredada cuando el arreglo moderno está vacío", () => {
+    expect(getFormatSourceIds({ ...legacyFormat, fuenteIds: [" ", ""] })).toEqual(["fuente_1"]);
+  });
+
+  it("rechaza un formato sin ninguna fuente válida", () => {
+    expect(() => withFormatSources(legacyFormat, [])).toThrow(/al menos un tipo de fuente/i);
+  });
 });

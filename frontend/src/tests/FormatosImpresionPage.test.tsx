@@ -263,6 +263,81 @@ describe("FormatosImpresionAdminPage", () => {
     ));
   });
 
+  it("conserva varias fuentes distintas al reemplazar un PDF", async () => {
+    apiMock.put.mockResolvedValue({ ...formatos[0], pdfNombreOriginal: "compartido-v2.pdf" });
+    renderWithQuery(<FormatosImpresionAdminPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Formatos" }));
+    const row = (await screen.findByText("Factura de Venta - Estándar")).closest("tr");
+    fireEvent.click(within(row!).getByRole("button", { name: "Editar" }));
+
+    const pdf = new File(["%PDF-1.4\n"], "compartido-v2.pdf", { type: "application/pdf" });
+    await userEvent.upload(screen.getByLabelText("PDF"), pdf);
+    await screen.findByText("PDF seleccionado: compartido-v2.pdf");
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => expect(apiMock.put).toHaveBeenCalledWith(
+      "/catalogo-formatos/admin/formatos-impresion/formato_estandar",
+      expect.objectContaining({
+        fuenteIds: ["fuente_factura", "fuente_remision"],
+        pdfNombreOriginal: "compartido-v2.pdf",
+      }),
+    ));
+  });
+
+  it("edita metadatos sin reenviar el PDF existente", async () => {
+    apiMock.put.mockResolvedValue(formatos[1]);
+    renderWithQuery(<FormatosImpresionAdminPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Formatos" }));
+    const row = (await screen.findByText("Factura de Venta - Resumido")).closest("tr");
+    fireEvent.click(within(row!).getByRole("button", { name: "Editar" }));
+    await userEvent.clear(field("Descripción *"));
+    await userEvent.type(field("Descripción *"), "Descripción actualizada");
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => expect(apiMock.put).toHaveBeenCalled());
+    const body = apiMock.put.mock.calls[0][1];
+    expect(body).toMatchObject({
+      fuenteIds: ["fuente_factura"],
+      descripcion: "Descripción actualizada",
+    });
+    expect(body).not.toHaveProperty("pdfBase64");
+    expect(body).not.toHaveProperty("pdfNombreOriginal");
+  });
+
+  it("rechaza un archivo que no es PDF antes de llamar al API", async () => {
+    renderWithQuery(<FormatosImpresionAdminPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Formatos" }));
+    const row = (await screen.findByText("Factura de Venta - Resumido")).closest("tr");
+    fireEvent.click(within(row!).getByRole("button", { name: "Editar" }));
+
+    const image = new File(["not-a-pdf"], "captura.png", { type: "image/png" });
+    await userEvent.upload(screen.getByLabelText("PDF"), image, { applyAccept: false });
+    expect(await screen.findByText("Solo se aceptan archivos PDF.")).toBeInTheDocument();
+    expect(apiMock.put).not.toHaveBeenCalled();
+  });
+
+  it("permite conservar o retirar una fuente inactiva ya asignada", async () => {
+    const fuenteInactiva = { ...fuentes[0], activa: false, status: "inactive" };
+    apiMock.get.mockImplementation((path: string) => {
+      if (path === "/catalogo-formatos/admin/fuentes-formatos") return Promise.resolve([fuenteInactiva, fuentes[1]]);
+      if (path === "/catalogo-formatos/admin/formatos-impresion") return Promise.resolve([formatos[1]]);
+      if (path === "/license-modules") return Promise.resolve(modulosLicencia);
+      return Promise.resolve([]);
+    });
+    renderWithQuery(<FormatosImpresionAdminPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Formatos" }));
+    const row = (await screen.findByText("Factura de Venta - Resumido")).closest("tr");
+    fireEvent.click(within(row!).getByRole("button", { name: "Editar" }));
+
+    const assigned = screen.getByLabelText("Factura de venta (Inactiva)");
+    expect(assigned).toBeChecked();
+    expect(assigned).not.toBeDisabled();
+    await userEvent.click(screen.getByLabelText("Remisión"));
+    await userEvent.click(assigned);
+    expect(assigned).not.toBeChecked();
+    expect(screen.getByLabelText("Remisión")).toBeChecked();
+  });
+
   it("muestra metadatos opcionales de tamaño y licencia en el formato", async () => {
     renderWithQuery(<FormatosImpresionAdminPage />);
     fireEvent.click(await screen.findByRole("button", { name: "Formatos" }));

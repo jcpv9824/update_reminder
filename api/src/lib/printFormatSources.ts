@@ -36,7 +36,13 @@ export function withFormatSources<T extends Pick<FormatoImpresionRecord, "fuente
   format: T,
   sources: SourceIdentity[]
 ): T & Pick<FormatoImpresionRecord, "fuenteId" | "fuenteNombre" | "fuenteIds" | "fuenteNombres"> {
-  const uniqueSources = sources.filter((source, index) => sources.findIndex((item) => item.id === source.id) === index);
+  const seen = new Set<string>();
+  const uniqueSources = sources.filter((source) => {
+    const comparisonKey = source.id.trim().toLocaleLowerCase("es-CO");
+    if (!comparisonKey || seen.has(comparisonKey)) return false;
+    seen.add(comparisonKey);
+    return true;
+  });
   if (uniqueSources.length === 0) throw new Error("El formato debe tener al menos un tipo de fuente.");
   return {
     ...format,
