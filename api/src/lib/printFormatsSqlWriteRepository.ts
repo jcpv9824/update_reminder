@@ -1,11 +1,33 @@
 import sql from "mssql";
 import type { FormatoImpresionRecord, FuenteFormatoRecord } from "../types/models";
 import { writeSqlAuditLog } from "./auditSqlWriter";
+import { isSqlUniqueConstraintError } from "./clientsSqlWriteRepository";
 import { ensureSqlContentFile } from "./contentFileSqlWriter";
 import { runSqlTransaction } from "./sqlTransaction";
 
 type Actor = { id: string; email: string };
 const normalized = (value: string) => value.trim().toLocaleLowerCase("es-CO");
+
+export function dedupeResolvedSourceKeys(keys: number[]): number[] {
+  return [...new Set(keys)];
+}
+
+export function printFormatSqlConflictMessage(error: unknown): string | null {
+  if (!isSqlUniqueConstraintError(error)) return null;
+  return "No fue posible guardar el formato porque una fuente está repetida o ya existe un formato con ese nombre para la fuente seleccionada.";
+}
+
+async function runPrintFormatTransaction<T>(
+  work: (transaction: sql.Transaction) => Promise<T>,
+): Promise<T> {
+  try {
+    return await runSqlTransaction(work);
+  } catch (error) {
+    const message = printFormatSqlConflictMessage(error);
+    if (message) throw Object.assign(new Error(message), { status: 409 });
+    throw error;
+  }
+}
 
 async function sourceKey(transaction: sql.Transaction, id: string, activeOnly = false): Promise<number | null> {
   const request = new sql.Request(transaction);
@@ -109,9 +131,10 @@ async function resolveSourceKeys(transaction: sql.Transaction, sourceIds: string
     if (!key) throw Object.assign(new Error("Uno o más tipos de fuente no existen."), { status: 400 });
     keys.push(key);
   }
-  if (!keys.length) throw Object.assign(new Error("Seleccione al menos un tipo de fuente."), { status: 400 });
-  if (keys.length > 50) throw Object.assign(new Error("Un formato no puede tener más de 50 tipos de fuente."), { status: 400 });
-  return keys;
+  const uniqueKeys = dedupeResolvedSourceKeys(keys);
+  if (!uniqueKeys.length) throw Object.assign(new Error("Seleccione al menos un tipo de fuente."), { status: 400 });
+  if (uniqueKeys.length > 50) throw Object.assign(new Error("Un formato no puede tener más de 50 tipos de fuente."), { status: 400 });
+  return uniqueKeys;
 }
 
 async function replaceSources(transaction: sql.Transaction, formatKey: number, sourceIds: string[], actorId: string, at: Date): Promise<number> {
@@ -220,7 +243,7 @@ async function moduleKey(transaction: sql.Transaction, record: FormatoImpresionR
 }
 
 export async function createSqlPrintFormat(record: FormatoImpresionRecord, actor: Actor): Promise<FormatoImpresionRecord> {
-  return runSqlTransaction(async (transaction) => {
+  return runPrintFormatTransaction(async (transaction) => {
     const primarySource = await sourceKey(transaction, record.fuenteId, true);
     if (!primarySource) throw Object.assign(new Error("El tipo de fuente principal no está activo."), { status: 400 });
     const license = await moduleKey(transaction, record);
@@ -252,7 +275,7 @@ export async function createSqlPrintFormat(record: FormatoImpresionRecord, actor
 }
 
 export async function updateSqlPrintFormat(before: FormatoImpresionRecord, after: FormatoImpresionRecord, actor: Actor, replacePdf: boolean): Promise<FormatoImpresionRecord | null> {
-  return runSqlTransaction(async (transaction) => {
+  return runPrintFormatTransaction(async (transaction) => {
     const lookup = new sql.Request(transaction); lookup.input("sourceId", sql.NVarChar(150), after.id);
     const found = await lookup.query<{ print_format_key: number; print_format_source_key: number }>(`SELECT print_format_key,print_format_source_key FROM content.print_formats WITH (UPDLOCK,HOLDLOCK)
       WHERE source_id=@sourceId AND status<>'deleted';`);

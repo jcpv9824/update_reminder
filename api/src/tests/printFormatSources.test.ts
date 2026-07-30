@@ -23,7 +23,7 @@ describe("printFormatSources", () => {
   });
 
   it("normaliza, deduplica y conserva múltiples fuentes", () => {
-    expect(normalizeSourceIds([" fuente_1 ", "fuente_2", "fuente_1", ""])).toEqual(["fuente_1", "fuente_2"]);
+    expect(normalizeSourceIds([" fuente_1 ", "fuente_2", "FUENTE_1", ""])).toEqual(["fuente_1", "fuente_2"]);
     const updated = withFormatSources(legacyFormat, [
       { id: "fuente_1", nombre: "Factura" },
       { id: "fuente_2", nombre: "Remisión" },

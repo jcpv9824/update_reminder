@@ -229,6 +229,40 @@ describe("FormatosImpresionAdminPage", () => {
     ));
   });
 
+  it("deduplica fuentes heredadas al reemplazar el PDF de un formato existente", async () => {
+    apiMock.get.mockImplementation((path: string) => {
+      if (path === "/catalogo-formatos/admin/fuentes-formatos") return Promise.resolve(fuentes);
+      if (path === "/catalogo-formatos/admin/formatos-impresion") {
+        return Promise.resolve([{
+          ...formatos[1],
+          fuenteIds: ["fuente_factura", "FUENTE_FACTURA"],
+          fuenteNombres: ["Factura de venta", "Factura de venta"],
+        }]);
+      }
+      if (path === "/license-modules") return Promise.resolve(modulosLicencia);
+      return Promise.resolve([]);
+    });
+    apiMock.put.mockResolvedValue({ ...formatos[1], pdfNombreOriginal: "reemplazo.pdf" });
+
+    renderWithQuery(<FormatosImpresionAdminPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Formatos" }));
+    const row = (await screen.findByText("Factura de Venta - Resumido")).closest("tr");
+    fireEvent.click(within(row!).getByRole("button", { name: "Editar" }));
+
+    const pdf = new File(["%PDF-1.4\n"], "reemplazo.pdf", { type: "application/pdf" });
+    await userEvent.upload(screen.getByLabelText("PDF"), pdf);
+    await screen.findByText("PDF seleccionado: reemplazo.pdf");
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => expect(apiMock.put).toHaveBeenCalledWith(
+      "/catalogo-formatos/admin/formatos-impresion/formato_resumido",
+      expect.objectContaining({
+        fuenteIds: ["fuente_factura"],
+        pdfNombreOriginal: "reemplazo.pdf",
+      }),
+    ));
+  });
+
   it("muestra metadatos opcionales de tamaño y licencia en el formato", async () => {
     renderWithQuery(<FormatosImpresionAdminPage />);
     fireEvent.click(await screen.findByRole("button", { name: "Formatos" }));

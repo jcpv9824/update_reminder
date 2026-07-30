@@ -3,7 +3,16 @@ import type { FormatoImpresionRecord } from "../types/models";
 type SourceIdentity = { id: string; nombre: string };
 
 export function normalizeSourceIds(ids: string[]): string[] {
-  return [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
+  const seen = new Set<string>();
+  return ids
+    .map((id) => id.trim())
+    .filter((id) => {
+      if (!id) return false;
+      const comparisonKey = id.toLocaleLowerCase("es-CO");
+      if (seen.has(comparisonKey)) return false;
+      seen.add(comparisonKey);
+      return true;
+    });
 }
 
 export function getFormatSourceIds(format: Pick<FormatoImpresionRecord, "fuenteId" | "fuenteIds">): string[] {

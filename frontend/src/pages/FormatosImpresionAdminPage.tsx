@@ -188,8 +188,21 @@ export default function FormatosImpresionAdminPage() {
   );
 }
 
+function normalizarIdsFuentes(ids: string[]): string[] {
+  const vistos = new Set<string>();
+  return ids
+    .map((id) => id.trim())
+    .filter((id) => {
+      if (!id) return false;
+      const clave = id.toLocaleLowerCase("es-CO");
+      if (vistos.has(clave)) return false;
+      vistos.add(clave);
+      return true;
+    });
+}
+
 function idsFuentes(formato: Pick<FormatoImpresion, "fuenteId" | "fuenteIds">): string[] {
-  return formato.fuenteIds?.length ? formato.fuenteIds : [formato.fuenteId].filter(Boolean);
+  return normalizarIdsFuentes(formato.fuenteIds?.length ? formato.fuenteIds : [formato.fuenteId].filter(Boolean));
 }
 
 function nombresFuentes(formato: Pick<FormatoImpresion, "fuenteNombre" | "fuenteNombres">): string[] {
@@ -240,9 +253,13 @@ function FormularioFormato({ inicial, fuentes, modulosLicencia, cargando, onSubm
   }, [fuenteIds.length, fuentes]);
 
   function alternarFuente(id: string) {
-    setFuenteIds((actuales) => actuales.includes(id)
-      ? actuales.filter((fuenteId) => fuenteId !== id)
-      : [...actuales, id]);
+    setFuenteIds((actuales) => {
+      const clave = id.toLocaleLowerCase("es-CO");
+      const seleccionada = actuales.some((fuenteId) => fuenteId.toLocaleLowerCase("es-CO") === clave);
+      return normalizarIdsFuentes(seleccionada
+        ? actuales.filter((fuenteId) => fuenteId.toLocaleLowerCase("es-CO") !== clave)
+        : [...actuales, id]);
+    });
   }
 
   async function cargarPdf(file?: File) {
@@ -271,7 +288,7 @@ function FormularioFormato({ inicial, fuentes, modulosLicencia, cargando, onSubm
     if (!inicial && !pdf) { setError("Debe cargar un PDF."); return; }
     onSubmit({
       nombre,
-      fuenteIds,
+      fuenteIds: normalizarIdsFuentes(fuenteIds),
       descripcion,
       tamanoFormato: tamanoFormato || null,
       tamanoFormatoPersonalizado: tamanoFormato === "personalizado" ? tamanoFormatoPersonalizado : "",
