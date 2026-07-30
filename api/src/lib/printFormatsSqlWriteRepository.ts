@@ -14,7 +14,7 @@ export function dedupeResolvedSourceKeys(keys: number[]): number[] {
 
 export function printFormatSqlConflictMessage(error: unknown): string | null {
   if (!isSqlUniqueConstraintError(error)) return null;
-  return "No fue posible guardar el formato porque una fuente está repetida o ya existe un formato con ese nombre para la fuente seleccionada.";
+  return "No fue posible guardar el formato porque la misma fuente se envió más de una vez dentro de este formato o ya existe otro formato con el mismo nombre para esa fuente.";
 }
 
 async function runPrintFormatTransaction<T>(

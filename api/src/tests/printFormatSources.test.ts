@@ -54,4 +54,17 @@ describe("printFormatSources", () => {
   it("rechaza un formato sin ninguna fuente válida", () => {
     expect(() => withFormatSources(legacyFormat, [])).toThrow(/al menos un tipo de fuente/i);
   });
+
+  it("permite que formatos diferentes compartan el mismo tipo de fuente", () => {
+    const first = withFormatSources(legacyFormat, [{ id: "fuente_1", nombre: "Factura" }]);
+    const second = withFormatSources({
+      ...legacyFormat,
+      id: "formato_2",
+      nombre: "Formato alternativo",
+    }, [{ id: "fuente_1", nombre: "Factura" }]);
+
+    expect(formatHasSource(first, "fuente_1")).toBe(true);
+    expect(formatHasSource(second, "fuente_1")).toBe(true);
+    expect(first.id).not.toBe(second.id);
+  });
 });

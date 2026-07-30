@@ -16,12 +16,12 @@ describe("Print Formats SQL write contract", () => {
       message: "Violation of PRIMARY KEY constraint 'PK_print_format_source_assignments'.",
     };
     const message = printFormatSqlConflictMessage(providerError);
-    expect(message).toMatch(/fuente está repetida/i);
+    expect(message).toMatch(/misma fuente se envió más de una vez dentro de este formato/i);
     expect(message).not.toContain("PRIMARY KEY");
     expect(printFormatSqlConflictMessage({
       originalError: { info: { number: 2601 } },
       message: "Cannot insert duplicate key row.",
-    })).toMatch(/fuente está repetida/i);
+    })).toMatch(/misma fuente se envió más de una vez dentro de este formato/i);
     expect(printFormatSqlConflictMessage({ number: 547 })).toBeNull();
   });
 });
