@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   dedupeResolvedSourceKeys,
+  normalizeSqlIdentityKey,
   printFormatSqlConflictMessage,
   resolvedSourceAssignmentsChanged,
   temporaryPrintFormatNormalizedName,
@@ -10,6 +11,28 @@ describe("Print Formats SQL write contract", () => {
   it("deduplicates source IDs after SQL resolution while preserving display order", () => {
     expect(dedupeResolvedSourceKeys([27, 27, 31, 27, 45])).toEqual([27, 31, 45]);
     expect(dedupeResolvedSourceKeys([])).toEqual([]);
+  });
+
+  it("normalizes BIGINT identity values returned as strings by the SQL driver", () => {
+    expect(normalizeSqlIdentityKey("27")).toBe(27);
+    expect(normalizeSqlIdentityKey(27)).toBe(27);
+    expect(normalizeSqlIdentityKey(27n)).toBe(27);
+    expect(() => normalizeSqlIdentityKey("")).toThrow(/missing/i);
+    expect(() => normalizeSqlIdentityKey("27.5")).toThrow(/invalid/i);
+  });
+
+  it("does not misclassify a PDF-only edit when SQL returns BIGINT keys as strings", () => {
+    const currentPrimary = normalizeSqlIdentityKey("27");
+    const desiredPrimary = normalizeSqlIdentityKey("27");
+    const currentSources = ["27", "31"].map((key) => normalizeSqlIdentityKey(key));
+    const desiredSources = ["27", "31"].map((key) => normalizeSqlIdentityKey(key));
+
+    expect(resolvedSourceAssignmentsChanged(
+      currentSources,
+      desiredSources,
+      currentPrimary,
+      desiredPrimary,
+    )).toBe(false);
   });
 
   it("maps assignment uniqueness failures to a safe business conflict", () => {

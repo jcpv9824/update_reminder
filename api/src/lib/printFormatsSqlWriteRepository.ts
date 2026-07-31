@@ -9,6 +9,17 @@ import { runSqlTransaction } from "./sqlTransaction";
 type Actor = { id: string; email: string };
 const normalized = (value: string) => value.trim().toLocaleLowerCase("es-CO");
 
+export function normalizeSqlIdentityKey(value: unknown, label = "SQL identity key"): number {
+  if (value === null || value === undefined || value === "") {
+    throw new Error(`${label} is missing.`);
+  }
+  const key = Number(value);
+  if (!Number.isSafeInteger(key) || key <= 0) {
+    throw new Error(`${label} is invalid.`);
+  }
+  return key;
+}
+
 export function dedupeResolvedSourceKeys(keys: number[]): number[] {
   return [...new Set(keys)];
 }
@@ -85,7 +96,8 @@ async function sourceKey(transaction: sql.Transaction, id: string, activeOnly = 
     SELECT print_format_source_key FROM content.print_format_sources WITH (UPDLOCK,HOLDLOCK)
     WHERE source_id=@sourceId AND status<>'deleted' ${activeOnly ? "AND active=1" : ""};
   `);
-  return result.recordset[0]?.print_format_source_key ?? null;
+  const key = result.recordset[0]?.print_format_source_key;
+  return key === null || key === undefined ? null : normalizeSqlIdentityKey(key, "Print-format source key");
 }
 
 export async function createSqlPrintSource(record: FuenteFormatoRecord, actor: Actor): Promise<FuenteFormatoRecord> {
@@ -195,7 +207,7 @@ async function assignedSourceKeys(transaction: sql.Transaction, formatKey: numbe
     WHERE print_format_key=@formatKey
     ORDER BY display_order,print_format_source_key;
   `);
-  return result.recordset.map((row) => Number(row.print_format_source_key));
+  return result.recordset.map((row) => normalizeSqlIdentityKey(row.print_format_source_key, "Assigned print-format source key"));
 }
 
 async function replaceSources(transaction: sql.Transaction, formatKey: number, sourceIds: string[], actorId: string, at: Date): Promise<number> {
@@ -300,7 +312,7 @@ async function moduleKey(transaction: sql.Transaction, record: FormatoImpresionR
   const result = await request.query<{ module_key: number }>(`SELECT module_key FROM licensing.license_modules
     WHERE source_id=@moduleId AND status='active';`);
   if (!result.recordset[0]) throw Object.assign(new Error("La licencia seleccionada no existe o está inactiva."), { status: 400 });
-  return result.recordset[0].module_key;
+  return normalizeSqlIdentityKey(result.recordset[0].module_key, "License module key");
 }
 
 export async function createSqlPrintFormat(record: FormatoImpresionRecord, actor: Actor): Promise<FormatoImpresionRecord> {
@@ -308,7 +320,7 @@ export async function createSqlPrintFormat(record: FormatoImpresionRecord, actor
     const primarySource = await sourceKey(transaction, record.fuenteId, true);
     if (!primarySource) throw Object.assign(new Error("El tipo de fuente principal no está activo."), { status: 400 });
     const license = await moduleKey(transaction, record);
-    const file = await ensurePdfFile(transaction, record, actor.id);
+    const file = normalizeSqlIdentityKey(await ensurePdfFile(transaction, record, actor.id), "PDF file key");
     const request = new sql.Request(transaction);
     request.input("sourceId", sql.NVarChar(150), record.id); request.input("primarySource", sql.BigInt, primarySource);
     request.input("name", sql.NVarChar(240), record.nombre); request.input("normalized", sql.NVarChar(240), normalized(record.nombre));
@@ -323,7 +335,7 @@ export async function createSqlPrintFormat(record: FormatoImpresionRecord, actor
       VALUES(@sourceId,@primarySource,@name,@normalized,@description,@size,@customSize,@requiresLicense,@moduleKey,
         @active,@status,@now,@actorId,@now,@actorId);
     `);
-    const formatKey = inserted.recordset[0].print_format_key;
+    const formatKey = normalizeSqlIdentityKey(inserted.recordset[0].print_format_key, "Print-format key");
     await replaceSources(transaction, formatKey, formatSourceIds(record), actor.id, new Date(record.createdAt));
     const version = new sql.Request(transaction);
     version.input("formatKey", sql.BigInt, formatKey); version.input("fileKey", sql.BigInt, file); version.input("now", sql.DateTime2(3), new Date(record.createdAt)); version.input("actorId", sql.NVarChar(150), actor.id);
@@ -340,11 +352,12 @@ export async function updateSqlPrintFormat(before: FormatoImpresionRecord, after
     const lookup = new sql.Request(transaction); lookup.input("sourceId", sql.NVarChar(150), after.id);
     const found = await lookup.query<{ print_format_key: number; print_format_source_key: number }>(`SELECT print_format_key,print_format_source_key FROM content.print_formats WITH (UPDLOCK,HOLDLOCK)
       WHERE source_id=@sourceId AND status<>'deleted';`);
-    const formatKey = found.recordset[0]?.print_format_key; if (!formatKey) return null;
+    const rawFormatKey = found.recordset[0]?.print_format_key; if (rawFormatKey === null || rawFormatKey === undefined) return null;
+    const formatKey = normalizeSqlIdentityKey(rawFormatKey, "Print-format key");
     const primarySource = await sourceKey(transaction, after.fuenteId); if (!primarySource) throw Object.assign(new Error("El tipo de fuente principal no existe."), { status: 400 });
     const desiredSourceKeys = await resolveSourceKeys(transaction, formatSourceIds(after));
     if (desiredSourceKeys[0] !== primarySource) throw Object.assign(new Error("La fuente principal debe ser la primera fuente asignada."), { status: 400 });
-    const currentPrimarySource = Number(found.recordset[0].print_format_source_key);
+    const currentPrimarySource = normalizeSqlIdentityKey(found.recordset[0].print_format_source_key, "Current primary source key");
     const currentSourceKeys = await assignedSourceKeys(transaction, formatKey);
     const sourcesChanged = resolvedSourceAssignmentsChanged(
       currentSourceKeys,
@@ -387,7 +400,7 @@ export async function updateSqlPrintFormat(before: FormatoImpresionRecord, after
       `);
     }
     if (replacePdf) {
-      const file = await ensurePdfFile(transaction, after, actor.id); const version = new sql.Request(transaction);
+      const file = normalizeSqlIdentityKey(await ensurePdfFile(transaction, after, actor.id), "PDF file key"); const version = new sql.Request(transaction);
       version.input("formatKey", sql.BigInt, formatKey); version.input("fileKey", sql.BigInt, file); version.input("now", sql.DateTime2(3), new Date(after.updatedAt)); version.input("actorId", sql.NVarChar(150), actor.id);
       await version.query(`DECLARE @version INT=ISNULL((SELECT MAX(version_no) FROM content.print_format_files WITH (UPDLOCK,HOLDLOCK) WHERE print_format_key=@formatKey),0)+1;
         UPDATE content.print_format_files SET is_current=0 WHERE print_format_key=@formatKey AND is_current=1;
