@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   dedupeResolvedSourceKeys,
+  insertNewFormatSourceAssignments,
   normalizeSqlIdentityKey,
   printFormatSqlConflictMessage,
   resolvedSourceAssignmentsChanged,
@@ -11,6 +12,21 @@ describe("Print Formats SQL write contract", () => {
   it("deduplicates source IDs after SQL resolution while preserving display order", () => {
     expect(dedupeResolvedSourceKeys([27, 27, 31, 27, 45])).toEqual([27, 31, 45]);
     expect(dedupeResolvedSourceKeys([])).toEqual([]);
+  });
+
+  it("creates source assignments by inserting the primary first without an empty-set reset", async () => {
+    const inserted: Array<{ key: number; displayOrder: number }> = [];
+
+    const primary = await insertNewFormatSourceAssignments([27, 31, 45], async (key, displayOrder) => {
+      inserted.push({ key, displayOrder });
+    });
+
+    expect(primary).toBe(27);
+    expect(inserted).toEqual([
+      { key: 27, displayOrder: 0 },
+      { key: 31, displayOrder: 1 },
+      { key: 45, displayOrder: 2 },
+    ]);
   });
 
   it("normalizes BIGINT identity values returned as strings by the SQL driver", () => {
@@ -53,6 +69,10 @@ describe("Print Formats SQL write contract", () => {
   });
 
   it("distinguishes name and PDF-version constraints", () => {
+    expect(printFormatSqlConflictMessage({
+      number: 51510,
+      message: "Every print format must retain its primary source assignment.",
+    })).toMatch(/fuente principal/i);
     expect(printFormatSqlConflictMessage({
       number: 2601,
       message: "Cannot insert duplicate key row in index 'UX_print_formats_source_name_active'.",

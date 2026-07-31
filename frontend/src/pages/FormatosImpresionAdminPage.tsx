@@ -42,6 +42,47 @@ export default function FormatosImpresionAdminPage() {
   const fuentesActivas = fuentes.filter((fuente) => fuente.activa && fuente.status !== "deleted");
   const modulosLicenciaActivos = modulosLicencia.filter((modulo) => modulo.status === "active" && modulo.active !== false);
 
+  useEffect(() => {
+    if (!mensaje && !error) return;
+    const timer = window.setTimeout(() => {
+      setMensaje(null);
+      setError(null);
+    }, 6000);
+    return () => window.clearTimeout(timer);
+  }, [mensaje, error]);
+
+  function limpiarAvisos() {
+    setMensaje(null);
+    setError(null);
+  }
+
+  function cambiarTab(siguiente: Tab) {
+    limpiarAvisos();
+    setTab(siguiente);
+  }
+
+  function abrirFuente(valor: FuenteFormato | "nuevo") {
+    limpiarAvisos();
+    guardarFuente.reset();
+    setModalFuente(valor);
+  }
+
+  function abrirFormato(valor: FormatoImpresion | "nuevo") {
+    limpiarAvisos();
+    guardarFormato.reset();
+    setModalFormato(valor);
+  }
+
+  function cerrarFuente() {
+    guardarFuente.reset();
+    setModalFuente(null);
+  }
+
+  function cerrarFormato() {
+    guardarFormato.reset();
+    setModalFormato(null);
+  }
+
   function onSuccess(texto: string) {
     qc.invalidateQueries({ queryKey: ["fuentes-formatos-admin"] });
     qc.invalidateQueries({ queryKey: ["formatos-impresion-admin"] });
@@ -56,12 +97,10 @@ export default function FormatosImpresionAdminPage() {
   const guardarFuente = useMutation({
     mutationFn: ({ id, body }: { id?: string; body: any }) => id ? api.put(`${ADMIN_API}/fuentes-formatos/${id}`, body) : api.post(`${ADMIN_API}/fuentes-formatos`, body),
     onSuccess: (_, vars) => onSuccess(vars.id ? "Tipo de fuente actualizado correctamente." : "Tipo de fuente creado correctamente."),
-    onError: (e: any) => setError(e?.message ?? "No se pudo guardar el tipo de fuente."),
   });
   const guardarFormato = useMutation({
     mutationFn: ({ id, body }: { id?: string; body: any }) => id ? api.put(`${ADMIN_API}/formatos-impresion/${id}`, body) : api.post(`${ADMIN_API}/formatos-impresion`, body),
     onSuccess: (_, vars) => onSuccess(vars.id ? "Formato actualizado correctamente." : "Formato creado correctamente."),
-    onError: (e: any) => setError(e?.message ?? "No se pudo guardar el formato."),
   });
   const borrarFuente = useMutation({
     mutationFn: (id: string) => api.del(`${ADMIN_API}/fuentes-formatos/${id}`),
@@ -78,7 +117,7 @@ export default function FormatosImpresionAdminPage() {
     <>
       <div className="encabezado-pagina">
         <h2>Formatos de Impresión</h2>
-        <button className="primario" onClick={() => tab === "fuentes" ? setModalFuente("nuevo") : setModalFormato("nuevo")}>
+        <button className="primario" onClick={() => tab === "fuentes" ? abrirFuente("nuevo") : abrirFormato("nuevo")}>
           {tab === "fuentes" ? "Nuevo tipo de fuente" : "Nuevo formato"}
         </button>
       </div>
@@ -86,8 +125,8 @@ export default function FormatosImpresionAdminPage() {
       {error && <Alerta tipo="error">{error}</Alerta>}
 
       <div className="pestanas">
-        <button className={tab === "fuentes" ? "activo" : ""} onClick={() => setTab("fuentes")}>Tipos de fuente</button>
-        <button className={tab === "formatos" ? "activo" : ""} onClick={() => setTab("formatos")}>Formatos</button>
+        <button className={tab === "fuentes" ? "activo" : ""} onClick={() => cambiarTab("fuentes")}>Tipos de fuente</button>
+        <button className={tab === "formatos" ? "activo" : ""} onClick={() => cambiarTab("formatos")}>Formatos</button>
       </div>
       <div className="barra-filtros">
         <div className="campo campo-busqueda-formatos">
@@ -113,8 +152,8 @@ export default function FormatosImpresionAdminPage() {
                   <td>{fuente.nombre}</td>
                   <td><EtiquetaEstado estado={fuente.activa ? "active" : "inactive"} /></td>
                   <td className="acciones-tabla">
-                    <button onClick={() => { setError(null); setModalFuente(fuente); }}>Editar</button>
-                    <button className="peligro" onClick={() => { setError(null); setEliminarFuente(fuente); }}>Eliminar</button>
+                    <button onClick={() => abrirFuente(fuente)}>Editar</button>
+                    <button className="peligro" onClick={() => { limpiarAvisos(); setEliminarFuente(fuente); }}>Eliminar</button>
                   </td>
                 </tr>
               ))}
@@ -137,8 +176,8 @@ export default function FormatosImpresionAdminPage() {
                   <td><a href={apiUrl(`/public/formatos-impresion/${formato.id}/pdf`)} target="_blank" rel="noreferrer">Ver PDF</a></td>
                   <td><EtiquetaEstado estado={formato.activo ? "active" : "inactive"} /></td>
                   <td className="acciones-tabla">
-                    <button onClick={() => { setError(null); setModalFormato(formato); }}>Editar</button>
-                    <button className="peligro" onClick={() => { setError(null); setEliminarFormato(formato); }}>Eliminar</button>
+                    <button onClick={() => abrirFormato(formato)}>Editar</button>
+                    <button className="peligro" onClick={() => { limpiarAvisos(); setEliminarFormato(formato); }}>Eliminar</button>
                   </td>
                 </tr>
               ))}
@@ -148,14 +187,15 @@ export default function FormatosImpresionAdminPage() {
         )
       )}
 
-      <Modal titulo={modalFuente === "nuevo" ? "Nuevo tipo de fuente" : "Editar tipo de fuente"} abierto={!!modalFuente} onCerrar={() => setModalFuente(null)}>
+      <Modal titulo={modalFuente === "nuevo" ? "Nuevo tipo de fuente" : "Editar tipo de fuente"} abierto={!!modalFuente} onCerrar={cerrarFuente}>
         <FormularioFuente
           inicial={modalFuente && modalFuente !== "nuevo" ? modalFuente : undefined}
           cargando={guardarFuente.isPending}
+          errorServidor={mensajeError(guardarFuente.error, "No se pudo guardar el tipo de fuente.")}
           onSubmit={(body) => guardarFuente.mutate({ id: modalFuente && modalFuente !== "nuevo" ? modalFuente.id : undefined, body })}
         />
       </Modal>
-      <Modal titulo={modalFormato === "nuevo" ? "Nuevo formato" : "Editar formato"} abierto={!!modalFormato} onCerrar={() => setModalFormato(null)}>
+      <Modal titulo={modalFormato === "nuevo" ? "Nuevo formato" : "Editar formato"} abierto={!!modalFormato} onCerrar={cerrarFormato}>
         <FormularioFormato
           inicial={modalFormato && modalFormato !== "nuevo" ? modalFormato : undefined}
           fuentes={modalFormato && modalFormato !== "nuevo"
@@ -163,6 +203,7 @@ export default function FormatosImpresionAdminPage() {
             : fuentesActivas}
           modulosLicencia={modulosLicenciaActivos}
           cargando={guardarFormato.isPending}
+          errorServidor={mensajeError(guardarFormato.error, "No se pudo guardar el formato.")}
           onSubmit={(body) => guardarFormato.mutate({ id: modalFormato && modalFormato !== "nuevo" ? modalFormato.id : undefined, body })}
         />
       </Modal>
@@ -217,7 +258,12 @@ function filtrar<T extends { nombre: string; descripcion?: string; fuenteNombre?
   return items.filter((item) => `${item.nombre} ${item.descripcion ?? ""} ${(item.fuenteNombres ?? [item.fuenteNombre]).filter(Boolean).join(" ")}`.toLowerCase().includes(q));
 }
 
-function FormularioFuente({ inicial, cargando, onSubmit }: { inicial?: FuenteFormato; cargando: boolean; onSubmit: (body: any) => void }) {
+function mensajeError(error: unknown, fallback: string): string | null {
+  if (!error) return null;
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function FormularioFuente({ inicial, cargando, errorServidor, onSubmit }: { inicial?: FuenteFormato; cargando: boolean; errorServidor: string | null; onSubmit: (body: any) => void }) {
   const [nombre, setNombre] = useState(inicial?.nombre ?? "");
   const [activa, setActiva] = useState(inicial?.activa ?? true);
   const [error, setError] = useState<string | null>(null);
@@ -231,6 +277,7 @@ function FormularioFuente({ inicial, cargando, onSubmit }: { inicial?: FuenteFor
   return (
     <form onSubmit={submit}>
       {error && <Alerta tipo="error">{error}</Alerta>}
+      {!error && errorServidor && <Alerta tipo="error">{errorServidor}</Alerta>}
       <div className="fila-formulario"><label>Nombre del tipo de fuente *</label><input value={nombre} onChange={(e) => setNombre(e.target.value)} /></div>
       <div className="fila-formulario"><label><input type="checkbox" checked={activa} onChange={(e) => setActiva(e.target.checked)} style={{ width: "auto", marginRight: 6 }} />Activa</label></div>
       <div className="acciones-formulario"><button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button></div>
@@ -238,7 +285,7 @@ function FormularioFuente({ inicial, cargando, onSubmit }: { inicial?: FuenteFor
   );
 }
 
-function FormularioFormato({ inicial, fuentes, modulosLicencia, cargando, onSubmit }: { inicial?: FormatoImpresion; fuentes: FuenteFormato[]; modulosLicencia: ModuloLicencia[]; cargando: boolean; onSubmit: (body: any) => void }) {
+function FormularioFormato({ inicial, fuentes, modulosLicencia, cargando, errorServidor, onSubmit }: { inicial?: FormatoImpresion; fuentes: FuenteFormato[]; modulosLicencia: ModuloLicencia[]; cargando: boolean; errorServidor: string | null; onSubmit: (body: any) => void }) {
   const [nombre, setNombre] = useState(inicial?.nombre ?? "");
   const [fuenteIds, setFuenteIds] = useState<string[]>(() => inicial ? idsFuentes(inicial) : (fuentes[0] ? [fuentes[0].id] : []));
   const [descripcion, setDescripcion] = useState(inicial?.descripcion ?? "");
@@ -249,6 +296,13 @@ function FormularioFormato({ inicial, fuentes, modulosLicencia, cargando, onSubm
   const [activo, setActivo] = useState(inicial?.activo ?? true);
   const [pdf, setPdf] = useState<PdfPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busquedaFuentes, setBusquedaFuentes] = useState("");
+  const fuentesVisibles = useMemo(() => {
+    const consulta = textoBusqueda(busquedaFuentes);
+    return [...fuentes]
+      .sort((left, right) => left.nombre.localeCompare(right.nombre, "es-CO"))
+      .filter((fuente) => !consulta || textoBusqueda(fuente.nombre).includes(consulta));
+  }, [busquedaFuentes, fuentes]);
 
   useEffect(() => {
     if (fuenteIds.length === 0 && fuentes[0]) setFuenteIds([fuentes[0].id]);
@@ -262,6 +316,11 @@ function FormularioFormato({ inicial, fuentes, modulosLicencia, cargando, onSubm
         ? actuales.filter((fuenteId) => fuenteId.toLocaleLowerCase("es-CO") !== clave)
         : [...actuales, id]);
     });
+  }
+
+  function seleccionada(id: string) {
+    const clave = id.toLocaleLowerCase("es-CO");
+    return fuenteIds.some((fuenteId) => fuenteId.toLocaleLowerCase("es-CO") === clave);
   }
 
   async function cargarPdf(file?: File) {
@@ -304,22 +363,39 @@ function FormularioFormato({ inicial, fuentes, modulosLicencia, cargando, onSubm
   return (
     <form onSubmit={submit}>
       {error && <Alerta tipo="error">{error}</Alerta>}
+      {!error && errorServidor && <Alerta tipo="error">{errorServidor}</Alerta>}
       <div className="fila-formulario"><label>Nombre del formato *</label><input value={nombre} onChange={(e) => setNombre(e.target.value)} /></div>
       <fieldset className="fila-formulario selector-fuentes-formato">
         <legend>Tipos de fuente *</legend>
         <p className="texto-ayuda">Seleccione uno o varios tipos de fuente para este formato.</p>
+        <label htmlFor="buscar-fuentes-formato" className="etiqueta-busqueda-fuentes">Buscar tipos de fuente</label>
+        <div className="buscador-limpiable buscador-fuentes-formato">
+          <input
+            id="buscar-fuentes-formato"
+            value={busquedaFuentes}
+            onChange={(e) => setBusquedaFuentes(e.target.value)}
+            placeholder="Buscar en todos los tipos de fuente..."
+          />
+          {busquedaFuentes && (
+            <button type="button" onClick={() => setBusquedaFuentes("")} aria-label="Limpiar búsqueda de tipos de fuente">
+              x
+            </button>
+          )}
+        </div>
+        <p className="texto-ayuda contador-fuentes-formato">Mostrando {fuentesVisibles.length} de {fuentes.length} tipos de fuente.</p>
         <div className="opciones-fuentes-formato">
-          {fuentes.map((fuente) => (
+          {fuentesVisibles.map((fuente) => (
             <label key={fuente.id}>
               <input
                 type="checkbox"
-                checked={fuenteIds.includes(fuente.id)}
+                checked={seleccionada(fuente.id)}
                 onChange={() => alternarFuente(fuente.id)}
-                disabled={!fuente.activa && !fuenteIds.includes(fuente.id)}
+                disabled={!fuente.activa && !seleccionada(fuente.id)}
               />
               <span>{fuente.nombre}{!fuente.activa ? " (Inactiva)" : ""}</span>
             </label>
           ))}
+          {fuentesVisibles.length === 0 && <div className="vacio">No hay tipos de fuente que coincidan con la búsqueda.</div>}
         </div>
       </fieldset>
       <div className="fila-formulario"><label>Descripción *</label><textarea value={descripcion} onChange={(e) => setDescripcion(e.target.value)} rows={3} /></div>
@@ -334,4 +410,8 @@ function FormularioFormato({ inicial, fuentes, modulosLicencia, cargando, onSubm
       <div className="acciones-formulario"><button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button></div>
     </form>
   );
+}
+
+function textoBusqueda(value: string): string {
+  return value.trim().toLocaleLowerCase("es-CO").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }

@@ -24,6 +24,17 @@ export function dedupeResolvedSourceKeys(keys: number[]): number[] {
   return [...new Set(keys)];
 }
 
+export async function insertNewFormatSourceAssignments(
+  keys: number[],
+  insert: (key: number, displayOrder: number) => Promise<void>,
+): Promise<number> {
+  if (!keys.length) throw new Error("A new print format requires at least one source assignment.");
+  for (const [displayOrder, key] of keys.entries()) {
+    await insert(key, displayOrder);
+  }
+  return keys[0];
+}
+
 function sqlErrorDetails(error: unknown): { number?: number; message: string } {
   const candidate = error as {
     number?: number;
@@ -39,6 +50,14 @@ function sqlErrorDetails(error: unknown): { number?: number; message: string } {
 export function printFormatSqlConflictMessage(error: unknown): string | null {
   const details = sqlErrorDetails(error);
   const message = details.message.toLowerCase();
+  if (
+    details.number === 51510
+    || details.number === 51513
+    || message.includes("retain its primary source assignment")
+    || message.includes("primary print-format source must exist")
+  ) {
+    return "El formato debe conservar su tipo de fuente principal dentro de las fuentes seleccionadas.";
+  }
   if (
     details.number === 51512
     || details.number === 51514
@@ -210,23 +229,19 @@ async function assignedSourceKeys(transaction: sql.Transaction, formatKey: numbe
   return result.recordset.map((row) => normalizeSqlIdentityKey(row.print_format_source_key, "Assigned print-format source key"));
 }
 
-async function replaceSources(transaction: sql.Transaction, formatKey: number, sourceIds: string[], actorId: string, at: Date): Promise<number> {
+async function createSourceAssignments(transaction: sql.Transaction, formatKey: number, sourceIds: string[], actorId: string, at: Date): Promise<number> {
   const keys = await resolveSourceKeys(transaction, sourceIds);
-  const remove = new sql.Request(transaction);
-  remove.input("formatKey", sql.BigInt, formatKey);
-  await remove.query("DELETE content.print_format_source_assignments WHERE print_format_key=@formatKey;");
-  for (const [order, key] of keys.entries()) {
+  return insertNewFormatSourceAssignments(keys, async (key, displayOrder) => {
     const insert = new sql.Request(transaction);
     insert.input("formatKey", sql.BigInt, formatKey);
     insert.input("sourceKey", sql.BigInt, key);
-    insert.input("displayOrder", sql.SmallInt, order);
+    insert.input("displayOrder", sql.SmallInt, displayOrder);
     insert.input("assignedAt", sql.DateTime2(3), at);
     insert.input("assignedBy", sql.NVarChar(150), actorId);
     await insert.query(`INSERT content.print_format_source_assignments
       (print_format_key,print_format_source_key,display_order,assigned_at,assigned_by)
       VALUES(@formatKey,@sourceKey,@displayOrder,@assignedAt,@assignedBy);`);
-  }
-  return keys[0];
+  });
 }
 
 async function preparePrimarySourceForUpdate(
@@ -336,7 +351,7 @@ export async function createSqlPrintFormat(record: FormatoImpresionRecord, actor
         @active,@status,@now,@actorId,@now,@actorId);
     `);
     const formatKey = normalizeSqlIdentityKey(inserted.recordset[0].print_format_key, "Print-format key");
-    await replaceSources(transaction, formatKey, formatSourceIds(record), actor.id, new Date(record.createdAt));
+    await createSourceAssignments(transaction, formatKey, formatSourceIds(record), actor.id, new Date(record.createdAt));
     const version = new sql.Request(transaction);
     version.input("formatKey", sql.BigInt, formatKey); version.input("fileKey", sql.BigInt, file); version.input("now", sql.DateTime2(3), new Date(record.createdAt)); version.input("actorId", sql.NVarChar(150), actor.id);
     await version.query(`INSERT content.print_format_files(print_format_key,version_no,file_key,is_current,created_at,created_by)

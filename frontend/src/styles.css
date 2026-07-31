@@ -1016,6 +1016,18 @@ td:last-child:has(.acciones-tabla) { text-align: right; }
 .selector-fuentes-formato .texto-ayuda {
   margin: 0 0 8px;
 }
+.etiqueta-busqueda-fuentes {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 5px;
+}
+.buscador-fuentes-formato {
+  max-width: none;
+  margin-bottom: 5px;
+}
+.contador-fuentes-formato {
+  font-size: 12px;
+}
 .opciones-fuentes-formato {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -229,6 +229,58 @@ describe("FormatosImpresionAdminPage", () => {
     ));
   });
 
+  it("muestra dentro de la modal el error devuelto al crear un formato", async () => {
+    const serverMessage = "No fue posible crear el formato con las fuentes seleccionadas.";
+    apiMock.post.mockRejectedValue(new Error(serverMessage));
+    renderWithQuery(<FormatosImpresionAdminPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Formatos" }));
+    fireEvent.click(screen.getByRole("button", { name: "Nuevo formato" }));
+    const modal = screen.getByRole("heading", { name: "Nuevo formato" }).closest(".modal") as HTMLElement;
+    await userEvent.type(field("Nombre del formato *"), "Formato con error");
+    await userEvent.type(field("Descripción *"), "Validación del error del servidor");
+    const pdf = new File(["%PDF-1.4\n"], "error.pdf", { type: "application/pdf" });
+    await userEvent.upload(screen.getByLabelText("PDF *"), pdf);
+    fireEvent.click(within(modal).getByRole("button", { name: "Guardar" }));
+
+    expect(await within(modal).findByText(serverMessage)).toBeInTheDocument();
+    expect(screen.getAllByText(serverMessage)).toHaveLength(1);
+
+    fireEvent.click(within(modal).getByRole("button", { name: "Cerrar" }));
+    expect(screen.queryByText(serverMessage)).not.toBeInTheDocument();
+  });
+
+  it("limpia avisos anteriores al cambiar de pestaña", async () => {
+    apiMock.post.mockResolvedValue({ id: "fuente_nueva", nombre: "Cotización" });
+    renderWithQuery(<FormatosImpresionAdminPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Nuevo tipo de fuente" }));
+    await userEvent.type(field("Nombre del tipo de fuente *"), "Cotización");
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+    expect(await screen.findByText("Tipo de fuente creado correctamente.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Formatos" }));
+
+    expect(screen.queryByText("Tipo de fuente creado correctamente.")).not.toBeInTheDocument();
+  });
+
+  it("permite buscar dentro de la lista completa de tipos de fuente", async () => {
+    renderWithQuery(<FormatosImpresionAdminPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Formatos" }));
+    fireEvent.click(screen.getByRole("button", { name: "Nuevo formato" }));
+
+    const sourceSearch = screen.getByLabelText("Buscar tipos de fuente");
+    expect(screen.getByLabelText("Factura de venta")).toBeInTheDocument();
+    expect(screen.getByLabelText("Remisión")).toBeInTheDocument();
+
+    await userEvent.type(sourceSearch, "remi");
+
+    expect(screen.queryByLabelText("Factura de venta")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Remisión")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Limpiar búsqueda de tipos de fuente" }));
+    expect(screen.getByLabelText("Factura de venta")).toBeInTheDocument();
+    expect(screen.getByLabelText("Remisión")).toBeInTheDocument();
+  });
+
   it("deduplica fuentes heredadas al reemplazar el PDF de un formato existente", async () => {
     apiMock.get.mockImplementation((path: string) => {
       if (path === "/catalogo-formatos/admin/fuentes-formatos") return Promise.resolve(fuentes);
