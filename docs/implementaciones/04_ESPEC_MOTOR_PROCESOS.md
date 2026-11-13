@@ -44,7 +44,7 @@ La guard de salida hacia `collecting` exige AMBAS en todos los casos.
 
 ## 2. PLANTILLA C1 — Migración (`migration`, v1)
 
-Fuente primaria: [PROC] §1 (flujo de negocio 14 pasos + paso a paso técnico **14 pasos** con BARRIDO único — rediseño 2026-07-09, fases A–F) + [SQL] §B/C. Fuente confiable: imagen + docx (regla de confianza [PROC] encabezado).
+Fuente primaria: [PROC] §1 (flujo de negocio 14 pasos + paso a paso técnico **14 pasos** *(hoy 19, 2026-10-08)* con BARRIDO único — rediseño 2026-07-09, fases A–F) + [SQL] §B/C. Fuente confiable: imagen + docx (regla de confianza [PROC] encabezado).
 
 ### Etapas de negocio
 
@@ -61,9 +61,9 @@ Fuente primaria: [PROC] §1 (flujo de negocio 14 pasos + paso a paso técnico **
 | stepKey | Fase | Paso | `blocking` | Rol | Fuente |
 |---|---|---|---|---|---|
 | `c1.a.entregables` | A | Validar que se tienen todos los datos/entregables (incluye activos ≤ contratados — RN-02) | ✔ | support | [PROC] §1.B.1 |
-| `c1.a.barridoUsuarios` | A | **BARRIDO único (RN-21):** por cada BD de compañía: (a) la consulta ÚNICA de validación de correos (un solo SELECT — `validacion_correos.sql`; cada fila trae Problema/Detalle/Que_hacer) — se ANOTA, no se detiene; (b) extracción del CSV (`consulta_importacion_usuarios.sql` por **ss_email** — RN-11 v2); (c) `ConsolidarUsuarios.exe` → **únicos por correo vs. contratados POR CLIENTE**; (d) reporte único → verde = continuar / algo mal = **STOP**: cliente corrige en PRODUCCIÓN → copia fresca → repetir barrido | ✔ | support | [PROC] §1.B.2 (2026-07-09) |
+| `c1.a.barridoUsuarios` | A | **BARRIDO único (RN-21):** por cada BD de compañía: (a) la consulta ÚNICA de validación de correos (un solo SELECT — `validacion_correos.sql`; cada fila trae Problema/Detalle/Que_hacer) — se ANOTA, no se detiene; (b) extracción del CSV (`consulta_importacion_usuarios.sql`: Login = **ss_login_web** si existe, si no **ss_email** — RN-11 v3); (c) `ConsolidarUsuarios.exe` → **únicos por correo vs. contratados POR CLIENTE**; (d) reporte único → verde = continuar / algo mal = **STOP**: cliente corrige en PRODUCCIÓN → copia fresca → repetir barrido | ✔ | support | [PROC] §1.B.2 (2026-07-09) |
 | `c1.b.actualizarLegado` | B | **Actualizar el SAG Clásico del cliente (librerías y BD) a la última versión** — SOLO con el barrido en verde; sobre la copia de PRUEBAS (producción en FASE F); si llegó copia nueva, repetir (RN-10/RN-21) | ✔ | support | [PROC] §1.B.3 (2026-07-09) |
-| `c1.b.scripts` | B | Correr los **5 scripts** en orden: `a_sag_web → a_sagweb_Menu → a_format_sag_web → a_report_sag_web → sp_migrar_usuarios_permisos_web` (RN-09; usar siempre la última versión) | ✔ | support | [PROC] §1.B.4, [SQL] §B |
+| `c1.b.scripts` | B | Correr los **5 scripts** en orden: `a_sag_inicial_web → a_sagweb_Menu → a_format_sag_web → a_report_sag_web → sp_migrar_usuarios_permisos_web` (RN-09; usar siempre la última versión) | ✔ | support | [PROC] §1.B.4, [SQL] §B |
 | `c1.b.validarScripts` | B | **Validar marcas de versión** (consulta embebida — `03_scripts_web.md` §F): 5 filas web con valor y FechaUltimaEjecucion de hoy (vacía = script olvidado → correrlo); `migrar_usuarios` SIN "SOLO" (permisos completos); versión local del mes (actualizada en el paso anterior). Propósito: detectar scripts olvidados | ✔ | support | docx C1 Paso 5 (2026-07-09), [SQL] §F |
 | `c1.c.cadenaConexion` | C | Armar cadena de conexión (`IP,Puerto; Initial Catalog; User ID; Password`) | ✔ | **lead** | [PROC] §1.B.6 |
 | `c1.c.crearCliente` | C | Crear cliente + licenciamiento en SAG Admin (reglas RN-13 en `instructions`) | ✔ | **lead** | [PROC] §1.B.7 |
@@ -102,7 +102,7 @@ Fuente: [PROC] §2 + [SQL] §B (cliente nuevo) y §C ter (script de borrado). Fu
 |---|---|---|---|---|---|
 | `c2.a.entregables` | A | Validar datos: usuarios contratados, dominio, cliente/compañías, **correo del admin de CADA compañía (RN-19)**, módulos. **NO aplican queries de correos** (no hay base previa — RN-03/04) | ✔ | support | docx C2 Paso 1 |
 | `c2.b.bdNueva` | B | Confirmar recepción de las BD nuevas — **una por compañía** (clones de `NEW SAG`; las entrega infraestructura, las solicitó Ventas) | ✔ | support | [PROC] §2.B.1, RN-19 |
-| `c2.b.scripts` | B | Correr **4 scripts** (SIN `sp_migrar`): `a_sag_web → a_sagweb_Menu → a_format_sag_web → a_report_sag_web`, en cada BD de compañía (RN-09) | ✔ | support | docx C2 Paso 2, [SQL] §B |
+| `c2.b.scripts` | B | Correr **4 scripts** (SIN `sp_migrar`): `a_sag_inicial_web → a_sagweb_Menu → a_format_sag_web → a_report_sag_web`, en cada BD de compañía (RN-09) | ✔ | support | docx C2 Paso 2, [SQL] §B |
 | `c2.b.validarScripts` | B | **Validar marcas + versión de la plantilla** (por cada BD de compañía): 4 marcas web con FechaUpdate de hoy; `migrar_usuarios` VACÍA = **esperado** (no es olvido); si la clonada de `NEW SAG` muestra versiones viejas → **escalar al Líder de Soporte** (actualizar la plantilla) y correr las versiones recientes | ✔ | support | docx C2 Paso 3 (jul. 2026), [SQL] §F |
 | `c2.b.actualizarAdmin` | B | **Actualizar el correo del admin** (`a_sagweb_actualizar_admin`) en CADA BD de compañía con el `adminEmail` de esa compañía — DESPUÉS de los scripts; solo UPDATE de `terceros.ss_email` + `usuarios.ss_login_web` (`ka_nl_tercero = 1`); nunca borrar/recrear. Evidencia obligatoria: correos aplicados por BD | ✔ | support | docx C2 Paso 4 (jul. 2026), [SQL] §C quater, RN-19 |
 | `c2.c.cadenaConexion` | C | Obtener la cadena de conexión a la BD nueva | ✔ | support | docx C2 Paso 5 (responsable: Servicio al Cliente) |
@@ -117,7 +117,7 @@ Fuente: [PROC] §2 + [SQL] §B (cliente nuevo) y §C ter (script de borrado). Fu
 **Notas de fidelidad:**
 - No existe paso "crear usuarios" (lista) ni "extraer usuarios": el cliente crea los suyos. Lo que SÍ existe (RN-19, supersede [DEC] B.8) es el **admin exclusivo por compañía**: `adminEmail` en el modelo + paso `c2.b.actualizarAdmin` + creación en SAG Admin con contraseña de estándar de compañía. El admin de plantilla jamás se entrega tal cual (hueco multi-tenant corregido).
 - FASE F no crea cliente/compañía nuevos en SAG Admin: es el MISMO ambiente ([PROC] §2.B contraste explícito con migración).
-- El paso a paso definitivo tiene **14 pasos** (Paso 3 = validación de marcas; Paso 4 = actualizar correo del admin).
+- El paso a paso definitivo tiene **14 pasos** (Paso 3 = validación de marcas; Paso 4 = actualizar correo del admin). **[Superado: desde el 2026-10-08 Migración tiene 19 pasos.]**
 
 ---
 
@@ -175,3 +175,12 @@ Fuente: [PROC] §3 + [SQL] §C bis. Fuente confiable: imagen + co-construcción.
 - **CA-M3-6:** En C1, los pasos de FASE F no pueden completarse antes de `client_tests_passed=yes`.
 - **CA-M3-7:** `c3.b.conectividad` queda `not_applicable` automáticamente si `hosting=cloud`, y obligatorio si `local`.
 - **CA-M3-8:** Doble clic en una transición produce exactamente un evento y cero correos duplicados.
+
+
+## Espejo Bloque 3 / H6 — 2026-10-08
+
+Actualiza exclusivamente el contrato documental: en Migración, entrega de Ventas → agenda y 02b → revisión de producción → aprobación → solicitud del Líder de Soporte → acceso a ambientes → 06 técnico de 19 pasos. 03 en Soporte en todos los materiales vigentes; Ventas no solicita dominio, accesos ni RDP. Carpetas Migración 07/12/18; importación consolidada Paso 15; credenciales Paso 18 y producción Paso 19 sin nueva importación. 02b tiene A/B/consulta sin hallazgos, fecha/hora y reagendamiento.
+
+Caso 4 BI: H6 aplicada; BI se hace después de migrar a SAG Web, se trata como módulo especial y vive en Fuera de los principales. El selector de Migración tiene BI Contable (INF21), BI Comercial (INF25) y BI Inventarios (INF29) como opciones independientes. Principales: Migración, Cliente Nuevo y Clientes locales. El catálogo de Locales queda para su resincronización paralela. Esta nota es contrato documental: no acredita implementación web/API. Evidencia: Step-by-step/Evidencias/Bloque4/.
+
+2026-10-13: Migración tiene **20 pasos** (nuevo Paso 6: igualar `ss_login_web` al correo del tercero de los activos, con `actualizar_login_web_con_correo.sql`; solo en pruebas) y Locales **13 pasos** (nuevo Paso 4). La extracción para SAG Admin toma solo `ss_login_web`.

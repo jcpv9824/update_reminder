@@ -43,7 +43,7 @@
 | RN-08 (accesos pruebas+prod por compañía, de una vez) | M2 §3 (`CompanyDeliverable`), M4 §2 (correo 1 C1) | ✔ |
 | RN-09 (scripts por caso y orden) | M3 pasos `c*.b.scripts` (5 / 4 / 4+login) | Cotejado contra [SQL] §C tabla — coincide columna por columna |
 | RN-10 (librerías antes de scripts) | M3 `c1.b.actualizarLibrerias` (order menor) | ✔ |
-| RN-11 v2 (extracción por ss_email DENTRO del barrido, antes de los scripts; sin reimportación en producción) | M3 `c1.a.barridoUsuarios` + `c1.f.prepararProduccion` | ✔ |
+| RN-11 v2/v3 (extracción DENTRO del barrido, antes de los scripts; Login = ss_login_web si existe, si no ss_email — v3 2026-10-08; sin reimportación en producción) | M3 `c1.a.barridoUsuarios` + `c1.f.prepararProduccion` | ✔ |
 | RN-12 (producción por caso) | M3 FASE F distinta en cada plantilla | C1 separado / C2 mismo ambiente + borrado / C3 rama |
 | RN-13 (reglas de campos SAG Admin) | M2 §5 (`instructions`), M3 pasos FASE C, M5 §3 (NIT crudo + normalización) | ✔ |
 | RN-14 (Plesk tras SAG Admin; storage al final) | M3 orden de pasos D tras C | ✔ |
@@ -124,3 +124,34 @@
 | P-06 | ~~Estándar de contraseñas~~ | H-04 | **RESUELTA (texto aprobado):** documentado en `01_contexto_y_glosario.md` §6 bis — contraseña NUEVA de SAG Admin, 8 caracteres (Inicial + 4 del apellido + año + `*`); tildes/ñ tal cual (recordatorio suave). Sufijo "- PRUEBAS" en cliente/compañía de pruebas, se retira al pasar a producción. Los correos siguen sin contraseñas |
 | P-07 | ¿Los correos al cliente salen del mismo SMTP o remitente por área? | diseño §11 | **Abierta.** Mismo SMTP configurado |
 | P-08 | Confirmar patrón único de subdominio | [DEC] B.7 / H-10 | **Abierta.** Validación suave |
+
+## Bloque 2 aplicado — 2026-10-08
+
+Actualización documental de RF-13 / RN-24: Correo 1 de Migración permite
+varios módulos mediante Sí/No, búsqueda, casillas, elegidos con X y Otro.
+Sí vacío impide generar/enviar; No mantiene la entrega habitual. Una sección
+por módulo conocido y una sola entrada, Fuentes deduplicadas, Guardar y revisión.
+Aviso B4 de reasignación en producción; no se repite el bloque en producción.
+Correo 2 conserva solo contraseñas con igual numeración. Insumo vigente:
+CorreoContrasenaUsuarios_{CLIENTE}.xlsx. BI mantiene texto libre; Cliente Nuevo
+no tiene selector. Catálogo v2 generado y comparado en todas las copias vivas.
+Evidencia: Step-by-step/Evidencias/Bloque2/. Esta nota actualiza la especificación;
+la herramienta de documentos está implementada. No acredita implementación
+del módulo de implementación en la aplicación web ni modifica api/.
+
+
+## Espejo Bloque 3 / H6 — 2026-10-08
+
+Actualiza exclusivamente el contrato documental: en Migración, entrega de Ventas → agenda y 02b → revisión de producción → aprobación → solicitud del Líder de Soporte → acceso a ambientes → 06 técnico de 19 pasos. 03 en Soporte en todos los materiales vigentes; Ventas no solicita dominio, accesos ni RDP. Carpetas Migración 07/12/18; importación consolidada Paso 15; credenciales Paso 18 y producción Paso 19 sin nueva importación. 02b tiene A/B/consulta sin hallazgos, fecha/hora y reagendamiento.
+
+Caso 4 BI: H6 aplicada; BI se hace después de migrar a SAG Web, se trata como módulo especial y vive en Fuera de los principales. El selector de Migración tiene BI Contable (INF21), BI Comercial (INF25) y BI Inventarios (INF29) como opciones independientes. Principales: Migración, Cliente Nuevo y Clientes locales. El catálogo de Locales queda para su resincronización paralela. Esta nota es contrato documental: no acredita implementación web/API. Evidencia: Step-by-step/Evidencias/Bloque4/.
+
+Caso Locales (Bloque 5, 2026-10-08): flujo principal de **solo pruebas en SAG Web** para clientes locales (póliza anual, sin producción, sin RDP; «sin cupo» superado el 2026-10-16). Antes del 06: actualización del Clásico coordinada por Ventas, 02, revisión, subida de bases con nombre exacto, 03 a Elasticserver (restaura en SQL Server 2017+). El 06 (13 pasos, solo Soporte; termina en la entrega de credenciales) comprueba versión >= 14 y compatibilidad >= 130; almacenamiento bloqueado por H7/C15; credenciales sin aviso de producción. Supera, para Locales, que «local solo existe en el Caso 3» (RN-15).
+
+2026-10-13: Migración tiene **20 pasos** (nuevo Paso 6: igualar `ss_login_web` al correo del tercero de los activos, con `actualizar_login_web_con_correo.sql`; solo en pruebas) y Locales **13 pasos** (nuevo Paso 4). La extracción para SAG Admin toma solo `ss_login_web`.
+
+2026-10-16 (reunión con Soporte y Ventas del 2026-10-15): en Locales los usuarios se preparan como en Migración (activos solo los que pasan, dentro de lo contratado; supera «sin cupo»). Ventas pide al cliente solo usuarios y datos de las compañías, y entrega a Soporte los usuarios contratados, el correo del administrador y el encargado del proyecto. Soporte agenda la revisión, envía el correo nuevo 02c con el enlace de subida, recoge cada archivo con su compañía y usa el formulario existente de Elasticserver con el recordatorio de compatibilidad 130 o superior. Esta nota es contrato documental: no acredita implementación web/API.
+
+2026-10-17: en la migración de correos se ignoran los usuarios inactivos. Si un inactivo tiene como login el correo que va a recibir un activo, actualizar_login_web_con_correo.sql y a_sagweb_migrar_login (V. 2026-10-31.2) se lo quitan y el activo lo recibe; solo bloquea otro usuario activo. Esta nota es contrato documental: no acredita implementación web/API.
+
+2026-10-23: tener más usuarios que los contratados ya no detiene la implementación (si el cliente no quiere inactivar ni contratar más, Soporte pregunta por qué, avisa a Ventas y sigue). Los perfiles necesitan correo único y login web, pero no cuentan ni se importan (la extracción los excluye). Nuevo GenerarEnlacesTablerosBI.exe; el script de enlaces respeta la lista existente. Esta nota es contrato documental: no acredita implementación web/API.

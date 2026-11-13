@@ -91,3 +91,26 @@
 - **CA-M4-6:** Un envío exitoso genera exactamente un evento `email_sent` y un registro en `emailNotifications`; un reenvío requiere confirmación y queda como segundo evento.
 - **CA-M4-7:** Con el buzón de Soporte sin configurar, el envío del correo 3 devuelve 400 con mensaje accionable (no un envío a dirección inventada).
 - **CA-M4-8:** Todos los HTML pasan por `layout()` (contienen `max-width` y el preheader) y escapan datos del cliente (`<script>` en un nombre no aparece en el HTML).
+
+## Bloque 2 aplicado — 2026-10-08
+
+Actualización documental de RF-13 / RN-24: Correo 1 de Migración permite
+varios módulos mediante Sí/No, búsqueda, casillas, elegidos con X y Otro.
+Sí vacío impide generar/enviar; No mantiene la entrega habitual. Una sección
+por módulo conocido y una sola entrada, Fuentes deduplicadas, Guardar y revisión.
+Aviso B4 de reasignación en producción; no se repite el bloque en producción.
+Correo 2 conserva solo contraseñas con igual numeración. Insumo vigente:
+CorreoContrasenaUsuarios_{CLIENTE}.xlsx. BI mantiene texto libre; Cliente Nuevo
+no tiene selector. Catálogo v2 generado y comparado en todas las copias vivas.
+Evidencia: Step-by-step/Evidencias/Bloque2/. Esta nota actualiza la especificación;
+la herramienta de documentos está implementada. No acredita implementación
+del módulo de implementación en la aplicación web ni modifica api/.
+
+
+## Espejo Bloque 3 / H6 — 2026-10-08
+
+Actualiza exclusivamente el contrato documental: en Migración, entrega de Ventas → agenda y 02b → revisión de producción → aprobación → solicitud del Líder de Soporte → acceso a ambientes → 06 técnico de 19 pasos. 03 en Soporte en todos los materiales vigentes; Ventas no solicita dominio, accesos ni RDP. Carpetas Migración 07/12/18; importación consolidada Paso 15; credenciales Paso 18 y producción Paso 19 sin nueva importación. 02b tiene A/B/consulta sin hallazgos, fecha/hora y reagendamiento.
+
+Caso 4 BI: H6 aplicada; BI se hace después de migrar a SAG Web, se trata como módulo especial y vive en Fuera de los principales. El selector de Migración tiene BI Contable (INF21), BI Comercial (INF25) y BI Inventarios (INF29) como opciones independientes. Principales: Migración, Cliente Nuevo y Clientes locales. El catálogo de Locales queda para su resincronización paralela. Esta nota es contrato documental: no acredita implementación web/API. Evidencia: Step-by-step/Evidencias/Bloque4/.
+
+2026-10-13: Migración tiene **20 pasos** (nuevo Paso 6: igualar `ss_login_web` al correo del tercero de los activos, con `actualizar_login_web_con_correo.sql`; solo en pruebas) y Locales **13 pasos** (nuevo Paso 4). La extracción para SAG Admin toma solo `ss_login_web`.
