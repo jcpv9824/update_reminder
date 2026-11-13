@@ -73,12 +73,35 @@ describe("company logo input validation", () => {
     expect(result.success).toBe(false);
   });
 
-  it("accepts only PNG/JPG whose content matches the extension", () => {
+  it("accepts common web image formats by content, whatever the file name", () => {
+    const gif = Buffer.concat([Buffer.from("GIF89a", "ascii"), Buffer.alloc(16)]);
+    const webp = Buffer.concat([Buffer.from("RIFF", "ascii"), Buffer.alloc(4), Buffer.from("WEBPVP8 ", "ascii"), Buffer.alloc(16)]);
+    const svg = Buffer.from('<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><defs><linearGradient id="g"/></defs><rect fill="url(#g)" width="10" height="10"/></svg>\n');
     expect(decodeCompanyLogo(PNG.toString("base64"), "logo.png").mimeType).toBe("image/png");
     expect(decodeCompanyLogo(`data:image/jpeg;base64,${JPG.toString("base64")}`, "Logo.JPEG").extension).toBe("jpg");
-    expect(() => decodeCompanyLogo(PNG.toString("base64"), "logo.jpg")).toThrow(CompanyLogoError);
-    expect(() => decodeCompanyLogo(Buffer.from("<svg/>").toString("base64"), "logo.svg")).toThrow(/PNG o JPG/);
+    expect(decodeCompanyLogo(PNG.toString("base64"), "logo.jpeg").extension).toBe("png");
+    expect(decodeCompanyLogo(gif.toString("base64"), "logo.gif").mimeType).toBe("image/gif");
+    expect(decodeCompanyLogo(webp.toString("base64"), "logo.webp").mimeType).toBe("image/webp");
+    expect(decodeCompanyLogo(svg.toString("base64"), "logo.svg").mimeType).toBe("image/svg+xml");
     expect(() => decodeCompanyLogo("%%%", "logo.png")).toThrow(/completa/);
+  });
+
+  it("rejects camera RAW and other files SAG Web cannot display", () => {
+    const cr2 = Buffer.concat([Buffer.from([0x49, 0x49, 0x2a, 0x00]), Buffer.from("CR", "ascii"), Buffer.alloc(32)]);
+    expect(() => decodeCompanyLogo(cr2.toString("base64"), "foto.CR2")).toThrow(/no es una imagen que SAG Web pueda mostrar/);
+    expect(() => decodeCompanyLogo(Buffer.from("hola").toString("base64"), "logo.txt")).toThrow(CompanyLogoError);
+  });
+
+  it.each([
+    '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><a href="javascript:alert(1)"><rect/></a></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><image href="https://evil.example/x.png"/></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><div/></foreignObject></svg>',
+    '<!DOCTYPE svg [<!ENTITY x "y">]><svg xmlns="http://www.w3.org/2000/svg"></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><style>@import url(https://evil.example/a.css);</style></svg>',
+  ])("rejects an SVG with code or external references: %s", (svg) => {
+    expect(() => decodeCompanyLogo(Buffer.from(svg).toString("base64"), "logo.svg")).toThrow(CompanyLogoError);
   });
 
   it("rejects an oversized payload before decoding it", () => {
@@ -165,9 +188,11 @@ describe("company logo SQL, audit and permissions", () => {
       action: "company_logo_uploaded",
       performedBy: "user_1",
       performedByEmail: "u@example.com",
+      companyName: "SAGWebDemoPYA",
       metadata: { assetKind: "png", bytes: 10, previousLogoCount: 1, bucket: "demo", secretKey: SECRET, databaseName: "X" },
     });
     expect(entry.metadata).toEqual({ assetKind: "png", bytes: 10, previousLogoCount: 1 });
+    expect(entry.companyName).toBe("SAGWebDemoPYA");
   });
 
   it("declares the Implementación option with view and upload actions", () => {

@@ -100,7 +100,43 @@ export type CompanyLogoUploadResult = {
   sqlFileName: string;
 };
 
-export type DecodedLogo = { bytes: Buffer; extension: "png" | "jpg"; mimeType: "image/png" | "image/jpeg" };
+export type LogoExtension = "png" | "jpg" | "gif" | "webp" | "svg";
+export type DecodedLogo = { bytes: Buffer; extension: LogoExtension; mimeType: string };
+
+const UNSUPPORTED_IMAGE =
+  "Este archivo no es una imagen que SAG Web pueda mostrar. Ábralo en un editor de imágenes, guárdelo como imagen e intente de nuevo.";
+
+/*
+  Un SVG es texto y puede traer código. Solo se acepta un SVG de dibujo puro:
+  sin scripts, eventos, entidades, contenido incrustado ni enlaces externos.
+*/
+const UNSAFE_SVG_PATTERNS = [
+  /<script/i,
+  /\son[a-z]+\s*=/i,
+  /javascript:/i,
+  /<foreignObject/i,
+  /<!ENTITY/i,
+  /<!DOCTYPE/i,
+  /<(iframe|embed|object|audio|video|link|meta|base)\b/i,
+  /\b(?:xlink:)?href\s*=\s*["']\s*(?!#|data:image\/(?:png|jpe?g|gif|webp);base64,)/i,
+  /\bsrc\s*=/i,
+  /url\(\s*["']?\s*(?!#)/i,
+  /@import/i,
+];
+
+function decodeSvg(bytes: Buffer): DecodedLogo | null {
+  const text = bytes.toString("utf8").replace(/^\uFEFF/, "");
+  const head = text.replace(/^\s*(<\?xml[^>]*\?>\s*)?(<!--[\s\S]*?-->\s*)*/, "");
+  if (!/^<svg[\s>]/i.test(head)) return null;
+  if (!/<\/svg>\s*$/i.test(text)) return null;
+  if (UNSAFE_SVG_PATTERNS.some((pattern) => pattern.test(text))) {
+    throw new CompanyLogoError(
+      "La imagen SVG trae código o enlaces externos y no se puede usar. Expórtela de nuevo como imagen simple e intente otra vez.",
+      400,
+    );
+  }
+  return { bytes, extension: "svg", mimeType: "image/svg+xml" };
+}
 
 /** Valida la imagen por su contenido (firma), no solo por el nombre. Solo PNG y JPG. */
 export function decodeCompanyLogo(imageBase64: string, imageName: string): DecodedLogo {
@@ -119,12 +155,20 @@ export function decodeCompanyLogo(imageBase64: string, imageName: string): Decod
   if (bytes.length > COMPANY_LOGO_MAX_BYTES) {
     throw new CompanyLogoError("La imagen supera 2 MB. Redúzcala e intente de nuevo.", 400);
   }
-  const isPng = bytes.length > 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
-  const isJpg = bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
-  const name = imageName.toLowerCase();
-  if (isPng && name.endsWith(".png")) return { bytes, extension: "png", mimeType: "image/png" };
-  if (isJpg && (name.endsWith(".jpg") || name.endsWith(".jpeg"))) return { bytes, extension: "jpg", mimeType: "image/jpeg" };
-  throw new CompanyLogoError("La imagen debe ser PNG o JPG (y su contenido debe corresponder a la extensión).", 400);
+  const starts = (...signature: number[]) => bytes.length > signature.length && signature.every((b, i) => bytes[i] === b);
+  // El tipo sale del contenido, no del nombre: un logo .jpeg que en realidad es PNG también sirve.
+  if (starts(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return { bytes, extension: "png", mimeType: "image/png" };
+  if (starts(0xff, 0xd8, 0xff)) return { bytes, extension: "jpg", mimeType: "image/jpeg" };
+  if (bytes.subarray(0, 6).toString("ascii") === "GIF87a" || bytes.subarray(0, 6).toString("ascii") === "GIF89a") {
+    return { bytes, extension: "gif", mimeType: "image/gif" };
+  }
+  if (bytes.length > 12 && bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP") {
+    return { bytes, extension: "webp", mimeType: "image/webp" };
+  }
+  const svg = decodeSvg(bytes);
+  if (svg) return svg;
+  void imageName;
+  throw new CompanyLogoError(UNSUPPORTED_IMAGE, 400);
 }
 
 export function companyLogoFolder(databaseName: string): string {

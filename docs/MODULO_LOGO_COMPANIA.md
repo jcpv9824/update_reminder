@@ -6,10 +6,10 @@ Se puede repetir las veces que haga falta.
 
 ## Reglas de seguridad (no negociables)
 
-- El portal **no guarda** bucket, llaves, nombre de base de datos ni la imagen:
-  no hay tablas, ni Key Vault, ni logs, ni auditoría de esos datos. Viven solo en
-  memoria durante la solicitud.
-- La auditoría registra únicamente `company_logo_uploaded` con `assetKind`,
+- El portal **no guarda** bucket, llaves, URL ni la imagen: no hay tablas, ni
+  Key Vault, ni logs de esos datos. Viven solo en memoria durante la solicitud.
+- La auditoría registra `company_logo_uploaded`: quién, cuándo y para qué
+  compañía (`companyName` = nombre de la base de datos), más `assetKind`,
   `bytes` y `previousLogoCount` (allowlist en `api/src/lib/audit.ts`).
 - Servidor, puerto, SSL y ruta base son **fijos** en el API
   (`COMPANY_LOGO_STORAGE`), iguales a `GenerarSQLAlmacenamiento`. El esquema es
@@ -48,8 +48,12 @@ calcula con el host sin puerto (middleware antes de `httpSigningMiddleware` en
 
 Permisos: `implementation.company_logo.view` (ver la opción) y
 `implementation.company_logo.upload` (probar conexión y subir). Límite:
-20 solicitudes cada 10 minutos por usuario e IP. Imagen: PNG o JPG
-validados por firma, máximo 2 MB.
+20 solicitudes cada 10 minutos por usuario e IP. Imagen: máximo 2 MB; el tipo
+se detecta por el contenido (no por el nombre): PNG, JPG/JPEG, GIF, WEBP y
+SVG. El SVG se rechaza si trae scripts, eventos, entidades, contenido
+incrustado o enlaces externos. Los RAW de cámara se rechazan con un mensaje
+que pide exportarlos como imagen, porque ni el navegador ni SAG Web pueden
+mostrarlos. La pantalla no nombra formatos; solo indica el máximo de 2 MB.
 
 ## Pantalla
 
@@ -61,7 +65,7 @@ Incluye el enlace a la hoja de almacenamiento de las compañías (pestaña nueva
 
 ## Verificación hecha (2026-11-13)
 
-- API: 498 pruebas, `npm run build`, `check:no-cosmos-runtime`.
+- API: ver el último commit para el conteo de pruebas, `npm run build`, `check:no-cosmos-runtime`.
 - Frontend: 228 pruebas, `npm run build`.
 - Migración 028: analizador SQL Server 2019 (TSql150) PASS.
 - Prueba real del código compilado contra storcube (bucket de pruebas): probar

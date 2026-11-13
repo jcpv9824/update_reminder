@@ -124,12 +124,6 @@ export default function LogoCompaniaPage() {
   async function onImage(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-    const name = file.name.toLowerCase();
-    if (!/\.(png|jpe?g)$/.test(name)) {
-      setNotice({ type: "error", text: "La imagen debe ser PNG o JPG." });
-      event.target.value = "";
-      return;
-    }
     if (file.size > MAX_BYTES) {
       setNotice({ type: "error", text: "La imagen supera 2 MB. Redúzcala e intente de nuevo." });
       event.target.value = "";
@@ -248,8 +242,8 @@ export default function LogoCompaniaPage() {
           <label htmlFor="logo-secret" className="logo-campo-ancho">Llave secreta (secret key)
             <input id="logo-secret" className="valor-tecnico" value={form.secretKey} onChange={(e) => update("secretKey", e.target.value)} autoComplete="off" spellCheck={false} disabled={!canUpload} />
           </label>
-          <label htmlFor="logo-imagen" className="logo-campo-ancho">Imagen del logo (PNG o JPG, máximo 2 MB)
-            <input id="logo-imagen" ref={fileInput} type="file" accept=".png,.jpg,.jpeg,image/png,image/jpeg" onChange={onImage} disabled={!canUpload} />
+          <label htmlFor="logo-imagen" className="logo-campo-ancho">Imagen del logo (máximo 2 MB)
+            <input id="logo-imagen" ref={fileInput} type="file" accept="image/*,.svg" onChange={onImage} disabled={!canUpload} />
           </label>
         </div>
         {imagen ? (

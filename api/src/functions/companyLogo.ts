@@ -85,15 +85,17 @@ app.http("companyLogoUpload", {
       const parsed = CompanyLogoUploadSchema.safeParse(await readJson(req));
       if (!parsed.success) return withNoStore(badRequest(parsed.error.issues[0].message));
       const result = await uploadCompanyLogo(parsed.data);
-      // Auditoría mínima: quién y cuándo. Sin bucket, llaves, base de datos ni URL.
+      // Auditoría mínima: quién, cuándo y para qué compañía (nombre de la base).
+      // Nunca bucket, llaves ni URL.
       await writeAuditLog({
         entityType: "companyLogo",
         entityId: result.fileName,
+        companyName: parsed.data.databaseName,
         action: "company_logo_uploaded",
         performedBy: user.id,
         performedByEmail: user.email,
         metadata: {
-          assetKind: result.fileName.endsWith(".png") ? "png" : "jpg",
+          assetKind: result.fileName.slice(result.fileName.lastIndexOf(".") + 1),
           bytes: result.bytes,
           previousLogoCount: result.replacedCount,
         },
