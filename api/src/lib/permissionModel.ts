@@ -113,6 +113,10 @@ export const PERMISSION_CATALOG: PermissionModule[] = [
         { id: "delete_file", label: "Eliminar Archivo" },
         { id: "replace_file", label: "Reemplazar Archivo" },
       ]),
+      option("company_logo", "Agregar logo a la compañía", "implementation.company_logo", [
+        ACTIONS.view,
+        { id: "upload", label: "Subir Logo y Generar SQL" },
+      ]),
     ],
   },
   {

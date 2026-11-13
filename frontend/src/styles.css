@@ -1353,3 +1353,18 @@ td:last-child:has(.acciones-tabla) { text-align: right; }
     flex-direction: column;
   }
 }
+
+/* Agregar logo a la compañía */
+.logo-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.logo-grid label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
+.logo-grid label input, .logo-grid label small { font-weight: 400; }
+.logo-campo-ancho { grid-column: 1 / -1; }
+.valor-tecnico { font-family: Consolas, "Cascadia Mono", "Courier New", monospace; font-size: 14px; letter-spacing: 0.02em; width: 100%; }
+.logo-vista-previa { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.logo-vista-previa img { max-height: 80px; max-width: 320px; border: 1px solid var(--color-border); border-radius: 6px; padding: 6px; background: var(--color-card); }
+.logo-existentes { margin-top: 12px; padding: 12px; border-left: 4px solid var(--color-accent); background: #fff8e6; border-radius: 6px; }
+.logo-existentes ul { margin: 6px 0 0; padding-left: 18px; }
+.logo-url { word-break: break-all; }
+.logo-sql { white-space: pre-wrap; word-break: break-all; font-family: Consolas, "Courier New", monospace; font-size: 12px; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 6px; padding: 12px; }
+@media (max-width: 760px) { .logo-grid { grid-template-columns: 1fr; } }
+.logo-acciones button:disabled { opacity: 0.45; cursor: not-allowed; }

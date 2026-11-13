@@ -279,6 +279,15 @@ export function canReplacePublicFile(user: CurrentUser, roleDefinitions: RoleDef
   return hasPermissionWithRoleDefinitions(user, "implementation.public_files.replace_file", roleDefinitions);
 }
 
+export function canViewCompanyLogo(user: CurrentUser, roleDefinitions: RoleDefinition[]): boolean {
+  return hasPermissionWithRoleDefinitions(user, "implementation.company_logo.view", roleDefinitions);
+}
+
+export function canUploadCompanyLogo(user: CurrentUser, roleDefinitions: RoleDefinition[]): boolean {
+  return hasPermissionWithRoleDefinitions(user, "implementation.company_logo.view", roleDefinitions)
+    && hasPermissionWithRoleDefinitions(user, "implementation.company_logo.upload", roleDefinitions);
+}
+
 export function canViewPrintFormats(user: CurrentUser, roleDefinitions: RoleDefinition[]): boolean {
   return hasPermissionWithRoleDefinitions(user, "configuration.print_formats.view", roleDefinitions);
 }

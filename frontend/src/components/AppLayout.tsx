@@ -11,6 +11,7 @@ import {
   DownloadCloud,
   Eye,
   FileImage,
+  ImageUp,
   FileText,
   Gauge,
   KeyRound,
@@ -74,6 +75,7 @@ const MODULOS: ModuloMenu[] = [
     elementos: [
       { ruta: "/admin/descargas-publicas", etiqueta: "Descargas Públicas", permiso: "implementation.public_downloads.view", Icono: DownloadCloud },
       { ruta: "/admin/archivos-publicos", etiqueta: "Archivos Públicos", permiso: "implementation.public_files.view", Icono: FileImage },
+      { ruta: "/implementacion/logo-compania", etiqueta: "Agregar logo a la compañía", permiso: "implementation.company_logo.view", Icono: ImageUp },
     ],
   },
   {

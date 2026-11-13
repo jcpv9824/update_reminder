@@ -23,6 +23,7 @@ import DescargasPublicasAdminPage from "./pages/DescargasPublicasAdminPage";
 import ArchivosPublicosAdminPage from "./pages/ArchivosPublicosAdminPage";
 import ConstructorGuiasPage from "./pages/ConstructorGuiasPage";
 import ConexionesPage from "./pages/ConexionesPage";
+import LogoCompaniaPage from "./pages/LogoCompaniaPage";
 import { DEFAULT_ROLE_DEFINITIONS, type RoleDefinition } from "./permissionModel";
 import { hasPermissionForRoleIds } from "./permissionAccess";
 import { GUIDE_BUILDER_UI_ENABLED } from "./featureFlags";
@@ -69,6 +70,7 @@ function Enrutador() {
           <Route path="admin/formatos-impresion" element={<Protegido permiso="configuration.print_formats.view" element={<FormatosImpresionAdminPage />} />} />
           <Route path="admin/descargas-publicas" element={<Protegido permiso="implementation.public_downloads.view" element={<DescargasPublicasAdminPage />} />} />
           <Route path="admin/archivos-publicos" element={<Protegido permiso="implementation.public_files.view" element={<ArchivosPublicosAdminPage />} />} />
+          <Route path="implementacion/logo-compania" element={<Protegido permiso="implementation.company_logo.view" element={<LogoCompaniaPage />} />} />
           <Route path="alertas-correos" element={<Protegido permiso="configuration.alerts.view" element={<AlertasCorreosPage />} />} />
           <Route path="configuracion/conexiones" element={<Protegido permiso="configuration.integrations.view" element={<ConexionesPage />} />} />
           <Route path="auditoria" element={<Protegido permiso="visibility.audit.view" element={<AuditoriaPage />} />} />

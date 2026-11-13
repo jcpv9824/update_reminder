@@ -17,6 +17,7 @@ import "./functions/reports";
 import "./functions/formatosImpresion";
 import "./functions/publicDownloads";
 import "./functions/publicFiles";
+import "./functions/companyLogo";
 import "./functions/guideSessions";
 import "./functions/generateDailyUpdateTasks";
 import "./functions/sendScheduledReminders";
