@@ -18,10 +18,18 @@ Se puede repetir las veces que haga falta.
   devuelve el detalle técnico. Respuestas con `Cache-Control: no-store`.
 - En la pantalla, las llaves se muestran en claro (decisión de negocio: quien
   hace el proceso debe poder leerlas) y se borran al terminar la subida.
+- **El nombre del bucket SÍ aparece en la URL y en el SQL, y es correcto.** La
+  regla es que el portal no *guarde* ni *registre* el bucket, no que deje de
+  devolverlo. El almacenamiento usa rutas tipo `servidor/bucket/objeto`, así que
+  la URL del logo no existe sin el bucket. Esa URL va en `parametros_web` de la
+  base del cliente, igual que el bucket que ya escribe `GenerarSQLAlmacenamiento`
+  en esa misma tabla. La respuesta viaja solo al navegador de quien hizo la
+  solicitud (`no-store`) y no entra en auditoría ni en logs. Las llaves nunca
+  salen en la URL ni en el SQL (hay prueba que lo verifica).
 
 ## Ruta del logo
 
-`{bucket}/{base de datos}/Archivos/Imagenes/LogoEmpresa/{uuid}.{png|jpg}`
+`{bucket}/{base de datos}/Archivos/Imagenes/LogoEmpresa/{uuid}.{png|jpg|gif|webp|svg}`
 
 URL resultante: `https://storcube.sagweb.co:8333/{bucket}/{base}/Archivos/Imagenes/LogoEmpresa/{uuid}.png`
 
@@ -50,8 +58,28 @@ Permisos: `implementation.company_logo.view` (ver la opción) y
 `implementation.company_logo.upload` (probar conexión y subir). Límite:
 20 solicitudes cada 10 minutos por usuario e IP. Imagen: máximo 2 MB; el tipo
 se detecta por el contenido (no por el nombre): PNG, JPG/JPEG, GIF, WEBP y
-SVG. El SVG se rechaza si trae scripts, eventos, entidades, contenido
-incrustado o enlaces externos. Los RAW de cámara se rechazan con un mensaje
+SVG.
+
+### SVG: limpieza estructural (`api/src/lib/svgSanitizer.ts`)
+
+El SVG **no se sube tal como llega**. Se analiza como XML (`@xmldom/xmldom`) y
+se **reconstruye** con una lista blanca de elementos y atributos de dibujo; se
+sube el resultado reconstruido, nunca el archivo original. Como los valores ya
+vienen decodificados por el analizador, los trucos que esquivan un filtro de
+texto (entidades `&#106;avascript:`, tabuladores dentro del esquema, mayúsculas,
+otros espacios de nombres) no pasan.
+
+- Se **rechaza** (mensaje «trae código o enlaces externos»): `script`,
+  `foreignObject`, animaciones (`animate`, `set`…), `feImage`, `iframe`,
+  `embed`, `object`, audio y video; atributos `on*`; DTD o entidades; esquemas
+  `javascript:`/`vbscript:`/`data:text`; `href` que no sea interno (`#id`), salvo
+  `<image>` con PNG/JPG/GIF/WEBP incrustado en base64; `url(...)` que no sea
+  `#id`; CSS con `@import`, `expression(`, `behavior`, `-moz-binding` o `\`.
+- Se **descarta en silencio**: metadatos de editores (Inkscape, Illustrator,
+  RDF), atributos de otros espacios de nombres, `data-*`, comentarios e
+  instrucciones de proceso. `<a>` y `<switch>` se quitan conservando su dibujo.
+- XML mal formado → «no es una imagen que SAG Web pueda mostrar».
+- Límites: 100 niveles de anidación y 50 000 elementos. Los RAW de cámara se rechazan con un mensaje
 que pide exportarlos como imagen, porque ni el navegador ni SAG Web pueden
 mostrarlos. La pantalla no nombra formatos; solo indica el máximo de 2 MB.
 
@@ -78,7 +106,10 @@ Incluye el enlace a la hoja de almacenamiento de las compañías (pestaña nueva
 ## Pendiente para desplegar (requiere autorización explícita)
 
 1. Aplicar `migration/sql/028_company_logo_permissions.sql` en producción
-   (después de un respaldo), igual que la 027.
+   (después de un respaldo), igual que la 027. El ejecutor
+   `migration/tools/Apply-PortalSAGWeb-PendingMigrationsThroughSession.ps1` ya
+   la incluye y verifica al final 2 permisos activos y 2 concedidos a
+   `super_admin`.
 2. Publicar el API (el push a `main` **no** despliega el API).
 3. Push a `main` para desplegar el frontend (después de 1 y 2, para que la
    opción no aparezca sin backend).

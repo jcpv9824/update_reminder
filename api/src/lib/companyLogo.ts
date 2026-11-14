@@ -6,6 +6,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import { sanitizeSvg, UnsafeSvgError } from "./svgSanitizer";
 
 /*
   Logo de la compañía en SAG Web.
@@ -107,38 +108,31 @@ const UNSUPPORTED_IMAGE =
   "Este archivo no es una imagen que SAG Web pueda mostrar. Ábralo en un editor de imágenes, guárdelo como imagen e intente de nuevo.";
 
 /*
-  Un SVG es texto y puede traer código. Solo se acepta un SVG de dibujo puro:
-  sin scripts, eventos, entidades, contenido incrustado ni enlaces externos.
+  Un SVG es texto y puede traer código. No se sube el archivo original: se
+  reconstruye con una lista blanca (svgSanitizer) y se sube ese resultado.
 */
-const UNSAFE_SVG_PATTERNS = [
-  /<script/i,
-  /\son[a-z]+\s*=/i,
-  /javascript:/i,
-  /<foreignObject/i,
-  /<!ENTITY/i,
-  /<!DOCTYPE/i,
-  /<(iframe|embed|object|audio|video|link|meta|base)\b/i,
-  /\b(?:xlink:)?href\s*=\s*["']\s*(?!#|data:image\/(?:png|jpe?g|gif|webp);base64,)/i,
-  /\bsrc\s*=/i,
-  /url\(\s*["']?\s*(?!#)/i,
-  /@import/i,
-];
+const UNSAFE_SVG =
+  "La imagen SVG trae código o enlaces externos y no se puede usar. Expórtela de nuevo como imagen simple e intente otra vez.";
 
 function decodeSvg(bytes: Buffer): DecodedLogo | null {
-  const text = bytes.toString("utf8").replace(/^\uFEFF/, "");
-  const head = text.replace(/^\s*(<\?xml[^>]*\?>\s*)?(<!--[\s\S]*?-->\s*)*/, "");
-  if (!/^<svg[\s>]/i.test(head)) return null;
-  if (!/<\/svg>\s*$/i.test(text)) return null;
-  if (UNSAFE_SVG_PATTERNS.some((pattern) => pattern.test(text))) {
-    throw new CompanyLogoError(
-      "La imagen SVG trae código o enlaces externos y no se puede usar. Expórtela de nuevo como imagen simple e intente otra vez.",
-      400,
-    );
+  const decoded = bytes.toString("utf8");
+  const text = decoded.charCodeAt(0) === 0xfeff ? decoded.slice(1) : decoded;
+  // Parece SVG si empieza con el prólogo XML, un comentario, una DTD o <svg, y trae <svg.
+  if (!/^\s*(?:<\?xml|<!--|<!DOCTYPE|<svg[\s>])/i.test(text) || !/<svg[\s>]/i.test(text)) return null;
+  let clean: Buffer;
+  try {
+    clean = Buffer.from(sanitizeSvg(text), "utf8");
+  } catch (error) {
+    if (error instanceof UnsafeSvgError) throw new CompanyLogoError(UNSAFE_SVG, 400);
+    throw new CompanyLogoError(UNSUPPORTED_IMAGE, 400);
   }
-  return { bytes, extension: "svg", mimeType: "image/svg+xml" };
+  if (clean.length > COMPANY_LOGO_MAX_BYTES) {
+    throw new CompanyLogoError("La imagen supera 2 MB. Redúzcala e intente de nuevo.", 400);
+  }
+  return { bytes: clean, extension: "svg", mimeType: "image/svg+xml" };
 }
 
-/** Valida la imagen por su contenido (firma), no solo por el nombre. Solo PNG y JPG. */
+/** Valida la imagen por su contenido (firma), no por el nombre. El SVG sale reconstruido y limpio. */
 export function decodeCompanyLogo(imageBase64: string, imageName: string): DecodedLogo {
   const raw = imageBase64.includes(",") && imageBase64.startsWith("data:")
     ? imageBase64.slice(imageBase64.indexOf(",") + 1)

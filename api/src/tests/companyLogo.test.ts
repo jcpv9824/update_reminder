@@ -104,6 +104,60 @@ describe("company logo input validation", () => {
     expect(() => decodeCompanyLogo(Buffer.from(svg).toString("base64"), "logo.svg")).toThrow(CompanyLogoError);
   });
 
+  it.each([
+    '<svg xmlns="http://www.w3.org/2000/svg"><rect onclick="x()"/></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><a href="&#106;avascript:alert(1)"><rect/></a></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><a href="java&#9;script:alert(1)"><rect/></a></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg" xmlns:h="http://www.w3.org/1999/xhtml"><h:script>alert(1)</h:script></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><SCRIPT>alert(1)</SCRIPT></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><animate attributeName="href" to="javascript:alert(1)"/></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><set attributeName="onload" to="alert(1)"/></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><use href="https://evil.example/s.svg#a"/></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg" xmlns:x="http://www.w3.org/1999/xlink"><use x:href="data:image/svg+xml;base64,PHN2Zy8+"/></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><rect style="fill:url(https://evil.example/p)"/></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><style><![CDATA[rect{background:url(//evil.example/a)}]]></style></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url(https://evil.example/p)"/></svg>',
+  ])("rejects tricks that a text filter misses: %s", (svg) => {
+    expect(() => decodeCompanyLogo(Buffer.from(svg).toString("base64"), "logo.svg")).toThrow(/código o enlaces externos/);
+  });
+
+  it("rejects a malformed SVG as an image SAG Web cannot display", () => {
+    expect(() => decodeCompanyLogo(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><rect></svg>').toString("base64"), "logo.svg"))
+      .toThrow(/no es una imagen que SAG Web pueda mostrar/);
+  });
+
+  it("uploads a rebuilt SVG, never the original bytes", () => {
+    const original = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      "<!-- Generator: Editor 1.0 -->",
+      '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"',
+      '  xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" inkscape:version="1.3" viewBox="0 0 20 10" width="200">',
+      '  <metadata><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"/></metadata>',
+      "  <defs><style>.cls-1{fill:#1c3664}.a > .b{fill:url(#g)}</style>",
+      '    <linearGradient id="g"><stop offset="0" stop-color="#bba461"/></linearGradient></defs>',
+      '  <a href="#logo"><path class="cls-1" d="M0 0h10v10H0z" data-name="Capa 1" inkscape:label="x"/></a>',
+      '  <use xlink:href="#logo"/>',
+      '  <image width="1" height="1" href="data:image/png;base64,iVBORw0KGgo="/>',
+      "  <text x=\"1\" y=\"9\">P&amp;A &lt;SAG&gt;</text>",
+      "</svg>",
+    ].join("\n");
+    const decoded = decodeCompanyLogo(Buffer.from(original).toString("base64"), "logo.svg");
+    const out = decoded.bytes.toString("utf8");
+    expect(decoded.extension).toBe("svg");
+    expect(out).not.toBe(original);
+    expect(out).toMatch(/^<\?xml version="1.0" encoding="UTF-8"\?>\n<svg xmlns="http:\/\/www.w3.org\/2000\/svg"/);
+    expect(out).not.toMatch(/inkscape|metadata|rdf|Generator|data-name|<a[\s>]/);
+    expect(out).toContain('viewBox="0 0 20 10"');
+    expect(out).toContain('<path class="cls-1" d="M0 0h10v10H0z"/>');
+    expect(out).toContain('xlink:href="#logo"');
+    expect(out).toContain('href="data:image/png;base64,iVBORw0KGgo="');
+    expect(out).toContain(".a &gt; .b{fill:url(#g)}");
+    expect(out).toContain("P&amp;A &lt;SAG&gt;");
+    // El resultado es XML válido y se vuelve a limpiar igual (idempotente).
+    const again = decodeCompanyLogo(decoded.bytes.toString("base64"), "logo.svg").bytes.toString("utf8");
+    expect(again).toBe(out);
+  });
+
   it("rejects an oversized payload before decoding it", () => {
     const result = CompanyLogoUploadSchema.safeParse({ ...connection, imageBase64: "A".repeat(3_000_001), imageName: "logo.png" });
     expect(result.success).toBe(false);
