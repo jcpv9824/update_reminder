@@ -1,117 +1,110 @@
-# Implementación → Agregar logo a la compañía
+# Implementación → Almacenamiento de archivos y logo
 
-Sube el logo de una compañía de SAG Web a su almacenamiento S3 (storcube) y
-genera el SQL que lo activa (`UPDATE parametros_web SET LogoEmpresa = N'<url>'`).
-Se puede repetir las veces que haga falta.
+Configura el almacenamiento de archivos de una compañía de SAG Web **directamente en su
+`parametros_web`** y, si se adjunta, sube el logo y lo deja activo. Se puede repetir las
+veces que haga falta. (Antes se llamaba «Agregar logo a la compañía» y solo generaba un SQL.)
 
-## Reglas de seguridad (no negociables)
+## Por qué escribe en la base
 
-- El portal **no guarda** bucket, llaves, URL ni la imagen: no hay tablas, ni
-  Key Vault, ni logs de esos datos. Viven solo en memoria durante la solicitud.
-- La auditoría registra `company_logo_uploaded`: quién, cuándo y para qué
-  compañía (`companyName` = nombre de la base de datos), más `assetKind`,
-  `bytes` y `previousLogoCount` (allowlist en `api/src/lib/audit.ts`).
-- Servidor, puerto, SSL y ruta base son **fijos** en el API
-  (`COMPANY_LOGO_STORAGE`), iguales a `GenerarSQLAlmacenamiento`. El esquema es
-  `.strict()`: un endpoint enviado por el cliente se rechaza (sin SSRF).
-- Los errores del proveedor se traducen a mensajes controlados; nunca se
-  devuelve el detalle técnico. Respuestas con `Cache-Control: no-store`.
-- En la pantalla, las llaves se muestran en claro (decisión de negocio: quien
-  hace el proceso debe poder leerlas) y se borran al terminar la subida.
-- **El nombre del bucket SÍ aparece en la URL y en el SQL, y es correcto.** La
-  regla es que el portal no *guarde* ni *registre* el bucket, no que deje de
-  devolverlo. El almacenamiento usa rutas tipo `servidor/bucket/objeto`, así que
-  la URL del logo no existe sin el bucket. Esa URL va en `parametros_web` de la
-  base del cliente, igual que el bucket que ya escribe `GenerarSQLAlmacenamiento`
-  en esa misma tabla. La respuesta viaja solo al navegador de quien hizo la
-  solicitud (`no-store`) y no entra en auditoría ni en logs. Las llaves nunca
-  salen en la URL ni en el SQL (hay prueba que lo verifica).
+Los formatos de impresión pintan el logo con `<img src="{{urlLogo}}">`, y `urlLogo` sale de
+`(SELECT TOP 1 LogoEmpresa FROM parametros_web)` (dos formatos usan como respaldo
+`parametros.ss_ruta_logo`). La URL apunta a un bucket **privado** (una lectura anónima
+responde 403), así que SAG Web solo puede mostrarla con los datos del almacenamiento de
+`parametros_web`. El logo funciona cuando `LogoEmpresa` tiene la URL nueva **y** el
+almacenamiento está configurado con el mismo bucket y carpeta. Esta opción escribe las dos
+cosas en una sola transacción.
 
-## Ruta del logo
+## Pantalla (`/implementacion/logo-compania`)
 
-`{bucket}/{base de datos}/Archivos/Imagenes/LogoEmpresa/{uuid}.{png|jpg|gif|webp|svg}`
+1. **Almacenamiento de objetos:** Bucket y Access key (misma fila), Secret key (fila completa),
+   enlace a la hoja de almacenamiento (pestaña nueva) y «Probar conexión».
+   Desplegable **«Configurar parámetros adicionales (opcional)»**: servidor
+   (`storcube.sagweb.co`), puerto (`8333`), SSL (sí), ruta base (`Archivos/`) y región
+   (`us-east-1`), con «Restaurar valores por defecto».
+2. **Acceso a la base de datos de la compañía:** servidor y puerto (`servidor,puerto`, como
+   SSMS; también `servidor\instancia`), nombre de la base de datos (también es la carpeta del
+   almacenamiento), usuario de SQL, contraseña y «Probar conexión» (no escribe nada).
+3. **Logo (opcional):** imagen de máximo 2 MB con vista previa.
 
-URL resultante: `https://storcube.sagweb.co:8333/{bucket}/{base}/Archivos/Imagenes/LogoEmpresa/{uuid}.png`
+Botones: **«Configurar almacenamiento de archivos»** (secciones 1 y 2) y **«Configurar
+almacenamiento de archivos y subir nuevo logo»** (secciones 1 y 2 + imagen).
 
-## Reemplazo de un logo existente
+Todos los campos llevan *trim*. No admiten espacios: bucket, access key, secret key,
+servidor y puerto, nombre de la base y usuario de SQL. La contraseña solo pierde los espacios
+de los extremos.
 
-Si la carpeta ya tiene imágenes, la pantalla las lista y pide confirmación
-(«Sí, reemplazar»). Sin confirmación el API responde `409`. **Las imágenes
-anteriores no se borran** (igual que SAG Web): el logo vigente sigue
-funcionando hasta que se ejecute el SQL nuevo en la base del cliente.
+**Avisos:** el resultado aparece anclado arriba de la ventana visible (`AvisoFlotante`,
+`position: fixed`), aunque se haya bajado con el scroll. Éxito e información se ocultan a los
+8 segundos; el error se queda hasta cerrarlo. Queda copia del último resultado arriba del
+formulario.
 
-## Detalle técnico: firma S3
+## Qué escribe
 
-El nginx de storcube reenvía el `Host` **sin puerto**. La firma SigV4 se
-calcula con el host sin puerto (middleware antes de `httpSigningMiddleware` en
-`createCompanyLogoS3Client`); de lo contrario el servidor responde 403
-`SignatureDoesNotMatch`.
+`UPDATE parametros_web` (todas las filas, como `GenerarSQLAlmacenamiento`):
+`MinioNameEnterprise` (= nombre de la base), `MinioBucketName`, `MinioAccessKey`,
+`MinioSecretKey`, `MinioEndpoint`, `MinioPort`, `MinioUseSSL` (`S`/`N`), `MinioBasePath` y,
+con logo, `LogoEmpresa`. `MinioPublicBaseUrl` no se toca.
+
+Antes de escribir revisa que la base sea la pedida, que exista `parametros_web` con esas
+columnas y registros, y que el usuario pueda actualizarla. Si ya había otros valores, un logo
+o imágenes en la carpeta, responde **409** con la lista de cambios (sin llaves) y la pantalla
+pide confirmación («Sí, reemplazar»). Después de escribir vuelve a leer y confirma.
+**Las imágenes anteriores no se borran.**
+
+Ruta del logo: `{bucket}/{base}/{ruta base}Imagenes/LogoEmpresa/{uuid}.{png|jpg|gif|webp|svg}`.
+El nombre del bucket va en la URL por diseño (rutas `servidor/bucket/objeto`).
+
+## Reglas de seguridad
+
+- El portal **no guarda** bucket, llaves, servidor, usuario ni contraseña de SQL, URL ni
+  imagen: viven solo en memoria durante la solicitud. No van a logs, auditoría ni respuestas
+  (`Cache-Control: no-store`). Las llaves sí quedan en `parametros_web` del cliente, donde
+  SAG Web las necesita.
+- Solo consultas fijas y parametrizadas (`companyDatabase.ts`); nunca SQL de la persona.
+- SQL cifrado, confiando en el certificado del servidor (como «Trust server certificate» de
+  SSMS), tiempos límite de 15 s, pool de una conexión que se cierra al terminar.
+- Servidores SQL sin lista de permitidos (decisión de negocio). El servidor del almacenamiento
+  rechaza `localhost`, `127.*`, `0.*`, `169.254.*` y `::1`.
+- Errores de SQL Server y del almacenamiento traducidos a mensajes controlados en español.
+- Auditoría `company_storage_configured`: quién, cuándo, en qué base (`companyName`) y
+  `logoUpdated`, `assetKind`, `bytes`, `previousLogoCount`, `changedFieldCount`,
+  `keysChanged`. Nada más.
+- Límite: 20 solicitudes cada 10 minutos por usuario e IP.
+
+### SVG: limpieza estructural (`api/src/lib/svgSanitizer.ts`)
+
+El SVG se analiza como XML (`@xmldom/xmldom`) y se **reconstruye** con una lista blanca; se
+sube el resultado, nunca el original. Se rechaza con código, eventos, DTD, animaciones,
+`feImage`, referencias externas o CSS peligroso; se descartan en silencio los metadatos de
+editores. RAW de cámara: se rechaza pidiendo exportarlo como imagen.
+
+### Detalle técnico: firma S3
+
+El nginx de storcube reenvía el `Host` **sin puerto**; la firma SigV4 se calcula igual
+(middleware antes de `httpSigningMiddleware`).
 
 ## Contrato del API
 
 | Método | Ruta | Cuerpo | Respuesta |
 |---|---|---|---|
-| POST | `/api/implementation/company-logo/check` | `bucket, accessKey, secretKey, databaseName` | `{ folder, existing: [{ name, bytes, lastModified }] }` |
-| POST | `/api/implementation/company-logo/upload` | lo anterior + `imageBase64, imageName, replaceConfirmed` | `{ url, fileName, bytes, replacedCount, sql, sqlFileName }` |
+| POST | `/api/implementation/company-logo/storage/check` | `storage{bucket,accessKey,secretKey,options?}`, `databaseName?` | `{ folder, existing[] }` |
+| POST | `/api/implementation/company-logo/database/check` | `database{server,databaseName,username,password}` | `{ databaseName, current{…sin llaves} }` |
+| POST | `/api/implementation/company-logo/apply` | `storage`, `database`, `logo?{imageBase64,imageName}`, `confirmed` | `{ databaseName, storageConfigured, logoUpdated, logoUrl, previousLogoCount, changes, keysChanged }` o 409 con `requiresConfirmation` |
 
-Permisos: `implementation.company_logo.view` (ver la opción) y
-`implementation.company_logo.upload` (probar conexión y subir). Límite:
-20 solicitudes cada 10 minutos por usuario e IP. Imagen: máximo 2 MB; el tipo
-se detecta por el contenido (no por el nombre): PNG, JPG/JPEG, GIF, WEBP y
-SVG.
+Permisos: `implementation.company_logo.view` (ver) e `implementation.company_logo.upload`
+(«Configurar Almacenamiento y Subir Logo»). Las claves no cambiaron: la migración 029 solo
+renombra etiquetas, así que los roles que ya tenían la opción la conservan.
 
-### SVG: limpieza estructural (`api/src/lib/svgSanitizer.ts`)
+## Página de inicio
 
-El SVG **no se sube tal como llega**. Se analiza como XML (`@xmldom/xmldom`) y
-se **reconstruye** con una lista blanca de elementos y atributos de dibujo; se
-sube el resultado reconstruido, nunca el archivo original. Como los valores ya
-vienen decodificados por el analizador, los trucos que esquivan un filtro de
-texto (entidades `&#106;avascript:`, tabuladores dentro del esquema, mayúsculas,
-otros espacios de nombres) no pasan.
+Al iniciar sesión (`InicioPage`): Tareas si la persona tiene acceso; si no, la única opción
+que tenga; si tiene varias, la bienvenida con la marca del portal («Bienvenido al Portal SAG
+Web»). El menú vive en `frontend/src/menu.ts` y lo comparten la barra lateral y el inicio.
 
-- Se **rechaza** (mensaje «trae código o enlaces externos»): `script`,
-  `foreignObject`, animaciones (`animate`, `set`…), `feImage`, `iframe`,
-  `embed`, `object`, audio y video; atributos `on*`; DTD o entidades; esquemas
-  `javascript:`/`vbscript:`/`data:text`; `href` que no sea interno (`#id`), salvo
-  `<image>` con PNG/JPG/GIF/WEBP incrustado en base64; `url(...)` que no sea
-  `#id`; CSS con `@import`, `expression(`, `behavior`, `-moz-binding` o `\`.
-- Se **descarta en silencio**: metadatos de editores (Inkscape, Illustrator,
-  RDF), atributos de otros espacios de nombres, `data-*`, comentarios e
-  instrucciones de proceso. `<a>` y `<switch>` se quitan conservando su dibujo.
-- XML mal formado → «no es una imagen que SAG Web pueda mostrar».
-- Límites: 100 niveles de anidación y 50 000 elementos. Los RAW de cámara se rechazan con un mensaje
-que pide exportarlos como imagen, porque ni el navegador ni SAG Web pueden
-mostrarlos. La pantalla no nombra formatos; solo indica el máximo de 2 MB.
+## Despliegue
 
-## Pantalla
-
-`/implementacion/logo-compania`. Cinco datos: bucket, nombre de la base de
-datos de la compañía, llave de acceso, llave secreta e imagen. El botón
-«Subir logo y generar SQL» se habilita solo con los cinco. Al terminar, el
-`.sql` se descarga automáticamente y queda «Descargar el SQL de nuevo».
-Incluye el enlace a la hoja de almacenamiento de las compañías (pestaña nueva).
-
-## Verificación hecha (2026-11-13)
-
-- API: ver el último commit para el conteo de pruebas, `npm run build`, `check:no-cosmos-runtime`.
-- Frontend: 228 pruebas, `npm run build`.
-- Migración 028: analizador SQL Server 2019 (TSql150) PASS.
-- Prueba real del código compilado contra storcube (bucket de pruebas): probar
-  conexión, subir con carpeta vacía, bloqueo 409 sin confirmar, subir
-  confirmando (la imagen vieja se conserva), SQL generado, llaves ausentes de
-  la respuesta, mensaje controlado con llave errada. Las imágenes de prueba se
-  borraron al final.
-- Pantalla revisada en local con una sesión simulada.
-
-## Pendiente para desplegar (requiere autorización explícita)
-
-1. Aplicar `migration/sql/028_company_logo_permissions.sql` en producción
-   (después de un respaldo), igual que la 027. El ejecutor
-   `migration/tools/Apply-PortalSAGWeb-PendingMigrationsThroughSession.ps1` ya
-   la incluye y verifica al final 2 permisos activos y 2 concedidos a
-   `super_admin`.
-2. Publicar el API (el push a `main` **no** despliega el API).
-3. Push a `main` para desplegar el frontend (después de 1 y 2, para que la
-   opción no aparezca sin backend).
-4. Asignar `implementation.company_logo.*` a los roles que lo usen
-   (`super_admin` lo recibe en la migración).
+1. Migración `029_company_storage_labels.sql` con el ejecutor
+   `migration/tools/Apply-PortalSAGWeb-PendingMigrationsThroughSession.ps1` (verifica 13
+   migraciones y las etiquetas nuevas). Respaldo antes en producción.
+2. Publicar el API (el push a `main` no lo despliega).
+3. Push a `main` para el frontend (después de 1 y 2).

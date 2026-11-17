@@ -1,25 +1,32 @@
 import { app, type HttpRequest, type HttpResponseInit } from "@azure/functions";
+import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
-import { badRequest, conflict, forbidden, ok } from "../lib/http";
+import { badRequest, forbidden, ok } from "../lib/http";
 import { canUploadCompanyLogo } from "../lib/managementAccess";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
 import { writeAuditLog } from "../lib/audit";
+import { checkCompanyStorage, CompanyLogoError, databaseNameSchema, StorageSchema } from "../lib/companyLogo";
 import {
-  checkCompanyLogoStorage,
-  CompanyLogoConnectionSchema,
-  CompanyLogoError,
-  CompanyLogoUploadSchema,
-  uploadCompanyLogo,
-} from "../lib/companyLogo";
+  applyCompanyStorage,
+  ApplyCompanyStorageSchema,
+  checkCompanyDatabase,
+  CheckDatabaseSchema,
+} from "../lib/companyStorageSetup";
 
 /*
-  Seguridad: el cuerpo de estas solicitudes trae llaves del almacenamiento del
-  cliente. Nunca se registra (context.log), nunca se audita y nunca se devuelve.
-  Los errores salen con mensajes controlados; jamás el detalle del proveedor.
+  Seguridad: el cuerpo de estas solicitudes trae llaves del almacenamiento y
+  usuario/contraseña de SQL del cliente. Nunca se registra (context.log), nunca
+  se audita y nunca se devuelve. Los errores salen con mensajes controlados;
+  jamás el detalle del proveedor o de SQL Server.
 */
 
 const NO_STORE = { "Cache-Control": "no-store" };
+
+const StorageCheckSchema = z.object({
+  storage: StorageSchema,
+  databaseName: z.union([databaseNameSchema, z.literal("")]).optional(),
+}).strict();
 
 function withNoStore(response: HttpResponseInit): HttpResponseInit {
   return { ...response, headers: { ...(response.headers as Record<string, string> | undefined), ...NO_STORE } };
@@ -46,7 +53,7 @@ async function readJson(req: HttpRequest): Promise<unknown> {
 function failure(error: unknown): HttpResponseInit {
   const candidate = error as { status?: number };
   if (error instanceof CompanyLogoError) {
-    return error.status === 409 ? conflict(error.message) : { status: error.status, jsonBody: { error: error.message } };
+    return { status: error.status, jsonBody: { error: error.message, ...(error.details ?? {}) } };
   }
   if (candidate?.status === 401) return { status: 401, jsonBody: { error: "No autenticado." } };
   if (candidate?.status === 403) return forbidden();
@@ -57,52 +64,72 @@ function isResponse(value: unknown): value is HttpResponseInit {
   return typeof (value as HttpResponseInit)?.status === "number";
 }
 
-app.http("companyLogoCheck", {
-  route: "implementation/company-logo/check",
-  methods: ["POST"],
-  authLevel: "anonymous",
-  handler: async (req): Promise<HttpResponseInit> => {
+function firstIssue(error: z.ZodError): string {
+  const issue = error.issues[0];
+  if (issue?.code === "unrecognized_keys") return "La solicitud trae datos que no se esperan.";
+  return issue?.message ?? "Datos no válidos.";
+}
+
+function handler(run: (body: unknown, user: { id: string; email: string }) => Promise<HttpResponseInit>) {
+  return async (req: HttpRequest): Promise<HttpResponseInit> => {
     try {
       const user = await authorize(req);
       if (isResponse(user)) return withNoStore(user);
-      const parsed = CompanyLogoConnectionSchema.safeParse(await readJson(req));
-      if (!parsed.success) return withNoStore(badRequest(parsed.error.issues[0].message));
-      return withNoStore(ok(await checkCompanyLogoStorage(parsed.data)));
+      return withNoStore(await run(await readJson(req), user));
     } catch (error) {
       return withNoStore(failure(error));
     }
-  },
+  };
+}
+
+app.http("companyStorageCheck", {
+  route: "implementation/company-logo/storage/check",
+  methods: ["POST"],
+  authLevel: "anonymous",
+  handler: handler(async (body) => {
+    const parsed = StorageCheckSchema.safeParse(body);
+    if (!parsed.success) return badRequest(firstIssue(parsed.error));
+    return ok(await checkCompanyStorage(parsed.data.storage, parsed.data.databaseName || null));
+  }),
 });
 
-app.http("companyLogoUpload", {
-  route: "implementation/company-logo/upload",
+app.http("companyDatabaseCheck", {
+  route: "implementation/company-logo/database/check",
   methods: ["POST"],
   authLevel: "anonymous",
-  handler: async (req): Promise<HttpResponseInit> => {
-    try {
-      const user = await authorize(req);
-      if (isResponse(user)) return withNoStore(user);
-      const parsed = CompanyLogoUploadSchema.safeParse(await readJson(req));
-      if (!parsed.success) return withNoStore(badRequest(parsed.error.issues[0].message));
-      const result = await uploadCompanyLogo(parsed.data);
-      // Auditoría mínima: quién, cuándo y para qué compañía (nombre de la base).
-      // Nunca bucket, llaves ni URL.
-      await writeAuditLog({
-        entityType: "companyLogo",
-        entityId: result.fileName,
-        companyName: parsed.data.databaseName,
-        action: "company_logo_uploaded",
-        performedBy: user.id,
-        performedByEmail: user.email,
-        metadata: {
-          assetKind: result.fileName.slice(result.fileName.lastIndexOf(".") + 1),
-          bytes: result.bytes,
-          previousLogoCount: result.replacedCount,
-        },
-      }).catch(() => undefined);
-      return withNoStore(ok(result));
-    } catch (error) {
-      return withNoStore(failure(error));
-    }
-  },
+  handler: handler(async (body) => {
+    const parsed = CheckDatabaseSchema.safeParse(body);
+    if (!parsed.success) return badRequest(firstIssue(parsed.error));
+    return ok(await checkCompanyDatabase(parsed.data.database));
+  }),
+});
+
+app.http("companyStorageApply", {
+  route: "implementation/company-logo/apply",
+  methods: ["POST"],
+  authLevel: "anonymous",
+  handler: handler(async (body, user) => {
+    const parsed = ApplyCompanyStorageSchema.safeParse(body);
+    if (!parsed.success) return badRequest(firstIssue(parsed.error));
+    const result = await applyCompanyStorage(parsed.data);
+    // Auditoría mínima: quién, cuándo, en qué base y qué se hizo.
+    // Nunca servidor, usuario, contraseña, bucket, llaves ni URL.
+    await writeAuditLog({
+      entityType: "companyStorage",
+      entityId: result.databaseName,
+      companyName: result.databaseName,
+      action: "company_storage_configured",
+      performedBy: user.id,
+      performedByEmail: user.email,
+      metadata: {
+        logoUpdated: result.logoUpdated,
+        assetKind: result.fileName ? result.fileName.slice(result.fileName.lastIndexOf(".") + 1) : null,
+        bytes: result.bytes,
+        previousLogoCount: result.previousLogoCount,
+        changedFieldCount: result.changes.length,
+        keysChanged: result.keysChanged,
+      },
+    }).catch(() => undefined);
+    return ok(result);
+  }),
 });

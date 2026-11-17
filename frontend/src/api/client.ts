@@ -67,15 +67,20 @@ function canRefreshRequest(status: number, path: string): boolean {
     && path !== "/auth/reset-password";
 }
 
-async function responseError(response: Response): Promise<Error & { status?: number }> {
+export type ApiError = Error & { status?: number; data?: Record<string, unknown> };
+
+async function responseError(response: Response): Promise<ApiError> {
   let message = `Error ${response.status}`;
+  let body: Record<string, unknown> | undefined;
   try {
     const data = await response.clone().json();
     message = data.error ?? message;
+    if (data && typeof data === "object") body = data as Record<string, unknown>;
   } catch {/* respuesta no JSON */}
   if (response.status === 401) setToken(null);
-  const error = new Error(message) as Error & { status?: number };
+  const error = new Error(message) as ApiError;
   error.status = response.status;
+  if (body) error.data = body;
   return error;
 }
 

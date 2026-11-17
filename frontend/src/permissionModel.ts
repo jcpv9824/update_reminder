@@ -89,7 +89,7 @@ export const PERMISSION_CATALOG: PermissionModule[] = [
     options: [
       option("public_downloads", "Descargas Públicas", "implementation.public_downloads", [ACTIONS.view, { id: "create_document", label: "Crear Archivo" }, { id: "edit_document", label: "Editar Archivo" }, { id: "delete_document", label: "Eliminar Archivo" }, { id: "replace_file", label: "Reemplazar Archivo" }]),
       option("public_files", "Archivos Públicos", "implementation.public_files", [ACTIONS.view, { id: "create_file", label: "Crear Archivo" }, { id: "edit_file", label: "Editar Archivo" }, { id: "delete_file", label: "Eliminar Archivo" }, { id: "replace_file", label: "Reemplazar Archivo" }]),
-      option("company_logo", "Agregar logo a la compañía", "implementation.company_logo", [ACTIONS.view, { id: "upload", label: "Subir Logo y Generar SQL" }]),
+      option("company_logo", "Almacenamiento de archivos y logo", "implementation.company_logo", [ACTIONS.view, { id: "upload", label: "Configurar Almacenamiento y Subir Logo" }]),
     ],
   },
   {

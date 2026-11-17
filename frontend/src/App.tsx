@@ -24,6 +24,7 @@ import ArchivosPublicosAdminPage from "./pages/ArchivosPublicosAdminPage";
 import ConstructorGuiasPage from "./pages/ConstructorGuiasPage";
 import ConexionesPage from "./pages/ConexionesPage";
 import LogoCompaniaPage from "./pages/LogoCompaniaPage";
+import InicioPage from "./pages/InicioPage";
 import { DEFAULT_ROLE_DEFINITIONS, type RoleDefinition } from "./permissionModel";
 import { hasPermissionForRoleIds } from "./permissionAccess";
 import { GUIDE_BUILDER_UI_ENABLED } from "./featureFlags";
@@ -51,7 +52,7 @@ function Enrutador() {
 
   return (
     <Routes>
-      <Route path="/login" element={auth.usuario ? <Navigate to="/tareas" replace /> : <LoginPage />} />
+      <Route path="/login" element={auth.usuario ? <Navigate to="/" replace /> : <LoginPage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/formatos-impresion" element={<FormatosImpresionPublicPage />} />
@@ -59,8 +60,8 @@ function Enrutador() {
         <Route path="*" element={<Navigate to="/login" replace />} />
       ) : (
         <Route element={<AppLayout />}>
-          {/* Página inicial: tareas */}
-          <Route index element={<Navigate to="/tareas" replace />} />
+          {/* Página inicial: Tareas, la única opción asignada o la bienvenida */}
+          <Route index element={<InicioPage />} />
           <Route path="tareas" element={<Protegido permiso="updates.tasks.view" element={<TareasPage />} />} />
           <Route path="clientes" element={<Protegido permiso="clients.clients.view" element={<ClientesPage />} />} />
           <Route path="dominios" element={<Protegido permiso="clients.domains.view" element={<DominiosPage />} />} />
@@ -79,7 +80,7 @@ function Enrutador() {
           {GUIDE_BUILDER_UI_ENABLED ? (
             <Route path="ayudas/constructor-guias" element={<Protegido permiso="help.guide_builder.view" element={<ConstructorGuiasPage />} />} />
           ) : null}
-          <Route path="*" element={<Navigate to="/tareas" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       )}
     </Routes>

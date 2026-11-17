@@ -1,14 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  buildCompanyLogoSql,
-  checkCompanyLogoStorage,
-  CompanyLogoConnectionSchema,
+  checkCompanyStorage,
   CompanyLogoError,
-  CompanyLogoUploadSchema,
   companyLogoFolder,
+  COMPANY_STORAGE_DEFAULTS,
   decodeCompanyLogo,
+  LogoImageSchema,
+  StorageSchema,
   storageErrorMessage,
-  uploadCompanyLogo,
   type S3Sender,
 } from "../lib/companyLogo";
 import { buildAuditLogEntry } from "../lib/audit";
@@ -19,14 +18,13 @@ const JPG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(3
 const SECRET = "SuperSecretKey-1234567890";
 const ACCESS = "AccessKeyExample";
 
-const connection = {
+const storageInput = {
   bucket: "  demo.sagerp.cloud.buk ",
   accessKey: ` ${ACCESS} `,
   secretKey: ` ${SECRET}\t`,
-  databaseName: " SAGWebDemoPYA ",
 };
 
-function fakeClient(existing: Array<{ Key: string; Size: number; LastModified: Date }>, options: { fail?: unknown } = {}) {
+function fakeS3(existing: Array<{ Key: string; Size: number; LastModified: Date }>, options: { fail?: unknown } = {}) {
   const sent: Array<{ name: string; input: Record<string, unknown> }> = [];
   const client: S3Sender = {
     send: vi.fn(async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
@@ -44,35 +42,57 @@ function fakeClient(existing: Array<{ Key: string; Size: number; LastModified: D
   return { client, sent };
 }
 
-describe("company logo input validation", () => {
-  it("trims every field", () => {
-    const parsed = CompanyLogoConnectionSchema.parse(connection);
-    expect(parsed).toEqual({
+describe("storage section validation", () => {
+  it("trims every field and fills the additional parameters with the defaults", () => {
+    expect(StorageSchema.parse(storageInput)).toEqual({
       bucket: "demo.sagerp.cloud.buk",
       accessKey: ACCESS,
       secretKey: SECRET,
-      databaseName: "SAGWebDemoPYA",
+      options: { ...COMPANY_STORAGE_DEFAULTS },
     });
   });
 
   it.each([
     [{ bucket: "Demo_Bucket" }, "bucket"],
     [{ bucket: "ab" }, "bucket"],
-    [{ databaseName: "../otra" }, "base de datos"],
-    [{ databaseName: "Mi Base" }, "base de datos"],
-    [{ accessKey: "" }, "llave de acceso"],
-    [{ secretKey: "abc def ghi" }, "llave secreta"],
-  ])("rejects %o with an actionable message", (override, label) => {
-    const result = CompanyLogoConnectionSchema.safeParse({ ...connection, ...override });
+    [{ bucket: "demo bucket" }, "espacios"],
+    [{ accessKey: "" }, "access key"],
+    [{ accessKey: "abc def" }, "espacios"],
+    [{ secretKey: "abc def ghi" }, "espacios"],
+    [{ secretKey: "short" }, "incompleto"],
+  ])("rejects %o with an actionable message", (override, text) => {
+    const result = StorageSchema.safeParse({ ...storageInput, ...override });
     expect(result.success).toBe(false);
-    expect(result.error!.issues[0].message.toLowerCase()).toContain(label);
+    expect(result.error!.issues[0].message.toLowerCase()).toContain(text);
   });
 
-  it("rejects extra fields such as a custom endpoint (no proxy to other hosts)", () => {
-    const result = CompanyLogoConnectionSchema.safeParse({ ...connection, endpoint: "evil.example.com" });
-    expect(result.success).toBe(false);
+  it("accepts edited additional parameters and trims them", () => {
+    const parsed = StorageSchema.parse({
+      ...storageInput,
+      options: { endpoint: " s3.ejemplo.co ", port: 9000, useSsl: false, basePath: " Datos/Web/ ", region: " us-west-2 " },
+    });
+    expect(parsed.options).toEqual({ endpoint: "s3.ejemplo.co", port: 9000, useSsl: false, basePath: "Datos/Web/", region: "us-west-2" });
   });
 
+  it.each([
+    [{ endpoint: "https://storcube.sagweb.co" }, "sin https"],
+    [{ endpoint: "localhost" }, "no está permitido"],
+    [{ endpoint: "169.254.169.254" }, "no está permitido"],
+    [{ port: 70000 }, "65535"],
+    [{ basePath: "Archivos" }, "terminada en /"],
+    [{ basePath: "../x/" }, "ruta base"],
+  ])("rejects additional parameter %o", (override, text) => {
+    const result = StorageSchema.safeParse({ ...storageInput, options: { ...COMPANY_STORAGE_DEFAULTS, ...override } });
+    expect(result.success).toBe(false);
+    expect(result.error!.issues[0].message.toLowerCase()).toContain(text.toLowerCase());
+  });
+
+  it("rejects unknown fields", () => {
+    expect(StorageSchema.safeParse({ ...storageInput, databaseName: "X" }).success).toBe(false);
+  });
+});
+
+describe("company logo images", () => {
   it("accepts common web image formats by content, whatever the file name", () => {
     const gif = Buffer.concat([Buffer.from("GIF89a", "ascii"), Buffer.alloc(16)]);
     const webp = Buffer.concat([Buffer.from("RIFF", "ascii"), Buffer.alloc(4), Buffer.from("WEBPVP8 ", "ascii"), Buffer.alloc(16)]);
@@ -159,7 +179,7 @@ describe("company logo input validation", () => {
   });
 
   it("rejects an oversized payload before decoding it", () => {
-    const result = CompanyLogoUploadSchema.safeParse({ ...connection, imageBase64: "A".repeat(3_000_001), imageName: "logo.png" });
+    const result = LogoImageSchema.safeParse({ imageBase64: "A".repeat(3_000_001), imageName: "logo.png" });
     expect(result.success).toBe(false);
     expect(result.error!.issues[0].message).toContain("2 MB");
   });
@@ -170,58 +190,37 @@ describe("company logo input validation", () => {
   });
 });
 
-describe("company logo storage", () => {
+
+describe("storage check", () => {
   it("lists the dedicated logo folder and reports existing logos, newest first", async () => {
-    const { client, sent } = fakeClient([
+    const { client, sent } = fakeS3([
       { Key: "SAGWebDemoPYA/Archivos/Imagenes/LogoEmpresa/a.jpg", Size: 10, LastModified: new Date("2026-09-01") },
       { Key: "SAGWebDemoPYA/Archivos/Imagenes/LogoEmpresa/b.png", Size: 20, LastModified: new Date("2026-11-01") },
     ]);
-    const result = await checkCompanyLogoStorage(CompanyLogoConnectionSchema.parse(connection), () => client);
+    const result = await checkCompanyStorage(StorageSchema.parse(storageInput), "SAGWebDemoPYA", () => client);
     expect(sent[0].input).toMatchObject({ Bucket: "demo.sagerp.cloud.buk", Prefix: "SAGWebDemoPYA/Archivos/Imagenes/LogoEmpresa/" });
     expect(result.existing.map((item) => item.name)).toEqual(["b.png", "a.jpg"]);
     expect(client.destroy).toHaveBeenCalled();
   });
 
-  it("refuses to upload over an existing logo without confirmation", async () => {
-    const { client, sent } = fakeClient([{ Key: `${companyLogoFolder("SAGWebDemoPYA")}a.jpg`, Size: 1, LastModified: new Date() }]);
-    const input = CompanyLogoUploadSchema.parse({ ...connection, imageBase64: PNG.toString("base64"), imageName: "logo.png" });
-    await expect(uploadCompanyLogo(input, () => client)).rejects.toMatchObject({ status: 409 });
-    expect(sent.some((item) => item.name === "PutObjectCommand")).toBe(false);
+  it("only validates the keys when the database name is not known yet", async () => {
+    const { client, sent } = fakeS3([]);
+    const result = await checkCompanyStorage(StorageSchema.parse(storageInput), null, () => client);
+    expect(result).toEqual({ folder: null, existing: [] });
+    expect(sent[0].input).toEqual({ Bucket: "demo.sagerp.cloud.buk", MaxKeys: 1 });
   });
 
-  it("uploads a new UUID file when confirmed, keeps old logos and returns the SQL", async () => {
-    const { client, sent } = fakeClient([{ Key: `${companyLogoFolder("SAGWebDemoPYA")}a.jpg`, Size: 1, LastModified: new Date() }]);
-    const input = CompanyLogoUploadSchema.parse({
-      ...connection, imageBase64: PNG.toString("base64"), imageName: " logo.png ", replaceConfirmed: true,
-    });
-    const result = await uploadCompanyLogo(input, () => client, new Date("2026-11-13T21:00:00Z"));
-    const put = sent.find((item) => item.name === "PutObjectCommand")!;
-    expect(put.input.Key).toMatch(/^SAGWebDemoPYA\/Archivos\/Imagenes\/LogoEmpresa\/[0-9a-f-]{36}\.png$/);
-    expect(put.input.ContentType).toBe("image/png");
-    expect(sent.some((item) => item.name === "DeleteObjectCommand")).toBe(false);
-    expect(result.replacedCount).toBe(1);
-    expect(result.url).toBe(`https://storcube.sagweb.co:8333/demo.sagerp.cloud.buk/${put.input.Key}`);
-    expect(result.sql).toContain(`UPDATE parametros_web SET LogoEmpresa = N'${result.url}';`);
-    expect(result.sqlFileName).toBe("logo_SAGWebDemoPYA.sql");
-    const serialized = JSON.stringify(result);
-    expect(serialized).not.toContain(SECRET);
-    expect(serialized).not.toContain(ACCESS);
-  });
-
-  it("uploads without confirmation when the folder is empty", async () => {
-    const { client } = fakeClient([]);
-    const input = CompanyLogoUploadSchema.parse({ ...connection, imageBase64: JPG.toString("base64"), imageName: "logo.jpg" });
-    const result = await uploadCompanyLogo(input, () => client);
-    expect(result.replacedCount).toBe(0);
-    expect(result.fileName).toMatch(/\.jpg$/);
+  it("uses the edited base path for the folder", () => {
+    const storage = StorageSchema.parse({ ...storageInput, options: { ...COMPANY_STORAGE_DEFAULTS, basePath: "Datos/" } });
+    expect(companyLogoFolder("Base1", storage.options)).toBe("Base1/Datos/Imagenes/LogoEmpresa/");
   });
 
   it("maps provider errors to controlled messages without technical details", async () => {
     const providerError = Object.assign(new Error(`SignatureDoesNotMatch for ${ACCESS}`), {
       name: "SignatureDoesNotMatch", $metadata: { httpStatusCode: 403 },
     });
-    const { client } = fakeClient([], { fail: providerError });
-    const error = await checkCompanyLogoStorage(CompanyLogoConnectionSchema.parse(connection), () => client).catch((e) => e);
+    const { client } = fakeS3([], { fail: providerError });
+    const error = await checkCompanyStorage(StorageSchema.parse(storageInput), "X", () => client).catch((e) => e);
     expect(error).toBeInstanceOf(CompanyLogoError);
     expect(error.message).toContain("rechazó las llaves");
     expect(error.message).not.toContain(ACCESS);
@@ -230,32 +229,36 @@ describe("company logo storage", () => {
   });
 });
 
-describe("company logo SQL, audit and permissions", () => {
-  it("escapes quotes in the generated SQL", () => {
-    expect(buildCompanyLogoSql("https://x/a'b.png")).toContain("N'https://x/a''b.png'");
-  });
-
+describe("audit and permissions", () => {
   it("audit keeps only allowlisted metadata", () => {
     const entry = buildAuditLogEntry({
-      entityType: "companyLogo",
-      entityId: "file.png",
-      action: "company_logo_uploaded",
+      entityType: "companyStorage",
+      entityId: "SAGWebDemoPYA",
+      action: "company_storage_configured",
       performedBy: "user_1",
       performedByEmail: "u@example.com",
       companyName: "SAGWebDemoPYA",
-      metadata: { assetKind: "png", bytes: 10, previousLogoCount: 1, bucket: "demo", secretKey: SECRET, databaseName: "X" },
+      metadata: {
+        logoUpdated: true, assetKind: "png", bytes: 10, previousLogoCount: 1, changedFieldCount: 2, keysChanged: false,
+        bucket: "demo", secretKey: SECRET, server: "srv,1433", password: "x",
+      },
     });
-    expect(entry.metadata).toEqual({ assetKind: "png", bytes: 10, previousLogoCount: 1 });
+    expect(entry.metadata).toEqual({
+      logoUpdated: true, assetKind: "png", bytes: 10, previousLogoCount: 1, changedFieldCount: 2, keysChanged: false,
+    });
     expect(entry.companyName).toBe("SAGWebDemoPYA");
   });
 
-  it("declares the Implementación option with view and upload actions", () => {
+  it("declares the Implementación option with view and configure actions", () => {
     const implementation = PERMISSION_CATALOG.find((module) => module.id === "implementation")!;
     const logo = implementation.options.find((option) => option.id === "company_logo")!;
-    expect(logo.label).toBe("Agregar logo a la compañía");
+    expect(logo.label).toBe("Almacenamiento de archivos y logo");
     expect(logo.actions.map((action) => `${logo.permissionPrefix}.${action.id}`)).toEqual([
       "implementation.company_logo.view",
       "implementation.company_logo.upload",
     ]);
+    expect(logo.actions[1].label).toBe("Configurar Almacenamiento y Subir Logo");
   });
 });
+
+void JPG;

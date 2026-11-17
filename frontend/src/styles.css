@@ -1354,7 +1354,7 @@ td:last-child:has(.acciones-tabla) { text-align: right; }
   }
 }
 
-/* Agregar logo a la compañía */
+/* Almacenamiento de archivos y logo */
 .logo-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .logo-grid label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
 .logo-grid label input, .logo-grid label small { font-weight: 400; }
@@ -1368,3 +1368,32 @@ td:last-child:has(.acciones-tabla) { text-align: right; }
 .logo-sql { white-space: pre-wrap; word-break: break-all; font-family: Consolas, "Courier New", monospace; font-size: 12px; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 6px; padding: 12px; }
 @media (max-width: 760px) { .logo-grid { grid-template-columns: 1fr; } }
 .logo-acciones button:disabled { opacity: 0.45; cursor: not-allowed; }
+.logo-acciones { justify-content: flex-end; flex-wrap: wrap; }
+.logo-acciones button:disabled, .conexion-panel button:disabled { cursor: not-allowed; }
+.conexion-panel h2 { margin-top: 0; }
+.logo-adicionales { margin: 8px 0 4px; border-top: 1px dashed var(--color-border); padding-top: 10px; }
+.logo-adicionales summary { cursor: pointer; font-weight: 600; color: var(--color-primary); margin-bottom: 10px; }
+.logo-grid label.logo-check { flex-direction: row; align-items: center; gap: 8px; font-weight: 400; }
+.logo-cambios { margin: 8px 0 16px; padding-left: 18px; display: grid; gap: 6px; }
+.logo-cambios code { word-break: break-all; }
+
+/* Aviso anclado arriba de la ventana visible (se ve aunque se haya bajado con el scroll) */
+.aviso-flotante {
+  position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+  z-index: 200; width: min(720px, calc(100vw - 32px));
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 12px 14px; border-radius: 8px; border: 1px solid transparent;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+  font-size: 14px; line-height: 1.45;
+}
+.aviso-flotante-texto { flex: 1; }
+.aviso-flotante-error { background: var(--color-error-bg); color: var(--color-error); border-color: #fca5a5; }
+.aviso-flotante-exito { background: var(--color-success-bg); color: var(--color-success); border-color: #6ee7b7; }
+.aviso-flotante-info { background: #e8eef5; color: var(--color-primary); border-color: var(--color-secondary); }
+.aviso-flotante-cerrar { background: transparent; border: 0; padding: 2px; color: inherit; cursor: pointer; line-height: 0; }
+
+/* Bienvenida (quien no tiene Tareas y tiene varias opciones) */
+.bienvenida { min-height: 60vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; text-align: center; }
+.bienvenida-marca { display: flex; align-items: center; gap: 14px; background: var(--color-primary); padding: 16px 22px; border-radius: 12px; }
+.bienvenida-marca img { width: 56px; height: 56px; object-fit: contain; }
+.bienvenida h1 { margin: 0; color: var(--color-primary); }

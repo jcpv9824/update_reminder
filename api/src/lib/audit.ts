@@ -239,6 +239,7 @@ const ACTION_METADATA_SCHEMAS: Record<string, AuditSchema> = {
   public_file_replaced: fields("previousFileName", "newFileName", "assetKind"),
   public_file_deleted: fields(),
   company_logo_uploaded: fields("assetKind", "bytes", "previousLogoCount"),
+  company_storage_configured: fields("logoUpdated", "assetKind", "bytes", "previousLogoCount", "changedFieldCount", "keysChanged"),
 };
 
 const SECRET_CONTENT_PATTERNS = [
