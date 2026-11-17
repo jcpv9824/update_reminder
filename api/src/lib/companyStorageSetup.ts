@@ -115,6 +115,9 @@ async function openAndInspect(database: CompanyDatabase, openDatabase: CompanyDa
     if (state.rows < 1) {
       throw new CompanyLogoError("parametros_web no tiene registros en esa base. Revise que la base esté configurada para SAG Web.", 400);
     }
+    if (state.rows > 1) {
+      throw new CompanyLogoError(`parametros_web tiene ${state.rows} filas en esa base y SAG Web usa una sola. Revise la base antes de configurar: no se cambió nada.`, 409);
+    }
     return { session, state };
   } catch (error) {
     await session?.close();

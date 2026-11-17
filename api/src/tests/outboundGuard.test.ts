@@ -1,5 +1,22 @@
-import { describe, expect, it } from "vitest";
-import { hostMatchesAllowList, isInternalAddress, resolvesToPublicAddresses } from "../lib/outboundGuard";
+import { describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
+import type { Socket } from "node:net";
+import {
+  createGuardedLookup,
+  createGuardedSqlConnector,
+  hostMatchesAllowList,
+  isInternalAddress,
+  resolvesToPublicAddresses,
+} from "../lib/outboundGuard";
+import { createCompanyStorageS3Client, storageErrorMessage } from "../lib/companyLogo";
+import { ListObjectsV2Command } from "@aws-sdk/client-s3";
+
+function fakeSocket(): Socket {
+  const socket = new EventEmitter() as unknown as Socket & { destroy: () => void };
+  socket.destroy = () => undefined;
+  setTimeout(() => socket.emit("connect"), 0);
+  return socket;
+}
 
 describe("outbound guard", () => {
   it.each([
@@ -28,5 +45,44 @@ describe("outbound guard", () => {
     expect(hostMatchesAllowList("sagweb.co", list)).toBe(false);
     expect(hostMatchesAllowList("evilsagweb.co", list)).toBe(false);
     expect(hostMatchesAllowList("sagweb.co.evil.com", list)).toBe(false);
+  });
+
+  it("the guarded lookup returns only validated public addresses to the transport", async () => {
+    const lookup = createGuardedLookup(async () => ["20.30.40.50", "2001:4860:4860::8888"]);
+    const all = await new Promise((resolve) => lookup("x", { all: true }, (_e, a) => resolve(a)));
+    expect(all).toEqual([{ address: "20.30.40.50", family: 4 }, { address: "2001:4860:4860::8888", family: 6 }]);
+    const one = await new Promise((resolve) => lookup("x", {}, (_e, a, f) => resolve([a, f])));
+    expect(one).toEqual(["20.30.40.50", 4]);
+    const blocked = createGuardedLookup(async () => ["20.30.40.50", "10.0.0.1"]);
+    const error = await new Promise<NodeJS.ErrnoException | null>((resolve) => blocked("x", { all: true }, (e) => resolve(e)));
+    expect(error).toMatchObject({ code: "EINTERNALDESTINATION" });
+  });
+
+  it("the SQL connector connects only to the addresses it validated", async () => {
+    const targets: Array<{ host: string; port: number }> = [];
+    const connector = createGuardedSqlConnector(async () => ["20.30.40.50"], (options) => {
+      targets.push({ host: options.host, port: options.port });
+      return fakeSocket();
+    });
+    await connector({ host: "sql.ejemplo.co", port: 1433 }, undefined, new AbortController().signal);
+    expect(targets).toEqual([{ host: "20.30.40.50", port: 1433 }]);
+
+    const connect = vi.fn(() => fakeSocket());
+    const blocked = createGuardedSqlConnector(async () => ["127.0.0.1"], connect);
+    await expect(blocked({ host: "sql.ejemplo.co", port: 1433 }, undefined, new AbortController().signal)).rejects.toMatchObject({ code: "EINTERNALDESTINATION" });
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it("the real S3 transport refuses a name that resolves to the internal network", async () => {
+    const client = createCompanyStorageS3Client({
+      bucket: "demo", accessKey: "AKIAEXAMPLE", secretKey: "SecretExample123",
+      options: { endpoint: "localhost", port: 8333, basePath: "Archivos/", region: "us-east-1" },
+    });
+    try {
+      const error = await client.send(new ListObjectsV2Command({ Bucket: "demo", MaxKeys: 1 })).catch((e) => e);
+      expect(storageErrorMessage(error).message).toContain("red interna");
+    } finally {
+      client.destroy();
+    }
   });
 });

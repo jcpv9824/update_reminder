@@ -1,7 +1,7 @@
 import sql from "mssql";
 import { z } from "zod";
 import { CompanyLogoError, databaseNameSchema, trimmed } from "./companyLogo";
-import { resolveHost, resolvesToPublicAddresses, type HostResolver } from "./outboundGuard";
+import { createGuardedSqlConnector, resolveHost, resolvesToPublicAddresses, type HostResolver } from "./outboundGuard";
 
 /*
   Conexión temporal a la base de datos de una compañía de SAG Web para
@@ -17,8 +17,11 @@ import { resolveHost, resolvesToPublicAddresses, type HostResolver } from "./out
     interna (loopback, privadas, link-local, metadatos de Azure).
 */
 
-/** servidor[\instancia][,puerto] — como en SSMS. */
-const SERVER_PATTERN = /^([A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?)(?:\\([A-Za-z0-9_$-]{1,64}))?(?:,(\d{1,5}))?$/;
+/**
+ * servidor[,puerto] — como en SSMS (sin puerto: 1433). No se admiten instancias con
+ * nombre (servidor\instancia): su búsqueda por UDP no pasaría por el filtro de destinos.
+ */
+const SERVER_PATTERN = /^([A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?)(?:,(\d{1,5}))?$/;
 
 const serverSchema = trimmed("El servidor y puerto", z.string()
   .min(1, "El servidor y puerto es obligatorio.")
@@ -27,7 +30,7 @@ const serverSchema = trimmed("El servidor y puerto", z.string()
   .refine((value) => {
     const match = SERVER_PATTERN.exec(value);
     if (!match) return false;
-    return match[3] === undefined || (Number(match[3]) >= 1 && Number(match[3]) <= 65535);
+    return match[2] === undefined || (Number(match[2]) >= 1 && Number(match[2]) <= 65535);
   }, "Escriba el servidor y el puerto así: servidor,puerto (ej.: data14.sagerp.co,54103 o 10.0.0.5,1433)."));
 
 export const CompanyDatabaseSchema = z.object({
@@ -44,16 +47,12 @@ export const CompanyDatabaseSchema = z.object({
 
 export type CompanyDatabase = z.infer<typeof CompanyDatabaseSchema>;
 
-export type ParsedServer = { host: string; instanceName?: string; port?: number };
+export type ParsedServer = { host: string; port: number };
 
 export function parseServer(value: string): ParsedServer {
   const match = SERVER_PATTERN.exec(value);
   if (!match) throw new CompanyLogoError("Escriba el servidor y el puerto así: servidor,puerto.", 400);
-  return {
-    host: match[1],
-    ...(match[2] ? { instanceName: match[2] } : {}),
-    ...(match[3] ? { port: Number(match[3]) } : {}),
-  };
+  return { host: match[1], port: match[2] ? Number(match[2]) : 1433 };
 }
 
 /** Columnas de parametros_web que se leen o escriben. */
@@ -102,6 +101,9 @@ export function databaseErrorMessage(error: unknown): CompanyLogoError {
     return new CompanyLogoError("El servidor rechazó el usuario o la contraseña de SQL. Revíselos e intente de nuevo.", 400);
   }
   const text = `${(error as { message?: string })?.message ?? ""} ${(candidate?.originalError as { message?: string } | undefined)?.message ?? ""}`;
+  if (code === "EINTERNALDESTINATION" || /internal or invalid address/i.test(text)) {
+    return new CompanyLogoError("No fue posible usar ese servidor de base de datos: no existe o apunta a una red interna. Revise el servidor y puerto.", 400);
+  }
   if (/certificate|self[ -]signed|altname|hostname\/ip does not match|CERT_|UNABLE_TO_VERIFY|DEPTH_ZERO/i.test(text)) {
     return new CompanyLogoError("El servidor de base de datos no presentó un certificado válido para ese nombre. Escriba el servidor con el nombre que aparece en su certificado (no la IP) o pida a Infraestructura instalar un certificado válido.", 400);
   }
@@ -146,7 +148,7 @@ async function openWithResolver(database: CompanyDatabase, resolver: HostResolve
   }
   const pool = new sql.ConnectionPool({
     server: server.host,
-    ...(server.port ? { port: server.port } : {}),
+    port: server.port,
     database: database.databaseName,
     user: database.username,
     password: database.password,
@@ -158,7 +160,10 @@ async function openWithResolver(database: CompanyDatabase, resolver: HostResolve
       trustServerCertificate: false,
       enableArithAbort: true,
       appName: "PortalSAGWeb-AlmacenamientoLogo",
-      ...(server.instanceName ? { instanceName: server.instanceName } : {}),
+      // El transporte se conecta SOLO a direcciones públicas validadas en ese momento
+      // (también si el servidor redirige). El certificado se valida con el nombre original.
+      // Los tipos de mssql declaran el conector sin argumentos; tedious sí se los pasa.
+      connector: createGuardedSqlConnector(resolver) as never,
     },
   });
   try {
@@ -220,8 +225,10 @@ SET MinioNameEnterprise = @nameEnterprise,
     MinioPort = @port,
     MinioUseSSL = @useSsl,
     MinioBasePath = @basePath${values.LogoEmpresa !== undefined ? ",\n    LogoEmpresa = @logo" : ""};`);
-        if ((result.rowsAffected?.[0] ?? 0) < 1) {
-          throw new CompanyLogoError("parametros_web no tiene registros en esa base. Revise que la base esté configurada para SAG Web.", 400);
+        const affected = result.rowsAffected?.[0] ?? 0;
+        if (affected !== 1) {
+          // Se revierte: la confirmación solo cubre una fila.
+          throw new CompanyLogoError(`Se iban a modificar ${affected} filas de parametros_web y debe ser exactamente una. No se cambió nada.`, 409);
         }
         await transaction.commit();
       } catch (error) {

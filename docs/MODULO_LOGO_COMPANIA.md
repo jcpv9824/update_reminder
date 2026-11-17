@@ -23,7 +23,7 @@ cosas en una sola transacción.
    (`us-east-1`), con «Restaurar valores por defecto». El cifrado no se puede quitar:
    siempre HTTPS (`MinioUseSSL = 'S'`).
 2. **Acceso a la base de datos de la compañía:** servidor y puerto (`servidor,puerto`, como
-   SSMS; también `servidor\instancia`), nombre de la base de datos (también es la carpeta del
+   SSMS; sin puerto usa 1433; no se admiten instancias con nombre), nombre de la base de datos (también es la carpeta del
    almacenamiento), usuario de SQL, contraseña y «Probar conexión» (no escribe nada).
 3. **Logo (opcional):** imagen de máximo 2 MB con vista previa.
 
@@ -41,13 +41,14 @@ formulario.
 
 ## Qué escribe
 
-`UPDATE parametros_web` (todas las filas, como `GenerarSQLAlmacenamiento`):
+`UPDATE parametros_web` (debe afectar exactamente una fila; si no, se revierte):
 `MinioNameEnterprise` (= nombre de la base), `MinioBucketName`, `MinioAccessKey`,
 `MinioSecretKey`, `MinioEndpoint`, `MinioPort`, `MinioUseSSL` (siempre `S`), `MinioBasePath` y,
 con logo, `LogoEmpresa`. `MinioPublicBaseUrl` no se toca.
 
 Antes de escribir revisa que la base sea la pedida, que exista `parametros_web` con esas
-columnas y registros, y que el usuario pueda actualizarla. Si ya había otros valores, un logo
+columnas y **exactamente una fila** (con varias, no escribe nada), y que el usuario pueda
+actualizarla. Si ya había otros valores, un logo
 o imágenes en la carpeta, responde **409** con la lista de cambios (sin llaves) y la pantalla
 pide confirmación («Sí, reemplazar»). Después de escribir vuelve a leer y confirma.
 **Las imágenes anteriores no se borran.**
@@ -70,7 +71,12 @@ El nombre del bucket va en la URL por diseño (rutas `servidor/bucket/objeto`).
 - Servidores SQL sin lista de permitidos (decisión de negocio), pero el nombre debe resolver
   **solo a direcciones públicas** (`outboundGuard.ts`): se rechazan loopback, redes privadas,
   CGNAT, link-local (incluye metadatos de Azure `169.254.169.254`), multicast y equivalentes
-  IPv6, antes de conectar.
+  IPv6. El filtro se aplica **en la conexión real**: tedious usa un conector propio
+  (`createGuardedSqlConnector`) y el cliente S3 un agente HTTPS con `lookup` filtrado
+  (`createGuardedLookup`), así que el transporte solo se conecta a direcciones validadas en ese
+  momento (también si el servidor SQL redirige). El certificado se valida con el nombre
+  original. Las instancias con nombre se rechazan porque su búsqueda por UDP no pasaría por el
+  filtro.
 - Almacenamiento: **siempre HTTPS** y solo servidores aprobados. La lista se configura en el
   API con `COMPANY_STORAGE_ALLOWED_HOSTS` (separada por comas, admite `*.dominio`); por defecto
   `storcube.sagweb.co,*.sagweb.co`. Además debe resolver solo a direcciones públicas.

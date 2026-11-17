@@ -99,8 +99,9 @@ describe("database section validation", () => {
 
   it("parses server, instance and port like SSMS", () => {
     expect(parseServer("data14.sagerp.co,54103")).toEqual({ host: "data14.sagerp.co", port: 54103 });
-    expect(parseServer("10.0.0.5")).toEqual({ host: "10.0.0.5" });
-    expect(parseServer("SRV01\\SQLEXPRESS")).toEqual({ host: "SRV01", instanceName: "SQLEXPRESS" });
+    expect(parseServer("servidor.ejemplo.co")).toEqual({ host: "servidor.ejemplo.co", port: 1433 });
+    expect(() => parseServer("SRV01\\SQLEXPRESS")).toThrow();
+    expect(CompanyDatabaseSchema.safeParse({ ...database, server: "SRV01\\SQLEXPRESS" }).success).toBe(false);
   });
 
   it("refuses a database server that resolves to the internal network, before sending credentials", async () => {
@@ -108,6 +109,16 @@ describe("database section validation", () => {
       const open = createCompanyDatabaseOpener(async () => [address]);
       await expect(open(CompanyDatabaseSchema.parse(database))).rejects.toThrow(/red interna/);
     }
+  });
+
+  it("blocks the real connection when the name changes to an internal address after the check", async () => {
+    let calls = 0;
+    const rebinding = async () => (calls++ === 0 ? ["20.30.40.50"] : ["127.0.0.1"]);
+    const open = createCompanyDatabaseOpener(rebinding);
+    const error = await open(CompanyDatabaseSchema.parse(database)).catch((e) => e);
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(error.message).toContain("red interna");
+    expect(error.message).not.toContain(SQL_PASSWORD);
   });
 
   it("explains an invalid server certificate without exposing details", () => {
@@ -131,6 +142,16 @@ describe("check database", () => {
     const result = await checkCompanyDatabase(CompanyDatabaseSchema.parse(database), opener);
     expect(result.current).toMatchObject({ bucket: "viejo", keysConfigured: true, logoUrl: "https://x/l.png" });
     expect(JSON.stringify(result)).not.toMatch(/"A"|"S"/);
+    expect(session.closed).toBe(true);
+  });
+
+  it("refuses to configure when parametros_web has more than one row, and writes nothing", async () => {
+    const { opener, session, writes } = fakeSession({}, { rows: 2 });
+    const { client } = fakeS3();
+    const error = await applyCompanyStorage(input(), { openDatabase: opener, s3Factory: () => client, resolver: publicDns }).catch((e) => e);
+    expect(error.status).toBe(409);
+    expect(error.message).toContain("2 filas");
+    expect(writes).toEqual([]);
     expect(session.closed).toBe(true);
   });
 

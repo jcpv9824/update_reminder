@@ -5,9 +5,10 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { createHash, randomUUID } from "node:crypto";
+import { Agent as HttpsAgent, type AgentOptions } from "node:https";
 import { z } from "zod";
 import { sanitizeSvg, UnsafeSvgError } from "./svgSanitizer";
-import { hostMatchesAllowList, resolveHost, resolvesToPublicAddresses, type HostResolver } from "./outboundGuard";
+import { createGuardedLookup, hostMatchesAllowList, resolveHost, resolvesToPublicAddresses, type HostResolver } from "./outboundGuard";
 
 /*
   Almacenamiento de archivos y logo de la compañía en SAG Web.
@@ -228,6 +229,13 @@ export function createCompanyStorageS3Client(storage: CompanyStorage): S3Client 
     requestChecksumCalculation: "WHEN_REQUIRED",
     responseChecksumValidation: "WHEN_REQUIRED",
     credentials: { accessKeyId: storage.accessKey, secretAccessKey: storage.secretKey },
+    // El transporte HTTPS se conecta SOLO a direcciones públicas validadas al conectar;
+    // el certificado se valida con el nombre original del servidor.
+    requestHandler: {
+      httpsAgent: new HttpsAgent({ keepAlive: false, lookup: createGuardedLookup() as unknown as AgentOptions["lookup"] }),
+      connectionTimeout: TIMEOUT_MS,
+      requestTimeout: TIMEOUT_MS,
+    },
   });
   type Middleware = Parameters<typeof client.middlewareStack.addRelativeTo>[0];
   const hostWithoutPort = ((next: (args: unknown) => Promise<unknown>) => async (args: unknown) => {
@@ -257,6 +265,9 @@ export function storageErrorMessage(error: unknown): CompanyLogoError {
   }
   if (name === "TimeoutError" || name === "AbortError") {
     return new CompanyLogoError("El almacenamiento no respondió a tiempo. Revise el servidor y el puerto en los parámetros adicionales, o intente de nuevo.", 504);
+  }
+  if (candidate?.code === "EINTERNALDESTINATION" || /internal or invalid address/i.test(String((error as { message?: string })?.message ?? ""))) {
+    return new CompanyLogoError("No fue posible usar ese servidor del almacenamiento: no existe o apunta a una red interna. Revise el servidor en los parámetros adicionales.", 400);
   }
   if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EPROTO/.test(`${name} ${candidate?.code ?? ""}`)) {
     return new CompanyLogoError("No fue posible llegar al servidor del almacenamiento. Revise el servidor, el puerto y el SSL en los parámetros adicionales.", 502);

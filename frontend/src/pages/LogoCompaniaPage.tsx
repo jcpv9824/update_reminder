@@ -93,7 +93,7 @@ export function validateDatabase(form: DatabaseForm): string | null {
   const username = form.username.trim();
   if (!server) return "Escriba el servidor y puerto de la base de datos.";
   if (!sinEspacios(server)) return "El servidor y puerto no puede tener espacios. Escríbalo así: servidor,puerto.";
-  if (!/^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?:\\[A-Za-z0-9_$-]{1,64})?(?:,\d{1,5})?$/.test(server)) {
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?:,\d{1,5})?$/.test(server)) {
     return "Escriba el servidor y el puerto así: servidor,puerto (ej.: data14.sagerp.co,54103).";
   }
   if (!databaseName) return "Escriba el nombre de la base de datos.";
