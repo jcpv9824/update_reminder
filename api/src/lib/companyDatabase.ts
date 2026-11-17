@@ -101,6 +101,9 @@ export function databaseErrorMessage(error: unknown): CompanyLogoError {
     return new CompanyLogoError("El servidor rechazó el usuario o la contraseña de SQL. Revíselos e intente de nuevo.", 400);
   }
   const text = `${(error as { message?: string })?.message ?? ""} ${(candidate?.originalError as { message?: string } | undefined)?.message ?? ""}`;
+  if (code === "EPLAINTEXTLOGIN" || /plaintext sql traffic blocked/i.test(text)) {
+    return new CompanyLogoError("El servidor de base de datos no aceptó una conexión cifrada. Por seguridad no se envió la contraseña. Pida a Infraestructura habilitar el cifrado (TLS) en ese servidor.", 400);
+  }
   if (code === "EINTERNALDESTINATION" || /internal or invalid address/i.test(text)) {
     return new CompanyLogoError("No fue posible usar ese servidor de base de datos: no existe o apunta a una red interna. Revise el servidor y puerto.", 400);
   }
@@ -135,13 +138,20 @@ function emptyValues(): ParametrosWebValues {
 }
 
 /** Abre una conexión real con mssql. */
-export function createCompanyDatabaseOpener(resolver: HostResolver = resolveHost): CompanyDatabaseOpener {
-  return (database) => openWithResolver(database, resolver);
+export function createCompanyDatabaseOpener(
+  resolver: HostResolver = resolveHost,
+  connectFn?: Parameters<typeof createGuardedSqlConnector>[1],
+): CompanyDatabaseOpener {
+  return (database) => openWithResolver(database, resolver, connectFn);
 }
 
 export const openCompanyDatabase: CompanyDatabaseOpener = (database) => openWithResolver(database, resolveHost);
 
-async function openWithResolver(database: CompanyDatabase, resolver: HostResolver): Promise<CompanyDatabaseSession> {
+async function openWithResolver(
+  database: CompanyDatabase,
+  resolver: HostResolver,
+  connectFn?: Parameters<typeof createGuardedSqlConnector>[1],
+): Promise<CompanyDatabaseSession> {
   const server = parseServer(database.server);
   if (!(await resolvesToPublicAddresses(server.host, resolver))) {
     throw new CompanyLogoError("No fue posible usar ese servidor de base de datos: no existe o apunta a una red interna. Revise el servidor y puerto.", 400);
@@ -163,7 +173,7 @@ async function openWithResolver(database: CompanyDatabase, resolver: HostResolve
       // El transporte se conecta SOLO a direcciones públicas validadas en ese momento
       // (también si el servidor redirige). El certificado se valida con el nombre original.
       // Los tipos de mssql declaran el conector sin argumentos; tedious sí se los pasa.
-      connector: createGuardedSqlConnector(resolver) as never,
+      connector: createGuardedSqlConnector(resolver, connectFn) as never,
     },
   });
   try {

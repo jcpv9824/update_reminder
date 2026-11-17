@@ -148,7 +148,7 @@ export function createGuardedSqlConnector(
           };
           const onAbort = () => { cleanup(); socket.destroy(); reject(signal.reason); };
           const onError = (error: Error) => { cleanup(); socket.destroy(); reject(error); };
-          const onConnect = () => { cleanup(); resolve(socket); };
+          const onConnect = () => { cleanup(); resolve(guardTdsSocket(socket)); };
           signal.addEventListener("abort", onAbort, { once: true });
           socket.on("error", onError);
           socket.on("connect", onConnect);
@@ -160,4 +160,78 @@ export function createGuardedSqlConnector(
     }
     throw new AggregateError(errors, "Could not connect (guarded sequence)");
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* TLS obligatorio ANTES de enviar credenciales SQL (TDS 7.x / SQL 2019) */
+/* ------------------------------------------------------------------ */
+
+export class PlaintextSqlLoginError extends Error {
+  readonly code = "EPLAINTEXTLOGIN";
+  constructor() {
+    super("Plaintext SQL traffic blocked: TLS was not negotiated before login.");
+  }
+}
+
+/**
+ * Revisa todo lo que el cliente escribe en el socket TCP. En TDS 7.x solo hay
+ * dos cosas legítimas en el cable: paquetes PRELOGIN (tipo 0x12, que también
+ * envuelven el saludo TLS) y registros TLS ya cifrados (tipos 0x14–0x17,
+ * versión 3.x). Cualquier otra cosa —en particular LOGIN7 (0x10), que lleva
+ * usuario y contraseña— significa que el driver iba a enviarla SIN cifrar
+ * (por ejemplo, porque el servidor respondió que no soporta cifrado). En ese
+ * caso se corta la conexión antes de escribir un solo byte.
+ */
+export function createTdsWireInspector() {
+  let pending = Buffer.alloc(0);
+  let remaining = 0;
+  return function accept(chunk: Buffer): boolean {
+    let offset = 0;
+    while (offset < chunk.length) {
+      if (remaining > 0) {
+        const take = Math.min(remaining, chunk.length - offset);
+        remaining -= take;
+        offset += take;
+        continue;
+      }
+      pending = Buffer.concat([pending, chunk.subarray(offset, offset + 1)]);
+      offset += 1;
+      const type = pending[0];
+      if (type === 0x12) {
+        if (pending.length < 8) continue;
+        const length = pending.readUInt16BE(2);
+        if (length < 8) return false;
+        remaining = length - 8;
+      } else if (type >= 0x14 && type <= 0x17) {
+        if (pending.length < 5) continue;
+        if (pending[1] !== 0x03) return false;
+        remaining = pending.readUInt16BE(3);
+      } else {
+        return false;
+      }
+      pending = Buffer.alloc(0);
+    }
+    return true;
+  };
+}
+
+/** Envuelve el socket: lo que no pase el inspector no se escribe y la conexión se corta. */
+export function guardTdsSocket(socket: Socket): Socket {
+  const accept = createTdsWireInspector();
+  const originalWrite = socket.write.bind(socket) as (...args: unknown[]) => boolean;
+  let blocked = false;
+  (socket as unknown as { write: (...args: unknown[]) => boolean }).write = (chunk: unknown, ...rest: unknown[]) => {
+    if (blocked) return false;
+    const encoding = typeof rest[0] === "string" ? (rest[0] as BufferEncoding) : undefined;
+    const buffer = Buffer.isBuffer(chunk)
+      ? chunk
+      : typeof chunk === "string" ? Buffer.from(chunk, encoding) : Buffer.from(chunk as Uint8Array);
+    if (!accept(buffer)) {
+      blocked = true;
+      socket.destroy(new PlaintextSqlLoginError());
+      return false;
+    }
+    return originalWrite(chunk, ...rest);
+  };
+  return socket;
 }

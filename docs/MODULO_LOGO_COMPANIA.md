@@ -68,6 +68,13 @@ El nombre del bucket va en la URL por diseño (rutas `servidor/bucket/objeto`).
   certificado válido para ese nombre, la pantalla pide usar el nombre del certificado (no la
   IP) o instalar uno válido. Tiempos límite de 15 s; pool de una conexión que se cierra al
   terminar.
+- **TLS antes de las credenciales (TDS 7.x, SQL Server 2019):** Tedious 20 continúa al LOGIN7
+  sin TLS si el servidor responde en PRELOGIN que no soporta cifrado. El conector envuelve el
+  socket con un inspector (`guardTdsSocket`): solo deja pasar paquetes PRELOGIN (0x12, que
+  también envuelven el saludo TLS) y registros TLS (0x14–0x17); cualquier otra cosa —en
+  particular LOGIN7 (0x10)— corta la conexión antes de escribir un byte. No se usa
+  `encrypt: 'strict'` porque exige TDS 8.0 (SQL Server 2022). Prueba de regresión con un
+  servidor TDS falso: `api/src/tests/sqlTlsGuard.test.ts`.
 - Servidores SQL sin lista de permitidos (decisión de negocio), pero el nombre debe resolver
   **solo a direcciones públicas** (`outboundGuard.ts`): se rechazan loopback, redes privadas,
   CGNAT, link-local (incluye metadatos de Azure `169.254.169.254`), multicast y equivalentes

@@ -12,8 +12,9 @@ import { createCompanyStorageS3Client, storageErrorMessage } from "../lib/compan
 import { ListObjectsV2Command } from "@aws-sdk/client-s3";
 
 function fakeSocket(): Socket {
-  const socket = new EventEmitter() as unknown as Socket & { destroy: () => void };
+  const socket = new EventEmitter() as unknown as Socket & { destroy: () => void; write: () => boolean };
   socket.destroy = () => undefined;
+  socket.write = () => true;
   setTimeout(() => socket.emit("connect"), 0);
   return socket;
 }
