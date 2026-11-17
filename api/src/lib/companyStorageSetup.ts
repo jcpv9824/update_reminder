@@ -15,6 +15,7 @@ import {
 } from "./companyLogo";
 import { resolveHost, type HostResolver } from "./outboundGuard";
 import {
+  CommitOutcomeUnknownError,
   CompanyDatabaseSchema,
   databaseErrorMessage,
   openCompanyDatabase,
@@ -83,6 +84,36 @@ export type ApplyCompanyStorageResult = {
   changes: FieldChange[];
   keysChanged: boolean;
 };
+
+/** Lo escrito coincide campo por campo con lo que se quería escribir. */
+function matchesTarget(values: ParametrosWebValues, target: StorageWrite): boolean {
+  return (Object.keys(target) as Array<keyof StorageWrite>).every((field) => {
+    const expected = String(target[field] ?? "");
+    const actual = values[field].trim();
+    return field === "MinioPort" ? Number(actual) === Number(expected) : actual === expected;
+  });
+}
+
+/**
+ * Tras un COMMIT de resultado incierto, revisa el estado real con una conexión
+ * nueva. Devuelve "applied", "not-applied" o "unknown" (si no se pudo revisar).
+ */
+async function verifyCommitOutcome(
+  database: CompanyDatabase,
+  openDatabase: CompanyDatabaseOpener,
+  target: StorageWrite,
+): Promise<"applied" | "not-applied" | "unknown"> {
+  let verifier: CompanyDatabaseSession | null = null;
+  try {
+    verifier = await openDatabase(database);
+    const { current } = await verifier.inspect();
+    return matchesTarget(current, target) ? "applied" : "not-applied";
+  } catch {
+    return "unknown";
+  } finally {
+    await verifier?.close().catch(() => undefined);
+  }
+}
 
 export type CompanyStorageDeps = {
   openDatabase?: CompanyDatabaseOpener;
@@ -242,6 +273,33 @@ export async function applyCompanyStorage(
       // La huella esperada es la que se revisó (o la de la inspección, si no hubo nada que confirmar).
       await session.write(target, state.fingerprint);
     } catch (error) {
+      if (error instanceof CommitOutcomeUnknownError) {
+        // La base pudo haber quedado apuntando al logo nuevo: NO se borra nada
+        // hasta saber qué pasó.
+        const outcome = await verifyCommitOutcome(database, openDatabase, target);
+        if (outcome === "applied") {
+          return {
+            databaseName: database.databaseName,
+            storageConfigured: true,
+            databaseChanged: true,
+            logoUpdated: Boolean(uploaded),
+            logoUrl: uploaded?.url ?? null,
+            fileName: uploaded?.fileName ?? null,
+            bytes: image ? image.bytes.length : null,
+            previousLogoCount: existing.length,
+            changes,
+            keysChanged,
+          };
+        }
+        if (outcome === "unknown") {
+          throw new CompanyLogoError(
+            "No fue posible confirmar si la configuración quedó guardada (se perdió la conexión al confirmar). No se borró nada. Use «Probar conexión» de la base de datos para revisar el estado antes de intentar de nuevo.",
+            502,
+            { stage: "commit", databaseChanged: "unknown", uploadedLogoKept: Boolean(uploaded) },
+          );
+        }
+        // "not-applied": la base no cambió; se sigue con la limpieza normal.
+      }
       const removed = uploaded ? await removeCompanyLogo(s3, storage, database.databaseName, uploaded.fileName) : undefined;
       const extra: Record<string, unknown> = uploaded ? { uploadedLogoRemoved: removed } : {};
       const translated = databaseErrorMessage(error);

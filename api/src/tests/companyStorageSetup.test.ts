@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { CompanyLogoError, type S3Sender } from "../lib/companyLogo";
 import {
+  CommitOutcomeUnknownError,
   CompanyDatabaseSchema,
   configurationFingerprint,
   createCompanyDatabaseOpener,
@@ -43,7 +44,7 @@ function emptyRow(): ParametrosWebValues {
  */
 function fakeSession(
   initial: Partial<ParametrosWebValues> = {},
-  options: { rows?: number; failWrite?: unknown; changeBeforeWrite?: Partial<ParametrosWebValues> } = {},
+  options: { rows?: number; failWrite?: unknown; changeBeforeWrite?: Partial<ParametrosWebValues>; commitUnknown?: "applied" | "not-applied" } = {},
 ) {
   let row: ParametrosWebValues = { ...emptyRow(), ...initial };
   const writes: StorageWrite[] = [];
@@ -56,8 +57,10 @@ function fakeSession(
       if (configurationFingerprint(row) !== expected) {
         throw new CompanyLogoError("La configuración de la compañía cambió mientras se revisaba. No se cambió nada: revise de nuevo y confirme.", 409, { stale: true });
       }
+      if (options.commitUnknown === "not-applied") throw new CommitOutcomeUnknownError();
       writes.push(values);
       row = { ...row, ...values } as ParametrosWebValues;
+      if (options.commitUnknown === "applied") throw new CommitOutcomeUnknownError();
     }),
     close: vi.fn(async () => { session.closed = true; }),
   };
@@ -348,6 +351,42 @@ describe("apply storage configuration", () => {
     expect(fingerprint).not.toContain(SECRET);
     expect(configurationFingerprint({ ...base, MinioSecretKey: "Otra-Llave-123" })).not.toBe(fingerprint);
     expect(configurationFingerprint({ ...base, LogoEmpresa: "x" })).not.toBe(fingerprint);
+  });
+});
+
+describe("uncertain COMMIT (the answer to COMMIT was lost)", () => {
+  it("verifies with a new connection: if it was saved, it is a success and the logo is kept", async () => {
+    const { opener } = fakeSession({}, { commitUnknown: "applied" });
+    const { client, objects } = fakeS3();
+    const result = await applyCompanyStorage(input({ logo: logoInput }), deps(opener, client));
+    expect(result).toMatchObject({ databaseChanged: true, logoUpdated: true });
+    expect([...objects.keys()].some((key) => key.includes("/LogoEmpresa/"))).toBe(true);
+    expect(opener).toHaveBeenCalledTimes(2); // una conexión nueva para verificar
+  });
+
+  it("if it was not saved, reports databaseChanged=false and removes the uploaded logo", async () => {
+    const { opener } = fakeSession({}, { commitUnknown: "not-applied" });
+    const { client, objects } = fakeS3();
+    const error = await applyCompanyStorage(input({ logo: logoInput }), deps(opener, client)).catch((e) => e);
+    expect(error.details).toMatchObject({ databaseChanged: false, uploadedLogoRemoved: true });
+    expect(objects.size).toBe(0);
+  });
+
+  it("if it cannot be verified, keeps the logo and says the outcome is unknown", async () => {
+    const { session } = fakeSession({}, { commitUnknown: "applied" });
+    let calls = 0;
+    const opener = vi.fn(async () => {
+      calls += 1;
+      if (calls > 1) throw new Error("ESOCKET");
+      return session;
+    });
+    const { client, objects, sent } = fakeS3();
+    const error = await applyCompanyStorage(input({ logo: logoInput }), deps(opener, client)).catch((e) => e);
+    expect(error.status).toBe(502);
+    expect(error.details).toMatchObject({ stage: "commit", databaseChanged: "unknown", uploadedLogoKept: true });
+    expect(error.message).toContain("No se borró nada");
+    expect(sent.filter((item) => item.name === "DeleteObjectCommand" && String(item.input.Key).includes("/LogoEmpresa/"))).toHaveLength(0);
+    expect([...objects.keys()].some((key) => key.includes("/LogoEmpresa/"))).toBe(true);
   });
 });
 

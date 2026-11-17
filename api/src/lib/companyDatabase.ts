@@ -87,6 +87,18 @@ export function configurationFingerprint(values: ParametrosWebValues): string {
   return digest(`parametros_web/v1\n${material}`);
 }
 
+/**
+ * El COMMIT se envió pero no llegó respuesta (conexión caída, tiempo agotado):
+ * SQL Server pudo haber confirmado o revertido. Quien llama NO debe suponer
+ * ninguna de las dos cosas: debe verificar el estado real antes de actuar.
+ */
+export class CommitOutcomeUnknownError extends Error {
+  readonly code = "ECOMMITUNKNOWN";
+  constructor() {
+    super("Commit outcome unknown.");
+  }
+}
+
 export type CompanyDatabaseState = {
   rows: number;
   fingerprint: string;
@@ -293,9 +305,14 @@ SELECT TOP 1 ${STORAGE_COLUMNS.map((column) => `CONVERT(NVARCHAR(4000), ${column
         if (mismatch) {
           throw new CompanyLogoError("La base de datos no conservó los valores escritos. No se cambió nada.", 502);
         }
-        await transaction.commit();
+        try {
+          await transaction.commit();
+        } catch {
+          // No se sabe si quedó confirmado: no se intenta revertir ni se supone nada.
+          throw new CommitOutcomeUnknownError();
+        }
       } catch (error) {
-        await transaction.rollback().catch(() => undefined);
+        if (!(error instanceof CommitOutcomeUnknownError)) await transaction.rollback().catch(() => undefined);
         throw error;
       }
     },

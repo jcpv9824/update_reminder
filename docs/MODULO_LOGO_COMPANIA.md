@@ -68,7 +68,11 @@ Orden (`companyStorageSetup.ts`):
 (`validation`, `database`, `storage`, `confirmation`, `logo`). La base solo cambia en el
 `COMMIT`, que es el último paso; después ya no hay nada que pueda fallar en el módulo. Si el
 logo se subió y la base no se actualizó, se borra el logo recién subido
-(`uploadedLogoRemoved`). Auditoría: `company_storage_configuration_requested` se registra
+(`uploadedLogoRemoved`). **COMMIT incierto** (se envió y no llegó respuesta): no se borra
+nada y se revisa el estado con una conexión nueva; si quedó guardado, es un éxito; si no, se
+limpia como en cualquier fallo; si no se puede revisar, responde 502 con
+`databaseChanged: "unknown"` y `uploadedLogoKept: true`, y pide revisar con «Probar conexión»
+antes de reintentar. Auditoría: `company_storage_configuration_requested` se registra
 **antes** y es obligatoria (si falla: 503 y no se toca nada); luego
 `company_storage_configured` o `company_storage_configuration_failed`. Si el registro final
 falla, la respuesta dice `auditRecorded: false` (el cambio sí se aplicó) y la pantalla lo avisa.
@@ -152,8 +156,9 @@ Web»). El menú vive en `frontend/src/menu.ts` y lo comparten la barra lateral 
 Antes de publicar:
 - `npm run build` y `node scripts/check-company-sql-tls.mjs` (en `api/`) contra una base de
   **pruebas** de SAG Web en SQL Server 2019: por nombre debe pasar TLS + inicio de sesión +
-  revisión de `parametros_web` (solo lectura); por IP debe rechazarse por certificado. Lo
-  ejecuta una persona: pide la contraseña sin mostrarla y no la guarda.
+  revisión de `parametros_web` (solo lectura); por IP debe rechazarse por certificado. Solo
+  sale con 0 si las dos dan PASS. Lo ejecuta una persona en una terminal interactiva: la
+  contraseña se lee en modo crudo, sin eco, y no se guarda; sin terminal interactiva no corre.
 - Revisar en `security.role_permissions` qué roles tienen `implementation.company_logo.upload`.
 
 Orden:
