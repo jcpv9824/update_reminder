@@ -18,8 +18,8 @@
     "check:no-cosmos-runtime": "node scripts/check-no-cosmos-runtime.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "security:audit:prod": "npm audit --omit=dev --audit-level=moderate",
-    "security:audit": "npm audit --audit-level=moderate"
+    "security:audit:prod": "node scripts/audit-dependencies.mjs --omit-dev",
+    "security:audit": "node scripts/audit-dependencies.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1094.0",
