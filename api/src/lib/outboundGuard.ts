@@ -42,17 +42,66 @@ function inRange(address: string, [base, bits]: [string, number]): boolean {
   return ((ipv4ToNumber(address) & mask) >>> 0) === ((ipv4ToNumber(base) & mask) >>> 0);
 }
 
+/**
+ * Convierte una IPv6 (cualquier representación válida: comprimida, expandida,
+ * mayúsculas, con IPv4 incrustada) a sus 16 bytes. Devuelve null si no se puede
+ * interpretar con certeza (por ejemplo, con identificador de zona «%eth0»).
+ */
+export function ipv6ToBytes(address: string): number[] | null {
+  let value = address.trim().toLowerCase();
+  if (value.startsWith("[") && value.endsWith("]")) value = value.slice(1, -1);
+  if (value.includes("%") || isIP(value) !== 6) return null;
+  let tail: number[] = [];
+  const embedded = /(\d+\.\d+\.\d+\.\d+)$/.exec(value);
+  if (embedded) {
+    if (isIP(embedded[1]) !== 4) return null;
+    tail = embedded[1].split(".").map(Number);
+    value = value.slice(0, -embedded[1].length);
+    if (value.endsWith(":") && !value.endsWith("::")) value = value.slice(0, -1);
+  }
+  const halves = value.split("::");
+  if (halves.length > 2) return null;
+  const toGroups = (part: string) => (part === "" ? [] : part.split(":"));
+  const head = toGroups(halves[0]);
+  const rest = halves.length === 2 ? toGroups(halves[1]) : [];
+  const needed = 8 - tail.length / 2;
+  const missing = needed - head.length - rest.length;
+  if (halves.length === 1 ? missing !== 0 : missing < 1) return null;
+  const groups = [...head, ...Array(halves.length === 2 ? missing : 0).fill("0"), ...rest];
+  const bytes: number[] = [];
+  for (const group of groups) {
+    if (!/^[0-9a-f]{1,4}$/.test(group)) return null;
+    const word = parseInt(group, 16);
+    bytes.push(word >> 8, word & 0xff);
+  }
+  bytes.push(...tail);
+  return bytes.length === 16 ? bytes : null;
+}
+
+function internalIpv6(bytes: number[]): boolean {
+  const v4 = (offset: number) => bytes.slice(offset, offset + 4).join(".");
+  const zeros = (from: number, to: number) => bytes.slice(from, to).every((byte) => byte === 0);
+  if (zeros(0, 10) && bytes[10] === 0xff && bytes[11] === 0xff) return isInternalAddress(v4(12)); // ::ffff:a.b.c.d
+  if (zeros(0, 12)) return true;                                    // ::, ::1, ::a.b.c.d (obsoleta)
+  if (bytes[0] === 0x00 && bytes[1] === 0x64 && bytes[2] === 0xff && bytes[3] === 0x9b) {
+    return zeros(4, 12) ? isInternalAddress(v4(12)) : true;         // NAT64 64:ff9b::/96 y 64:ff9b:1::/48
+  }
+  if (bytes[0] === 0x20 && bytes[1] === 0x02) return isInternalAddress(v4(2)); // 6to4 2002::/16
+  if (bytes[0] === 0x20 && bytes[1] === 0x01 && bytes[2] === 0x00 && bytes[3] === 0x00) return true; // Teredo
+  if (bytes[0] === 0x20 && bytes[1] === 0x01 && bytes[2] === 0x0d && bytes[3] === 0xb8) return true; // documentación
+  if (bytes[0] === 0x01 && zeros(1, 8)) return true;                // 100::/64 descarte
+  if (bytes[0] === 0x3f && bytes[1] === 0xff && (bytes[2] & 0xf0) === 0) return true; // documentación 3fff::/20
+  // Solo se considera pública la unicast global 2000::/3; todo lo demás
+  // (fc00::/7 privadas, fe80::/10 link-local, fec0::/10, ff00::/8 multicast…) no.
+  return (bytes[0] & 0xe0) !== 0x20;
+}
+
 export function isInternalAddress(address: string): boolean {
   const version = isIP(address);
   if (version === 4) return BLOCKED_IPV4.some((range) => inRange(address, range));
   if (version === 6) {
-    const value = address.toLowerCase();
-    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(value);
-    if (mapped) return isInternalAddress(mapped[1]);
-    return value === "::" || value === "::1"
-      || /^f[cd][0-9a-f]{2}:/.test(value)      // fc00::/7 privadas
-      || /^fe[89ab][0-9a-f]:/.test(value)      // fe80::/10 link-local
-      || /^ff[0-9a-f]{2}:/.test(value);        // multicast
+    const bytes = ipv6ToBytes(address);
+    return bytes === null ? true : internalIpv6(bytes);
   }
   return true; // lo que no es una IP válida no se usa
 }

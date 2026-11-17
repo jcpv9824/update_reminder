@@ -34,6 +34,11 @@ function fakeS3(existing: Array<{ Key: string; Size: number; LastModified: Date 
       sent.push({ name: command.constructor.name, input: command.input });
       if (options.fail) throw options.fail;
       if (command.constructor.name === "ListObjectsV2Command") return { Contents: existing };
+      if (command.constructor.name === "GetObjectCommand") {
+        const put = [...sent].reverse().find((item) => item.name === "PutObjectCommand" && item.input.Key === command.input.Key);
+        const body = (put?.input.Body as Buffer) ?? Buffer.alloc(0);
+        return { Body: { transformToByteArray: async () => new Uint8Array(body) } };
+      }
       if (command.constructor.name === "HeadObjectCommand") {
         const put = sent.find((item) => item.name === "PutObjectCommand");
         return { ContentLength: (put?.input.Body as Buffer).length };
@@ -222,6 +227,8 @@ describe("storage check", () => {
     const result = await checkCompanyStorage(StorageSchema.parse(storageInput), "SAGWebDemoPYA", () => client, publicDns);
     expect(sent[0].input).toMatchObject({ Bucket: "demo.sagerp.cloud.buk", Prefix: "SAGWebDemoPYA/Archivos/Imagenes/LogoEmpresa/" });
     expect(result.existing.map((item) => item.name)).toEqual(["b.png", "a.jpg"]);
+    // Con el nombre de la base, además escribe, lee y borra un archivo de prueba.
+    expect(sent.map((item) => item.name)).toEqual(["ListObjectsV2Command", "PutObjectCommand", "GetObjectCommand", "DeleteObjectCommand"]);
     expect(client.destroy).toHaveBeenCalled();
   });
 

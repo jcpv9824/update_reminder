@@ -97,7 +97,7 @@ describe("LogoCompaniaPage", () => {
     expect(notice).toHaveClass("aviso-flotante");
     expect(notice).toHaveTextContent("Almacenamiento de archivos configurado en SAGWebDemo.");
     expect(apiMock.post).toHaveBeenCalledWith("/implementation/company-logo/apply", {
-      storage: EXPECTED_STORAGE, database: EXPECTED_DATABASE, confirmed: false,
+      storage: EXPECTED_STORAGE, database: EXPECTED_DATABASE,
     });
     expect(screen.getByLabelText(/^Secret key/)).toHaveValue("");
     expect(screen.getByLabelText(/^Contraseña/)).toHaveValue("");
@@ -108,8 +108,10 @@ describe("LogoCompaniaPage", () => {
       status: 409,
       data: {
         requiresConfirmation: true,
+        stale: false,
+        confirmationToken: "a".repeat(64),
         changes: [{ field: "MinioBucketName", label: "Bucket", before: "otro", after: "demo.sagerp.cloud.buk" }],
-        keysChanged: true, currentLogoUrl: "https://x/old.png", existingLogoCount: 2, replacesLogo: true,
+        keysChanged: true, hasLogo: true, existingLogoCount: 2, replacesLogo: true,
       },
     });
     apiMock.post
@@ -126,7 +128,8 @@ describe("LogoCompaniaPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sí, reemplazar" }));
     expect(await screen.findByRole("status")).toHaveTextContent("logo actualizado en SAGWebDemo");
     const second = apiMock.post.mock.calls[1][1];
-    expect(second).toMatchObject({ confirmed: true, logo: { imageName: "logo.png" } });
+    expect(second).toMatchObject({ confirmationToken: "a".repeat(64), logo: { imageName: "logo.png" } });
+    expect(second).not.toHaveProperty("confirmed");
   });
 
   it("shows an error in the anchored notice and keeps it until it is closed", async () => {

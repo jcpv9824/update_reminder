@@ -6,7 +6,9 @@ import {
   decodeCompanyLogo,
   listExistingLogos,
   LogoImageSchema,
+  probeCompanyStorage,
   putCompanyLogo,
+  removeCompanyLogo,
   StorageSchema,
   storageErrorMessage,
   type S3Factory,
@@ -28,15 +30,25 @@ import {
   compañía directamente en su parametros_web.
 
   Orden: validar todo → abrir la base y revisar parametros_web → probar el
-  almacenamiento → pedir confirmación si algo ya tenía otro valor → subir el
-  logo → escribir en una transacción → volver a leer y confirmar.
+  almacenamiento de verdad (escribir, leer y borrar un archivo de prueba) →
+  pedir confirmación ligada a la huella de la configuración vista → subir el
+  logo → escribir en UNA transacción que bloquea la fila, comprueba la huella,
+  actualiza y verifica antes de confirmar.
+
+  Garantía para quien lo usa: cualquier error devuelve databaseChanged=false.
+  La base solo cambia en el último paso (commit), y después de ese paso este
+  módulo ya no puede fallar. Si el logo se subió y la base no se pudo
+  actualizar, se borra el logo recién subido (mejor esfuerzo).
 */
+
+const FINGERPRINT = /^[0-9a-f]{64}$/;
 
 export const ApplyCompanyStorageSchema = z.object({
   storage: StorageSchema,
   database: CompanyDatabaseSchema,
   logo: LogoImageSchema.optional(),
-  confirmed: z.boolean().default(false),
+  /** Huella de la configuración que el operador revisó y confirmó (viene en la respuesta 409). */
+  confirmationToken: z.string().regex(FINGERPRINT, "La confirmación no es válida. Revise de nuevo y confirme.").optional(),
 }).strict();
 
 export const CheckDatabaseSchema = z.object({ database: CompanyDatabaseSchema }).strict();
@@ -48,7 +60,7 @@ export type FieldChange = { field: string; label: string; before: string; after:
 export type DatabaseCheckResult = {
   databaseName: string;
   current: {
-    logoUrl: string;
+    hasLogo: boolean;
     bucket: string;
     folder: string;
     endpoint: string;
@@ -62,6 +74,7 @@ export type DatabaseCheckResult = {
 export type ApplyCompanyStorageResult = {
   databaseName: string;
   storageConfigured: true;
+  databaseChanged: true;
   logoUpdated: boolean;
   logoUrl: string | null;
   fileName: string | null;
@@ -94,9 +107,16 @@ function samePort(a: string, b: string): boolean {
   return Number(a) === Number(b) && a.trim() !== "";
 }
 
+/** Error con la garantía explícita de que la base de la compañía no cambió. */
+function unchanged(error: unknown, stage: string, translate: (error: unknown) => CompanyLogoError, extra: Record<string, unknown> = {}): CompanyLogoError {
+  const base = translate(error);
+  return new CompanyLogoError(base.message, base.status, { ...(base.details ?? {}), ...extra, stage, databaseChanged: false });
+}
+
 function summarize(current: ParametrosWebValues): DatabaseCheckResult["current"] {
+  // Nunca se devuelve LogoEmpresa: podría traer un enlace firmado. Solo si hay logo.
   return {
-    logoUrl: current.LogoEmpresa.trim(),
+    hasLogo: current.LogoEmpresa.trim() !== "",
     bucket: current.MinioBucketName.trim(),
     folder: current.MinioNameEnterprise.trim(),
     endpoint: current.MinioEndpoint.trim(),
@@ -121,7 +141,7 @@ async function openAndInspect(database: CompanyDatabase, openDatabase: CompanyDa
     return { session, state };
   } catch (error) {
     await session?.close();
-    throw databaseErrorMessage(error);
+    throw unchanged(error, "database", databaseErrorMessage);
   }
 }
 
@@ -142,8 +162,14 @@ export async function applyCompanyStorage(
   const openDatabase = deps.openDatabase ?? openCompanyDatabase;
   const s3Factory = deps.s3Factory ?? createCompanyStorageS3Client;
   const { storage, database } = input;
-  const image = input.logo ? decodeCompanyLogo(input.logo.imageBase64, input.logo.imageName) : null;
-  await assertStorageReachable(storage, deps.resolver ?? resolveHost);
+
+  let image;
+  try {
+    image = input.logo ? decodeCompanyLogo(input.logo.imageBase64, input.logo.imageName) : null;
+    await assertStorageReachable(storage, deps.resolver ?? resolveHost);
+  } catch (error) {
+    throw unchanged(error, "validation", storageErrorMessage);
+  }
 
   const { session, state } = await openAndInspect(database, openDatabase);
   const s3 = s3Factory(storage);
@@ -151,8 +177,9 @@ export async function applyCompanyStorage(
     let existing;
     try {
       existing = await listExistingLogos(s3, storage, database.databaseName);
+      await probeCompanyStorage(s3, storage, database.databaseName);
     } catch (error) {
-      throw storageErrorMessage(error);
+      throw unchanged(error, "storage", storageErrorMessage);
     }
 
     const target: StorageWrite = {
@@ -175,19 +202,28 @@ export async function applyCompanyStorage(
       .map(({ field, label }) => ({ field, label, before: current[field].trim(), after: target[field]! }));
     const keysChanged = (current.MinioAccessKey.trim() !== "" && current.MinioAccessKey.trim() !== storage.accessKey)
       || (current.MinioSecretKey.trim() !== "" && current.MinioSecretKey.trim() !== storage.secretKey);
-    const replacesLogo = Boolean(image && (current.LogoEmpresa.trim() !== "" || existing.length > 0));
+    const hasLogo = current.LogoEmpresa.trim() !== "";
+    const replacesLogo = Boolean(image && (hasLogo || existing.length > 0));
+    const needsConfirmation = changes.length > 0 || keysChanged || replacesLogo;
 
-    if ((changes.length > 0 || keysChanged || replacesLogo) && !input.confirmed) {
+    if (needsConfirmation && input.confirmationToken !== state.fingerprint) {
+      const stale = input.confirmationToken !== undefined;
       throw new CompanyLogoError(
-        "Esta compañía ya tiene una configuración o un logo. Revise qué cambia y confirme.",
+        stale
+          ? "La configuración de la compañía cambió desde que la revisó. No se cambió nada: revise de nuevo y confirme."
+          : "Esta compañía ya tiene una configuración o un logo. Revise qué cambia y confirme.",
         409,
         {
           requiresConfirmation: true,
+          stale,
+          confirmationToken: state.fingerprint,
           changes,
           keysChanged,
-          currentLogoUrl: current.LogoEmpresa.trim(),
+          hasLogo,
           existingLogoCount: existing.length,
           replacesLogo,
+          stage: "confirmation",
+          databaseChanged: false,
         },
       );
     }
@@ -197,29 +233,28 @@ export async function applyCompanyStorage(
       try {
         uploaded = await putCompanyLogo(s3, storage, database.databaseName, image);
       } catch (error) {
-        throw storageErrorMessage(error);
+        throw unchanged(error, "logo", storageErrorMessage);
       }
       target.LogoEmpresa = uploaded.url;
     }
 
     try {
-      await session.write(target);
-      const after = (await session.inspect()).current;
-      const mismatch = (Object.keys(target) as Array<keyof StorageWrite>).some((field) => {
-        const expected = target[field] ?? "";
-        const actual = after[field].trim();
-        return field === "MinioPort" ? !samePort(actual, expected) : actual !== expected;
-      });
-      if (mismatch) {
-        throw new CompanyLogoError("La base de datos no confirmó los valores escritos. Revise parametros_web e intente de nuevo.", 502);
-      }
+      // La huella esperada es la que se revisó (o la de la inspección, si no hubo nada que confirmar).
+      await session.write(target, state.fingerprint);
     } catch (error) {
-      throw databaseErrorMessage(error);
+      const removed = uploaded ? await removeCompanyLogo(s3, storage, database.databaseName, uploaded.fileName) : undefined;
+      const extra: Record<string, unknown> = uploaded ? { uploadedLogoRemoved: removed } : {};
+      const translated = databaseErrorMessage(error);
+      if (translated.status === 409 && (translated.details as { stale?: boolean } | undefined)?.stale) {
+        extra.requiresConfirmation = false;
+      }
+      throw unchanged(error, "database", databaseErrorMessage, extra);
     }
 
     return {
       databaseName: database.databaseName,
       storageConfigured: true,
+      databaseChanged: true,
       logoUpdated: Boolean(uploaded),
       logoUrl: uploaded?.url ?? null,
       fileName: uploaded?.fileName ?? null,

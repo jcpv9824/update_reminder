@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import sql from "mssql";
 import { z } from "zod";
 import { CompanyLogoError, databaseNameSchema, trimmed } from "./companyLogo";
@@ -71,8 +72,24 @@ export const STORAGE_COLUMNS = [
 export type StorageColumn = (typeof STORAGE_COLUMNS)[number];
 export type ParametrosWebValues = Record<StorageColumn, string>;
 
+/**
+ * Huella de la configuración actual de parametros_web. La confirmación del
+ * operador queda ligada a esta huella: si la configuración cambia antes de
+ * escribir, la huella no coincide y no se escribe nada. Las llaves entran
+ * solo como su propio SHA-256 (la huella no permite recuperarlas).
+ */
+export function configurationFingerprint(values: ParametrosWebValues): string {
+  const digest = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+  const material = STORAGE_COLUMNS.map((column) => {
+    const value = values[column] ?? "";
+    return `${column}=${column === "MinioAccessKey" || column === "MinioSecretKey" ? digest(value) : value}`;
+  }).join("\n");
+  return digest(`parametros_web/v1\n${material}`);
+}
+
 export type CompanyDatabaseState = {
   rows: number;
+  fingerprint: string;
   /** Valores actuales (incluye llaves: SOLO para comparar en el servidor; nunca se devuelven). */
   current: ParametrosWebValues;
 };
@@ -82,7 +99,12 @@ export type StorageWrite = Omit<ParametrosWebValues, "LogoEmpresa"> & { LogoEmpr
 
 export interface CompanyDatabaseSession {
   inspect(): Promise<CompanyDatabaseState>;
-  write(values: StorageWrite): Promise<void>;
+  /**
+   * En UNA transacción: bloquea la fila, comprueba que la configuración sigue
+   * siendo la de `expectedFingerprint`, actualiza exactamente una fila, vuelve a
+   * leer y verifica lo escrito. Cualquier diferencia revierte todo.
+   */
+  write(values: StorageWrite, expectedFingerprint: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -208,13 +230,32 @@ async function openWithResolver(
       const row = readSets[1]?.[0] ?? {};
       const current = emptyValues();
       for (const column of STORAGE_COLUMNS) current[column] = row[column] == null ? "" : String(row[column]);
-      return { rows, current };
+      return { rows, current, fingerprint: configurationFingerprint(current) };
     },
 
-    async write(values) {
+    async write(values, expectedFingerprint) {
       const transaction = new sql.Transaction(pool);
       await transaction.begin();
       try {
+        // 1) Bloquear y releer: la confirmación debe seguir correspondiendo a lo que hay.
+        const locked = await new sql.Request(transaction).query(`
+SELECT COUNT(*) AS row_count FROM parametros_web WITH (UPDLOCK, HOLDLOCK);
+SELECT TOP 1 ${STORAGE_COLUMNS.map((column) => `CONVERT(NVARCHAR(4000), ${column}) AS ${column}`).join(", ")}
+FROM parametros_web WITH (UPDLOCK, HOLDLOCK);`);
+        const lockedSets = locked.recordsets as unknown as Array<Array<Record<string, unknown>>>;
+        const lockedRows = Number(lockedSets[0]?.[0]?.row_count ?? 0);
+        if (lockedRows !== 1) {
+          throw new CompanyLogoError(`parametros_web tiene ${lockedRows} filas y debe ser exactamente una. No se cambió nada.`, 409);
+        }
+        const lockedValues = emptyValues();
+        for (const column of STORAGE_COLUMNS) {
+          const value = lockedSets[1]?.[0]?.[column];
+          lockedValues[column] = value == null ? "" : String(value);
+        }
+        if (configurationFingerprint(lockedValues) !== expectedFingerprint) {
+          throw new CompanyLogoError("La configuración de la compañía cambió mientras se revisaba. No se cambió nada: revise de nuevo y confirme.", 409, { stale: true });
+        }
+        // 2) Actualizar.
         const request = new sql.Request(transaction);
         request.input("nameEnterprise", sql.NVarChar(4000), values.MinioNameEnterprise);
         request.input("bucket", sql.NVarChar(4000), values.MinioBucketName);
@@ -239,6 +280,18 @@ SET MinioNameEnterprise = @nameEnterprise,
         if (affected !== 1) {
           // Se revierte: la confirmación solo cubre una fila.
           throw new CompanyLogoError(`Se iban a modificar ${affected} filas de parametros_web y debe ser exactamente una. No se cambió nada.`, 409);
+        }
+        // 3) Verificar dentro de la misma transacción, ANTES de confirmar.
+        const check = await new sql.Request(transaction).query(`
+SELECT TOP 1 ${STORAGE_COLUMNS.map((column) => `CONVERT(NVARCHAR(4000), ${column}) AS ${column}`).join(", ")} FROM parametros_web;`);
+        const written = (check.recordset?.[0] ?? {}) as Record<string, unknown>;
+        const mismatch = (Object.keys(values) as Array<keyof StorageWrite>).some((field) => {
+          const expected = String(values[field] ?? "");
+          const actual = written[field] == null ? "" : String(written[field]).trim();
+          return field === "MinioPort" ? Number(actual) !== Number(expected) : actual !== expected;
+        });
+        if (mismatch) {
+          throw new CompanyLogoError("La base de datos no conservó los valores escritos. No se cambió nada.", 502);
         }
         await transaction.commit();
       } catch (error) {

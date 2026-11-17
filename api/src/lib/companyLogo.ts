@@ -1,4 +1,6 @@
 import {
+  DeleteObjectCommand,
+  GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
@@ -318,10 +320,10 @@ export async function checkCompanyStorage(
       );
       return { folder: null, existing: [] };
     }
-    return {
-      folder: companyLogoFolder(databaseName, storage.options),
-      existing: await listExistingLogos(client, storage, databaseName),
-    };
+    const existing = await listExistingLogos(client, storage, databaseName);
+    // Prueba real: escribir, leer y borrar un archivo de prueba en la carpeta de la compañía.
+    await probeCompanyStorage(client, storage, databaseName);
+    return { folder: companyLogoFolder(databaseName, storage.options), existing };
   } catch (error) {
     throw storageErrorMessage(error);
   } finally {
@@ -358,4 +360,51 @@ export async function putCompanyLogo(
     throw new CompanyLogoError("El almacenamiento no confirmó la imagen completa. Intente de nuevo.", 502);
   }
   return { url: companyLogoUrl(storage, objectKey), fileName };
+}
+
+/**
+ * Prueba real de lo que SAG Web necesita: ESCRIBE un archivo de prueba en la
+ * carpeta de la compañía, lo LEE y compara su contenido, y lo BORRA. Listar no
+ * basta para demostrar que SAG Web podrá guardar y mostrar archivos.
+ * Si el borrado falla, no se considera error (queda un archivo de prueba de pocos bytes).
+ */
+export async function probeCompanyStorage(client: S3Sender, storage: CompanyStorage, databaseName: string): Promise<void> {
+  const body = Buffer.from(`Prueba del Portal SAG Web ${randomUUID()}`, "utf8");
+  const sha256 = createHash("sha256").update(body).digest("hex");
+  const key = `${databaseName}/${storage.options.basePath}.portal-sag-web/prueba-${randomUUID()}.txt`;
+  await client.send(new PutObjectCommand({
+    Bucket: storage.bucket,
+    Key: key,
+    Body: body,
+    ContentLength: body.length,
+    ContentType: "text/plain; charset=utf-8",
+  }), { abortSignal: AbortSignal.timeout(TIMEOUT_MS) });
+  try {
+    const read = await client.send(
+      new GetObjectCommand({ Bucket: storage.bucket, Key: key }),
+      { abortSignal: AbortSignal.timeout(TIMEOUT_MS) },
+    );
+    const downloaded = read.Body ? Buffer.from(await read.Body.transformToByteArray()) : Buffer.alloc(0);
+    if (createHash("sha256").update(downloaded).digest("hex") !== sha256) {
+      throw new CompanyLogoError("El almacenamiento guardó el archivo de prueba pero devolvió un contenido distinto. Escale a Infraestructura.", 502);
+    }
+  } finally {
+    await client.send(
+      new DeleteObjectCommand({ Bucket: storage.bucket, Key: key }),
+      { abortSignal: AbortSignal.timeout(TIMEOUT_MS) },
+    ).catch(() => undefined);
+  }
+}
+
+/** Borra un logo recién subido cuando la configuración no se pudo guardar (mejor esfuerzo). */
+export async function removeCompanyLogo(client: S3Sender, storage: CompanyStorage, databaseName: string, fileName: string): Promise<boolean> {
+  try {
+    await client.send(
+      new DeleteObjectCommand({ Bucket: storage.bucket, Key: `${companyLogoFolder(databaseName, storage.options)}${fileName}` }),
+      { abortSignal: AbortSignal.timeout(TIMEOUT_MS) },
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }

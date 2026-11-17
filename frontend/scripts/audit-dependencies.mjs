@@ -17,15 +17,42 @@ if (audit.error) {
   throw audit.error;
 }
 
+function failClosed(message) {
+  process.stderr.write(`${message}\n`);
+  process.exit(1);
+}
+
 let report;
 try {
   report = JSON.parse(audit.stdout);
 } catch {
   process.stderr.write(audit.stderr || audit.stdout);
-  throw new Error("npm audit did not return a valid JSON report.");
+  failClosed("npm audit did not return a valid JSON report. The audit is NOT approved.");
 }
 
-const vulnerabilities = report.vulnerabilities ?? {};
+// Falla cerrada: si npm no pudo hacer la auditoría (registro caído, sin red,
+// error de npm), NO se da por aprobada. Un informe válido trae
+// auditReportVersion, metadata.vulnerabilities y el objeto vulnerabilities.
+if (
+  !report ||
+  typeof report !== "object" ||
+  report.error ||
+  typeof report.auditReportVersion !== "number" ||
+  typeof report.metadata?.vulnerabilities !== "object" ||
+  report.metadata.vulnerabilities === null ||
+  typeof report.vulnerabilities !== "object" ||
+  report.vulnerabilities === null
+) {
+  failClosed("npm audit could not complete (incomplete or error report). The audit is NOT approved.");
+}
+
+// npm audit sale con 0 sin hallazgos y con 1 cuando hay hallazgos. Si salió con
+// error y no trae ningún hallazgo, la auditoría no se completó.
+if (audit.status !== 0 && Object.keys(report.vulnerabilities).length === 0) {
+  failClosed(`npm audit exited with code ${audit.status} without findings. The audit is NOT approved.`);
+}
+
+const vulnerabilities = report.vulnerabilities;
 const minimumSeverity = 2;
 const severityRank = {
   info: 0,

@@ -31,13 +31,15 @@ type ExistingLogo = { name: string; bytes: number; lastModified: string | null }
 type StorageCheck = { folder: string | null; existing: ExistingLogo[] };
 type DatabaseCheck = {
   databaseName: string;
-  current: { logoUrl: string; bucket: string; folder: string; endpoint: string; port: string; useSsl: string; basePath: string; keysConfigured: boolean };
+  current: { hasLogo: boolean; bucket: string; folder: string; endpoint: string; port: string; useSsl: string; basePath: string; keysConfigured: boolean };
 };
 type FieldChange = { field: string; label: string; before: string; after: string };
 type Confirmation = {
+  confirmationToken: string;
+  stale: boolean;
   changes: FieldChange[];
   keysChanged: boolean;
-  currentLogoUrl: string;
+  hasLogo: boolean;
   existingLogoCount: number;
   replacesLogo: boolean;
 };
@@ -46,6 +48,7 @@ type ApplyResult = {
   logoUpdated: boolean;
   logoUrl: string | null;
   previousLogoCount: number;
+  auditRecorded?: boolean;
 };
 
 type Imagen = { name: string; base64: string; previewUrl: string; bytes: number };
@@ -221,26 +224,29 @@ export default function LogoCompaniaPage() {
       const estado = current.bucket || current.keysConfigured
         ? `ya tiene almacenamiento configurado${current.bucket ? ` (bucket ${current.bucket})` : ""}`
         : "todavía no tiene almacenamiento configurado";
-      avisar("exito", `Conexión correcta con la base ${response.databaseName}. La compañía ${estado}${current.logoUrl ? " y ya tiene logo" : ""}.`);
+      avisar("exito", `Conexión correcta con la base ${response.databaseName}. La compañía ${estado}${current.hasLogo ? " y ya tiene logo" : ""}.`);
     },
     onError: (error) => avisar("error", messageOf(error)),
   });
 
   const apply = useMutation({
-    mutationFn: (variables: { confirmed: boolean; logo: boolean }) => api.post<ApplyResult>(`${BASE}/apply`, {
+    mutationFn: (variables: { confirmationToken?: string; logo: boolean }) => api.post<ApplyResult>(`${BASE}/apply`, {
       storage: storagePayload(storage, options),
       database: databasePayload(database),
       ...(variables.logo && imagen ? { logo: { imageBase64: imagen.base64, imageName: imagen.name } } : {}),
-      confirmed: variables.confirmed,
+      ...(variables.confirmationToken ? { confirmationToken: variables.confirmationToken } : {}),
     }),
     onSuccess: (response) => {
       setConfirmation(null);
       // Las llaves y la contraseña ya no se necesitan: se borran de la pantalla.
       setStorage((current) => ({ ...current, accessKey: "", secretKey: "" }));
       setDatabase((current) => ({ ...current, password: "" }));
-      avisar("exito", response.logoUpdated
+      const mensaje = response.logoUpdated
         ? `Almacenamiento de archivos configurado y logo actualizado en ${response.databaseName}. Cierre sesión en SAG Web y vuelva a entrar para ver el logo nuevo.`
-        : `Almacenamiento de archivos configurado en ${response.databaseName}.`);
+        : `Almacenamiento de archivos configurado en ${response.databaseName}.`;
+      avisar(response.auditRecorded === false ? "info" : "exito", response.auditRecorded === false
+        ? `${mensaje} Atención: el cambio se aplicó, pero no quedó registrado en la auditoría del portal. Avise a un administrador.`
+        : mensaje);
     },
     onError: (error) => {
       const apiError = error as ApiError;
@@ -258,7 +264,7 @@ export default function LogoCompaniaPage() {
     if (problem) { avisar("error", problem); return; }
     if (logo && !imagen) { avisar("error", "Adjunte la imagen del logo."); return; }
     setWithLogo(logo);
-    apply.mutate({ confirmed: false, logo });
+    apply.mutate({ logo });
   }
 
   function testStorage() {
@@ -401,6 +407,9 @@ export default function LogoCompaniaPage() {
       <Modal titulo="Esta compañía ya tiene una configuración" abierto={Boolean(confirmation)} onCerrar={() => setConfirmation(null)}>
         {confirmation ? (
           <>
+            {confirmation.stale ? (
+              <Alerta tipo="info">La configuración cambió desde que la revisó. Estos son los valores actuales: revíselos de nuevo.</Alerta>
+            ) : null}
             <p>Revise qué va a cambiar en la base <strong>{database.databaseName.trim()}</strong>:</p>
             <ul className="logo-cambios">
               {confirmation.changes.map((change) => (
@@ -416,7 +425,7 @@ export default function LogoCompaniaPage() {
             </ul>
             <div className="acciones-formulario">
               <button type="button" onClick={() => setConfirmation(null)} disabled={apply.isPending}>Cancelar</button>
-              <button type="button" className="primario" onClick={() => apply.mutate({ confirmed: true, logo: withLogo })} disabled={apply.isPending}>
+              <button type="button" className="primario" onClick={() => apply.mutate({ confirmationToken: confirmation.confirmationToken, logo: withLogo })} disabled={apply.isPending}>
                 {apply.isPending ? "Configurando..." : "Sí, reemplazar"}
               </button>
             </div>

@@ -46,11 +46,32 @@ formulario.
 `MinioSecretKey`, `MinioEndpoint`, `MinioPort`, `MinioUseSSL` (siempre `S`), `MinioBasePath` y,
 con logo, `LogoEmpresa`. `MinioPublicBaseUrl` no se toca.
 
-Antes de escribir revisa que la base sea la pedida, que exista `parametros_web` con esas
-columnas y **exactamente una fila** (con varias, no escribe nada), y que el usuario pueda
-actualizarla. Si ya había otros valores, un logo
-o imágenes en la carpeta, responde **409** con la lista de cambios (sin llaves) y la pantalla
-pide confirmación («Sí, reemplazar»). Después de escribir vuelve a leer y confirma.
+Orden (`companyStorageSetup.ts`):
+
+1. Validar todo (imagen incluida) y que el servidor del almacenamiento sea aprobado y público.
+2. Abrir la base y revisar que sea la pedida, que exista `parametros_web` con esas columnas y
+   **exactamente una fila**, y que el usuario pueda actualizarla.
+3. **Probar el almacenamiento de verdad:** escribir, leer (comparando SHA-256) y borrar un
+   archivo de prueba en `{base}/{ruta base}.portal-sag-web/`. Listar no basta.
+4. **Confirmación ligada a lo que se vio:** si ya había otros valores, un logo o imágenes en la
+   carpeta, responde **409** con la lista de cambios (sin llaves), `hasLogo` (nunca la URL
+   guardada: podría traer un enlace firmado) y `confirmationToken` = huella SHA-256 de la
+   configuración actual (`configurationFingerprint`; las llaves entran solo como su SHA-256). El
+   reintento debe traer ese token; si la configuración cambió, otro 409 con `stale: true` y los
+   valores nuevos.
+5. Subir el logo (si hay).
+6. **Una transacción:** `SELECT … WITH (UPDLOCK, HOLDLOCK)`, comprobar que la huella sigue
+   siendo la revisada, `UPDATE` (exactamente una fila), releer y verificar **antes** del
+   `COMMIT`. Cualquier diferencia revierte todo.
+
+**Semántica de fallos:** todo error trae `databaseChanged: false` y `stage`
+(`validation`, `database`, `storage`, `confirmation`, `logo`). La base solo cambia en el
+`COMMIT`, que es el último paso; después ya no hay nada que pueda fallar en el módulo. Si el
+logo se subió y la base no se actualizó, se borra el logo recién subido
+(`uploadedLogoRemoved`). Auditoría: `company_storage_configuration_requested` se registra
+**antes** y es obligatoria (si falla: 503 y no se toca nada); luego
+`company_storage_configured` o `company_storage_configuration_failed`. Si el registro final
+falla, la respuesta dice `auditRecorded: false` (el cambio sí se aplicó) y la pantalla lo avisa.
 **Las imágenes anteriores no se borran.**
 
 Ruta del logo: `{bucket}/{base}/{ruta base}Imagenes/LogoEmpresa/{uuid}.{png|jpg|gif|webp|svg}`.
@@ -109,13 +130,16 @@ El nginx de storcube reenvía el `Host` **sin puerto**; la firma SigV4 se calcul
 
 | Método | Ruta | Cuerpo | Respuesta |
 |---|---|---|---|
-| POST | `/api/implementation/company-logo/storage/check` | `storage{bucket,accessKey,secretKey,options?}`, `databaseName?` | `{ folder, existing[] }` |
-| POST | `/api/implementation/company-logo/database/check` | `database{server,databaseName,username,password}` | `{ databaseName, current{…sin llaves} }` |
-| POST | `/api/implementation/company-logo/apply` | `storage`, `database`, `logo?{imageBase64,imageName}`, `confirmed` | `{ databaseName, storageConfigured, logoUpdated, logoUrl, previousLogoCount, changes, keysChanged }` o 409 con `requiresConfirmation` |
+| POST | `/api/implementation/company-logo/storage/check` | `storage{bucket,accessKey,secretKey,options?}`, `databaseName?` | `{ folder, existing[] }` (con base: también escribe, lee y borra un archivo de prueba) |
+| POST | `/api/implementation/company-logo/database/check` | `database{server,databaseName,username,password}` | `{ databaseName, current{hasLogo, bucket, folder, endpoint, port, useSsl, basePath, keysConfigured} }` (sin llaves ni URL) |
+| POST | `/api/implementation/company-logo/apply` | `storage`, `database`, `logo?{imageBase64,imageName}`, `confirmationToken?` | `{ databaseName, storageConfigured, databaseChanged, logoUpdated, logoUrl, previousLogoCount, changes, keysChanged, auditRecorded }`; 409 con `requiresConfirmation`, `confirmationToken`, `stale`, `changes`, `hasLogo`; todo error trae `databaseChanged: false` y `stage` |
+| POST | `/api/implementation/company-logo/check` y `/upload` | contrato anterior | **Compatibilidad temporal** (`companyLogoLegacy.ts`): solo sube el logo y devuelve el SQL, como antes. Retirar en el despliegue siguiente. |
 
 Permisos: `implementation.company_logo.view` (ver) e `implementation.company_logo.upload`
 («Configurar Almacenamiento y Subir Logo»). Las claves no cambiaron: la migración 029 solo
-renombra etiquetas, así que los roles que ya tenían la opción la conservan.
+renombra etiquetas. **Ampliación de alcance:** el mismo permiso `upload`, que antes solo subía el
+logo y generaba un SQL, ahora también escribe en la base de la compañía. Antes de publicar hay
+que revisar qué roles lo tienen y confirmar que esa ampliación es intencional.
 
 ## Página de inicio
 
@@ -123,10 +147,29 @@ Al iniciar sesión (`InicioPage`): Tareas si la persona tiene acceso; si no, la 
 que tenga; si tiene varias, la bienvenida con la marca del portal («Bienvenido al Portal SAG
 Web»). El menú vive en `frontend/src/menu.ts` y lo comparten la barra lateral y el inicio.
 
-## Despliegue
+## Despliegue, transición y reversión
 
+Antes de publicar:
+- `npm run build` y `node scripts/check-company-sql-tls.mjs` (en `api/`) contra una base de
+  **pruebas** de SAG Web en SQL Server 2019: por nombre debe pasar TLS + inicio de sesión +
+  revisión de `parametros_web` (solo lectura); por IP debe rechazarse por certificado. Lo
+  ejecuta una persona: pide la contraseña sin mostrarla y no la guarda.
+- Revisar en `security.role_permissions` qué roles tienen `implementation.company_logo.upload`.
+
+Orden:
 1. Migración `029_company_storage_labels.sql` con el ejecutor
    `migration/tools/Apply-PortalSAGWeb-PendingMigrationsThroughSession.ps1` (verifica 13
    migraciones y las etiquetas nuevas). Respaldo antes en producción.
-2. Publicar el API (el push a `main` no lo despliega).
-3. Push a `main` para el frontend (después de 1 y 2).
+2. Publicar el API (el push a `main` no lo despliega). Sirve las rutas nuevas **y** las
+   anteriores (`/check`, `/upload`), así que el frontend publicado sigue funcionando.
+3. Push a `main` para el frontend.
+
+Reversión:
+- Si falla Actions o el frontend nuevo: no hace falta tocar el API (sigue sirviendo las rutas
+  anteriores); se deja o se vuelve a publicar el frontend anterior.
+- Si falla el API: volver a publicar el paquete anterior del API **solo si el frontend nuevo
+  no se publicó**; si ya se publicó, revertir primero el frontend (el anterior no conoce las
+  rutas nuevas) y luego el API.
+- La 029 solo cambia etiquetas: no requiere reversión.
+- Retirar las rutas `/check` y `/upload` en el despliegue siguiente, con el frontend nuevo ya
+  verificado en producción.

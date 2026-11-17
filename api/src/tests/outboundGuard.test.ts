@@ -28,6 +28,23 @@ describe("outbound guard", () => {
     expect(isInternalAddress(address)).toBe(true);
   });
 
+  it.each([
+    "0:0:0:0:0:0:0:1", "0000:0000:0000:0000:0000:0000:0000:0001", "::0:1", "[::1]",
+    "::ffff:7f00:1", "0:0:0:0:0:ffff:7f00:0001", "::FFFF:127.0.0.1", "::ffff:a9fe:a9fe", "::ffff:169.254.169.254",
+    "::127.0.0.1", "64:ff9b::7f00:1", "64:ff9b::10.0.0.1", "64:ff9b:1::1", "2002:7f00:1::1", "2002:a00:1::",
+    "2001:0:4136:e378::1", "2001:db8::1", "100::1", "FE80::1", "fe80::1%eth0", "FEC0::1", "FC00::1", "FD00:0:0:0::1", "FF02::1",
+    "3fff::1", "::",
+  ])("treats IPv6 %s as internal whatever its representation", (address) => {
+    expect(isInternalAddress(address)).toBe(true);
+  });
+
+  it.each(["2001:4860:4860::8888", "2001:4860:4860:0:0:0:0:8888", "2606:4700:4700::1111", "64:ff9b::808:808", "2002:808:808::1"])(
+    "treats IPv6 %s as public",
+    (address) => {
+      expect(isInternalAddress(address)).toBe(false);
+    },
+  );
+
   it.each(["20.30.40.50", "8.8.8.8", "172.32.0.1", "2001:4860:4860::8888"])("treats %s as public", (address) => {
     expect(isInternalAddress(address)).toBe(false);
   });

@@ -7,6 +7,7 @@ import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
 import { writeAuditLog } from "../lib/audit";
 import { checkCompanyStorage, CompanyLogoError, databaseNameSchema, StorageSchema } from "../lib/companyLogo";
+import { legacyCheck, LegacyConnectionSchema, legacyUpload, LegacyUploadSchema } from "../lib/companyLogoLegacy";
 import {
   applyCompanyStorage,
   ApplyCompanyStorageSchema,
@@ -111,10 +112,45 @@ app.http("companyStorageApply", {
   handler: handler(async (body, user) => {
     const parsed = ApplyCompanyStorageSchema.safeParse(body);
     if (!parsed.success) return badRequest(firstIssue(parsed.error));
-    const result = await applyCompanyStorage(parsed.data);
-    // Auditoría mínima: quién, cuándo, en qué base y qué se hizo.
+    const databaseName = parsed.data.database.databaseName;
+    // Auditoría OBLIGATORIA antes de tocar nada: si no se puede registrar la
+    // intención, no se escribe en la base de la compañía.
     // Nunca servidor, usuario, contraseña, bucket, llaves ni URL.
-    await writeAuditLog({
+    try {
+      await writeAuditLog({
+        entityType: "companyStorage",
+        entityId: databaseName,
+        companyName: databaseName,
+        action: "company_storage_configuration_requested",
+        performedBy: user.id,
+        performedByEmail: user.email,
+        metadata: { logoRequested: Boolean(parsed.data.logo), confirmed: Boolean(parsed.data.confirmationToken) },
+      });
+    } catch {
+      return {
+        status: 503,
+        jsonBody: { error: "No fue posible registrar la auditoría. No se cambió nada: intente de nuevo en unos minutos.", databaseChanged: false, stage: "audit" },
+      };
+    }
+    let result;
+    try {
+      result = await applyCompanyStorage(parsed.data);
+    } catch (error) {
+      const details = (error as CompanyLogoError).details ?? {};
+      await writeAuditLog({
+        entityType: "companyStorage",
+        entityId: databaseName,
+        companyName: databaseName,
+        action: "company_storage_configuration_failed",
+        performedBy: user.id,
+        performedByEmail: user.email,
+        metadata: { stage: String(details.stage ?? "unknown"), status: (error as CompanyLogoError).status ?? 500 },
+      }).catch(() => undefined);
+      throw error;
+    }
+    // Resultado: la base YA cambió. Si este registro falla, se informa en la
+    // respuesta (auditRecorded=false) sin ocultar que el cambio se aplicó.
+    const auditRecorded = await writeAuditLog({
       entityType: "companyStorage",
       entityId: result.databaseName,
       companyName: result.databaseName,
@@ -128,6 +164,48 @@ app.http("companyStorageApply", {
         previousLogoCount: result.previousLogoCount,
         changedFieldCount: result.changes.length,
         keysChanged: result.keysChanged,
+      },
+    }).then(() => true, () => false);
+    return ok({ ...result, auditRecorded });
+  }),
+});
+
+/*
+  COMPATIBILIDAD TEMPORAL: rutas del frontend anterior (/check y /upload).
+  Permiten publicar el API antes que el frontend y revertir el frontend sin
+  revertir el API. RETIRAR en el siguiente despliegue, con el frontend nuevo
+  ya verificado en producción.
+*/
+app.http("companyLogoCheckLegacy", {
+  route: "implementation/company-logo/check",
+  methods: ["POST"],
+  authLevel: "anonymous",
+  handler: handler(async (body) => {
+    const parsed = LegacyConnectionSchema.safeParse(body);
+    if (!parsed.success) return badRequest(firstIssue(parsed.error));
+    return ok(await legacyCheck(parsed.data));
+  }),
+});
+
+app.http("companyLogoUploadLegacy", {
+  route: "implementation/company-logo/upload",
+  methods: ["POST"],
+  authLevel: "anonymous",
+  handler: handler(async (body, user) => {
+    const parsed = LegacyUploadSchema.safeParse(body);
+    if (!parsed.success) return badRequest(firstIssue(parsed.error));
+    const result = await legacyUpload(parsed.data);
+    await writeAuditLog({
+      entityType: "companyLogo",
+      entityId: result.fileName,
+      companyName: parsed.data.databaseName,
+      action: "company_logo_uploaded",
+      performedBy: user.id,
+      performedByEmail: user.email,
+      metadata: {
+        assetKind: result.fileName.slice(result.fileName.lastIndexOf(".") + 1),
+        bytes: result.bytes,
+        previousLogoCount: result.replacedCount,
       },
     }).catch(() => undefined);
     return ok(result);
