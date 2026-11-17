@@ -1,6 +1,7 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { partialUpdate } from "../lib/zodPartial";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import {
@@ -37,7 +38,7 @@ const PublicFileSchema = z.object({
   archivoMimeType: z.string().max(160).optional(),
 });
 
-const PublicFileUpdateSchema = PublicFileSchema.partial();
+const PublicFileUpdateSchema = partialUpdate(PublicFileSchema);
 
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);

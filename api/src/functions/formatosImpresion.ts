@@ -1,6 +1,7 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import { partialUpdate } from "../lib/zodPartial";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import { getPagination, paginateArray } from "../lib/pagination";
@@ -43,7 +44,7 @@ const FuenteSchema = z.object({
   activa: z.boolean().default(true),
 });
 
-const FuenteUpdateSchema = FuenteSchema.partial();
+const FuenteUpdateSchema = partialUpdate(FuenteSchema);
 
 const PdfSchema = z.object({
   pdfBase64: z.string().min(1, "El PDF es obligatorio."),
@@ -67,7 +68,7 @@ const FormatoSchema = FormatoFieldsSchema.merge(PdfSchema).refine(
   { message: "Seleccione al menos un tipo de fuente." }
 );
 
-const FormatoUpdateSchema = FormatoFieldsSchema.partial().merge(PdfSchema.partial());
+const FormatoUpdateSchema = partialUpdate(FormatoFieldsSchema).merge(partialUpdate(PdfSchema));
 
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);

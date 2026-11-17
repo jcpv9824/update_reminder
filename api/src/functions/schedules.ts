@@ -64,8 +64,8 @@ const LicensingScopeSchema = z.object({
   environment: z.string().default("all"),
   targetTypes: z.enum(["domains_and_databases", "domains_only", "databases_only"]).default("domains_and_databases"),
   activeOnly: z.boolean().default(true),
-  excludedDomainIds: z.array(z.string()).default([]).optional(),
-  excludedDatabaseIds: z.array(z.string()).default([]).optional(),
+  excludedDomainIds: z.array(z.string()).optional(),
+  excludedDatabaseIds: z.array(z.string()).optional(),
 });
 
 const RemindersSchema = z.object({
@@ -73,7 +73,7 @@ const RemindersSchema = z.object({
   reminderDaysBefore: z.array(z.number().int().min(0).max(30)).default([1, 0]),
   reminderTime: z.string().regex(/^\d{2}:\d{2}$/, "La hora del recordatorio debe estar en formato HH:mm.").default("08:00"),
   reminderRecipientsMode: z.enum(["assignedUsers", "roleUsers", "customEmails"]).default("roleUsers"),
-  customReminderEmails: z.array(z.string()).default([]).optional(),
+  customReminderEmails: z.array(z.string()).optional(),
 }).optional();
 
 const ScheduleSchema = z.object({

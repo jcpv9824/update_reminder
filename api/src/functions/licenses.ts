@@ -1,6 +1,7 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { partialUpdate } from "../lib/zodPartial";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import {
@@ -105,7 +106,7 @@ app.http("licenseModulesUpdate", {
       const id = req.params.id;
       const current = await findSqlLicenseModule(id);
       if (!current || current.status === "deleted" || current.deletedAt) return notFound("Licencia o módulo no encontrado.");
-      const parsed = ModuleSchema.partial().safeParse(await req.json().catch(() => ({})));
+      const parsed = partialUpdate(ModuleSchema).safeParse(await req.json().catch(() => ({})));
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       if (parsed.data.status === "inactive" && current.status !== "inactive" && !canDeactivateLicense(user, roleDefinitions)) return forbidden("No tiene permisos para desactivar licencias.");
       if (parsed.data.status === "active" && current.status !== "active" && !canReactivateLicense(user, roleDefinitions)) return forbidden("No tiene permisos para reactivar licencias.");
@@ -200,7 +201,7 @@ app.http("licenseAssignmentsUpdate", {
       const id = req.params.id;
       const current = await findSqlLicenseAssignment(id);
       if (!current || current.status === "deleted" || current.deletedAt) return notFound("Asignación no encontrada.");
-      const parsed = AssignmentSchema.partial().safeParse(await req.json().catch(() => ({})));
+      const parsed = partialUpdate(AssignmentSchema).safeParse(await req.json().catch(() => ({})));
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       if (parsed.data.status === "inactive" && current.status !== "inactive" && !canDeactivateLicense(user, roleDefinitions)) return forbidden("No tiene permisos para desactivar asignaciones.");
       if (parsed.data.status === "active" && current.status !== "active" && !canReactivateLicense(user, roleDefinitions)) return forbidden("No tiene permisos para reactivar asignaciones.");

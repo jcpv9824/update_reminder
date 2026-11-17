@@ -1,6 +1,7 @@
 import { app, HttpRequest, HttpResponseInit } from "@azure/functions";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { partialUpdate } from "../lib/zodPartial";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { badRequest, conflict, created, forbidden, notFound, ok, serverError } from "../lib/http";
 import {
@@ -145,7 +146,7 @@ app.http("clientsUpdate", {
       if (!canEditClient(user, roleDefinitions)) return forbidden();
       const id = req.params.id;
       const body = await req.json();
-      const parsed = ClientSchema.partial().safeParse(body);
+      const parsed = partialUpdate(ClientSchema).safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       if (parsed.data.licenseModuleIds !== undefined && !canAssignClientLicenses(user, roleDefinitions)) return forbidden();
       const resource = await readClient(id);

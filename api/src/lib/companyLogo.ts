@@ -38,8 +38,8 @@ export class CompanyLogoError extends Error {
   }
 }
 
-function trimmed(label: string, schema: z.ZodTypeAny) {
-  return z.string({ required_error: `${label} es obligatorio.`, invalid_type_error: `${label} es obligatorio.` })
+function trimmed(label: string, schema: z.ZodType<string, string>) {
+  return z.string({ error: `${label} es obligatorio.` })
     .transform((value) => value.trim())
     .pipe(schema);
 }
@@ -75,7 +75,7 @@ export const CompanyLogoConnectionSchema = z.object({
 }).strict();
 
 export const CompanyLogoUploadSchema = CompanyLogoConnectionSchema.extend({
-  imageBase64: z.string({ required_error: "La imagen es obligatoria." })
+  imageBase64: z.string({ error: "La imagen es obligatoria." })
     .min(1, "La imagen es obligatoria.")
     .max(3_000_000, "La imagen supera 2 MB. Redúzcala e intente de nuevo."),
   imageName: trimmed("El nombre de la imagen", z.string().min(1, "El nombre de la imagen es obligatorio.").max(240)),
