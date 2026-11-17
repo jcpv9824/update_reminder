@@ -65,8 +65,9 @@ describe("ConexionesPage", () => {
     renderPage();
 
     expect(await screen.findByRole("heading", { name: "Conexiones" })).toBeInTheDocument();
-    expect(screen.getByDisplayValue("https://s3.example.com")).toBeInTheDocument();
-    expect(screen.getByText(/Credenciales: configuradas/)).toBeInTheDocument();
+    // El título aparece antes de que llegue la consulta: esperar a que el formulario se llene.
+    expect(await screen.findByDisplayValue("https://s3.example.com")).toBeInTheDocument();
+    expect(await screen.findByText(/Credenciales: configuradas/)).toBeInTheDocument();
     expect(screen.queryByText(/secret-name/i)).toBeNull();
     expect(screen.queryByDisplayValue(/secret/i)).toBeNull();
     expect(screen.getAllByDisplayValue("").length).toBeGreaterThanOrEqual(2);
