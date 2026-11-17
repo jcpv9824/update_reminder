@@ -7,6 +7,7 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { sanitizeSvg, UnsafeSvgError } from "./svgSanitizer";
+import { hostMatchesAllowList, resolveHost, resolvesToPublicAddresses, type HostResolver } from "./outboundGuard";
 
 /*
   Almacenamiento de archivos y logo de la compañía en SAG Web.
@@ -18,11 +19,13 @@ import { sanitizeSvg, UnsafeSvgError } from "./svgSanitizer";
   compañía, que es donde SAG Web las necesita.
 */
 
-/** Valores por defecto (los mismos de GenerarSQLAlmacenamiento). Se pueden cambiar en «parámetros adicionales». */
+/**
+ * Valores por defecto (los mismos de GenerarSQLAlmacenamiento). Se pueden cambiar en
+ * «parámetros adicionales», salvo el cifrado: la conexión es SIEMPRE HTTPS.
+ */
 export const COMPANY_STORAGE_DEFAULTS = {
   endpoint: "storcube.sagweb.co",
   port: 8333,
-  useSsl: true,
   basePath: "Archivos/",
   region: "us-east-1",
 } as const;
@@ -69,11 +72,22 @@ const secretKeySchema = trimmed("El secret key", noSpaces("El secret key", 256)
 export const databaseNameSchema = trimmed("El nombre de la base de datos", noSpaces("El nombre de la base de datos", 128)
   .regex(/^[A-Za-z0-9_-]+$/, "El nombre de la base de datos solo admite letras sin tildes, números, guion y guion bajo."));
 
-const BLOCKED_HOSTS = /^(localhost|127\.|0\.|169\.254\.|\[?::1\]?$|metadata\.)/i;
+/**
+ * Servidores de almacenamiento aprobados. Se configuran en el API con
+ * COMPANY_STORAGE_ALLOWED_HOSTS (lista separada por comas; admite «*.dominio»).
+ */
+export const DEFAULT_STORAGE_ALLOWED_HOSTS = "storcube.sagweb.co,*.sagweb.co";
+
+export function storageAllowedHosts(env: NodeJS.ProcessEnv = process.env): string[] {
+  return (env.COMPANY_STORAGE_ALLOWED_HOSTS?.trim() || DEFAULT_STORAGE_ALLOWED_HOSTS)
+    .split(",").map((item) => item.trim()).filter(Boolean);
+}
 
 const endpointSchema = trimmed("El servidor del almacenamiento", noSpaces("El servidor del almacenamiento", 253)
   .regex(/^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$/, "Escriba solo el nombre del servidor del almacenamiento, sin https:// ni barras (ej.: storcube.sagweb.co).")
-  .refine((value) => !BLOCKED_HOSTS.test(value), "Ese servidor del almacenamiento no está permitido."));
+  .refine((value) => hostMatchesAllowList(value, storageAllowedHosts()), {
+    error: () => `Ese servidor del almacenamiento no está aprobado. Servidores aprobados: ${storageAllowedHosts().join(", ")}.`,
+  }));
 
 const basePathSchema = trimmed("La ruta base", noSpaces("La ruta base", 120)
   .regex(/^[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)*\/$/, "La ruta base solo admite letras, números, guion y guion bajo, separados por / y terminada en / (ej.: Archivos/)."));
@@ -88,7 +102,6 @@ export const StorageOptionsSchema = z.object({
     .min(1, "El puerto del almacenamiento debe estar entre 1 y 65535.")
     .max(65535, "El puerto del almacenamiento debe estar entre 1 y 65535.")
     .default(COMPANY_STORAGE_DEFAULTS.port),
-  useSsl: z.boolean({ error: "Indique si el almacenamiento usa SSL." }).default(COMPANY_STORAGE_DEFAULTS.useSsl),
   basePath: basePathSchema.default(COMPANY_STORAGE_DEFAULTS.basePath),
   region: regionSchema.default(COMPANY_STORAGE_DEFAULTS.region),
 }).strict();
@@ -100,7 +113,6 @@ export const StorageSchema = z.object({
   options: StorageOptionsSchema.default({
     endpoint: COMPANY_STORAGE_DEFAULTS.endpoint,
     port: COMPANY_STORAGE_DEFAULTS.port,
-    useSsl: COMPANY_STORAGE_DEFAULTS.useSsl,
     basePath: COMPANY_STORAGE_DEFAULTS.basePath,
     region: COMPANY_STORAGE_DEFAULTS.region,
   }),
@@ -192,7 +204,7 @@ export function companyLogoFolder(databaseName: string, options: StorageOptions)
 }
 
 export function storageBaseUrl(options: StorageOptions): string {
-  return `${options.useSsl ? "https" : "http"}://${options.endpoint}:${options.port}`;
+  return `https://${options.endpoint}:${options.port}`;
 }
 
 export function companyLogoUrl(storage: CompanyStorage, objectKey: string): string {
@@ -268,6 +280,13 @@ export async function listExistingLogos(client: S3Sender, storage: CompanyStorag
     .sort((a, b) => (b.lastModified ?? "").localeCompare(a.lastModified ?? ""));
 }
 
+/** El servidor del almacenamiento debe resolver solo a direcciones públicas (no a la red interna). */
+export async function assertStorageReachable(storage: CompanyStorage, resolver: HostResolver = resolveHost): Promise<void> {
+  if (!(await resolvesToPublicAddresses(storage.options.endpoint, resolver))) {
+    throw new CompanyLogoError("No fue posible usar ese servidor del almacenamiento: no existe o apunta a una red interna. Revise el servidor en los parámetros adicionales.", 400);
+  }
+}
+
 /**
  * Prueba el almacenamiento (listar exige llaves válidas para ese bucket).
  * Con el nombre de la base, devuelve además los logos que ya existen.
@@ -276,7 +295,9 @@ export async function checkCompanyStorage(
   storage: CompanyStorage,
   databaseName: string | null,
   clientFactory: S3Factory = createCompanyStorageS3Client,
+  resolver: HostResolver = resolveHost,
 ): Promise<StorageCheckResult> {
+  await assertStorageReachable(storage, resolver);
   const client = clientFactory(storage);
   try {
     if (!databaseName) {

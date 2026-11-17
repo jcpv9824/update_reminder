@@ -19,8 +19,9 @@ cosas en una sola transacción.
 1. **Almacenamiento de objetos:** Bucket y Access key (misma fila), Secret key (fila completa),
    enlace a la hoja de almacenamiento (pestaña nueva) y «Probar conexión».
    Desplegable **«Configurar parámetros adicionales (opcional)»**: servidor
-   (`storcube.sagweb.co`), puerto (`8333`), SSL (sí), ruta base (`Archivos/`) y región
-   (`us-east-1`), con «Restaurar valores por defecto».
+   (`storcube.sagweb.co`), puerto (`8333`), ruta base (`Archivos/`) y región
+   (`us-east-1`), con «Restaurar valores por defecto». El cifrado no se puede quitar:
+   siempre HTTPS (`MinioUseSSL = 'S'`).
 2. **Acceso a la base de datos de la compañía:** servidor y puerto (`servidor,puerto`, como
    SSMS; también `servidor\instancia`), nombre de la base de datos (también es la carpeta del
    almacenamiento), usuario de SQL, contraseña y «Probar conexión» (no escribe nada).
@@ -42,7 +43,7 @@ formulario.
 
 `UPDATE parametros_web` (todas las filas, como `GenerarSQLAlmacenamiento`):
 `MinioNameEnterprise` (= nombre de la base), `MinioBucketName`, `MinioAccessKey`,
-`MinioSecretKey`, `MinioEndpoint`, `MinioPort`, `MinioUseSSL` (`S`/`N`), `MinioBasePath` y,
+`MinioSecretKey`, `MinioEndpoint`, `MinioPort`, `MinioUseSSL` (siempre `S`), `MinioBasePath` y,
 con logo, `LogoEmpresa`. `MinioPublicBaseUrl` no se toca.
 
 Antes de escribir revisa que la base sea la pedida, que exista `parametros_web` con esas
@@ -61,10 +62,18 @@ El nombre del bucket va en la URL por diseño (rutas `servidor/bucket/objeto`).
   (`Cache-Control: no-store`). Las llaves sí quedan en `parametros_web` del cliente, donde
   SAG Web las necesita.
 - Solo consultas fijas y parametrizadas (`companyDatabase.ts`); nunca SQL de la persona.
-- SQL cifrado, confiando en el certificado del servidor (como «Trust server certificate» de
-  SSMS), tiempos límite de 15 s, pool de una conexión que se cierra al terminar.
-- Servidores SQL sin lista de permitidos (decisión de negocio). El servidor del almacenamiento
-  rechaza `localhost`, `127.*`, `0.*`, `169.254.*` y `::1`.
+- SQL cifrado **con certificado validado** (`trustServerCertificate: false`): se comprueba la
+  identidad del servidor antes de enviar la contraseña. Si el servidor no presenta un
+  certificado válido para ese nombre, la pantalla pide usar el nombre del certificado (no la
+  IP) o instalar uno válido. Tiempos límite de 15 s; pool de una conexión que se cierra al
+  terminar.
+- Servidores SQL sin lista de permitidos (decisión de negocio), pero el nombre debe resolver
+  **solo a direcciones públicas** (`outboundGuard.ts`): se rechazan loopback, redes privadas,
+  CGNAT, link-local (incluye metadatos de Azure `169.254.169.254`), multicast y equivalentes
+  IPv6, antes de conectar.
+- Almacenamiento: **siempre HTTPS** y solo servidores aprobados. La lista se configura en el
+  API con `COMPANY_STORAGE_ALLOWED_HOSTS` (separada por comas, admite `*.dominio`); por defecto
+  `storcube.sagweb.co,*.sagweb.co`. Además debe resolver solo a direcciones públicas.
 - Errores de SQL Server y del almacenamiento traducidos a mensajes controlados en español.
 - Auditoría `company_storage_configured`: quién, cuándo, en qué base (`companyName`) y
   `logoUpdated`, `assetKind`, `bytes`, `previousLogoCount`, `changedFieldCount`,

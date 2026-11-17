@@ -20,11 +20,11 @@ const MAX_BYTES = 2 * 1024 * 1024;
 const HOJA_ALMACENAMIENTO = "https://docs.google.com/spreadsheets/d/1lZQ2gpeKZ-lDu3vFQ17y2-Ngw-bXr6bw2-4FBpucCLM/edit?gid=232262362#gid=232262362";
 
 export type StorageForm = { bucket: string; accessKey: string; secretKey: string };
-export type OptionsForm = { endpoint: string; port: string; useSsl: boolean; basePath: string; region: string };
+export type OptionsForm = { endpoint: string; port: string; basePath: string; region: string };
 export type DatabaseForm = { server: string; databaseName: string; username: string; password: string };
 
 const EMPTY_STORAGE: StorageForm = { bucket: "", accessKey: "", secretKey: "" };
-export const DEFAULT_OPTIONS: OptionsForm = { endpoint: "storcube.sagweb.co", port: "8333", useSsl: true, basePath: "Archivos/", region: "us-east-1" };
+export const DEFAULT_OPTIONS: OptionsForm = { endpoint: "storcube.sagweb.co", port: "8333", basePath: "Archivos/", region: "us-east-1" };
 const EMPTY_DATABASE: DatabaseForm = { server: "", databaseName: "", username: "", password: "" };
 
 type ExistingLogo = { name: string; bytes: number; lastModified: string | null };
@@ -113,7 +113,6 @@ function storagePayload(form: StorageForm, options: OptionsForm) {
     options: {
       endpoint: options.endpoint.trim(),
       port: Number(options.port.trim()),
-      useSsl: options.useSsl,
       basePath: options.basePath.trim(),
       region: options.region.trim(),
     },
@@ -326,10 +325,8 @@ export default function LogoCompaniaPage() {
             <label htmlFor="logo-region">Región
               <input id="logo-region" className="valor-tecnico" value={options.region} onChange={(e) => setOptions({ ...options, region: e.target.value })} autoComplete="off" spellCheck={false} disabled={disabled} />
             </label>
-            <label className="logo-check">
-              <input type="checkbox" checked={options.useSsl} onChange={(e) => setOptions({ ...options, useSsl: e.target.checked })} disabled={disabled} /> Usar SSL
-            </label>
           </div>
+          <p className="texto-ayuda">La conexión al almacenamiento siempre es cifrada (HTTPS) y solo se permiten servidores aprobados (por defecto, los de sagweb.co).</p>
           <div className="acciones-formulario">
             <button type="button" onClick={() => setOptions({ ...DEFAULT_OPTIONS })} disabled={disabled}>Restaurar valores por defecto</button>
           </div>

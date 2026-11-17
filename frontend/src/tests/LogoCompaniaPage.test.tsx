@@ -42,7 +42,7 @@ const EXPECTED_STORAGE = {
   bucket: "demo.sagerp.cloud.buk",
   accessKey: "ACCESS123",
   secretKey: "SECRET-1234567890",
-  options: { endpoint: "storcube.sagweb.co", port: 8333, useSsl: true, basePath: "Archivos/", region: "us-east-1" },
+  options: { endpoint: "storcube.sagweb.co", port: 8333, basePath: "Archivos/", region: "us-east-1" },
 };
 const EXPECTED_DATABASE = { server: "data14.sagerp.co,54103", databaseName: "SAGWebDemo", username: "usuario_sql", password: "clave con espacios" };
 

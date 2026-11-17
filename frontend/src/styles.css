@@ -1373,7 +1373,6 @@ td:last-child:has(.acciones-tabla) { text-align: right; }
 .conexion-panel h2 { margin-top: 0; }
 .logo-adicionales { margin: 8px 0 4px; border-top: 1px dashed var(--color-border); padding-top: 10px; }
 .logo-adicionales summary { cursor: pointer; font-weight: 600; color: var(--color-primary); margin-bottom: 10px; }
-.logo-grid label.logo-check { flex-direction: row; align-items: center; gap: 8px; font-weight: 400; }
 .logo-cambios { margin: 8px 0 16px; padding-left: 18px; display: grid; gap: 6px; }
 .logo-cambios code { word-break: break-all; }
 

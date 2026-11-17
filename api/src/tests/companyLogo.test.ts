@@ -7,6 +7,7 @@ import {
   decodeCompanyLogo,
   LogoImageSchema,
   StorageSchema,
+  storageBaseUrl,
   storageErrorMessage,
   type S3Sender,
 } from "../lib/companyLogo";
@@ -17,6 +18,8 @@ const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a
 const JPG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(32, 2)]);
 const SECRET = "SuperSecretKey-1234567890";
 const ACCESS = "AccessKeyExample";
+
+const publicDns = async () => ["20.30.40.50"];
 
 const storageInput = {
   bucket: "  demo.sagerp.cloud.buk ",
@@ -69,15 +72,17 @@ describe("storage section validation", () => {
   it("accepts edited additional parameters and trims them", () => {
     const parsed = StorageSchema.parse({
       ...storageInput,
-      options: { endpoint: " s3.ejemplo.co ", port: 9000, useSsl: false, basePath: " Datos/Web/ ", region: " us-west-2 " },
+      options: { endpoint: " s3.sagweb.co ", port: 9000, basePath: " Datos/Web/ ", region: " us-west-2 " },
     });
-    expect(parsed.options).toEqual({ endpoint: "s3.ejemplo.co", port: 9000, useSsl: false, basePath: "Datos/Web/", region: "us-west-2" });
+    expect(parsed.options).toEqual({ endpoint: "s3.sagweb.co", port: 9000, basePath: "Datos/Web/", region: "us-west-2" });
   });
 
   it.each([
     [{ endpoint: "https://storcube.sagweb.co" }, "sin https"],
-    [{ endpoint: "localhost" }, "no está permitido"],
-    [{ endpoint: "169.254.169.254" }, "no está permitido"],
+    [{ endpoint: "localhost" }, "no está aprobado"],
+    [{ endpoint: "169.254.169.254" }, "no está aprobado"],
+    [{ endpoint: "s3.amazonaws.com" }, "no está aprobado"],
+    [{ endpoint: "sagweb.co.evil.com" }, "no está aprobado"],
     [{ port: 70000 }, "65535"],
     [{ basePath: "Archivos" }, "terminada en /"],
     [{ basePath: "../x/" }, "ruta base"],
@@ -85,6 +90,23 @@ describe("storage section validation", () => {
     const result = StorageSchema.safeParse({ ...storageInput, options: { ...COMPANY_STORAGE_DEFAULTS, ...override } });
     expect(result.success).toBe(false);
     expect(result.error!.issues[0].message.toLowerCase()).toContain(text.toLowerCase());
+  });
+
+  it("uses the approved storage hosts from the API settings", () => {
+    const previous = process.env.COMPANY_STORAGE_ALLOWED_HOSTS;
+    process.env.COMPANY_STORAGE_ALLOWED_HOSTS = "s3.aprobado.co";
+    try {
+      expect(StorageSchema.safeParse({ ...storageInput, options: { ...COMPANY_STORAGE_DEFAULTS, endpoint: "s3.aprobado.co" } }).success).toBe(true);
+      expect(StorageSchema.safeParse({ ...storageInput, options: { ...COMPANY_STORAGE_DEFAULTS, endpoint: "storcube.sagweb.co" } }).success).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.COMPANY_STORAGE_ALLOWED_HOSTS;
+      else process.env.COMPANY_STORAGE_ALLOWED_HOSTS = previous;
+    }
+  });
+
+  it("always uses HTTPS and does not accept an option to turn it off", () => {
+    expect(storageBaseUrl(StorageSchema.parse(storageInput).options)).toBe("https://storcube.sagweb.co:8333");
+    expect(StorageSchema.safeParse({ ...storageInput, options: { ...COMPANY_STORAGE_DEFAULTS, useSsl: false } }).success).toBe(false);
   });
 
   it("rejects unknown fields", () => {
@@ -197,7 +219,7 @@ describe("storage check", () => {
       { Key: "SAGWebDemoPYA/Archivos/Imagenes/LogoEmpresa/a.jpg", Size: 10, LastModified: new Date("2026-09-01") },
       { Key: "SAGWebDemoPYA/Archivos/Imagenes/LogoEmpresa/b.png", Size: 20, LastModified: new Date("2026-11-01") },
     ]);
-    const result = await checkCompanyStorage(StorageSchema.parse(storageInput), "SAGWebDemoPYA", () => client);
+    const result = await checkCompanyStorage(StorageSchema.parse(storageInput), "SAGWebDemoPYA", () => client, publicDns);
     expect(sent[0].input).toMatchObject({ Bucket: "demo.sagerp.cloud.buk", Prefix: "SAGWebDemoPYA/Archivos/Imagenes/LogoEmpresa/" });
     expect(result.existing.map((item) => item.name)).toEqual(["b.png", "a.jpg"]);
     expect(client.destroy).toHaveBeenCalled();
@@ -205,7 +227,7 @@ describe("storage check", () => {
 
   it("only validates the keys when the database name is not known yet", async () => {
     const { client, sent } = fakeS3([]);
-    const result = await checkCompanyStorage(StorageSchema.parse(storageInput), null, () => client);
+    const result = await checkCompanyStorage(StorageSchema.parse(storageInput), null, () => client, publicDns);
     expect(result).toEqual({ folder: null, existing: [] });
     expect(sent[0].input).toEqual({ Bucket: "demo.sagerp.cloud.buk", MaxKeys: 1 });
   });
@@ -215,12 +237,19 @@ describe("storage check", () => {
     expect(companyLogoFolder("Base1", storage.options)).toBe("Base1/Datos/Imagenes/LogoEmpresa/");
   });
 
+  it("refuses a storage host that resolves to the internal network, before connecting", async () => {
+    const { client, sent } = fakeS3([]);
+    const error = await checkCompanyStorage(StorageSchema.parse(storageInput), null, () => client, async () => ["10.0.0.4"]).catch((e) => e);
+    expect(error.message).toContain("red interna");
+    expect(sent).toHaveLength(0);
+  });
+
   it("maps provider errors to controlled messages without technical details", async () => {
     const providerError = Object.assign(new Error(`SignatureDoesNotMatch for ${ACCESS}`), {
       name: "SignatureDoesNotMatch", $metadata: { httpStatusCode: 403 },
     });
     const { client } = fakeS3([], { fail: providerError });
-    const error = await checkCompanyStorage(StorageSchema.parse(storageInput), "X", () => client).catch((e) => e);
+    const error = await checkCompanyStorage(StorageSchema.parse(storageInput), "X", () => client, publicDns).catch((e) => e);
     expect(error).toBeInstanceOf(CompanyLogoError);
     expect(error.message).toContain("rechazó las llaves");
     expect(error.message).not.toContain(ACCESS);

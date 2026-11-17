@@ -1,6 +1,7 @@
 import sql from "mssql";
 import { z } from "zod";
 import { CompanyLogoError, databaseNameSchema, trimmed } from "./companyLogo";
+import { resolveHost, resolvesToPublicAddresses, type HostResolver } from "./outboundGuard";
 
 /*
   Conexión temporal a la base de datos de una compañía de SAG Web para
@@ -10,8 +11,10 @@ import { CompanyLogoError, databaseNameSchema, trimmed } from "./companyLogo";
     guardan, no se registran y no se devuelven.
   - Solo se ejecutan consultas fijas y parametrizadas; nunca SQL escrito por la
     persona.
-  - Cifrado obligatorio, confiando en el certificado del servidor (igual que la
-    casilla «Trust server certificate» de SSMS), con tiempos límite.
+  - Cifrado obligatorio y certificado VALIDADO: se comprueba la identidad del
+    servidor antes de enviar la contraseña. Tiempos límite cortos.
+  - El nombre del servidor debe resolver a direcciones públicas: nunca a la red
+    interna (loopback, privadas, link-local, metadatos de Azure).
 */
 
 /** servidor[\instancia][,puerto] — como en SSMS. */
@@ -98,6 +101,10 @@ export function databaseErrorMessage(error: unknown): CompanyLogoError {
   if (number === 18456 || code === "ELOGIN") {
     return new CompanyLogoError("El servidor rechazó el usuario o la contraseña de SQL. Revíselos e intente de nuevo.", 400);
   }
+  const text = `${(error as { message?: string })?.message ?? ""} ${(candidate?.originalError as { message?: string } | undefined)?.message ?? ""}`;
+  if (/certificate|self[ -]signed|altname|hostname\/ip does not match|CERT_|UNABLE_TO_VERIFY|DEPTH_ZERO/i.test(text)) {
+    return new CompanyLogoError("El servidor de base de datos no presentó un certificado válido para ese nombre. Escriba el servidor con el nombre que aparece en su certificado (no la IP) o pida a Infraestructura instalar un certificado válido.", 400);
+  }
   if (code === "ETIMEOUT") {
     return new CompanyLogoError("El servidor de base de datos no respondió a tiempo. Revise el servidor y el puerto.", 504);
   }
@@ -126,8 +133,17 @@ function emptyValues(): ParametrosWebValues {
 }
 
 /** Abre una conexión real con mssql. */
-export const openCompanyDatabase: CompanyDatabaseOpener = async (database) => {
+export function createCompanyDatabaseOpener(resolver: HostResolver = resolveHost): CompanyDatabaseOpener {
+  return (database) => openWithResolver(database, resolver);
+}
+
+export const openCompanyDatabase: CompanyDatabaseOpener = (database) => openWithResolver(database, resolveHost);
+
+async function openWithResolver(database: CompanyDatabase, resolver: HostResolver): Promise<CompanyDatabaseSession> {
   const server = parseServer(database.server);
+  if (!(await resolvesToPublicAddresses(server.host, resolver))) {
+    throw new CompanyLogoError("No fue posible usar ese servidor de base de datos: no existe o apunta a una red interna. Revise el servidor y puerto.", 400);
+  }
   const pool = new sql.ConnectionPool({
     server: server.host,
     ...(server.port ? { port: server.port } : {}),
@@ -139,7 +155,7 @@ export const openCompanyDatabase: CompanyDatabaseOpener = async (database) => {
     pool: { min: 0, max: 1, idleTimeoutMillis: 5_000 },
     options: {
       encrypt: true,
-      trustServerCertificate: true,
+      trustServerCertificate: false,
       enableArithAbort: true,
       appName: "PortalSAGWeb-AlmacenamientoLogo",
       ...(server.instanceName ? { instanceName: server.instanceName } : {}),
@@ -218,4 +234,4 @@ SET MinioNameEnterprise = @nameEnterprise,
       await pool.close().catch(() => undefined);
     },
   };
-};
+}

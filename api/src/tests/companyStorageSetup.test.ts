@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { S3Sender } from "../lib/companyLogo";
 import {
   CompanyDatabaseSchema,
+  createCompanyDatabaseOpener,
   databaseErrorMessage,
   parseServer,
   STORAGE_COLUMNS,
@@ -18,6 +19,7 @@ import {
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32, 1)]);
 const SECRET = "SuperSecretKey-1234567890";
 const ACCESS = "AccessKeyExample";
+const publicDns = async () => ["20.30.40.50"];
 const SQL_PASSWORD = "Clave SQL con espacios 123";
 
 const database = {
@@ -101,6 +103,20 @@ describe("database section validation", () => {
     expect(parseServer("SRV01\\SQLEXPRESS")).toEqual({ host: "SRV01", instanceName: "SQLEXPRESS" });
   });
 
+  it("refuses a database server that resolves to the internal network, before sending credentials", async () => {
+    for (const address of ["127.0.0.1", "10.1.2.3", "172.20.0.5", "192.168.1.10", "169.254.169.254", "::1", "fd00::1"]) {
+      const open = createCompanyDatabaseOpener(async () => [address]);
+      await expect(open(CompanyDatabaseSchema.parse(database))).rejects.toThrow(/red interna/);
+    }
+  });
+
+  it("explains an invalid server certificate without exposing details", () => {
+    const error = databaseErrorMessage({ code: "ESOCKET", message: "Hostname/IP does not match certificate's altnames: IP: 10.0.0.5 is not in the cert's list" });
+    expect(error.message).toContain("certificado válido");
+    expect(error.message).not.toContain("10.0.0.5");
+    expect(databaseErrorMessage({ code: "ESOCKET", message: "self-signed certificate" }).message).toContain("certificado");
+  });
+
   it("maps SQL Server errors to controlled messages without details", () => {
     expect(databaseErrorMessage({ code: "ELOGIN", message: `Login failed for user 'usuario_sql'` }).message).toContain("usuario o la contraseña");
     expect(databaseErrorMessage({ number: 4060 }).message).toContain("base de datos no existe");
@@ -129,7 +145,7 @@ describe("apply storage configuration", () => {
   it("configures the storage on a clean company without asking for confirmation", async () => {
     const { session, writes, opener } = fakeSession();
     const { client, sent } = fakeS3();
-    const result = await applyCompanyStorage(input(), { openDatabase: opener, s3Factory: () => client });
+    const result = await applyCompanyStorage(input(), { openDatabase: opener, s3Factory: () => client, resolver: publicDns });
     expect(writes).toEqual([{
       MinioNameEnterprise: "SAGWebDemo",
       MinioBucketName: "demo.sagerp.cloud.buk",
@@ -153,7 +169,7 @@ describe("apply storage configuration", () => {
     const { client, sent } = fakeS3();
     const result = await applyCompanyStorage(
       input({ logo: { imageBase64: PNG.toString("base64"), imageName: "logo.png" } }),
-      { openDatabase: opener, s3Factory: () => client },
+      { openDatabase: opener, s3Factory: () => client, resolver: publicDns },
     );
     const put = sent.find((item) => item.name === "PutObjectCommand")!;
     expect(put.input.Key).toMatch(/^SAGWebDemo\/Archivos\/Imagenes\/LogoEmpresa\/[0-9a-f-]{36}\.png$/);
@@ -171,7 +187,7 @@ describe("apply storage configuration", () => {
     const { client, sent } = fakeS3(["old.png"]);
     const error = await applyCompanyStorage(
       input({ logo: { imageBase64: PNG.toString("base64"), imageName: "logo.png" } }),
-      { openDatabase: opener, s3Factory: () => client },
+      { openDatabase: opener, s3Factory: () => client, resolver: publicDns },
     ).catch((e) => e);
     expect(error.status).toBe(409);
     expect(error.details).toMatchObject({ requiresConfirmation: true, keysChanged: true, existingLogoCount: 1, replacesLogo: true });
@@ -187,7 +203,7 @@ describe("apply storage configuration", () => {
       MinioEndpoint: "storcube.sagweb.co", MinioPort: "8333.0", MinioUseSSL: "S", MinioBasePath: "Archivos/",
     });
     const { client } = fakeS3();
-    await expect(applyCompanyStorage(input(), { openDatabase: opener, s3Factory: () => client })).resolves.toMatchObject({ changes: [] });
+    await expect(applyCompanyStorage(input(), { openDatabase: opener, s3Factory: () => client, resolver: publicDns })).resolves.toMatchObject({ changes: [] });
   });
 
   it("writes after confirmation and keeps the old images", async () => {
@@ -195,7 +211,7 @@ describe("apply storage configuration", () => {
     const { client, sent } = fakeS3(["old.png"]);
     const result = await applyCompanyStorage(
       input({ confirmed: true, logo: { imageBase64: PNG.toString("base64"), imageName: "logo.png" } }),
-      { openDatabase: opener, s3Factory: () => client },
+      { openDatabase: opener, s3Factory: () => client, resolver: publicDns },
     );
     expect(writes).toHaveLength(1);
     expect(sent.some((item) => item.name === "DeleteObjectCommand")).toBe(false);
@@ -205,7 +221,7 @@ describe("apply storage configuration", () => {
   it("fails cleanly when the database rejects the write, and closes everything", async () => {
     const { session, opener } = fakeSession({}, { failWrite: { number: 229, message: "UPDATE permission denied on object parametros_web" } });
     const { client } = fakeS3();
-    const error = await applyCompanyStorage(input(), { openDatabase: opener, s3Factory: () => client }).catch((e) => e);
+    const error = await applyCompanyStorage(input(), { openDatabase: opener, s3Factory: () => client, resolver: publicDns }).catch((e) => e);
     expect(error.message).toContain("no tiene permiso");
     expect(session.closed).toBe(true);
     expect(client.destroy).toHaveBeenCalled();
@@ -215,7 +231,7 @@ describe("apply storage configuration", () => {
     const { opener } = fakeSession();
     await expect(applyCompanyStorage(
       input({ logo: { imageBase64: Buffer.from("hola").toString("base64"), imageName: "x.txt" } }),
-      { openDatabase: opener, s3Factory: () => fakeS3().client },
+      { openDatabase: opener, s3Factory: () => fakeS3().client, resolver: publicDns },
     )).rejects.toThrow(/no es una imagen/);
     expect(opener).not.toHaveBeenCalled();
   });
@@ -225,11 +241,11 @@ describe("apply storage configuration", () => {
     const { client } = fakeS3();
     await applyCompanyStorage(
       ApplyCompanyStorageSchema.parse({
-        storage: { ...storage, options: { endpoint: "s3.ejemplo.co", port: 9000, useSsl: false, basePath: "Datos/", region: "us-east-1" } },
+        storage: { ...storage, options: { endpoint: "s3.sagweb.co", port: 9000, basePath: "Datos/", region: "us-east-1" } },
         database,
       }),
-      { openDatabase: opener, s3Factory: () => client },
+      { openDatabase: opener, s3Factory: () => client, resolver: publicDns },
     );
-    expect(writes[0]).toMatchObject({ MinioEndpoint: "s3.ejemplo.co", MinioPort: "9000", MinioUseSSL: "N", MinioBasePath: "Datos/" });
+    expect(writes[0]).toMatchObject({ MinioEndpoint: "s3.sagweb.co", MinioPort: "9000", MinioUseSSL: "S", MinioBasePath: "Datos/" });
   });
 });

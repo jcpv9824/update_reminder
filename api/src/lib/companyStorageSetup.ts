@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  assertStorageReachable,
   CompanyLogoError,
   createCompanyStorageS3Client,
   decodeCompanyLogo,
@@ -10,6 +11,7 @@ import {
   storageErrorMessage,
   type S3Factory,
 } from "./companyLogo";
+import { resolveHost, type HostResolver } from "./outboundGuard";
 import {
   CompanyDatabaseSchema,
   databaseErrorMessage,
@@ -72,6 +74,7 @@ export type ApplyCompanyStorageResult = {
 export type CompanyStorageDeps = {
   openDatabase?: CompanyDatabaseOpener;
   s3Factory?: S3Factory;
+  resolver?: HostResolver;
 };
 
 const VISIBLE_FIELDS: Array<{ field: keyof ParametrosWebValues; label: string }> = [
@@ -137,6 +140,7 @@ export async function applyCompanyStorage(
   const s3Factory = deps.s3Factory ?? createCompanyStorageS3Client;
   const { storage, database } = input;
   const image = input.logo ? decodeCompanyLogo(input.logo.imageBase64, input.logo.imageName) : null;
+  await assertStorageReachable(storage, deps.resolver ?? resolveHost);
 
   const { session, state } = await openAndInspect(database, openDatabase);
   const s3 = s3Factory(storage);
@@ -155,7 +159,7 @@ export async function applyCompanyStorage(
       MinioSecretKey: storage.secretKey,
       MinioEndpoint: storage.options.endpoint,
       MinioPort: String(storage.options.port),
-      MinioUseSSL: storage.options.useSsl ? "S" : "N",
+      MinioUseSSL: "S",
       MinioBasePath: storage.options.basePath,
     };
 
