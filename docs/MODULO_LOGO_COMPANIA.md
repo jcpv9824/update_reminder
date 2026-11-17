@@ -68,11 +68,12 @@ Orden (`companyStorageSetup.ts`):
 (`validation`, `database`, `storage`, `confirmation`, `logo`). La base solo cambia en el
 `COMMIT`, que es el último paso; después ya no hay nada que pueda fallar en el módulo. Si el
 logo se subió y la base no se actualizó, se borra el logo recién subido
-(`uploadedLogoRemoved`). **COMMIT incierto** (se envió y no llegó respuesta): no se borra
-nada y se revisa el estado con una conexión nueva; si quedó guardado, es un éxito; si no, se
-limpia como en cualquier fallo; si no se puede revisar, responde 502 con
-`databaseChanged: "unknown"` y `uploadedLogoKept: true`, y pide revisar con «Probar conexión»
-antes de reintentar. Auditoría: `company_storage_configuration_requested` se registra
+(`uploadedLogoRemoved`). **COMMIT incierto** (se envió y no llegó respuesta): **nunca se
+borra el logo subido.** Se revisa con una conexión nueva: solo si toda la configuración coincide
+con lo enviado es un éxito. En cualquier otro caso (no coincide o no se pudo revisar) responde 502
+con `databaseChanged: "unknown"` y `uploadedLogoKept: true`, y pide revisar con «Probar conexión»
+antes de reintentar: que la configuración difiera no prueba que el COMMIT falló, porque otra
+persona pudo cambiarla después. Auditoría: `company_storage_configuration_requested` se registra
 **antes** y es obligatoria (si falla: 503 y no se toca nada); luego
 `company_storage_configured` o `company_storage_configuration_failed`. Si el registro final
 falla, la respuesta dice `auditRecorded: false` (el cambio sí se aplicó) y la pantalla lo avisa.

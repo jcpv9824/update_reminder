@@ -364,12 +364,34 @@ describe("uncertain COMMIT (the answer to COMMIT was lost)", () => {
     expect(opener).toHaveBeenCalledTimes(2); // una conexión nueva para verificar
   });
 
-  it("if it was not saved, reports databaseChanged=false and removes the uploaded logo", async () => {
+  it("if the configuration differs, it does not assume anything: keeps the logo and reports unknown", async () => {
     const { opener } = fakeSession({}, { commitUnknown: "not-applied" });
-    const { client, objects } = fakeS3();
+    const { client, objects, sent } = fakeS3();
     const error = await applyCompanyStorage(input({ logo: logoInput }), deps(opener, client)).catch((e) => e);
-    expect(error.details).toMatchObject({ databaseChanged: false, uploadedLogoRemoved: true });
-    expect(objects.size).toBe(0);
+    expect(error.details).toMatchObject({ stage: "commit", databaseChanged: "unknown", uploadedLogoKept: true });
+    expect(sent.filter((item) => item.name === "DeleteObjectCommand" && String(item.input.Key).includes("/LogoEmpresa/"))).toHaveLength(0);
+    expect([...objects.keys()].some((key) => key.includes("/LogoEmpresa/"))).toBe(true);
+  });
+
+  it("regression: COMMIT saved, answer lost, then another operator changed a storage field — the active logo is NOT deleted", async () => {
+    const { session } = fakeSession({}, { commitUnknown: "applied" });
+    let calls = 0;
+    const opener = vi.fn(async () => {
+      calls += 1;
+      if (calls === 2) {
+        // Entre el COMMIT perdido y la verificación, otra persona cambia el puerto.
+        const state = await session.inspect();
+        const changed = { ...state.current, MinioPort: "9443" };
+        return { ...session, inspect: async () => ({ rows: 1, current: changed, fingerprint: configurationFingerprint(changed) }) };
+      }
+      return session;
+    });
+    const { client, objects, sent } = fakeS3();
+    const error = await applyCompanyStorage(input({ logo: logoInput }), deps(opener, client)).catch((e) => e);
+    expect(error.details).toMatchObject({ stage: "commit", databaseChanged: "unknown", uploadedLogoKept: true });
+    const logoKey = [...objects.keys()].find((key) => key.includes("/LogoEmpresa/"));
+    expect(logoKey).toBeDefined(); // el logo al que apunta LogoEmpresa sigue existiendo
+    expect(sent.filter((item) => item.name === "DeleteObjectCommand" && String(item.input.Key).includes("/LogoEmpresa/"))).toHaveLength(0);
   });
 
   it("if it cannot be verified, keeps the logo and says the outcome is unknown", async () => {

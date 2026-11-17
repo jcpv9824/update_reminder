@@ -96,20 +96,22 @@ function matchesTarget(values: ParametrosWebValues, target: StorageWrite): boole
 
 /**
  * Tras un COMMIT de resultado incierto, revisa el estado real con una conexión
- * nueva. Devuelve "applied", "not-applied" o "unknown" (si no se pudo revisar).
+ * nueva. Solo hay una conclusión segura: "applied" (todo coincide con lo
+ * enviado). Cualquier otra cosa es "unverified": que la configuración difiera
+ * NO prueba que el COMMIT falló (otra persona pudo cambiarla después).
  */
 async function verifyCommitOutcome(
   database: CompanyDatabase,
   openDatabase: CompanyDatabaseOpener,
   target: StorageWrite,
-): Promise<"applied" | "not-applied" | "unknown"> {
+): Promise<"applied" | "unverified"> {
   let verifier: CompanyDatabaseSession | null = null;
   try {
     verifier = await openDatabase(database);
     const { current } = await verifier.inspect();
-    return matchesTarget(current, target) ? "applied" : "not-applied";
+    return matchesTarget(current, target) ? "applied" : "unverified";
   } catch {
-    return "unknown";
+    return "unverified";
   } finally {
     await verifier?.close().catch(() => undefined);
   }
@@ -291,14 +293,14 @@ export async function applyCompanyStorage(
             keysChanged,
           };
         }
-        if (outcome === "unknown") {
-          throw new CompanyLogoError(
-            "No fue posible confirmar si la configuración quedó guardada (se perdió la conexión al confirmar). No se borró nada. Use «Probar conexión» de la base de datos para revisar el estado antes de intentar de nuevo.",
-            502,
-            { stage: "commit", databaseChanged: "unknown", uploadedLogoKept: Boolean(uploaded) },
-          );
-        }
-        // "not-applied": la base no cambió; se sigue con la limpieza normal.
+        // Regla fija: con un COMMIT incierto NUNCA se borra el logo subido, porque
+        // LogoEmpresa podría estar apuntando a él. Un archivo de más es inofensivo
+        // (las imágenes anteriores tampoco se borran); un logo activo borrado, no.
+        throw new CompanyLogoError(
+          "No fue posible confirmar si la configuración quedó guardada (se perdió la conexión al confirmar). No se borró nada. Use «Probar conexión» de la base de datos para revisar el estado antes de intentar de nuevo.",
+          502,
+          { stage: "commit", databaseChanged: "unknown", uploadedLogoKept: Boolean(uploaded) },
+        );
       }
       const removed = uploaded ? await removeCompanyLogo(s3, storage, database.databaseName, uploaded.fileName) : undefined;
       const extra: Record<string, unknown> = uploaded ? { uploadedLogoRemoved: removed } : {};
