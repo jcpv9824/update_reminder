@@ -13,10 +13,25 @@ const deps = () => ({
   readRoster: vi.fn().mockResolvedValue([{ schedule: { id: "manual-1", active: true, frequencyType: "manual",
     startDate: day }, version }]),
   appendIntents: vi.fn().mockResolvedValue(undefined),
+  closeOnce: vi.fn().mockResolvedValue({ checked: 2, completed: 1, skipped: 1, failed: 0 }),
   generate: vi.fn().mockResolvedValue({ status: "evaluated", registered: 0, existing: 0, held: 0, conflicts: 0, accountedOrigins: 1 }),
 });
 
 describe("catalog generation activation boundary", () => {
+  it("sweeps completed past once schedules once per background window, not once per generated date", async () => {
+    const io = deps();
+    const result = await runCatalogGeneration({ trigger: "timer" },io,env);
+    expect(io.closeOnce).toHaveBeenCalledExactlyOnceWith("qa");
+    expect(result).toMatchObject({ completedOneTimeSchedules: 1, onceClosure: { checked: 2, completed: 1, skipped: 1, failed: 0 } });
+  });
+  it("reports closure failure independently without erasing already generated work", async () => {
+    const io = deps();
+    io.closeOnce.mockRejectedValue(new Error("synthetic private database detail"));
+    const result = await runCatalogGeneration({ trigger: "refresh" },io,env);
+    expect(result).toMatchObject({ status: "evaluated", completedOneTimeSchedules: 0,
+      onceClosure: { checked: 0, completed: 0, skipped: 0, failed: 1 } });
+    expect(JSON.stringify(result)).not.toContain("synthetic private database detail");
+  });
   it("defaults to legacy only for absent or explicit legacy mode; rejects broken configuration", async () => {
     expect(getTaskGenerationMode({})).toBe("legacy");
     expect(getTaskGenerationMode({ PORTAL_CATALOG_GENERATION_MODE: "legacy" })).toBe("legacy");
@@ -28,6 +43,7 @@ describe("catalog generation activation boundary", () => {
       .rejects.toMatchObject({ status: 503 });
     expect(io.generate).not.toHaveBeenCalled();
     expect(io.readActiveLicenseIds).not.toHaveBeenCalled();
+    expect(io.closeOnce).not.toHaveBeenCalled();
   });
 
   it("derives the business day/cutoff server-side and reports receipt-only accounting separately", async () => {

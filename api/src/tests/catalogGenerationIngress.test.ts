@@ -99,6 +99,17 @@ describe("catalog generation ingress", () => {
     expect(fakes.clients).not.toHaveBeenCalled();
   });
 
+  it("reports closure counters separately from task generation and in the manual audit", async () => {
+    const onceClosure = { checked: 3, completed: 1, skipped: 1, failed: 1 };
+    fakes.catalog.mockResolvedValue({ ...evaluated, completedOneTimeSchedules: 1, onceClosure });
+    const response = await invoke("refreshUpdateTasksManual");
+    expect(response).toMatchObject({ status: 200, jsonBody: { created: 0, completedOneTimeSchedules: 1, onceClosure } });
+    expect(fakes.audit).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ completedOneTimeSchedules: 1, onceClosure }),
+    }));
+    expect(fakes.clients).not.toHaveBeenCalled();
+  });
+
   it.each([["cutoff", 409], ["unverified", 503]])("reports %s and never falls back", async (status, responseStatus) => {
     fakes.catalog.mockResolvedValue({ ...evaluated, status });
     expect((await invoke("refreshUpdateTasksManual")).status).toBe(responseStatus);

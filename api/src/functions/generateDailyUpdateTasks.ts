@@ -336,7 +336,7 @@ app.timer("generateDailyUpdateTasks", {
         const result = await runCatalogGeneration({ trigger: "timer" });
         await sweepCatalogCutoffs(message => ctx.log(message));
         const dates = result.days ? ` fechas evaluadas=${result.days.filter(day => day.status === "evaluated").length}/${result.days.length};` : "";
-        ctx.log(`Catálogo: estado=${result.status};${dates} creadas=${result.created}; existentes=${result.existing}; retenidas=${result.held}; conflictos=${result.conflicts}; procedencias=${result.accountedOrigins}.`);
+        ctx.log(`Catálogo: estado=${result.status};${dates} creadas=${result.created}; existentes=${result.existing}; retenidas=${result.held}; conflictos=${result.conflicts}; procedencias=${result.accountedOrigins}; programaciones únicas completadas=${result.completedOneTimeSchedules ?? 0}; fallos de cierre=${result.onceClosure?.failed ?? 0}.`);
         return;
       }
       const isoDate = todayInBogotaIso();
@@ -383,7 +383,9 @@ async function handleManualGeneration(trigger: "generate" | "refresh", req: Http
       const result = await runCatalogGeneration({ trigger, body, actorId: profile.id });
       if (trigger === "refresh") await sweepCatalogCutoffs(message => ctx.log(message));
       const { date, status, created, existing, held, conflicts, accountedOrigins, manualIntentsSaved, message } = result;
-      const metadata = { date, status, created, existing, held, conflicts, accountedOrigins, manualIntentsSaved };
+      const metadata = { date, status, created, existing, held, conflicts, accountedOrigins, manualIntentsSaved,
+        ...(result.completedOneTimeSchedules === undefined ? {} : { completedOneTimeSchedules: result.completedOneTimeSchedules }),
+        ...(result.onceClosure ? { onceClosure: result.onceClosure } : {}) };
       try {
         await writeAuditLog({
           entityType: "task",

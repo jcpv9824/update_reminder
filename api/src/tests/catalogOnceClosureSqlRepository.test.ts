@@ -11,7 +11,7 @@ vi.mock("mssql", () => ({ default: {
     input(name: string, _type: unknown, value: unknown) { this.parameters[name] = value; return this; }
     query(statement: string) { return m.query(statement, this.tx, this.parameters); }
   },
-  Date: Symbol(), BigInt: Symbol(), VarChar: vi.fn(), Char: vi.fn(), NVarChar: vi.fn(),
+  Date: Symbol(), BigInt: Symbol(), Int: Symbol(), VarChar: vi.fn(), Char: vi.fn(), NVarChar: vi.fn(),
 } }));
 vi.mock("../lib/catalogExecutionCoexistenceSql", () => ({ lockCatalogTaskDay: m.lock }));
 vi.mock("../lib/auditSqlWriter", () => ({ writeSqlAuditLog: m.audit }));
@@ -28,7 +28,8 @@ vi.mock("../lib/sqlTransaction", () => ({
   },
 }));
 
-import { completeSqlCatalogOnceSchedule } from "../lib/catalogOnceClosureSqlRepository";
+import { completeSqlCatalogOnceSchedule, reserveSqlCatalogOnceClosureCandidates,
+  reserveCatalogOnceClosureCandidatesSql } from "../lib/catalogOnceClosureSqlRepository";
 import { readCatalogOnceClosureProofSql } from "../lib/catalogOnceClosureSql";
 const item: CatalogOnceClosureCandidate = { portalEnvironment: "qa", taskDate: "2030-01-01", observationKey: "9007199254740993" };
 const proof = { scheduleId: "once-a", scheduleVersion: "0000000000000001", clientId: "customer-a" };
@@ -39,6 +40,18 @@ beforeEach(() => {
 });
 
 describe("atomic closure of one catalogue schedule", () => {
+  it("advances a serialized fair cursor before processing and wraps instead of starving behind a blocked key", async () => {
+    m.query.mockResolvedValueOnce({ recordset: [item] });
+    expect(await reserveSqlCatalogOnceClosureCandidates("qa",50)).toEqual([item]);
+    expect(m.query).toHaveBeenCalledExactlyOnceWith(reserveCatalogOnceClosureCandidatesSql,m.tx,
+      { portalEnvironment:"qa",take:50 });
+    expect(reserveCatalogOnceClosureCandidatesSql).toContain("WITH (UPDLOCK,HOLDLOCK)");
+    expect(reserveCatalogOnceClosureCandidatesSql).toContain("CASE WHEN o.observation_key>@after THEN 0 ELSE 1 END");
+    expect(reserveCatalogOnceClosureCandidatesSql).toContain("last_observation_key=COALESCE(@last,0)");
+    expect(reserveCatalogOnceClosureCandidatesSql).toContain("newer.observation_key>o.observation_key");
+    expect(m.lock).not.toHaveBeenCalled();
+    expect(m.audit).not.toHaveBeenCalled();
+  });
   it("takes both transaction day locks, proves current eligibility, closes by exact version and audits before commit", async () => {
     m.query.mockResolvedValueOnce({ recordset: [proof] }).mockResolvedValueOnce({ recordset: [{ changed: 1 }] });
     expect(await completeSqlCatalogOnceSchedule(item)).toBe(true);

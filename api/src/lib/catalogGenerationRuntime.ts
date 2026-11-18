@@ -3,6 +3,7 @@ import { generateApprovedCatalogOperationalScheduleDay } from "./catalogSchedule
 import { appendSqlCatalogManualDayIntents } from "./catalogManualDayIntentSqlRepository";
 import { readSqlCatalogScheduleRoster } from "./schedulingSqlRepository";
 import { getSqlPool } from "./sql";
+import { runCatalogOnceClosureSweep, type CatalogOnceClosureSummary } from "./catalogOnceClosureWorker";
 
 type Mode = "legacy" | "catalog";
 type Trigger = "timer" | "generate" | "refresh" | "schedule-change";
@@ -17,6 +18,8 @@ export type CatalogGenerationResult = {
   accountedOrigins: number;
   manualIntentsSaved: number;
   message: string;
+  completedOneTimeSchedules?: number;
+  onceClosure?: CatalogOnceClosureSummary;
   /** Only background runs report the separate, independently committed Bogotá dates. */
   days?: Omit<CatalogGenerationResult, "days">[];
 };
@@ -84,7 +87,8 @@ async function readActiveLicenseIds(): Promise<ReadonlySet<string>> {
 }
 
 const dependencies = { now: () => new Date(), readActiveLicenseIds, readRoster: readSqlCatalogScheduleRoster,
-  appendIntents: appendSqlCatalogManualDayIntents, generate: generateApprovedCatalogOperationalScheduleDay };
+  appendIntents: appendSqlCatalogManualDayIntents, generate: generateApprovedCatalogOperationalScheduleDay,
+  closeOnce: runCatalogOnceClosureSweep };
 
 function incomplete(date: string, status: "cutoff" | "unverified", manualIntentsSaved: number): DayResult {
   return { date, status, created: 0, existing: 0, held: 0, conflicts: 0, accountedOrigins: 0, manualIntentsSaved,
@@ -145,7 +149,7 @@ async function evaluateBackgroundWindow(today: string, config: ReturnType<typeof
 }
 
 /** The existing route must authorize generation before calling this internal service. */
-export async function runCatalogGeneration(request: Request, io = dependencies,
+async function evaluateCatalogGeneration(request: Request, io: typeof dependencies,
   env: NodeJS.ProcessEnv = process.env): Promise<CatalogGenerationResult> {
   const config = configuration(env);
   const { portalEnvironment, matchKeyVersion } = config;
@@ -176,4 +180,17 @@ export async function runCatalogGeneration(request: Request, io = dependencies,
       activeLicenseIds: await io.readActiveLicenseIds(), ...(manualScheduleIds.length ? { manualScheduleIds } : {}) },
     io.generate, manualIntentsSaved);
   } catch { return incomplete(date, "unverified", manualIntentsSaved); }
+}
+
+/** Closure is independent of today's eight-date window and runs once per invocation. */
+export async function runCatalogGeneration(request: Request, io = dependencies,
+  env: NodeJS.ProcessEnv = process.env): Promise<CatalogGenerationResult> {
+  const result = await evaluateCatalogGeneration(request, io, env);
+  // evaluateCatalogGeneration has already enforced catalog mode/read/cutoff readiness
+  // and all transport authorization belongs to its existing callers.
+  const { portalEnvironment } = configuration(env);
+  let onceClosure: CatalogOnceClosureSummary;
+  try { onceClosure = await io.closeOnce(portalEnvironment); }
+  catch { onceClosure = { checked: 0, completed: 0, skipped: 0, failed: 1 }; }
+  return { ...result, completedOneTimeSchedules: onceClosure.completed, onceClosure };
 }

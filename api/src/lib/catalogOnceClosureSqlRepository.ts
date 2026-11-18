@@ -11,6 +11,46 @@ export type CatalogOnceClosureCandidate = Readonly<{
   /** Decimal text is lossless for SQL bigint, unlike a JavaScript number. */
   observationKey: string;
 }>;
+
+/** A short cursor transaction reserves a fair keyset page, never the day proof locks. */
+export const reserveCatalogOnceClosureCandidatesSql = `
+SET NOCOUNT ON;
+DECLARE @after bigint;
+SELECT @after=last_observation_key FROM scheduling.catalog_once_closure_scan_cursors WITH (UPDLOCK,HOLDLOCK)
+WHERE portal_environment=@portalEnvironment;
+IF @after IS NULL THROW 55004,N'The catalog closure cursor is not installed.',1;
+DECLARE @now datetime2(3)=SYSUTCDATETIME();
+DECLARE @chosen TABLE(observation_key bigint PRIMARY KEY,task_date date NOT NULL);
+INSERT @chosen
+SELECT TOP (@take) o.observation_key,o.task_date
+FROM scheduling.catalog_once_observations o WITH (HOLDLOCK)
+JOIN scheduling.update_schedules s WITH (HOLDLOCK)
+  ON s.schedule_key=o.schedule_key AND s.row_version=o.schedule_version AND s.active=1 AND s.deleted_at IS NULL
+  AND s.completed_at IS NULL AND s.frequency_type='once' AND s.start_date=o.task_date
+WHERE o.portal_environment=@portalEnvironment AND o.cutoff_at<=@now
+  AND NOT EXISTS(SELECT 1 FROM scheduling.catalog_once_observations newer WITH (HOLDLOCK)
+    WHERE newer.portal_environment=o.portal_environment AND newer.task_date=o.task_date
+      AND newer.schedule_key=o.schedule_key AND newer.schedule_version=o.schedule_version AND newer.observation_key>o.observation_key)
+ORDER BY CASE WHEN o.observation_key>@after THEN 0 ELSE 1 END,o.observation_key;
+DECLARE @last bigint=(SELECT TOP (1) observation_key FROM @chosen
+  ORDER BY CASE WHEN observation_key>@after THEN 0 ELSE 1 END DESC,observation_key DESC);
+UPDATE scheduling.catalog_once_closure_scan_cursors SET last_observation_key=COALESCE(@last,0),updated_at=SYSUTCDATETIME()
+WHERE portal_environment=@portalEnvironment;
+SELECT @portalEnvironment AS portalEnvironment,CONVERT(char(10),task_date,23) AS taskDate,
+  CONVERT(varchar(20),observation_key) AS observationKey FROM @chosen
+ORDER BY CASE WHEN observation_key>@after THEN 0 ELSE 1 END,observation_key;`;
+
+export async function reserveSqlCatalogOnceClosureCandidates(portalEnvironment: CatalogEnvironment,
+  take: number): Promise<CatalogOnceClosureCandidate[]> {
+  if ((portalEnvironment !== "qa" && portalEnvironment !== "production") || !Number.isInteger(take) || take < 1 || take > 50) {
+    throw new Error("catalog_once_candidates_invalid");
+  }
+  return runSqlTransaction(async transaction => {
+    const result = await new sql.Request(transaction).input("portalEnvironment", sql.VarChar(10), portalEnvironment)
+      .input("take", sql.Int, take).query<CatalogOnceClosureCandidate>(reserveCatalogOnceClosureCandidatesSql);
+    return result.recordset;
+  });
+}
 type ProofRow = { scheduleId: string; scheduleVersion: string; clientId: string };
 const maxSqlBigInt = 9223372036854775807n;
 const id = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 150 &&

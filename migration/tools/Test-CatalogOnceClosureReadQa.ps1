@@ -11,9 +11,11 @@ $root=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
 $compiled=Join-Path $root 'api/dist/src/lib/catalogOnceClosureSql.js'
 if(!(Test-Path -LiteralPath $compiled)){throw 'Build the API candidate before rehearsing SQL closure eligibility.'}
 $query=(& node -e 'process.stdout.write(require(process.argv[1]).readCatalogOnceClosureProofSql);' $compiled) -join [Environment]::NewLine
+$localStages='candidate|populationLinks|manifest|cutoffHeads|witnessFence|validPairs|licenseContexts|licenseClaims|numbers|licenseCodes|licenseModules|licensedPairs'
 if($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($query) -or
-  $query -match '(?im)^\s*(INSERT|UPDATE|DELETE|MERGE|ALTER|DROP|CREATE|EXEC(?:UTE)?)\b'){
-  throw 'Expected a read-only compiled closure proof statement.'
+  $query -match '(?im)^\s*(UPDATE|DELETE|MERGE|ALTER|DROP|CREATE|EXEC(?:UTE)?)\b' -or
+  $query -match ('(?im)^\s*INSERT\s+(?!@(?:'+$localStages+')\b)')){
+  throw 'Expected a compiled proof with only closed local-stage inserts and no persistent writes.'
 }
 $literal="DECLARE @proofSql nvarchar(max)=N'"+$query.Replace("'","''")+"';"
 $body=@'
@@ -22,7 +24,8 @@ SET XACT_ABORT ON;
 IF DB_NAME() COLLATE Latin1_General_100_BIN2<>N'PortalSAGWeb-TEST' OR @@TRANCOUNT<>0
   THROW 54970,N'Unexpected QA closure rehearsal target.',1;
 IF OBJECT_ID(N'scheduling.catalog_once_observations',N'U') IS NULL
-  THROW 54971,N'The observed ledger must be installed first.',1;
+  OR OBJECT_ID(N'scheduling.catalog_once_source_witnesses',N'U') IS NULL
+  THROW 54971,N'The observation and source witness ledgers must be installed first.',1;
 DECLARE @key bigint=9223372036854775807,@passed int=0,@scenario int=1,@lock int;
 -- Prove both past- and future-day binding without using any live data or
 -- masking SQL compilation errors with an early no-lock guard.
