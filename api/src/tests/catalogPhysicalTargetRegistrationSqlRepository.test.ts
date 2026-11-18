@@ -119,7 +119,8 @@ describe("verified catalog physical target registration", () => {
     expect(sql).toContain("IF @latestVerifiedAt>=@verifiedAt");
     expect(sql).toContain("IF @verifiedAt>@now OR @validUntil<=@now");
     expect(sql).toContain("DATALENGTH(db.source_id)=DATALENGTH(@databaseId)");
-    expect(sql).toContain("OUTPUT inserted.link_id INTO @inserted(link_id)");
+    expect(sql).toContain("DECLARE @newLinkId uniqueidentifier=NEWID()");
+    expect(sql).toContain("WHERE inserted.link_id=@newLinkId AND inserted.proof_id=@proofId");
     expect(sql).toContain("@databaseNameFingerprint=HASHBYTES('SHA2_256',CONVERT(varbinary(max),p.initial_catalog))");
     expect(sql).toContain("@storedDatabaseNameFingerprint=database_name_fingerprint");
     expect(sql).toContain("@databaseNameFingerprint<>@storedDatabaseNameFingerprint");

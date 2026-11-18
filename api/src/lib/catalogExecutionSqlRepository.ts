@@ -104,11 +104,10 @@ function mapOccurrenceLink(link: CatalogExecutionLink): CatalogTaskOccurrenceLin
  * per-client, per-role, and per-link visibility must first be enforced by callers.
  * These row versions are only observations, not a permission or an atomic update.
  */
-export async function readCatalogTaskExecution(lookup: CatalogExecutionLookup): Promise<CatalogExecutionSnapshot | null> {
+export async function readCatalogTaskExecution(lookup: CatalogExecutionLookup, transaction?: sql.Transaction): Promise<CatalogExecutionSnapshot | null> {
   const byKey = "executionKey" in lookup;
   const key = byKey ? executionKeyParameter(lookup.executionKey) : taskIdParameter(lookup.taskId);
-  const pool = await getSqlPool();
-  const request = pool.request();
+  const request = transaction ? transaction.request() : (await getSqlPool()).request();
   if (byKey) request.input("executionKey", sql.VarBinary(32), key);
   else request.input("taskId", sql.NVarChar(260), key);
   const where = byKey ? "e.execution_key=CONVERT(binary(32),@executionKey)" : "task.source_id=@taskId";
@@ -145,7 +144,7 @@ export async function readCatalogTaskExecution(lookup: CatalogExecutionLookup): 
         WHERE link.catalog_execution_key=e.catalog_execution_key
         ORDER BY link.catalog_execution_link_key
         FOR JSON PATH, INCLUDE_NULL_VALUES) AS links_json
-    FROM workflow.catalog_task_executions e
+    FROM workflow.catalog_task_executions e ${transaction ? "WITH (UPDLOCK,HOLDLOCK)" : ""}
     INNER JOIN workflow.update_tasks task ON task.task_key=e.task_key AND task.target_type=e.execution_kind
     WHERE ${where};
   `);

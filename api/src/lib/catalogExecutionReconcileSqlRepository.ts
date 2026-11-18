@@ -31,7 +31,7 @@ function instant(value: number): Date {
  * Internal write path for a trusted SQL snapshot and source observations. Never accepts
  * HTTP input directly. Preserve task/assignee/schedule rows and append only cutoff events.
  */
-export async function persistCatalogTaskCutoffCheck(args: ReconcileInput): Promise<ReconcileResult> {
+export async function persistCatalogTaskCutoffCheck(args: ReconcileInput, outerTransaction?: sql.Transaction): Promise<ReconcileResult> {
   const { snapshot, checkedAt, observations } = args;
   if (!executionKey.test(snapshot.executionKey) || snapshot.links.length > MAX_LINKS
     || snapshot.occurrence.links.length !== snapshot.links.length) throw new Error("catalog_reconciliation_invalid");
@@ -55,7 +55,7 @@ export async function persistCatalogTaskCutoffCheck(args: ReconcileInput): Promi
     reason: "reason" in item ? item.reason : null }));
   if (atCutoff) events.push({ type: "cutoff_checked", linkId: null, reason: null });
 
-  return runSqlTransaction(async transaction => {
+  const apply = async (transaction: sql.Transaction): Promise<ReconcileResult> => {
     const { recordset } = await new sql.Request(transaction)
       .input("executionKey", sql.VarBinary(32), Buffer.from(snapshot.executionKey, "hex"))
       .input("expectedExecutionVersion", sql.VarBinary(8), expectedVersion)
@@ -69,7 +69,8 @@ export async function persistCatalogTaskCutoffCheck(args: ReconcileInput): Promi
       throw new Error("catalog_reconciliation_write_failed");
     }
     return recordset[0].status;
-  });
+  };
+  return outerTransaction ? apply(outerTransaction) : runSqlTransaction(apply);
 }
 
 const applyReconciliation = `

@@ -149,17 +149,16 @@ export const REGISTER_CATALOG_PHYSICAL_TARGET_SQL = `
     IF (SELECT COUNT(*) FROM @retired)<>1
       THROW 53621,N'No se pudo sustituir el vínculo verificado del catálogo.',1;
   END;
-  DECLARE @inserted TABLE (link_id uniqueidentifier NOT NULL);
-  INSERT core.catalog_physical_target_links(physical_target_key,portal_environment,target_kind,client_key,domain_key,
+  DECLARE @newLinkId uniqueidentifier=NEWID();
+  INSERT core.catalog_physical_target_links(link_id,physical_target_key,portal_environment,target_kind,client_key,domain_key,
     database_key,access_profile_key,access_profile_version,domain_route_fingerprint,proof_id,verified_by,verified_at,valid_until)
-  OUTPUT inserted.link_id INTO @inserted(link_id)
-  VALUES(@physicalKey,@environment,@kind,@clientKey,@domainKey,@databaseKey,@profileKey,CONVERT(binary(8),@profileVersion),
+  VALUES(@newLinkId,@physicalKey,@environment,@kind,@clientKey,@domainKey,@databaseKey,@profileKey,CONVERT(binary(8),@profileVersion),
     CONVERT(binary(32),@routeFingerprint),@proofId,@actorId,@verifiedAt,@validUntil);
 
   SELECT 'registered' AS result,LOWER(CONVERT(char(36),@targetId)) AS target_id,
     LOWER(CONVERT(char(36),inserted.link_id)) AS link_id,
     (SELECT LOWER(CONVERT(char(36),link_id)) FROM @retired) AS replaced_link_id
-  FROM @inserted AS inserted;`;
+  FROM core.catalog_physical_target_links AS inserted WHERE inserted.link_id=@newLinkId AND inserted.proof_id=@proofId;`;
 
 export async function registerSqlCatalogPhysicalTarget(input: CatalogPhysicalTargetRegistration): Promise<CatalogPhysicalTargetRegistrationResult> {
   if (!isValid(input)) return { status: "conflict", reason: "invalid-proof" };

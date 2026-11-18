@@ -297,7 +297,7 @@ export function reconcileCatalogTaskOccurrence(input: {
     const evidence = isOlder ? undefined : candidate;
     const lastEvidenceAt = evidence?.observedAt ?? effectiveAt;
     const verified = evidence?.status === "verified" && evidence.targetId === task.targetId &&
-      Number.isFinite(evidence.validUntil) && evidence.validUntil >= effectiveAt;
+      Number.isFinite(evidence.validUntil) && evidence.validUntil > effectiveAt;
     if (verified) {
       if (link.state !== "active") transitions.push({ type: "restored", linkId: link.linkId });
       return { linkId: link.linkId, state: "active", lastEvidenceAt };

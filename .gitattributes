@@ -8,3 +8,4 @@ migration/sql/035_catalog_sag_discovery_evidence.sql text eol=lf
 migration/sql/036_catalog_physical_targets.sql text eol=lf
 migration/sql/037_catalog_reporting_profiles.sql text eol=lf
 migration/sql/038_catalog_match_key_registry.sql text eol=lf
+migration/sql/039_catalog_physical_registration_time.sql text eol=lf

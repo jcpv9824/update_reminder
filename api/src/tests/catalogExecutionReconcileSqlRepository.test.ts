@@ -64,7 +64,7 @@ describe("catalog cutoff reconciliation SQL write", () => {
 
   it("retires only the unverified link at cutoff, ignoring recovery after the original cutoff", async () => {
     expect(await persistCatalogTaskCutoffCheck({ snapshot: fixture, checkedAt: cutoff + 10, observations: [
-      { linkId: "l1", observedAt: cutoff - 5, status: "verified", targetId: "target", validUntil: cutoff },
+      { linkId: "l1", observedAt: cutoff - 5, status: "verified", targetId: "target", validUntil: cutoff + 1 },
       { linkId: "l2", observedAt: cutoff + 2, status: "verified", targetId: "target", validUntil: cutoff + 10 },
     ] })).toBe("updated");
     expect(mocks.parameters.get("retired")).toBe(false);

@@ -8,6 +8,7 @@ import { readSqlClients } from "../lib/clientsSqlRepository";
 import { readSqlDomains, readSqlPublicDatabases } from "../lib/coreMastersSqlRepository";
 import { readSqlLicenseModules } from "../lib/licensingSqlRepository";
 import { readSqlWorkflowTasks } from "../lib/workflowTasksSqlRepository";
+import { runCatalogTaskCutoffSweep } from "../lib/catalogTaskCutoffWorker";
 import {
   completeSqlOneTimeSchedule,
   createSqlGeneratedTask,
@@ -316,12 +317,20 @@ export async function runTaskGeneration(
   };
 }
 
+async function sweepCatalogCutoffs(log: (message: string) => void): Promise<void> {
+  try {
+    const swept = await runCatalogTaskCutoffSweep();
+    if (swept) log(`Corte de catálogo: actualizadas=${swept.updated}; omitidas=${swept.skipped}; fallidas=${swept.failed}.`);
+  } catch { log("No se pudo comprobar el corte del catálogo; no se presume la ausencia de destinos."); }
+}
+
 // Timer trigger: 06:00 UTC = 01:00 hora de Bogotá.
 app.timer("generateDailyUpdateTasks", {
   schedule: "0 0 6 * * *",
   handler: async (_t: Timer, ctx: InvocationContext) => {
     const isoDate = todayInBogotaIso();
     ctx.log(`Iniciando generación de tareas para ${isoDate}...`);
+    await sweepCatalogCutoffs(message => ctx.log(message));
     try {
       const r = await runTaskGeneration(isoDate, (m) => ctx.log(m));
       ctx.log(`Generación completada. Tareas nuevas: ${r.created}; omitidas: ${r.skipped}.`);
@@ -383,6 +392,7 @@ app.http("refreshUpdateTasksManual", {
       if (!profile || !canGenerateScheduleTasks(profile, roleDefinitions)) {
         return { status: 403, jsonBody: { error: "No tiene permisos para generar tareas." } };
       }
+      await sweepCatalogCutoffs(message => ctx.log(message));
       const body = (await req.json().catch(() => ({}))) as any;
       const date = typeof body.date === "string" ? body.date : todayInBogotaIso();
       const windowStart = typeof body.windowStart === "string" ? body.windowStart : undefined;
