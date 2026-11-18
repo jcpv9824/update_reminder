@@ -268,7 +268,23 @@ un primer segmento sin `clave=` y ninguna presenta las claves estándar de
 servidor examinadas. En 111 casos el primer segmento coincide con el conjunto
 conservador de caracteres de dirección evaluado. Esto es coherente con el
 formato legado documentado en `dbAccessParser.ts` (servidor primero); no
-demuestra un destino aprobado ni que todas las etiquetas restantes coincidan.
+demuestra un destino aprobado. Una segunda consulta de sólo conteos,
+normalizando espacios y mayúsculas en las claves, encontró una clave de
+catálogo, una de usuario y una de contraseña en cada una de las 122 filas,
+sin claves adicionales ni catálogo duplicado. Los 122 primeros segmentos
+incluyen una coma; nueve también incluyen una barra invertida, compatible
+con una instancia nombrada. Esto no valida el puerto ni la identidad de
+ninguna instancia y no autoriza resolver instancias por SQL Browser.
+Una tercera comprobación de forma encontró 102 hosts con sintaxis DNS
+conservadora, 113 puertos numéricos en rango y 122 identificadores de base
+compatibles. La intersección sin instancia nombrada dio 96 de 122. Es una
+estimación sintáctica, no una ejecución del parser final, una conexión ni
+una autorización de 96 destinos. Las 26 filas restantes no se descartan ni
+se completan mediante deducciones de puerto, servidor o instancia.
+La proyección nueva, con reglas explícitas y ya comprobada en SQL Server
+2019, dio 98 candidatas y 24 no verificadas en 122 filas (203 ms). Es la
+medición del parser final, distinta de la estimación anterior; no constituye
+prueba de conectividad, identidad ni autorización.
 La proyección para v2 debe contemplar ese formato, ejecutarse en el origen,
 y devolver sólo los metadatos permitidos o un marcador no verificado. No se
 debe reutilizar el parser legado, que recibe la cadena completa y devuelve
@@ -348,7 +364,7 @@ mutaciones heredadas al activar lectura del catálogo.
 
 ## Antes de activar
 
-1. Certificar el esquema 031–051 en QA. `Apply-PortalSAGWeb-PendingMigrationsThroughSession.ps1 -Environment qa -IncludeCatalog` suma 031–051 al paquete. Sus hashes están fijados sobre texto LF. Las consultas de tareas requieren la vista de la 042; la carga de dominios compartidos, la 043; y el programador, operaciones versionadas 044–045, cobertura 046, intenciones manuales 047, recibos de procedencia 048, observaciones 049, testigos históricos 050 y cola de actualización 051. Activar filtros y programación solo cuando las correspondencias estén certificadas.
+1. El esquema 031–054 está aplicado y verificado en QA mediante el ejecutor con `-Environment qa -IncludeCatalog`. La matriz con rollback de 053 (publicador dedicado) pasó 46 casos. Falta comprobar el COMMIT mediante el principal previsto y el flujo de extremo a extremo antes de habilitarlo. Las consultas de tareas requieren la vista de la 042; la carga de dominios compartidos, la 043; y el programador, operaciones versionadas 044–045, cobertura 046, intenciones manuales 047, recibos de procedencia 048, observaciones 049, testigos históricos 050 y cola de actualización 051. Activar filtros y programación solo cuando las correspondencias estén certificadas.
 2. Integrar y certificar la carga de revisiones con cuentas de sólo lectura, credenciales referenciadas y pruebas de aislamiento por fuente. Un borrador no cuenta como fuente habilitada y un endpoint que responde no equivale a un catálogo alimentado. El ciclo automático del candidato 051 todavía necesita certificación integrada y operativa: la publicación conserva por defecto 30 minutos de frescura y el temporizador diario heredado sólo corre a la 01:00 de Bogotá. Debe demostrarse que la cola y la reconciliación periódica producen una lectura y observación oportunas antes de cada corte, con aislamiento de fallos, límites de trabajo y autorización de publicación; no se resuelve ampliando artificialmente la frescura ni declarando suficiente el fixture histórico de QA.
 3. Conectar y certificar las relaciones cliente–dominio–base, el catálogo de licencias, la deduplicación en la programación y en tareas, y el reporte de usuarios activos. El código de comparación, corte y conteo no habilita por sí solo el programador, no identifica destinos físicos sin evidencia aprobada y no prueba el esquema `usuarios` de una base remota. Verificar de punta a punta en QA la asignación, el corte y los registros de apertura, revelación y copia usando un perfil de prueba, no credenciales reales de clientes.
    La revisión ERP y el registro físico aún no identifican por sí solos el mismo vínculo lógico. Poblar y certificar la correspondencia aprobada de la 042 antes de habilitar consumidores; nunca inferirla por nombre de cliente, hostname, nombre de base o coincidencia casual de identificadores. Los listados heredados sin paginación tienen un tope: no constituyen un inventario completo. El proveedor futuro deberá comprobar las versiones de las revisiones y de las equivalencias utilizadas en cada planificación, y volver a comprobar el vínculo al registrar o autorizar la tarea. Con vínculos ya registrados, no ejecutar el reemplazo masivo heredado de la 021: elimina filas de maestros referenciadas por estas claves foráneas. La carga del catálogo debe reconciliar sin borrar identidades ni historia.
@@ -368,15 +384,14 @@ guardaron mediante el servicio existente en Key Vault, nunca en SQL ni Git.
 Los dos perfiles quedaron **deshabilitados**: guardar un perfil no certifica ni
 activa su vínculo de catálogo. No se cambiaron App Settings ni permisos remotos.
 
-El preflight del catálogo confirmó `compatible=true` y `readOnly=true` en
-ambas fuentes, pero la lectura de datos dentro de SNAPSHOT no pudo completarse.
-SAG Admin devolvió el número SQL 3952. Una consulta SELECT de metadatos confirmó
-`snapshot_isolation_state=0` en ambas fuentes. ERP sí tiene
-`is_read_committed_snapshot_on=1`; SAG Admin no. RCSI no sustituye el SNAPSHOT
-exigido para una revisión paginada coherente. No se relajó ese contrato ni se
-modificó la configuración del origen. Falta resolver con el administrador del
-origen la disponibilidad de SNAPSHOT antes de certificar y activar las fuentes.
-Una conexión TLS válida no se reporta como catálogo ya alimentado.
+El preflight inicial encontró SNAPSHOT deshabilitado en ambas fuentes; no
+se sustituyó por RCSI ni se cambió la configuración de los orígenes desde el
+Portal. Después de que el propietario habilitó SNAPSHOT, la comprobación
+directa de los dos perfiles de sólo lectura devolvió `verified`: ambos
+orígenes pasaron esquema, permisos efectivos y lectura bajo SNAPSHOT con TLS
+estricto. No se devolvieron credenciales ni filas. Este resultado certifica la
+conexión y el contrato de lectura del origen, no una publicación en el Portal:
+los perfiles siguen sin una activación de catálogo certificada.
 
 **Verificación posterior a habilitar SNAPSHOT.** Una lectura de `sys.databases`
 confirmó `snapshot_isolation_state=1` (`ON`) en ERP y SAG Admin. El verificador

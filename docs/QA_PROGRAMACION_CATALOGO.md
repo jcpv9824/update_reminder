@@ -95,6 +95,34 @@ grants EXECUTE y ausencia de miembros para el rol dedicado; no se instaló
 053 de forma permanente. Aún faltan las pruebas funcionales de autorización,
 transición, auditoría y confirmación.
 
+El primer ensayo funcional de 053 falló con una transacción no confirmable.
+La siguiente consulta de sólo lectura también falló: la conexión efímera
+seguía en el contexto de un principal sintético. No se debe reutilizar esa
+sesión para escribir. El reensayo exige una sesión nueva de QA, comprobar
+el contexto y la ausencia de objetos de prueba, y validar la limpieza ante
+errores antes de repetir toda la matriz. No se efectuó un cambio en
+producción.
+
+Con la nueva sesión de QA se comprobó el contexto original, cero
+transacciones abiertas y la ausencia de principales y objetos de ensayo.
+El fixture de 053 pasó arranque (1/1), permisos (10/10) y la matriz completa
+(46/46, 6,785 s), con rollback y cero filas de prueba. Después se aplicó 053
+por el ejecutor. Esto aún no certifica el COMMIT de una publicación real
+bajo un principal de trabajador dedicado.
+
+La comprobación directa de los dos perfiles oficiales de origen devolvió
+`verified` para ERP y SAG Admin: las cuentas de sólo lectura completaron la
+verificación por SNAPSHOT sin imprimir credenciales ni filas de clientes.
+Esto no sustituye el ensayo de publicación contra PortalSAGWeb-TEST.
+
+El adaptador de API para 053 exige un pool dedicado y no está conectado al
+trabajador. No se debe habilitar v2 cambiando sólo el valor de una fila: la
+activación, el reclamo de cola, la prueba de licencias, los maestros y las
+reglas de corte aún verifican el contrato v1. La transición debe probar que
+un fallo del publicador v2 no reemplaza la última revisión válida ni amplía
+la selección de una tarea o programación. No se usa la cuenta general del
+Portal como respaldo del publicador dedicado.
+
 ## Verificación de preparación del reporte (2026-11-18)
 
 El conjunto enfocado de conteo, perfiles, permisos de destinatarios y outbox
@@ -149,6 +177,51 @@ misma instancia, rechazar UPDATE y DELETE, rechazar ambiente incorrecto,
 UUID cero y reutilización de prueba. Se conserva el DENY de escritura directa
 para el rol general. Falta implementar y verificar el escritor autorizado;
 la tabla, por sí sola, no acredita ningún destino.
+
+La certificación, el registro y la lectura del reporte exigen ahora que la
+instancia coincida con esa relación de 054. El conteo vuelve a comprobar la
+ruta configurada antes de acceder al secreto, después de ese acceso y antes
+de devolver un resultado. Una relación ausente o discordante no se interpreta
+como cero usuarios. La matriz local registró ocho fallos antes del cambio y
+luego pasó 41 casos en seis archivos. La prueba adicional de dos destinos
+pasó en la corrida de maestros (9/9): se conserva el conteo del inscrito
+cuando falta el perfil del otro. La consulta real del repositorio también
+se ejecutó en QA contra 054 con un ID sintético y devolvió cero filas, como
+corresponde. Los perfiles aún requieren registro y verificación de extremo
+a extremo; no se habilitó el conteo en Azure.
+
+La primera proyección de destinos legados pasó la revisión de sintaxis, pero
+el SELECT de 61 filas sintéticas en SAG Admin agotó 8 s y luego 15 s, bajo la
+cuenta de solo lectura y SNAPSHOT. No se integró en las páginas del catálogo
+(presupuesto por página: 4 s). Este resultado no es una verificación de
+destinos ni indica que se hayan contactado sus servidores.
+
+La versión optimizada corrigió cuatro aceptaciones indebidas detectadas por
+SQL Server y aprobó **78/78** casos sintéticos en **272 ms** sobre engine 15,
+compatibilidad 130. El SELECT real devolvió sólo agregados en **203 ms**:
+122 asociaciones, 98 candidatas y 24 no verificadas. No se devolvieron
+direcciones, bases ni cadenas; no se contactaron esos destinos. La proyección
+todavía no está conectada al lector de catálogo ni autoriza conexiones.
+
+El ejecutor y el manifiesto ya incluyen 053 y 054. Se comprobó el SHA-256 de
+ambos archivos y el analizador TSql150 aprobó los scripts hasta 054. En QA se
+aplicaron ambos dentro de una transacción de ensayo y se ejecutó el SELECT
+real de posverificación: 31 tablas, 41 triggers y ambos bloques de esquema y
+permisos aprobados. El historial permaneció en 22 migraciones de catálogo
+(031–052) porque el ensayo no escribió entradas. El rollback eliminó el
+rol y los objetos nuevos. No es un PASS de aplicación permanente ni del
+COMMIT del publicador.
+
+En la ejecución autónoma de 054, SQL devolvió `-999` al adquirir el bloqueo:
+faltaba abrir la transacción propia. Se reprodujo con `@@TRANCOUNT=0`, se
+añadió la apertura condicional y se renovó el SHA-256 del manifiesto a
+`f55689d6161c01fe150e131d0e1231b0ff85c8608660aa6440a91c22994284b5`.
+El diagnóstico corregido obtuvo bloqueo `0`, una transacción al adquirirlo
+y cero tras rollback; el analizador TSql150 pasó. El ejecutor aplicó 054 y
+verificó 031–054. Una consulta independiente confirmó 24 migraciones de
+catálogo, 2/2 hashes exactos, cero miembros en el rol publicador, cero
+instancias inscritas y cero fuentes activas en QA. No se ejecutó en
+producción ni se activó el trabajador.
 
 La consulta de recursos de Azure no encontró slots en la Function App de
 producción y encontró una sola Static Web App en el grupo productivo. No se
