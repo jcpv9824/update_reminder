@@ -289,6 +289,26 @@ modificó la configuración del origen. Falta resolver con el administrador del
 origen la disponibilidad de SNAPSHOT antes de certificar y activar las fuentes.
 Una conexión TLS válida no se reporta como catálogo ya alimentado.
 
+**Verificación posterior a habilitar SNAPSHOT.** Una lectura de `sys.databases`
+confirmó `snapshot_isolation_state=1` (`ON`) en ERP y SAG Admin. El verificador
+normal aprobó SAG Admin; ERP no pasó con los plazos vigentes. Una ejecución
+diagnóstica del lector existente con 15 s por sentencia, 30 s totales y tope de
+5.000 filas completó **3.516 filas ERP** en 13,27 s y **86 filas SAG Admin** en
+1,47 s. Sólo se emitieron conteos y tiempos. En ERP el control de esquema y
+permisos tomó 10,63 s; cada página tomó menos de 200 ms. El plazo normal por
+sentencia es 4 s. La evidencia apunta al plazo del control previo, no al inicio
+de sesión ni a SNAPSHOT. Falta corregir y certificar ese límite sin debilitar los
+controles de solo lectura ni ampliar el plazo de las páginas. No se publicaron
+revisiones, activaron fuentes ni cambiaron configuraciones durante la prueba.
+
+El candidato posterior separa los plazos: 15 s para esquema/permisos, 4 s
+por página por defecto, 20 s para la lectura completa y 30 s para el
+verificador. No cambia el SQL ni los controles de permisos, TLS y SNAPSHOT.
+Con el API compilado y sin overrides, el verificador aprobó ERP (12,53 s)
+y SAG Admin (1,40 s). Las lecturas completas dieron ERP 3.516 filas (13,18 s)
+y SAG Admin 86 filas (1,37 s). La prueba usó las cuentas de solo lectura y
+sólo emitió conteos y tiempos; no publicó revisiones ni activó fuentes.
+
 Los antecedentes siguientes corresponden a perfiles anteriores y no describen
 los permisos de las nuevas cuentas de sólo lectura.
 

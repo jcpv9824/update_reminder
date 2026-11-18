@@ -4,6 +4,17 @@
 
 ## Estado
 
+**Recuperación pública acotada — verificada 2026-11-18.** En producción, el
+verificador de recuperación dio **7/7**: cinco archivos respondieron con
+redirección firmada al gateway SeaweedFS, lectura, SHA-256 y rango correctos; los
+dos logos devolvieron PNG con el hash esperado. Azure confirmó el proveedor de
+escritura SeaweedFS y las dos referencias a Key Vault, sin exponer sus valores.
+`GET /api/portal-runtime-status` dio 200, SQL conectado y habilitado, sin modo
+mantenimiento. El Health Check de plataforma no tiene ruta configurada; esta
+evidencia corresponde al probe HTTP de la aplicación. No se cambiaron
+localizadores ni configuración durante la verificación. Esto no certifica la
+transferencia de otros archivos ni autoriza retirar Azure Blob.
+
 El adaptador runtime y la migración SQL `024_s3_object_storage.sql` están preparados localmente. No deben desplegarse ni aplicarse en producción hasta recibir el contrato del proveedor, transferir todos los objetos y probar rollback. Azure Blob permanece operativo y no se modifica durante esta preparación.
 
 ## Datos que debe entregar infraestructura

@@ -122,7 +122,7 @@ El workflow de Static Web Apps debe ejecutar las pruebas y el build antes de pub
 
 ## Comprobaciones posteriores
 
-1. `GET /api/health` devuelve `200` con:
+1. `GET /api/portal-runtime-status` devuelve `200` con:
    - `backend = sql`
    - `sqlConnected = true`
    - `sqlSecurityEnabled = true`

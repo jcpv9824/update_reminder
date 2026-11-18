@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { catalogDocumentKey } from "../lib/catalogCustomerDirectory";
 import {
   readCatalogExternalSource, verifyCatalogExternalSource,
@@ -14,14 +14,23 @@ const erpRow = (sourceRecordId: number, activeCode: string | null = "S", documen
   ({ sourceRecordId, officialName: "Nombre ERP", activeCode, documentNumber });
 
 function fake(pages: (statement: CatalogExternalReadStatement) => readonly unknown[] | Promise<readonly unknown[]>, options: {
-  schema?: readonly unknown[]; consistency?: CatalogExternalReadSession["consistency"];
+  schema?: readonly unknown[] | (() => Promise<readonly unknown[]>);
+  consistency?: CatalogExternalReadSession["consistency"];
+  setupMs?: number;
 } = {}) {
-  const select = vi.fn(async (request: CatalogExternalReadStatement) => request.tag === "schema" ? options.schema ?? validSchema : pages(request));
+  const select = vi.fn(async (request: CatalogExternalReadStatement) => request.tag === "schema"
+    ? typeof options.schema === "function" ? options.schema() : options.schema ?? validSchema
+    : pages(request));
   const withConsistentRead = vi.fn();
   const transport: CatalogExternalSourceTransport = {
     withConsistentRead(request, read) {
       withConsistentRead(request);
-      return read({ select, consistency: options.consistency ?? "verified" });
+      const session = { select, consistency: options.consistency ?? "verified" };
+      if (options.setupMs === undefined) return read(session);
+      return new Promise(resolve => {
+        const timer = setTimeout(() => resolve(read(session)), options.setupMs);
+        request.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
+      });
     },
   };
   return { transport, select, withConsistentRead };
@@ -50,7 +59,7 @@ describe("catalog verified external contracts", () => {
     expect(requests[1].sql).toMatch(/FROM dbo\.clientes AS c\s+LEFT JOIN dbo\.terceros AS t ON t\.ka_nl_tercero = c\.ka_nl_tercero/);
     expect(requests[1].sql).toMatch(/TOP \(@pageSize\)[\s\S]*> @afterId[\s\S]*ORDER BY c\.ka_nl_tercero ASC/);
     expect(requests.map(request => request.parameters)).toEqual([{}, { afterId: null, pageSize: 2 }, { afterId: 10, pageSize: 2 }]);
-    expect(requests.every(request => request.timeoutMs === 4000)).toBe(true);
+    expect(requests.map(request => request.timeoutMs)).toEqual([15_000, 4000, 4000]);
     expect(requests.every(request => request.sql.startsWith("SELECT"))).toBe(true);
   });
 
@@ -156,5 +165,90 @@ describe("catalog verified external contracts", () => {
     const controller = new AbortController();
     controller.abort();
     expect(await readCatalogExternalSource(transport, "erp_v1", { signal: controller.signal })).toEqual({ status: "unavailable", reason: "cancelled" });
+  });
+});
+
+const delayedSchema = () => new Promise<readonly unknown[]>(resolve => setTimeout(() => resolve(validSchema), 10_631));
+const hangs = () => new Promise<readonly unknown[]>(() => {});
+const executionModes = [
+  ["verification", 30_000, 26_500, "verified", "unavailable"],
+  ["refresh", 20_000, 16_500, { status: "complete", records: [erpRow(1)] }, { status: "unavailable", reason: "timeout" }],
+] as const;
+
+describe("external schema and page budgets", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  describe.each(executionModes)("%s", (mode, totalMs, setupMs, complete, timeout) => {
+    const run = (transport: CatalogExternalSourceTransport, signal?: AbortSignal) => mode === "verification"
+      ? verifyCatalogExternalSource(transport, "erp_v1", signal)
+      : readCatalogExternalSource(transport, "erp_v1", { signal });
+
+    it("accepts the observed 10,631ms schema check without relaxing the page or permissions check", async () => {
+      const { transport, withConsistentRead, select } = fake(() => [erpRow(1)], { schema: delayedSchema });
+      const pending = run(transport);
+      await vi.advanceTimersByTimeAsync(10_631);
+      expect(await pending).toEqual(complete);
+      expect(withConsistentRead).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ timeoutMs: totalMs }));
+      expect(select.mock.calls.map(([statement]) => [statement.tag, statement.timeoutMs]))
+        .toEqual([["schema", 15_000], ["page", 4000]]);
+    });
+
+    it("cancels a stalled schema after 15 seconds and never reads a page", async () => {
+      const { transport, select } = fake(() => [erpRow(1)], { schema: hangs });
+      const done = vi.fn();
+      const pending = run(transport).then(value => { done(); return value; });
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(done).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toEqual(timeout);
+      expect(select.mock.calls.map(([statement]) => statement.tag)).toEqual(["schema"]);
+      expect(select.mock.calls[0][0].signal.aborted).toBe(true);
+    });
+
+    it("keeps the default deadline for a stalled page at 4 seconds", async () => {
+      const { transport, select } = fake(hangs);
+      const done = vi.fn();
+      const pending = run(transport).then(value => { done(); return value; });
+      await vi.advanceTimersByTimeAsync(3999);
+      expect(done).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toEqual(timeout);
+      expect(select.mock.calls.map(([statement]) => [statement.tag, statement.timeoutMs]))
+        .toEqual([["schema", 15_000], ["page", 4000]]);
+      expect(select.mock.calls[1][0].signal.aborted).toBe(true);
+    });
+
+    it("lets the total and caller cancellation interrupt an in-flight schema first", async () => {
+      const { transport, select, withConsistentRead } = fake(() => [erpRow(1)], { schema: hangs, setupMs });
+      const done = vi.fn();
+      const pending = run(transport).then(value => { done(); return value; });
+      await vi.advanceTimersByTimeAsync(totalMs - 1);
+      expect(done).not.toHaveBeenCalled();
+      expect(select.mock.calls.map(([statement]) => statement.tag)).toEqual(["schema"]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toEqual(timeout);
+      expect(withConsistentRead.mock.calls[0][0].signal.aborted).toBe(true);
+      expect(select.mock.calls[0][0].signal.aborted).toBe(true);
+
+      const aborting = fake(() => [erpRow(1)], { schema: hangs });
+      const caller = new AbortController();
+      const interrupted = run(aborting.transport, caller.signal);
+      await vi.advanceTimersByTimeAsync(100);
+      caller.abort();
+      expect(await interrupted).toEqual(mode === "verification" ? "unavailable" : { status: "unavailable", reason: "cancelled" });
+      expect(aborting.select.mock.calls.map(([statement]) => statement.tag)).toEqual(["schema"]);
+      expect(aborting.select.mock.calls[0][0].signal.aborted).toBe(true);
+    });
+  });
+
+  it("applies a statement timeout override to pages only, not the schema", async () => {
+    const { transport, select } = fake(hangs, { schema: delayedSchema });
+    const pending = readCatalogExternalSource(transport, "erp_v1", { statementTimeoutMs: 25 });
+    await vi.advanceTimersByTimeAsync(10_656);
+    expect(await pending).toEqual({ status: "unavailable", reason: "timeout" });
+    expect(select.mock.calls.map(([statement]) => [statement.tag, statement.timeoutMs]))
+      .toEqual([["schema", 15_000], ["page", 25]]);
+    expect(select.mock.calls[1][0].signal.aborted).toBe(true);
   });
 });

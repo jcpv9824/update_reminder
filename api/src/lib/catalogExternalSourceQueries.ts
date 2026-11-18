@@ -49,6 +49,7 @@ export interface CatalogExternalSourceTransport {
 export interface CatalogExternalReadOptions {
   pageSize?: number;
   maxRows?: number;
+  /** Overrides only the per-page budget, not the fixed schema probe budget. */
   statementTimeoutMs?: number;
   totalTimeoutMs?: number;
   signal?: AbortSignal;
@@ -282,6 +283,19 @@ async function bounded<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs: 
   }
 }
 
+const schemaTimeoutMs = 15_000;
+const defaultPageTimeoutMs = 4_000;
+const verificationTimeoutMs = 30_000;
+
+function selectBoundedStatement(session: CatalogExternalReadSession, contract: CatalogExternalContract,
+  tag: CatalogExternalReadStatement["tag"], parameters: CatalogExternalReadStatement["parameters"],
+  parent: AbortSignal, pageTimeoutMs = defaultPageTimeoutMs) {
+  const timeoutMs = tag === "schema" ? schemaTimeoutMs : pageTimeoutMs;
+  // Permission metadata can take longer than a page; the parent deadline still caps both.
+  return bounded(signal => session.select({ tag, sql: catalogExternalSelectSql(contract, tag), parameters, timeoutMs, signal }),
+    timeoutMs, parent);
+}
+
 /** Prove the fixed projection can be read without storing or returning any source rows. */
 export async function verifyCatalogExternalSource(
   transport: CatalogExternalSourceTransport, contract: CatalogExternalContract, signal?: AbortSignal,
@@ -289,25 +303,22 @@ export async function verifyCatalogExternalSource(
   if (contract !== "erp_v1" && contract !== "sag_admin_v1") return "unavailable";
   try {
     return await bounded(parent => transport.withConsistentRead({
-      contract, timeoutMs: 10_000, signal: parent,
+      contract, timeoutMs: verificationTimeoutMs, signal: parent,
     }, async session => {
       if (session.consistency !== "verified") throw new Unavailable("consistency_unverified");
-      const select = (tag: CatalogExternalReadStatement["tag"], parameters: CatalogExternalReadStatement["parameters"]) =>
-        bounded(signal => session.select({ tag, sql: catalogExternalSelectSql(contract, tag), parameters, timeoutMs: 4000, signal }),
-          4000, parent);
-      const schema = await select("schema", {});
+      const schema = await selectBoundedStatement(session, contract, "schema", {}, parent);
       if (!Array.isArray(schema) || schema.length !== 1) throw new Unavailable("schema_unverified");
       const proof = rowWithKeys(schema[0], ["compatible", "readOnly"]);
       if (proof.compatible !== true) throw new Unavailable("schema_unverified");
       if (proof.readOnly !== true) throw new Unavailable("write_access");
-      const rows = await select("page", { afterId: null, pageSize: 1 });
+      const rows = await selectBoundedStatement(session, contract, "page", { afterId: null, pageSize: 1 }, parent);
       if (!Array.isArray(rows) || rows.length > 1) throw new Unavailable("invalid_rows");
       for (const row of rows) {
         if (contract === "erp_v1") parseErp(row);
         else parseSag(row);
       }
       return "verified" as const;
-    }), 10_000, signal);
+    }), verificationTimeoutMs, signal);
   } catch (error) {
     return error instanceof Unavailable && error.reason === "write_access" ? "not_read_only" : "unavailable";
   }
@@ -323,13 +334,11 @@ export async function readCatalogExternalSource(
   try {
     const pageSize = positiveInt(options.pageSize, 500, 1000);
     const maxRows = positiveInt(options.maxRows, 50_000, 100_000);
-    const statementTimeoutMs = positiveInt(options.statementTimeoutMs, 4000, 15_000);
+    const pageTimeoutMs = positiveInt(options.statementTimeoutMs, defaultPageTimeoutMs, 15_000);
     const totalTimeoutMs = positiveInt(options.totalTimeoutMs, 20_000, 120_000);
     const records = await bounded(signal => transport.withConsistentRead({ contract, timeoutMs: totalTimeoutMs, signal }, async session => {
       if (session.consistency !== "verified") throw new Unavailable("consistency_unverified");
-      const select = (tag: CatalogExternalReadStatement["tag"], sql: string, parameters: CatalogExternalReadStatement["parameters"]) =>
-        bounded(statementSignal => session.select({ tag, sql, parameters, timeoutMs: statementTimeoutMs, signal: statementSignal }), statementTimeoutMs, signal);
-      const schema = await select("schema", catalogExternalSelectSql(contract, "schema"), {});
+      const schema = await selectBoundedStatement(session, contract, "schema", {}, signal);
       if (!Array.isArray(schema) || schema.length !== 1) throw new Unavailable("schema_unverified");
       let proof: Record<string, unknown>;
       try { proof = rowWithKeys(schema[0], ["compatible", "readOnly"]); }
@@ -342,7 +351,7 @@ export async function readCatalogExternalSource(
       while (!signal.aborted) {
         // The extra row is an existence probe when at the limit, not a record to publish.
         const limit = Math.min(pageSize, maxRows - pageRows.length + 1);
-        const rows = await select("page", catalogExternalSelectSql(contract, "page"), { afterId, pageSize: limit });
+        const rows = await selectBoundedStatement(session, contract, "page", { afterId, pageSize: limit }, signal, pageTimeoutMs);
         if (!Array.isArray(rows) || rows.length > limit) throw new Unavailable("invalid_rows");
         if (pageRows.length + rows.length > maxRows) throw new Unavailable("row_limit");
         for (const raw of rows) {
