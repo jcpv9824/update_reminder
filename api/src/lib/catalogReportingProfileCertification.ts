@@ -10,21 +10,26 @@ import { resolveCatalogSqlInstanceRoute } from "./catalogSqlInstanceRegistry";
 
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 
-async function readDestination(portalEnvironment: CatalogEnvironment, id: string): Promise<Buffer | null> {
+async function readDestination(portalEnvironment: CatalogEnvironment, id: string): Promise<{ fingerprint: Buffer; instanceId: string } | null> {
   const pool = await getSqlPool();
   const result = await pool.request().input("env", sql.VarChar(10), portalEnvironment)
-    .input("id", sql.UniqueIdentifier, id).query<{ fingerprint: Buffer }>(`
-      SELECT t.identity_fingerprint AS fingerprint
+    .input("id", sql.UniqueIdentifier, id).query<{ fingerprint: Buffer; instanceId: string }>(`
+      DECLARE @now datetime2(3)=SYSUTCDATETIME();
+      SELECT t.identity_fingerprint AS fingerprint, LOWER(CONVERT(char(36),i.trusted_instance_id)) AS instanceId
       FROM core.catalog_physical_targets t
+      JOIN core.catalog_sql_target_instance_identities i ON i.physical_target_key=t.physical_target_key
+        AND i.portal_environment=t.portal_environment AND i.target_kind=t.target_kind AND i.registered_at<=@now
       WHERE t.portal_environment=@env AND t.target_kind='database' AND t.target_id=@id
         AND EXISTS (
           SELECT 1 FROM core.catalog_physical_target_links l
-          WHERE l.physical_target_key=t.physical_target_key AND l.retired_at IS NULL
-            AND l.verified_at<=SYSUTCDATETIME() AND l.valid_until>SYSUTCDATETIME()
+          WHERE l.physical_target_key=t.physical_target_key AND l.portal_environment=t.portal_environment
+            AND l.target_kind=t.target_kind AND l.retired_at IS NULL AND l.verified_at<=@now AND l.valid_until>@now
         );
     `);
-  const bytes = result.recordset[0]?.fingerprint;
-  return result.recordset.length === 1 && Buffer.isBuffer(bytes) && bytes.length === 32 ? Buffer.from(bytes) : null;
+  const row = result.recordset[0];
+  return result.recordset.length === 1 && Buffer.isBuffer(row?.fingerprint) && row.fingerprint.length === 32 &&
+    typeof row.instanceId === "string" && uuid.test(row.instanceId) && row.instanceId !== "00000000-0000-0000-0000-000000000000"
+    ? { fingerprint: Buffer.from(row.fingerprint), instanceId: row.instanceId } : null;
 }
 
 const defaults = {
@@ -51,14 +56,15 @@ export async function certifyCatalogReportingProfile(input: {
   try {
     if (signal.aborted) return { status: "unavailable" };
     const evidence = structuredClone(input.evidence);
-    const [fingerprint, profile] = await Promise.all([io.readDestination(portalEnvironment, targetId), io.readConnection(connectionId)]);
-    if (!fingerprint || signal.aborted || !profile || profile.id !== connectionId || !profile.active ||
+    const [destination, profile] = await Promise.all([io.readDestination(portalEnvironment, targetId), io.readConnection(connectionId)]);
+    if (!destination || signal.aborted || !profile || profile.id !== connectionId || !profile.active ||
       profile.status !== "active" || !profile.encrypt || !profile.passwordConfigured || !profile.passwordSecretName
       || !/^[a-f0-9]{16}$/i.test(profile.etag)) return { status: "unavailable" };
     const resolveInstance = () => resolveCatalogSqlInstanceRoute(io.readInstanceRoutes(), portalEnvironment,
       profile.serverHost, profile.serverPort);
     const trustedInstanceId = resolveInstance();
-    if (!trustedInstanceId) return { status: "unavailable" };
+    if (!trustedInstanceId || trustedInstanceId !== destination.instanceId) return { status: "unavailable" };
+    const fingerprint = destination.fingerprint;
     const proofId = randomUUID();
     const target = { physicalDatabaseId: targetId, serverGroupId: trustedInstanceId, reportingProfileId: proofId };
     const run = io.createReader(async (_ref, readerSignal) => {

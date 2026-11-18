@@ -109,4 +109,11 @@ describe("catalog reporting profile registration", () => {
       "r.role_id=N'super_admin'", "u.source_id COLLATE Latin1_General_100_BIN2=@actor COLLATE Latin1_General_100_BIN2",
       "DATALENGTH(u.source_id)=DATALENGTH(@actor)"]) expect(guard).toContain(clause);
   });
+
+  it("requires the locked namespace of that exact SQL destination before modifying reporting profiles", () => {
+    const guard = REGISTER_CATALOG_REPORTING_PROFILE_SQL.split("SELECT @connectionKey=")[0];
+    expect(guard).toContain("JOIN core.catalog_sql_target_instance_identities AS i WITH (HOLDLOCK)");
+    for (const clause of ["i.physical_target_key=t.physical_target_key", "i.portal_environment=t.portal_environment",
+      "i.target_kind=t.target_kind", "i.trusted_instance_id=@instanceId", "i.registered_at<=@now"]) expect(guard).toContain(clause);
+  });
 });

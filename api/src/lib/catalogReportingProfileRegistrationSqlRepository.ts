@@ -81,6 +81,9 @@ export const REGISTER_CATALOG_REPORTING_PROFILE_SQL = `
   DECLARE @targetKey bigint,@nameFingerprint binary(32),@connectionKey bigint;
   SELECT @targetKey=t.physical_target_key,@nameFingerprint=t.database_name_fingerprint
   FROM core.catalog_physical_targets AS t WITH (UPDLOCK,HOLDLOCK)
+  JOIN core.catalog_sql_target_instance_identities AS i WITH (HOLDLOCK)
+    ON i.physical_target_key=t.physical_target_key AND i.portal_environment=t.portal_environment
+      AND i.target_kind=t.target_kind AND i.trusted_instance_id=@instanceId AND i.registered_at<=@now
   WHERE t.target_id=@targetId AND t.portal_environment=@environment AND t.target_kind='database'
     AND t.identity_fingerprint=CONVERT(binary(32),@identityFingerprint);
 

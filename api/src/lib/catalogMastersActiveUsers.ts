@@ -5,6 +5,7 @@ import { readSqlCatalogReportingProfiles } from "./catalogReportingProfilesSqlRe
 import type { CatalogEnvironment } from "./catalogSourceConfiguration";
 import { readStoredExternalDatabaseConnection } from "./integrationConnectionsSqlRepository";
 import { getSecret } from "./keyVault";
+import { resolveCatalogSqlInstanceRoute } from "./catalogSqlInstanceRegistry";
 import type { SqlMastersReportData } from "./mastersReportSqlData";
 import type { Environment } from "../types/models";
 
@@ -13,6 +14,7 @@ const dependencies = {
   readProfiles: readSqlCatalogReportingProfiles,
   readConnection: readStoredExternalDatabaseConnection,
   readSecret: getSecret,
+  readInstanceRoutes: () => process.env.PORTAL_CATALOG_SQL_INSTANCE_ROUTES,
   createReader: createCatalogActiveUserSqlReader,
 };
 
@@ -83,6 +85,7 @@ export async function loadCatalogMastersActiveUsers(
       !profile.expectedFingerprint.equals(original.expectedFingerprint)) return null;
     return profile;
   };
+  const confirmedRoutes = new Map<string, () => boolean>();
   const reader = io.createReader(async (target, signal) => {
     const profile = await recheck(target, signal);
     if (!profile) return null;
@@ -90,12 +93,17 @@ export async function loadCatalogMastersActiveUsers(
     if (!connection || connection.id !== profile.connectionId || connection.etag !== profile.profileVersion ||
       !connection.active || connection.status !== "active" || !connection.encrypt || !connection.passwordConfigured ||
       !connection.passwordSecretName || signal.aborted) return null;
+    const { serverHost, serverPort } = connection;
+    const routeMatches = () => resolveCatalogSqlInstanceRoute(io.readInstanceRoutes(), portalEnvironment,
+      serverHost, serverPort) === target.serverGroupId;
+    if (!routeMatches()) return null;
     const password = await io.readSecret(connection.passwordSecretName, signal);
-    if (!password || signal.aborted) return null;
+    if (!password || signal.aborted || !routeMatches()) return null;
+    confirmedRoutes.set(target.physicalDatabaseId, routeMatches);
     return {
       target, evidence: profile.evidence,
       identity: { instanceId: target.serverGroupId, expectedFingerprint: profile.expectedFingerprint },
-      connection: { server: connection.serverHost, port: connection.serverPort,
+      connection: { server: serverHost, port: serverPort,
         database: connection.databaseName, username: connection.username, password },
     };
   });
@@ -103,7 +111,9 @@ export async function loadCatalogMastersActiveUsers(
     async (target, signal) => {
       const count = await reader(target, signal);
       // An expiring/revoked proof or a changed alias cannot surface a count that was in flight.
-      if (!await recheck(target, signal)) throw new Error("catalog_active_users_proof_changed");
+      if (!await recheck(target, signal) || !confirmedRoutes.get(target.physicalDatabaseId)?.()) {
+        throw new Error("catalog_active_users_proof_changed");
+      }
       return count;
     });
 }

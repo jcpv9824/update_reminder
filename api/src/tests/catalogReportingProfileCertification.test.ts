@@ -14,7 +14,7 @@ function setup() {
   const inspect = vi.fn();
   const io = {
     readInstanceRoutes: vi.fn().mockReturnValue(registry),
-    readDestination: vi.fn().mockResolvedValue(expected),
+    readDestination: vi.fn().mockResolvedValue({ fingerprint: expected, instanceId: trustedInstanceId }),
     readConnection: vi.fn().mockResolvedValue({ id: args.connectionId, active: true, status: "active", encrypt: true,
       passwordConfigured: true, passwordSecretName: "synthetic", etag: "0102030405060708",
       serverHost: "fixture.invalid", serverPort: 1433, databaseName: "fixture", username: "read" }),
@@ -57,6 +57,15 @@ describe("reporting profile certification orchestration", () => {
     io.readInstanceRoutes.mockReturnValue(undefined);
     const injected = { ...args, trustedInstanceId };
     expect(await certifyCatalogReportingProfile(injected, io)).toEqual({ status: "unavailable" });
+    expect(io.readSecret).not.toHaveBeenCalled();
+    expect(io.createReader).not.toHaveBeenCalled();
+    expect(io.register).not.toHaveBeenCalled();
+  });
+
+  it("does not probe a route that maps to a different namespace than the recorded destination", async () => {
+    const { io } = setup();
+    io.readDestination.mockResolvedValue({ fingerprint: expected, instanceId: args.targetId });
+    expect(await certifyCatalogReportingProfile(args, io)).toEqual({ status: "unavailable" });
     expect(io.readSecret).not.toHaveBeenCalled();
     expect(io.createReader).not.toHaveBeenCalled();
     expect(io.register).not.toHaveBeenCalled();

@@ -72,13 +72,16 @@ export async function readSqlCatalogReportingProfiles(input: {
         DECLARE @now datetime2(3)=SYSUTCDATETIME();
         SELECT LOWER(CONVERT(char(36), t.target_id)) AS target_id,
           LOWER(CONVERT(char(36), r.reporting_profile_id)) AS profile_id,
-          LOWER(CONVERT(char(36), r.trusted_instance_id)) AS instance_id,
+          LOWER(CONVERT(char(36), i.trusted_instance_id)) AS instance_id,
           p.source_id AS connection_id, LOWER(CONVERT(char(16),CONVERT(binary(8),p.row_version),2)) AS version,
           r.verified_identity_fingerprint AS fingerprint, r.count_contract,
           r.active_column,r.active_storage,r.active_bit,r.active_text,r.inactive_text
         FROM core.catalog_physical_targets t
         JOIN settings.catalog_reporting_profiles r ON r.physical_target_key=t.physical_target_key
           AND r.portal_environment=t.portal_environment AND r.target_kind=t.target_kind
+        JOIN core.catalog_sql_target_instance_identities i ON i.physical_target_key=t.physical_target_key
+          AND i.portal_environment=t.portal_environment AND i.target_kind=t.target_kind
+          AND i.trusted_instance_id=r.trusted_instance_id AND i.registered_at<=@now
         JOIN settings.external_database_connections p ON p.external_database_connection_key=r.external_database_connection_key
         WHERE t.portal_environment=@env AND t.target_kind='database'
           AND r.retired_at IS NULL AND r.verified_at<=@now AND r.valid_until>@now
