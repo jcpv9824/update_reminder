@@ -262,6 +262,19 @@ no coincida con un Customer de esa misma revisión o no esté disponible.
 `Name` es una etiqueta de origen, no el nombre SQL de la base. El lector de
 metadatos no selecciona `StringConnection`, `Token` ni credenciales.
 
+Una exploración adicional de **forma**, ejecutada en SAG Admin con SELECT,
+TLS estricto y SNAPSHOT, devolvió únicamente agregados. Las 122 filas tienen
+un primer segmento sin `clave=` y ninguna presenta las claves estándar de
+servidor examinadas. En 111 casos el primer segmento coincide con el conjunto
+conservador de caracteres de dirección evaluado. Esto es coherente con el
+formato legado documentado en `dbAccessParser.ts` (servidor primero); no
+demuestra un destino aprobado ni que todas las etiquetas restantes coincidan.
+La proyección para v2 debe contemplar ese formato, ejecutarse en el origen,
+y devolver sólo los metadatos permitidos o un marcador no verificado. No se
+debe reutilizar el parser legado, que recibe la cadena completa y devuelve
+credenciales. No se devolvieron cadenas, credenciales, hosts ni nombres de
+bases en estas consultas de forma, ni se contactaron los destinos observados.
+
 En la persistencia propuesta, `expected_sag_company_rows=NULL` significa que
 la revisión histórica no tiene esa evidencia; cero significa que el contrato
 v2 leyó el conjunto completo y no había registros. Las filas tendrán una
