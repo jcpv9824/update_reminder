@@ -7,6 +7,7 @@ import { runSqlTransaction } from "./sqlTransaction";
 import { rootScheduleId } from "./taskGenerator";
 import { insertSqlGeneratedTaskInTransaction } from "./workflowTaskGenerationSqlRepository";
 import { lockCatalogTaskDay } from "./catalogExecutionCoexistenceSql";
+import { catalogDomainRouteFingerprintSql } from "./catalogPhysicalTargetIdentity";
 
 type PlannedGroup = CatalogTaskPlan["tasks"][number];
 type SqlKey = number | string;
@@ -56,7 +57,7 @@ function parseInput(input: CatalogExecutionRegistration) {
   // The legacy workflow schema requires a real assigned_role FK even for explicitly assigned users.
   if (group.assignment.kind === "unassigned") return conflict("workflow-assignment-required");
   if ((group.kind !== "domain" && group.kind !== "database") ||
-      !safeText(group.occurrenceId, 200) || !safeText(group.targetId, 260) || !safeText(group.revisionId, 200) ||
+      !safeText(group.occurrenceId, 200) || !sourceIdFormat.test(group.targetId) || !safeText(group.revisionId, 200) ||
       !safeText(group.operationId, 200) || group.executionKey !== catalogTaskExecutionKey(group.occurrenceId, group.kind, group.targetId) ||
       !(cutoffAt instanceof Date) || !Number.isFinite(cutoffAt.valueOf()) ||
       (portalEnvironment !== "production" && portalEnvironment !== "qa") || group.sources.length === 0 || group.sources.length > 512 ||
@@ -230,12 +231,17 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
 
       const writes = await new sql.Request(transaction).input("executionId", sql.BigInt, executionId)
         .input("kind", sql.VarChar(20), group.kind).input("portalEnvironment", sql.VarChar(10), portalEnvironment)
+        .input("physicalId", sql.UniqueIdentifier, group.targetId)
         .input("links", sql.NVarChar(sql.MAX), JSON.stringify([...planned.links.values()]))
-        .query<{ linkId: string }>(`
-          INSERT workflow.catalog_task_execution_links
-            (catalog_execution_key,execution_kind,link_id,catalog_source_key,catalog_record_id,client_key,domain_key,database_key,link_environment)
-          OUTPUT inserted.link_id AS linkId
-          SELECT @executionId,@kind,r.linkId,b.catalog_source_key,r.recordId,c.client_key,d.domain_key,db.database_key,r.environment
+        .query<{ linkId: string; validUntil: Date }>(`
+          DECLARE @registryNow datetime2(3)=SYSUTCDATETIME();
+          DECLARE @accepted TABLE (
+            linkId nvarchar(260) COLLATE Latin1_General_100_BIN2 PRIMARY KEY, catalogSourceKey bigint NULL,
+            recordId nvarchar(260) NOT NULL, clientKey bigint NOT NULL, domainKey bigint NOT NULL,
+            databaseKey bigint NULL, environment varchar(20) NOT NULL, validUntil datetime2(3) NOT NULL
+          );
+          INSERT @accepted
+          SELECT r.linkId,b.catalog_source_key,r.recordId,c.client_key,d.domain_key,db.database_key,r.environment,pt.valid_until
           FROM OPENJSON(@links) WITH (
             linkId nvarchar(260), clientId nvarchar(150), domainId nvarchar(150), databaseId nvarchar(150),
             catalogSourceId uniqueidentifier, recordId nvarchar(260), environment varchar(20)
@@ -247,16 +253,42 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
           LEFT JOIN core.databases AS db ON @kind='database' AND db.source_id=r.databaseId
             AND db.client_key=c.client_key AND db.domain_key=d.domain_key AND db.status='active'
             AND db.source_id COLLATE Latin1_General_100_BIN2=r.databaseId COLLATE Latin1_General_100_BIN2
+          LEFT JOIN core.database_access_profiles AS ap ON ap.access_profile_key=db.access_profile_key AND ap.active=1
+          JOIN core.catalog_physical_target_links AS pt WITH (UPDLOCK,HOLDLOCK)
+            ON pt.portal_environment=@portalEnvironment AND pt.target_kind=@kind
+            AND pt.client_key=c.client_key AND pt.domain_key=d.domain_key AND pt.retired_at IS NULL
+            AND pt.verified_at<=@registryNow AND pt.valid_until>@registryNow
+            AND ((@kind='domain' AND pt.database_key IS NULL AND d.environment_id=r.environment
+                AND pt.domain_route_fingerprint=${catalogDomainRouteFingerprintSql})
+              OR (@kind='database' AND pt.database_key=db.database_key AND db.environment_id=r.environment
+                AND pt.access_profile_key=ap.access_profile_key AND pt.access_profile_version=ap.row_version))
+          JOIN core.catalog_physical_targets AS target WITH (HOLDLOCK)
+            ON target.physical_target_key=pt.physical_target_key AND target.target_id=@physicalId
+            AND target.portal_environment=@portalEnvironment AND target.target_kind=@kind
+            AND (@kind='domain' OR target.database_name_fingerprint=HASHBYTES('SHA2_256',CONVERT(varbinary(max),ap.initial_catalog)))
           LEFT JOIN settings.catalog_source_bindings AS b ON b.source_id=r.catalogSourceId
             AND b.portal_environment=@portalEnvironment AND b.source_state='active' AND b.validated_at IS NOT NULL
           LEFT JOIN settings.external_database_connections AS p ON p.external_database_connection_key=b.external_database_connection_key
             AND p.status='active' AND p.active=1 AND p.encrypt_connection=1 AND p.password_configured=1
             AND b.validated_profile_version=p.row_version
           WHERE (@kind='domain' OR db.database_key IS NOT NULL)
-            AND (r.catalogSourceId IS NULL OR p.external_database_connection_key IS NOT NULL);`);
+            AND (r.catalogSourceId IS NULL OR p.external_database_connection_key IS NOT NULL);
+          IF EXISTS(SELECT 1 FROM @accepted WHERE validUntil<=SYSUTCDATETIME())
+          BEGIN
+            SELECT linkId,validUntil FROM @accepted WHERE 1=0;
+            RETURN;
+          END;
+          INSERT workflow.catalog_task_execution_links
+            (catalog_execution_key,execution_kind,link_id,catalog_source_key,catalog_record_id,client_key,domain_key,database_key,link_environment)
+          SELECT @executionId,@kind,linkId,catalogSourceKey,recordId,clientKey,domainKey,databaseKey,environment
+          FROM @accepted;
+          SELECT linkId,validUntil FROM @accepted;`);
       if (writes.recordset.length !== planned.links.size || writes.recordset.some(link => !planned.links.has(link.linkId))) {
         return conflict("catalog-reference-changed");
       }
+      const deadlines = writes.recordset.map(link => link.validUntil instanceof Date ? link.validUntil.valueOf() : NaN);
+      if (deadlines.some(value => !Number.isFinite(value))) return conflict("catalog-reference-changed");
+      const evidenceValidUntil = new Date(Math.min(...deadlines));
 
       const attached = await new sql.Request(transaction).input("executionId", sql.BigInt, executionId)
         .input("attachments", sql.NVarChar(sql.MAX), JSON.stringify([...planned.attachments.values()]))
@@ -285,10 +317,17 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
       }
 
       const eventToken = createHash("sha256").update(`catalog-task-registered-v1:${group.executionKey}`, "utf8").digest();
-      await new sql.Request(transaction).input("executionId", sql.BigInt, executionId)
-        .input("token", sql.VarBinary(32), eventToken).query(`
+      const event = await new sql.Request(transaction).input("executionId", sql.BigInt, executionId)
+        .input("cutoffAt", sql.DateTime2(3), cutoffAt).input("validUntil", sql.DateTime2(3), evidenceValidUntil)
+        .input("token", sql.VarBinary(32), eventToken).query<{ result: string }>(`
           INSERT workflow.catalog_task_execution_events(catalog_execution_key,event_token,event_kind)
-          VALUES(@executionId,CONVERT(binary(32),@token),'registered');`);
+          VALUES(@executionId,CONVERT(binary(32),@token),'registered');
+          DECLARE @finalNow datetime2(3)=SYSUTCDATETIME();
+          SELECT CASE WHEN @finalNow>=@cutoffAt THEN 'cutoff-passed'
+            WHEN @finalNow>=@validUntil THEN 'catalog-reference-changed' ELSE 'registered' END AS result;`);
+      const result = event.recordset[0]?.result;
+      if (result === "cutoff-passed") return conflict("cutoff-passed");
+      if (result !== "registered") return conflict("catalog-reference-changed");
       return { status: "registered", taskId: task.id };
     });
   } catch (error) {

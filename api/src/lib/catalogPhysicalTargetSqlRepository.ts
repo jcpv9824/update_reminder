@@ -1,0 +1,107 @@
+import sql from "mssql";
+import type { Environment } from "../types/models";
+import { catalogDomainRouteFingerprintSql } from "./catalogPhysicalTargetIdentity";
+import type { CatalogEnvironment } from "./catalogSourceConfiguration";
+import { planCatalogTaskTargets, type CatalogTaskLink } from "./catalogTaskTargetPlanning";
+import { getSqlPool } from "./sql";
+
+type RequestedLink = Readonly<{
+  customerId: string;
+  domainId: string;
+  environment: Environment;
+}> & ({ kind: "domain"; databaseId?: never } | { kind: "database"; databaseId: string });
+
+type ResolvedTarget = CatalogTaskLink["target"];
+type Resolver = typeof readSqlCatalogPhysicalTargets;
+const maxLinks = 5000;
+const opaqueId = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
+const allowedEnvironments = new Set<Environment>(["production", "demo", "test"]);
+const validSourceId = (id: string) => typeof id === "string" && id.length >= 1 && id.length <= 150
+  && id === id.trim() && !/\p{C}/u.test(id);
+const fail = (): never => { throw new Error("catalog_physical_inventory_unavailable"); };
+
+const readTargets = `
+WITH wanted AS (
+  SELECT CONVERT(int,[key]) AS ordinal,
+    JSON_VALUE([value],'$.kind') COLLATE Latin1_General_100_BIN2 AS target_kind,
+    JSON_VALUE([value],'$.environment') AS link_environment,
+    JSON_VALUE([value],'$.customerId') AS client_id, JSON_VALUE([value],'$.domainId') AS domain_id,
+    JSON_VALUE([value],'$.databaseId') AS database_id
+  FROM OPENJSON(@requestedLinks)
+)
+SELECT w.ordinal, ready.target_status,
+  CASE WHEN ready.target_status='verified' THEN LOWER(CONVERT(char(36),t.target_id)) END AS physical_id
+FROM wanted w
+LEFT JOIN core.clients c ON c.source_id=w.client_id AND c.source_id COLLATE Latin1_General_100_BIN2=w.client_id COLLATE Latin1_General_100_BIN2
+LEFT JOIN core.domains d ON d.client_key=c.client_key AND d.source_id=w.domain_id
+  AND d.source_id COLLATE Latin1_General_100_BIN2=w.domain_id COLLATE Latin1_General_100_BIN2
+LEFT JOIN core.databases db ON w.target_kind='database' AND db.client_key=c.client_key
+  AND db.domain_key=d.domain_key AND db.source_id=w.database_id
+  AND db.source_id COLLATE Latin1_General_100_BIN2=w.database_id COLLATE Latin1_General_100_BIN2
+LEFT JOIN core.database_access_profiles p ON p.access_profile_key=db.access_profile_key
+LEFT JOIN core.catalog_physical_target_links l ON l.portal_environment=@portalEnvironment AND l.target_kind=w.target_kind
+  AND l.client_key=c.client_key AND l.domain_key=d.domain_key AND l.retired_at IS NULL
+  AND ((w.target_kind='domain' AND l.database_key IS NULL) OR (w.target_kind='database' AND l.database_key=db.database_key))
+LEFT JOIN core.catalog_physical_targets t ON t.physical_target_key=l.physical_target_key
+  AND t.portal_environment=@portalEnvironment AND t.target_kind=w.target_kind
+CROSS APPLY (VALUES (CASE
+  WHEN c.client_key IS NULL OR c.status='deleted' OR d.domain_key IS NULL OR d.status='deleted'
+    OR (w.target_kind='database' AND (db.database_key IS NULL OR db.status='deleted')) THEN 'not_found'
+  WHEN t.target_id IS NOT NULL AND l.verified_at<=@now AND l.valid_until>@now
+    AND c.status='active' AND d.status='active'
+    AND ((w.target_kind='domain' AND d.environment_id=w.link_environment AND
+      l.domain_route_fingerprint=${catalogDomainRouteFingerprintSql})
+      OR (w.target_kind='database' AND db.status='active' AND db.environment_id=w.link_environment AND p.active=1
+        AND l.access_profile_key=p.access_profile_key AND l.access_profile_version=p.row_version
+        AND t.database_name_fingerprint=HASHBYTES('SHA2_256',CONVERT(varbinary(max),p.initial_catalog))))
+    THEN 'verified'
+  ELSE 'unverifiable' END)) AS ready(target_status)
+ORDER BY w.ordinal;
+`.trim();
+
+/** Internal. The caller must restrict requested links to a trusted, authorized catalogue selection. */
+export async function readSqlCatalogPhysicalTargets(input: {
+  portalEnvironment: CatalogEnvironment;
+  links: readonly RequestedLink[];
+}): Promise<ResolvedTarget[]> {
+  if (!["qa", "production"].includes(input.portalEnvironment) || input.links.length > maxLinks) fail();
+  if (!input.links.length) return [];
+  const links = input.links.map(link => {
+    if (!validSourceId(link.customerId) || !validSourceId(link.domainId) || !allowedEnvironments.has(link.environment)
+      || (link.kind === "domain" ? link.databaseId !== undefined : link.kind !== "database" || !validSourceId(link.databaseId))) fail();
+    return { customerId: link.customerId, domainId: link.domainId, environment: link.environment,
+      kind: link.kind, ...(link.kind === "database" ? { databaseId: link.databaseId } : {}) };
+  });
+  try {
+    const pool = await getSqlPool();
+    const result = await pool.request()
+      .input("portalEnvironment", sql.VarChar(10), input.portalEnvironment)
+      .input("requestedLinks", sql.NVarChar(sql.MAX), JSON.stringify(links))
+      .query<{ ordinal: number; target_status: string; physical_id: string | null }>(
+        `DECLARE @now datetime2(3)=SYSUTCDATETIME();\n${readTargets}`,
+      );
+    if (result.recordset.length !== links.length) fail();
+    return result.recordset.map(({ ordinal, target_status: status, physical_id: id }, index): ResolvedTarget => {
+      if (index !== ordinal) return fail();
+      if (status === "verified" && typeof id === "string" && opaqueId.test(id)) return { status, id };
+      if ((status === "unverifiable" || status === "not_found") && id === null) return { status };
+      return fail();
+    });
+  } catch {
+    return fail();
+  }
+}
+
+/** Replace the untrusted/old target projection, then filter logical scope and group by verified physical ID. */
+export async function planCatalogTasksWithVerifiedTargets(
+  portalEnvironment: CatalogEnvironment,
+  input: Parameters<typeof planCatalogTaskTargets>[0],
+  resolve: Resolver = readSqlCatalogPhysicalTargets,
+): Promise<ReturnType<typeof planCatalogTaskTargets>> {
+  if (!input.revision.complete) return planCatalogTaskTargets(input);
+  const targets = await resolve({ portalEnvironment, links: input.links });
+  if (targets.length !== input.links.length) return fail();
+  return planCatalogTaskTargets({
+    ...input, links: input.links.map((link, index) => ({ ...link, target: targets[index] })),
+  });
+}
