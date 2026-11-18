@@ -13,7 +13,7 @@ type Dependencies = {
   authorize: (request: HttpRequest) => Promise<{ actorId: string } | { status: 401 | 403 }>;
   rateLimit: (request: HttpRequest, actorId: string, method: Method) => Promise<HttpResponseInit | null>;
   enqueue: (input: CatalogRefreshScope & CatalogRefreshSettings) => Promise<{ accepted: number; coalesced: number } | null>;
-  status: (input: CatalogRefreshScope & { includeSag: boolean }) => Promise<CatalogRefreshStatus | null>;
+  status: (input: CatalogRefreshScope & CatalogRefreshSettings) => Promise<CatalogRefreshStatus | null>;
 };
 const problem = (): HttpResponseInit => ({ status: 503, jsonBody: { error: "La actualización del catálogo no está disponible." } });
 const invalid = () => badRequest("La selección de fuentes no es válida.");
@@ -46,8 +46,7 @@ export function createCatalogRefreshHttp(io: Dependencies) {
       if (raw !== null && raw.length > 50 * 37) return invalid();
       const input = sourceIdsSchema.optional().safeParse(raw === null ? undefined : raw === "" ? [] : raw.split(","));
       if (!input.success) return invalid();
-      const result = await io.status({ environment: config.environment, includeSag: config.includeSag,
-        actorId: actor.actorId, sourceIds: input.data });
+      const result = await io.status({ ...config, actorId: actor.actorId, sourceIds: input.data });
       if (result === null) return forbidden();
       return { ...ok({ pending: result.pending, items: result.items.map(({ sourceId, status, updatedAt }) => ({ sourceId, status, updatedAt })) }),
         headers: { "Cache-Control": "private, no-store" } };

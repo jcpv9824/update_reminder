@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory=$true)][string]$SessionDirectory,
-  [ValidateSet('all','bootstrap')][string]$ProbeStage='all',
+  [ValidateSet('all','bootstrap','installed')][string]$ProbeStage='all',
   [ValidateRange(10,90)][int]$SqlTimeoutSeconds=60
 )
 $ErrorActionPreference='Stop'
@@ -39,12 +39,16 @@ IF DB_NAME() COLLATE Latin1_General_100_BIN2<>N'PortalSAGWeb-TEST' OR @@TRANCOUN
   OR CAST(SERVERPROPERTY('ProductMajorVersion') AS int)<>15
   OR (SELECT compatibility_level FROM sys.databases WHERE database_id=DB_ID())<>150
   THROW 55180,N'Unexpected queue QA target.',1;
-DECLARE @headObject int=OBJECT_ID(N'settings.catalog_source_head_events',N'U');
-IF @headObject IS NULL OR OBJECT_ID(N'settings.catalog_source_refresh_jobs',N'U') IS NOT NULL
-  OR OBJECT_ID(N'settings.catalog_source_refresh_attempts',N'U') IS NOT NULL
+DECLARE @headObject int=OBJECT_ID(N'settings.catalog_source_head_events',N'U'),
+  @jobsObject int=OBJECT_ID(N'settings.catalog_source_refresh_jobs',N'U'),
+  @attemptsObject int=OBJECT_ID(N'settings.catalog_source_refresh_attempts',N'U');
+IF @headObject IS NULL
+  OR (@probe<>'installed' AND (@jobsObject IS NOT NULL OR @attemptsObject IS NOT NULL))
+  OR (@probe='installed' AND (@jobsObject IS NULL OR @attemptsObject IS NULL
+    OR NOT EXISTS(SELECT 1 FROM migration.schema_migrations WHERE migration_version='054' AND succeeded=1)))
   OR EXISTS(SELECT 1 FROM settings.catalog_source_bindings WHERE portal_environment='qa' AND source_state='active')
   OR EXISTS(SELECT 1 FROM settings.catalog_match_key_registry WHERE portal_environment='qa')
-  THROW 55181,N'Requires installed050, absent051, no active QA source and no QA key enrollment.',1;
+  THROW 55181,N'Unexpected queue rehearsal baseline or active QA data.',1;
 DECLARE @tag nvarchar(72)=N'qa-refresh-'+LOWER(CONVERT(char(36),NEWID())),@started datetime2(3)=SYSUTCDATETIME(),@step int=0,
   @now datetime2(3)=SYSUTCDATETIME(),@actorKey bigint,@lock int,@worker uniqueidentifier=NEWID(),
   @fakeVersion binary(16)=CONVERT(binary(16),NEWID()),@fakeVerifier binary(32)=HASHBYTES('SHA2_256',CONVERT(binary(16),NEWID()));
@@ -53,7 +57,7 @@ DECLARE @sources table(n int PRIMARY KEY,k bigint,id uniqueidentifier,b binary(8
 DECLARE @enqueue table(allowed bit,coalesced int,accepted int);
 DECLARE @due table(enqueued int);
 DECLARE @claims table(jobId uniqueidentifier,workerId uniqueidentifier,leaseToken uniqueidentifier,attempt tinyint,sourceId uniqueidentifier,
-  environment varchar(10),bindingRevision binary(8),profileRevision binary(8),matchKeyVersion smallint);
+  environment varchar(10),bindingRevision binary(8),profileRevision binary(8),matchKeyVersion smallint,dispatchKind varchar(7));
 DECLARE @auth table(allowed int,attemptOrdinal varchar(19));
 DECLARE @ordinalResult table(attemptOrdinal varchar(19));
 DECLARE @done table(completed bit);
@@ -61,9 +65,9 @@ DECLARE @publication table(result varchar(11));
 DECLARE @source uniqueidentifier,@binding binary(8),@profile binary(8),@job uniqueidentifier,@token uniqueidentifier,@attempt tinyint,
   @ordinal varchar(19),@otherOrdinal varchar(19),@bad uniqueidentifier,@badProfile binary(8),@badVerifier binary(32),@badVersion binary(16),
   @beforeJobs int,@beforeHistory int,@jobKey bigint,@sourceKey bigint,@i int,@expected int;
-DECLARE @enqueueParams nvarchar(max)=N'@actorId nvarchar(150),@sourceIds nvarchar(max),@environment varchar(10),@matchKeyVersion smallint,@includeSag bit',
-  @configParams nvarchar(max)=N'@environment varchar(10),@matchKeyVersion smallint,@includeSag bit',
-  @claimParams nvarchar(max)=N'@environment varchar(10),@matchKeyVersion smallint,@includeSag bit,@workerId uniqueidentifier,@count tinyint',
+DECLARE @enqueueParams nvarchar(max)=N'@actorId nvarchar(150),@sourceIds nvarchar(max),@environment varchar(10),@matchKeyVersion smallint,@includeSag bit,@includeSagV2 bit',
+  @configParams nvarchar(max)=N'@environment varchar(10),@matchKeyVersion smallint,@includeSag bit,@includeSagV2 bit',
+  @claimParams nvarchar(max)=N'@environment varchar(10),@matchKeyVersion smallint,@includeSag bit,@includeSagV2 bit,@workerId uniqueidentifier,@count tinyint',
   @fenceParams nvarchar(max)=N'@environment varchar(10),@source uniqueidentifier,@binding varbinary(8),@profile varbinary(8),@currentKeyVersion smallint,@jobId uniqueidentifier,@workerId uniqueidentifier,@leaseToken uniqueidentifier,@jobAttempt tinyint',
   @authParams nvarchar(max),@completeParams nvarchar(max),@publishCompleteParams nvarchar(max),@selection nvarchar(max);
 SET @authParams=@fenceParams+N',@vaultSecretVersion varbinary(16),@keyVerifier varbinary(32)';
@@ -73,8 +77,13 @@ BEGIN TRY
   BEGIN TRANSACTION;
   EXEC @lock=sys.sp_getapplock @Resource=N'portal-sag:catalog-customer-publication:qa',@LockMode='Exclusive',@LockOwner='Transaction',@LockTimeout=5000;
   IF @lock<0 THROW 55182,N'QA catalog lock unavailable.',1;
-  EXEC sys.sp_executesql @migration;
-  EXEC sys.sp_executesql @migration;
+  IF @probe<>'installed'
+  BEGIN
+    EXEC sys.sp_executesql @migration;
+    EXEC sys.sp_executesql @migration;
+  END;
+  ELSE IF EXISTS(SELECT 1 FROM settings.catalog_source_refresh_jobs WHERE portal_environment='qa' AND finished_at IS NULL)
+    THROW 55181,N'Installed queue rehearsal requires no open QA jobs.',1;
   IF (SELECT COUNT(*) FROM sys.tables WHERE object_id IN(OBJECT_ID(N'settings.catalog_source_refresh_jobs'),OBJECT_ID(N'settings.catalog_source_refresh_attempts')))<>2
     OR (SELECT COUNT(*) FROM sys.triggers WHERE object_id=OBJECT_ID(N'settings.tr_catalog_source_refresh_attempts_immutable') AND is_disabled=0)<>1
     OR (SELECT COUNT(*) FROM sys.indexes WHERE object_id=OBJECT_ID(N'settings.catalog_source_refresh_jobs') AND name IN
@@ -104,48 +113,82 @@ BEGIN TRY
   INSERT settings.catalog_source_bindings(external_database_connection_key,display_name,source_role,portal_environment,
     contract_version,source_state,issuer_scope,validated_at,validated_profile_version,created_by,updated_by)
     SELECT external_database_connection_key,source_id,CASE WHEN source_id=@tag+N'-3' THEN 'sag-admin' ELSE 'erp-customers' END,'qa',
-      CASE WHEN source_id=@tag+N'-3' THEN 'sag_admin_v1' ELSE 'erp_v1' END,'active',CASE WHEN source_id<>@tag+N'-3' THEN N'CO:NIT' END,
+      CASE WHEN source_id<>@tag+N'-3' THEN 'erp_v1' WHEN @probe='installed' THEN 'sag_admin_v2' ELSE 'sag_admin_v1' END,
+      'active',CASE WHEN source_id<>@tag+N'-3' THEN N'CO:NIT' END,
       @now,row_version,N'fixture',N'fixture' FROM settings.external_database_connections WHERE source_id IN(@tag+N'-1',@tag+N'-2',@tag+N'-3');
   INSERT @sources SELECT v.n,b.catalog_source_key,b.source_id,b.row_version,p.row_version,p.external_database_connection_key
     FROM (VALUES(1),(2),(3)) v(n) JOIN settings.external_database_connections p ON p.source_id=@tag+N'-'+CONVERT(nvarchar(1),v.n)
     JOIN settings.catalog_source_bindings b ON b.external_database_connection_key=p.external_database_connection_key;
   INSERT security.catalog_source_readers(user_key,catalog_source_key,granted_by) SELECT @actorKey,k,N'fixture' FROM @sources WHERE n=1;
-  INSERT @enqueue EXEC sys.sp_executesql @qenqueueRequest,@enqueueParams,@tag,N'[]','qa',1,1;
+  IF @probe='installed'
+  BEGIN
+    SELECT @sourceKey=k,@source=id,@binding=b,@profile=p FROM @sources WHERE n=3;
+    INSERT @due EXEC sys.sp_executesql @qenqueueDue,@configParams,'qa',1,1,0;
+    IF NOT EXISTS(SELECT 1 FROM @due WHERE enqueued=2)
+      OR EXISTS(SELECT 1 FROM settings.catalog_source_refresh_jobs WHERE catalog_source_key=@sourceKey)
+      THROW 55184,N'Disabled v2 entered the queue.',1;
+    INSERT @cases VALUES('v2 disabled enqueue');
+    DELETE @due;
+    INSERT @due EXEC sys.sp_executesql @qenqueueDue,@configParams,'qa',1,1,1;
+    IF NOT EXISTS(SELECT 1 FROM @due WHERE enqueued=1) THROW 55184,N'Enabled v2 did not enqueue.',1;
+    INSERT @cases VALUES('v2 enabled enqueue');
+    INSERT @claims EXEC sys.sp_executesql @qclaim,@claimParams,'qa',1,1,0,@worker,2;
+    IF (SELECT COUNT(*) FROM @claims WHERE dispatchKind='legacy')<>2 OR EXISTS(SELECT 1 FROM @claims WHERE sourceId=@source)
+      THROW 55185,N'Disabled claim did not isolate legacy work.',1;
+    INSERT @cases VALUES('legacy claims while v2 disabled');
+    DELETE @claims;
+    INSERT @claims EXEC sys.sp_executesql @qclaim,@claimParams,'qa',1,1,1,@worker,2;
+    IF (SELECT COUNT(*) FROM @claims)<>1 OR NOT EXISTS(SELECT 1 FROM @claims WHERE sourceId=@source AND dispatchKind='sag-v2')
+      THROW 55185,N'Enabled claim did not pin v2 route.',1;
+    SELECT @job=jobId,@token=leaseToken,@attempt=attempt FROM @claims;
+    INSERT @cases VALUES('v2 claim dispatch');
+    INSERT @done EXEC sys.sp_executesql @qcomplete,@completeParams,'qa',@source,@binding,@profile,1,@job,@worker,@token,@attempt,'retry';
+    IF NOT EXISTS(SELECT 1 FROM @done WHERE completed=0) THROW 55185,N'Legacy completion accepted v2.',1;
+    INSERT @cases VALUES('v2 refuses legacy compensation');
+    DELETE @due;
+    INSERT @due EXEC sys.sp_executesql @qenqueueDue,@configParams,'qa',1,1,0;
+    IF NOT EXISTS(SELECT 1 FROM settings.catalog_source_refresh_jobs WHERE job_id=@job AND job_status='processing' AND lease_token=@token)
+      THROW 55185,N'Disabling v2 destroyed a current lease.',1;
+    INSERT @cases VALUES('v2 current lease preserved');
+    GOTO Finish;
+  END;
+  INSERT @enqueue EXEC sys.sp_executesql @qenqueueRequest,@enqueueParams,@tag,N'[]','qa',1,1,0;
   IF NOT EXISTS(SELECT 1 FROM @enqueue WHERE allowed=1 AND accepted=0 AND coalesced=0) OR EXISTS(SELECT 1 FROM settings.catalog_source_refresh_jobs)
     THROW 55184,N'Explicit empty selection became all sources.',1;
   INSERT @cases VALUES('empty selection includes no hidden dependency'); DELETE @enqueue;
   SELECT @selection=N'["'+CONVERT(nvarchar(36),MIN(CASE WHEN n=1 THEN CONVERT(char(36),id) END))+N'","'+CONVERT(nvarchar(36),MIN(CASE WHEN n=2 THEN CONVERT(char(36),id) END))+N'"]' FROM @sources;
-  INSERT @enqueue EXEC sys.sp_executesql @qenqueueRequest,@enqueueParams,@tag,@selection,'qa',1,1;
+  INSERT @enqueue EXEC sys.sp_executesql @qenqueueRequest,@enqueueParams,@tag,@selection,'qa',1,1,0;
   IF NOT EXISTS(SELECT 1 FROM @enqueue WHERE allowed=0 AND accepted=0) OR EXISTS(SELECT 1 FROM settings.catalog_source_refresh_jobs)
     THROW 55184,N'Forged selection partially enqueued.',1;
   INSERT @cases VALUES('forged source denied atomically'); DELETE @enqueue;
   SELECT @selection=N'["'+CONVERT(nvarchar(36),id)+N'"]' FROM @sources WHERE n=1;
-  INSERT @enqueue EXEC sys.sp_executesql @qenqueueRequest,@enqueueParams,@tag,@selection,'qa',1,1;
+  INSERT @enqueue EXEC sys.sp_executesql @qenqueueRequest,@enqueueParams,@tag,@selection,'qa',1,1,0;
   IF NOT EXISTS(SELECT 1 FROM @enqueue WHERE allowed=1 AND accepted=1 AND coalesced=0)
     OR (SELECT COUNT(*) FROM settings.catalog_source_refresh_jobs)<>2 THROW 55184,N'Scoped enqueue/dependency mismatch.',1;
   INSERT @cases VALUES('scoped enqueue plus hidden SAG'); DELETE @enqueue;
-  INSERT @enqueue EXEC sys.sp_executesql @qenqueueRequest,@enqueueParams,@tag,@selection,'qa',1,1;
+  INSERT @enqueue EXEC sys.sp_executesql @qenqueueRequest,@enqueueParams,@tag,@selection,'qa',1,1,0;
   IF NOT EXISTS(SELECT 1 FROM @enqueue WHERE accepted=0 AND coalesced=1) OR (SELECT COUNT(*) FROM settings.catalog_source_refresh_jobs)<>2
     THROW 55184,N'Open request did not coalesce.',1;
   INSERT @cases VALUES('coalesced request');
   SELECT 'status-visible' AS fixture_status_case;
-  EXEC sys.sp_executesql @qstatus,N'@actorId nvarchar(150),@sourceIds nvarchar(max),@environment varchar(10),@includeSag bit',@tag,@selection,'qa',1;
+  EXEC sys.sp_executesql @qstatus,@enqueueParams,@tag,@selection,'qa',1,1,0;
   UPDATE security.catalog_source_readers SET revoked_at=SYSUTCDATETIME(),revoked_by=N'fixture' WHERE user_key=@actorKey;
   SELECT 'status-revoked' AS fixture_status_case;
-  EXEC sys.sp_executesql @qstatus,N'@actorId nvarchar(150),@sourceIds nvarchar(max),@environment varchar(10),@includeSag bit',@tag,@selection,'qa',1;
+  EXEC sys.sp_executesql @qstatus,@enqueueParams,@tag,@selection,'qa',1,1,0;
   UPDATE security.catalog_source_readers SET revoked_at=NULL,revoked_by=NULL WHERE user_key=@actorKey;
   INSERT security.catalog_source_readers(user_key,catalog_source_key,granted_by) SELECT @actorKey,k,N'fixture' FROM @sources WHERE n=2;
-  DELETE @enqueue; INSERT @enqueue EXEC sys.sp_executesql @qenqueueRequest,@enqueueParams,@tag,NULL,'qa',1,1;
+  DELETE @enqueue; INSERT @enqueue EXEC sys.sp_executesql @qenqueueRequest,@enqueueParams,@tag,NULL,'qa',1,1,0;
   IF NOT EXISTS(SELECT 1 FROM @enqueue WHERE accepted=1 AND coalesced=1) OR (SELECT COUNT(*) FROM settings.catalog_source_refresh_jobs)<>3
     THROW 55184,N'All-source authorized scope mismatch.',1;
   INSERT @cases VALUES('undefined means all authorized ERP');
   SET @step=2; EXEC sys.sp_set_session_context @key=N'portal_qa_refresh_step',@value=@step;
-  INSERT @claims EXEC sys.sp_executesql @qclaim,@claimParams,'qa',1,1,@worker,2;
-  IF (SELECT COUNT(*) FROM @claims)<>2 THROW 55185,N'Claim bound mismatch.',1;
-  INSERT @claims EXEC sys.sp_executesql @qclaim,@claimParams,'qa',1,1,@worker,2;
+  INSERT @claims EXEC sys.sp_executesql @qclaim,@claimParams,'qa',1,1,0,@worker,2;
+  IF (SELECT COUNT(*) FROM @claims)<>2 OR EXISTS(SELECT 1 FROM @claims WHERE dispatchKind IS NULL OR dispatchKind<>'legacy')
+    THROW 55185,N'Claim bound or route mismatch.',1;
+  INSERT @claims EXEC sys.sp_executesql @qclaim,@claimParams,'qa',1,1,0,@worker,2;
   IF (SELECT COUNT(*) FROM @claims)<>3 OR (SELECT COUNT(DISTINCT sourceId) FROM @claims)<>3 OR EXISTS(SELECT 1 FROM @claims WHERE attempt<>1)
     THROW 55185,N'Claims duplicated or starved another source.',1;
-  INSERT @claims EXEC sys.sp_executesql @qclaim,@claimParams,'qa',1,1,@worker,2;
+  INSERT @claims EXEC sys.sp_executesql @qclaim,@claimParams,'qa',1,1,0,@worker,2;
   IF (SELECT COUNT(*) FROM @claims)<>3 THROW 55185,N'Active claim was reclaimed.',1;
   INSERT @cases VALUES('bounded independent claims and no active replay');
   SELECT @source=c.sourceId,@binding=c.bindingRevision,@profile=c.profileRevision,@job=c.jobId,@token=c.leaseToken,@attempt=c.attempt
@@ -225,14 +268,14 @@ BEGIN TRY
   INSERT @auth EXEC sys.sp_executesql @pauthorize,@authParams,'qa',@source,@binding,@profile,1,@job,@worker,@token,@attempt,@fakeVersion,@fakeVerifier;
   DELETE @done; INSERT @done EXEC sys.sp_executesql @qcomplete,@completeParams,'qa',@source,@binding,@profile,1,@job,@worker,@token,@attempt,'retry';
   IF EXISTS(SELECT 1 FROM @auth) OR NOT EXISTS(SELECT 1 FROM @done WHERE completed=0) THROW 55188,N'Expired worker retained write completion.',1;
-  DELETE @claims; INSERT @claims EXEC sys.sp_executesql @qclaim,@claimParams,'qa',1,1,@worker,2;
+  DELETE @claims; INSERT @claims EXEC sys.sp_executesql @qclaim,@claimParams,'qa',1,1,0,@worker,2;
   IF EXISTS(SELECT 1 FROM @claims) OR NOT EXISTS(SELECT 1 FROM settings.catalog_source_refresh_jobs WHERE job_key=@jobKey AND job_status='retry' AND attempt_no=1 AND available_at>SYSUTCDATETIME())
     THROW 55188,N'Expiry did not release to delayed retry.',1;
   ROLLBACK TRANSACTION expiryScenario;
   INSERT @cases VALUES('expired claim rejected and reaped with backoff');
   SAVE TRANSACTION staleScenario;
   UPDATE settings.catalog_source_bindings SET display_name=display_name+N'-changed' WHERE catalog_source_key=@sourceKey;
-  DELETE @claims; INSERT @claims EXEC sys.sp_executesql @qclaim,@claimParams,'qa',1,1,@worker,2;
+  DELETE @claims; INSERT @claims EXEC sys.sp_executesql @qclaim,@claimParams,'qa',1,1,0,@worker,2;
   IF NOT EXISTS(SELECT 1 FROM settings.catalog_source_refresh_jobs WHERE job_key=@jobKey AND job_status='cancelled')
     OR NOT EXISTS(SELECT 1 FROM settings.catalog_source_refresh_attempts WHERE job_key=@jobKey AND event_kind='stale')
     THROW 55188,N'Stale binding was not cancelled.',1;
@@ -250,7 +293,7 @@ BEGIN TRY
     BEGIN
       -- QA-owner clock setup only; application never edits availability to bypass delay.
       UPDATE settings.catalog_source_refresh_jobs SET requested_at=DATEADD(minute,-10,@now),available_at=DATEADD(second,-1,SYSUTCDATETIME()) WHERE job_key=@jobKey;
-      DELETE @claims; INSERT @claims EXEC sys.sp_executesql @qclaim,@claimParams,'qa',1,1,@worker,1;
+      DELETE @claims; INSERT @claims EXEC sys.sp_executesql @qclaim,@claimParams,'qa',1,1,0,@worker,1;
       SELECT @token=leaseToken,@attempt=attempt FROM @claims WHERE jobId=@job;
       IF @attempt<>@i+1 THROW 55188,N'Retry claim lost attempt fencing.',1;
     END;
@@ -259,12 +302,13 @@ BEGIN TRY
   IF (SELECT COUNT(*) FROM settings.catalog_source_refresh_jobs WHERE finished_at IS NULL)<>2
     THROW 55188,N'Failure on one source changed other jobs.',1;
   INSERT @cases VALUES('source failure leaves other sources processing');
-  DELETE @due; INSERT @due EXEC sys.sp_executesql @qenqueueDue,@configParams,'qa',1,1;
+  DELETE @due; INSERT @due EXEC sys.sp_executesql @qenqueueDue,@configParams,'qa',1,1,0;
   IF NOT EXISTS(SELECT 1 FROM @due WHERE enqueued=0) THROW 55188,N'Terminal failure cooldown ignored.',1;
   INSERT @cases VALUES('timer terminal cooldown');
 Finish:
   ROLLBACK TRANSACTION;
-  IF OBJECT_ID(N'settings.catalog_source_refresh_jobs',N'U') IS NOT NULL OR OBJECT_ID(N'settings.catalog_source_refresh_attempts',N'U') IS NOT NULL
+  IF ISNULL(OBJECT_ID(N'settings.catalog_source_refresh_jobs',N'U'),0)<>ISNULL(@jobsObject,0)
+    OR ISNULL(OBJECT_ID(N'settings.catalog_source_refresh_attempts',N'U'),0)<>ISNULL(@attemptsObject,0)
     OR OBJECT_ID(N'settings.catalog_source_head_events',N'U')<>@headObject
     OR EXISTS(SELECT 1 FROM security.users WHERE source_id=@tag)
     OR EXISTS(SELECT 1 FROM settings.external_database_connections WHERE source_id IN(@tag+N'-1',@tag+N'-2',@tag+N'-3'))
@@ -289,7 +333,7 @@ $invoke=Join-Path $PSScriptRoot '../connect-sql-server/Invoke-PortalSAGWeb-Ephem
 $response=(& $invoke -SessionDirectory $session -Sql ($prefix+$body) -Mode write -TimeoutSeconds $SqlTimeoutSeconds -MaxRows 10) | ConvertFrom-Json -Depth 16
 $sets=@($response.resultSets)
 $row=if($sets.Count){$sets[-1].rows[0]}else{$null}
-$expectedPassed=if($ProbeStage -eq 'bootstrap'){1}else{30}
+$expectedPassed=if($ProbeStage -eq 'bootstrap'){1}elseif($ProbeStage -eq 'installed'){7}else{30}
 if(!$response.success -or $row.passed -ne $expectedPassed -or $row.error_number -ne 0 -or $row.fixture_rows_remaining -ne 0){
   $constraint=if($row.error_constraint -match '^[A-Za-z0-9_]+$'){$row.error_constraint}else{'not available'}
   throw "QA queue failed (SQL number: $([int]$row.error_number); case: $([int]$row.error_case); line: $([int]$row.error_line); completed: $([int]$row.passed); constraint: $constraint)."

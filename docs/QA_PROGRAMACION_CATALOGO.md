@@ -123,6 +123,20 @@ un fallo del publicador v2 no reemplaza la última revisión válida ni amplía
 la selección de una tarea o programación. No se usa la cuenta general del
 Portal como respaldo del publicador dedicado.
 
+El ciclo del temporizador ya distingue el reclamo de la ruta que debe
+procesarlo. Para un trabajo marcado v2, un resultado confirmado lo cierra
+en SQL; un resultado ambiguo, una excepción o una configuración no disponible
+lo difiere. En ningún caso se usa el cierre genérico v1. Un trabajo v2
+aplazado no bloquea las fuentes ERP. El selector SQL ya fija la ruta bajo el
+mismo bloqueo y versión del vínculo; el temporizador aún no registra el
+manejador v2 ni pone su bandera de admisión. La validación del envelope
+rechaza también rutas conocidas con un claim incompleto o de otro ambiente.
+El lote real exportado por el API pasó **7/7** en PortalSAGWeb-TEST (283 ms)
+con rollback: encolado y reclamo con v2 apagado/encendido, ERP heredado
+independiente, cierre genérico negado y concesión v2 vigente conservada al
+apagar la admisión. Quedaron cero filas de prueba. Pasaron 58 pruebas locales,
+TypeScript y el build del API. No se activó v2 ni se escribió en producción.
+
 ## Verificación de preparación del reporte (2026-11-18)
 
 El conjunto enfocado de conteo, perfiles, permisos de destinatarios y outbox

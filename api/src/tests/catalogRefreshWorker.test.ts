@@ -10,8 +10,11 @@ const claim = (i: number): CatalogRefreshClaim => ({ jobId: `10000000-0000-4000-
   leaseToken: `20000000-0000-4000-8000-00000000000${i}`, workerId: "30000000-0000-4000-8000-000000000000",
   sourceId: `40000000-0000-4000-8000-00000000000${i}`, attempt: 1, environment: "qa",
   bindingRevision: "ab".repeat(8), profileRevision: "bc".repeat(8), matchKeyVersion: 2 });
+const legacy = (i: number) => ({ kind: "legacy" as const, claim: claim(i) });
+const sagV2 = (i: number) => ({ kind: "sag-v2" as const, claim: claim(i) });
 const mocks = () => ({ enqueueDue: vi.fn().mockResolvedValue(2), claim: vi.fn().mockResolvedValue([]),
   publish: vi.fn().mockResolvedValue("published"), complete: vi.fn().mockResolvedValue(true),
+  publishSagV2: vi.fn(),
   generate: vi.fn().mockResolvedValue({ status: "evaluated" }), cutoff: vi.fn().mockResolvedValue(null),
   now: vi.fn().mockReturnValue(new Date("2026-11-19T04:59:00Z")) });
 
@@ -26,7 +29,7 @@ describe("durable catalog refresh tick", () => {
 
   it("claims in two bounded independent waves, isolates a failed source and runs today's cutoff even without jobs", async () => {
     const io = mocks();
-    io.claim.mockResolvedValueOnce([claim(1), claim(2)]).mockResolvedValueOnce([claim(3), claim(4)]);
+    io.claim.mockResolvedValueOnce([legacy(1), legacy(2)]).mockResolvedValueOnce([legacy(3), legacy(4)]);
     let active = 0, peak = 0;
     io.publish.mockImplementation(async (job: CatalogRefreshClaim) => {
       peak = Math.max(peak, ++active);
@@ -62,7 +65,7 @@ describe("durable catalog refresh tick", () => {
   it("records a pre-cutoff observation before the next wave and never backdates an after-cutoff publication", async () => {
     const io = mocks();
     const sequence: string[] = [];
-    io.claim.mockResolvedValueOnce([claim(1)]).mockResolvedValueOnce([claim(2)]);
+    io.claim.mockResolvedValueOnce([legacy(1)]).mockResolvedValueOnce([legacy(2)]);
     io.publish.mockImplementation(async (job: CatalogRefreshClaim) => {
       sequence.push(`commit ${job.attempt}:${job.sourceId.at(-1)}`);
       io.now.mockReturnValue(new Date(job.sourceId.endsWith("1") ? "2026-11-19T04:59:38Z" : "2026-11-19T05:00:10Z"));
@@ -75,5 +78,50 @@ describe("durable catalog refresh tick", () => {
     expect(await runCatalogRefreshTick(io, config)).toMatchObject({ published: 2, unverifiedDays: 1, generation: "evaluated" });
     expect(sequence).toEqual(["commit 1:1", "observe 2026-11-18", "commit 1:2", "observe 2026-11-19"]);
     expect(io.cutoff).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [{ outcome: "published", queue: "settled", jobStatus: "succeeded" }, "published"],
+    [{ outcome: "superseded", queue: "settled", jobStatus: "succeeded" }, "superseded"],
+    [{ outcome: "superseded", queue: "settled", jobStatus: "cancelled" }, "cancelled"],
+    [{ outcome: "failed-recorded", queue: "settled", jobStatus: "retry" }, "failed"],
+    [{ outcome: "failed-recorded", queue: "settled", jobStatus: "failed" }, "failed"],
+    [{ outcome: "unconfirmed", queue: "lease-recovery" }, "deferred"],
+    [{ outcome: "stale", queue: "fenced-stale" }, "deferred"],
+    [{ outcome: "cancelled", queue: "untouched" }, "deferred"],
+    [{ outcome: "ineligible", queue: "untouched" }, "deferred"],
+  ] as const)("never compensates a SAG v2 claim after result %j", async (result, count) => {
+    const io = mocks();
+    const env = { ...config, PORTAL_CATALOG_SAG_V2_ENABLED: "true" };
+    io.claim.mockResolvedValueOnce([sagV2(1)]);
+    io.publishSagV2.mockResolvedValue(result);
+    expect(await runCatalogRefreshTick(io, env)).toMatchObject({ claimed: 1, [count]: 1 });
+    expect(io.publishSagV2).toHaveBeenCalledExactlyOnceWith(claim(1), env);
+    expect(io.publish).not.toHaveBeenCalled();
+    expect(io.complete).not.toHaveBeenCalled();
+  });
+
+  it.each(["disabled", "missing-handler", "throws"])("defers a pinned SAG v2 claim (%s) without interrupting legacy refresh", async state => {
+    const io = mocks();
+    io.claim.mockResolvedValueOnce([sagV2(1), legacy(2)]);
+    io.publishSagV2.mockRejectedValue(new Error("synthetic private error"));
+    const env = { ...config, PORTAL_CATALOG_SAG_V2_ENABLED: state === "disabled" ? undefined : "true" };
+    const { publishSagV2, ...legacyOnly } = io;
+    const result = await runCatalogRefreshTick(state === "missing-handler" ? legacyOnly : io, env);
+    expect(result).toMatchObject({ claimed: 2, published: 1, deferred: 1 });
+    expect(io.publish).toHaveBeenCalledExactlyOnceWith(claim(2), env);
+    expect(io.complete).not.toHaveBeenCalled();
+    expect(publishSagV2).toHaveBeenCalledTimes(state === "throws" ? 1 : 0);
+    expect(JSON.stringify(result)).not.toContain("synthetic private error");
+  });
+
+  it("never treats a malformed claim envelope as legacy work", async () => {
+    const io = mocks();
+    io.claim.mockResolvedValueOnce([claim(1), { kind: "unknown", claim: claim(2) }, null,
+      { kind: "legacy" }, { kind: "sag-v2", claim: { ...claim(3), bindingRevision: "invalid" } },
+      { kind: "legacy", claim: claim(4), untrusted: true }]);
+    expect(await runCatalogRefreshTick(io, { ...config, PORTAL_CATALOG_SAG_V2_ENABLED: "true" }))
+      .toMatchObject({ claimed: 6, deferred: 6 });
+    for (const fn of [io.publish, io.publishSagV2, io.complete]) expect(fn).not.toHaveBeenCalled();
   });
 });

@@ -11,6 +11,7 @@ const actor = { actorId: "authenticated-requester", sourceIds: ["4a56df91-f51c-4
 const raw = { jobId: "1a56df91-f51c-4320-a626-67fd22fd3db8", workerId: "2a56df91-f51c-4320-a626-67fd22fd3db8",
   leaseToken: "3a56df91-f51c-4320-a626-67fd22fd3db8", sourceId: actor.sourceIds[0], attempt: 3, environment: "qa" as const,
   bindingRevision: Buffer.alloc(8, 0xab), profileRevision: Buffer.alloc(8, 0xac), matchKeyVersion: 2 };
+const decodedClaim = { ...raw, bindingRevision: "ab".repeat(8), profileRevision: "ac".repeat(8) };
 const value = (key: string) => d.input.mock.calls.findLast(([name]) => name === key)?.[2];
 
 describe("catalog refresh queue SQL contracts", () => {
@@ -51,22 +52,24 @@ describe("catalog refresh queue SQL contracts", () => {
     d.query.mockResolvedValueOnce({ recordsets: [[{ allowed: false, sagPending: false }], result.recordsets[1]] });
     expect(await readCatalogRefreshStatus({ ...settings, ...actor })).toBeNull();
     expect(batches.status).toContain("reader.revoked_at IS NULL");
-    expect(batches.status).toContain("@includeSag=1 AND EXISTS(SELECT 1 FROM @scope)");
+    expect(batches.status).toContain("@allowed=1 AND EXISTS(SELECT 1 FROM @scope)");
+    expect(batches.status).toContain("j.match_key_version=@matchKeyVersion");
+    expect(value("matchKeyVersion")).toBe(2);
     expect(batches.status).not.toMatch(/(?:DELETE|UPDATE|INSERT)\s+settings\./);
   });
 
   it("claims at most two, uses SQL time and a unique lease, and completes only the entire exact fence", async () => {
     expect(() => claimCatalogRefreshJobs(settings, raw.workerId, 3)).toThrow("invalid_catalog_refresh_claim_count");
     expect(d.transaction).not.toHaveBeenCalled();
-    d.query.mockResolvedValueOnce({ recordset: [raw] });
+    d.query.mockResolvedValueOnce({ recordset: [{ ...raw, dispatchKind: "legacy" }] });
     const jobs = await claimCatalogRefreshJobs(settings, raw.workerId, 2);
-    expect(jobs).toEqual([{ ...raw, bindingRevision: "ab".repeat(8), profileRevision: "ac".repeat(8) }]);
+    expect(jobs).toEqual([{ kind: "legacy", claim: decodedClaim }]);
     expect(batches.claim).toContain("j.available_at<=@now");
     expect(batches.claim).toContain("lease_token=NEWID(),lease_expires_at=DATEADD(second,120,@now)");
     expect(batches.claim).toContain("j.lease_expires_at<=@now");
     expect(batches.claim).toContain("WHEN 1 THEN 30 WHEN 2 THEN 60 WHEN 3 THEN 120 WHEN 4 THEN 240 ELSE 300");
     d.query.mockResolvedValueOnce({ recordset: [{ completed: false }] });
-    expect(await completeCatalogRefreshClaim(jobs[0], "retry")).toBe(false);
+    expect(await completeCatalogRefreshClaim(decodedClaim, "retry")).toBe(false);
     expect(value("leaseToken")).toBe(raw.leaseToken);
     expect(value("jobAttempt")).toBe(3);
     expect(batches.complete).toContain("j.job_id=@jobId AND j.worker_id=@workerId AND j.lease_token=@leaseToken");
@@ -74,6 +77,36 @@ describe("catalog refresh queue SQL contracts", () => {
     expect(batches.complete).toContain("IF @leaseUntil<=SYSUTCDATETIME() THROW");
     expect(batches.enqueueDue).toContain("h.attempted_at<=DATEADD(minute,-5,@now)");
     expect(batches.enqueueDue).not.toContain("verified_until");
+  });
+
+  it("keeps the SQL-selected v2 route outside the exact claim under the same lock", async () => {
+    d.query.mockResolvedValueOnce({ recordset: [{ ...raw, dispatchKind: "sag-v2" }] });
+    await expect(claimCatalogRefreshJobs({ ...settings, includeSagV2: true }, raw.workerId, 1))
+      .resolves.toEqual([{ kind: "sag-v2", claim: decodedClaim }]);
+    expect(value("includeSagV2")).toBe(true);
+    expect(batches.claim).toContain("eligible.dispatch_kind INTO @claimed");
+    expect(batches.claim).toContain("c.dispatch_kind AS dispatchKind");
+    expect(batches.claim).toContain("b WITH (UPDLOCK,HOLDLOCK)");
+    expect(batches.claim).toContain("j.binding_version=b.row_version");
+  });
+
+  it.each(["sag-v2", "unknown", undefined])("rejects impossible routes before a claim transaction can commit: %s", async dispatchKind => {
+    d.query.mockResolvedValueOnce({ recordset: [{ ...raw, dispatchKind }] });
+    await expect(claimCatalogRefreshJobs(settings, raw.workerId, 1)).rejects.toThrow("invalid_catalog_refresh_claim_result");
+    expect(value("includeSagV2")).toBe(false);
+  });
+
+  it("shares the exact v2 admission gate, never declares it stale solely when disabled, and leaves generic completion legacy-only", () => {
+    for (const batch of [batches.enqueueRequest, batches.enqueueDue, batches.claim, batches.status]) {
+      expect(batch).toContain("@includeSagV2=1 AND b.source_role='sag-admin'");
+      expect(batch).toContain("DATALENGTH(b.contract_version)=12");
+    }
+    const reap = batches.claim.split("DECLARE @claimed TABLE")[0];
+    expect(reap).toContain("'sag_admin_v2'");
+    expect(reap).not.toContain("@includeSagV2=1 AND b.source_role");
+    expect(batches.complete).toContain("b.row_version=j.binding_version");
+    expect(batches.complete).not.toContain("'sag_admin_v2'");
+    expect(batches.completePublication).not.toContain("'sag_admin_v2'");
   });
 
   it("does not report a superseded job as successful unless a higher exact sealed head is still verified", () => {

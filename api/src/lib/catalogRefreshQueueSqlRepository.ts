@@ -4,11 +4,12 @@ import type { CatalogEnvironment } from "./catalogSourceConfiguration";
 import { runSqlTransaction } from "./sqlTransaction";
 
 export type CatalogRefreshScope = { environment: CatalogEnvironment; actorId: string; sourceIds?: readonly string[] };
-export type CatalogRefreshSettings = { environment: CatalogEnvironment; matchKeyVersion: number; includeSag: boolean };
+export type CatalogRefreshSettings = { environment: CatalogEnvironment; matchKeyVersion: number; includeSag: boolean; includeSagV2?: boolean };
 export type CatalogRefreshClaim = Readonly<{
   jobId: string; workerId: string; leaseToken: string; attempt: number; sourceId: string;
   environment: CatalogEnvironment; bindingRevision: string; profileRevision: string; matchKeyVersion: number;
 }>;
+export type CatalogRefreshWork = Readonly<{ kind: "legacy" | "sag-v2"; claim: CatalogRefreshClaim }>;
 export type CatalogRefreshStatus = {
   pending: boolean; items: { sourceId: string; status: "queued" | "processing" | "retry" | "succeeded" | "failed"; updatedAt: string }[];
 };
@@ -23,12 +24,20 @@ export const catalogRefreshPublicationLockSql = `
   IF @lockCode<0 THROW 53320,N'Catalog publication lock unavailable.',1;
 `;
 
-// All names are fixed. The same SQL eligibility predicate fences jobs and publisher transactions.
-export const currentCertifiedCatalogSourceSql = `b.source_state='active'
-  AND ((b.source_role='erp-customers' AND b.contract_version='erp_v1')
-    OR (b.source_role='sag-admin' AND b.contract_version='sag_admin_v1'))
-  AND b.validated_at IS NOT NULL AND b.validated_profile_version=p.row_version
+const legacyErp = `b.source_role='erp-customers' AND b.contract_version='erp_v1'`;
+const legacySag = `b.source_role='sag-admin' AND b.contract_version='sag_admin_v1'`;
+const sagV2 = `b.source_role='sag-admin' AND b.contract_version COLLATE Latin1_General_100_BIN2='sag_admin_v2'
+    AND DATALENGTH(b.contract_version)=12`;
+const certifiedProfile = `b.source_state='active' AND b.validated_at IS NOT NULL AND b.validated_profile_version=p.row_version
   AND p.active=1 AND p.status='active' AND p.encrypt_connection=1 AND p.password_configured=1`;
+
+// The legacy publisher must never accept a v2 binding, even if the queue is enabled for v2.
+export const currentCertifiedCatalogSourceSql = `${certifiedProfile} AND ((${legacyErp}) OR (${legacySag}))`;
+const currentQueueSourceSql = `${certifiedProfile}
+  AND ((${legacyErp}) OR (@includeSag=1 AND ${legacySag}) OR (@includeSagV2=1 AND ${sagV2}))`;
+// A disabled or unavailable v2 dispatcher is not evidence that an issued lease is stale.
+const currentRetainedSourceSql = `${certifiedProfile}
+  AND ((${legacyErp}) OR (@includeSag=1 AND ${legacySag}) OR (${sagV2}))`;
 
 const sourceJoin = `JOIN settings.external_database_connections AS p
   ON p.external_database_connection_key=b.external_database_connection_key`;
@@ -65,13 +74,13 @@ const reapJobsSql = (requestedOnly: boolean) => `
     SELECT ${requestedOnly ? "" : "TOP (50) "}j.job_key FROM settings.catalog_source_refresh_jobs AS j
     WHERE j.portal_environment=@environment AND j.finished_at IS NULL${requestedOnly ? `
       AND (EXISTS(SELECT 1 FROM @scope AS s WHERE s.catalog_source_key=j.catalog_source_key)
-        OR (@includeSag=1 AND EXISTS(SELECT 1 FROM settings.catalog_source_bindings AS b
+        OR ((@includeSag=1 OR @includeSagV2=1) AND EXISTS(SELECT 1 FROM settings.catalog_source_bindings AS b
           WHERE b.catalog_source_key=j.catalog_source_key AND b.portal_environment=@environment AND b.source_role='sag-admin'
             AND b.source_state='active')))` : ""} AND NOT EXISTS(
       SELECT 1 FROM settings.catalog_source_bindings AS b ${sourceJoin}
       WHERE b.catalog_source_key=j.catalog_source_key AND b.portal_environment=@environment
         AND b.row_version=j.binding_version AND p.row_version=j.profile_version AND j.match_key_version=@matchKeyVersion
-        AND (b.source_role<>'sag-admin' OR @includeSag=1) AND ${currentCertifiedCatalogSourceSql})
+        AND ${currentRetainedSourceSql})
     ${requestedOnly ? "" : "ORDER BY j.job_key"}
   )
   UPDATE j SET job_status='cancelled',updated_at=@now,finished_at=@now,attempt_ordinal=NULL,
@@ -107,8 +116,8 @@ const enqueueRequestSql = `${catalogRefreshPublicationLockSql}${authorizedScopeS
   INSERT @eligible(catalog_source_key,source_role,binding_version,profile_version)
   SELECT b.catalog_source_key,b.source_role,b.row_version,p.row_version
   FROM settings.catalog_source_bindings AS b ${sourceJoin}
-  WHERE b.portal_environment=@environment AND ${currentCertifiedCatalogSourceSql}
-    AND ((b.source_role='sag-admin' AND @includeSag=1)
+  WHERE b.portal_environment=@environment AND ${currentQueueSourceSql}
+    AND (b.source_role='sag-admin'
       OR EXISTS(SELECT 1 FROM @scope AS scope WHERE scope.catalog_source_key=b.catalog_source_key));
 
   DECLARE @coalesced int=(SELECT COUNT(*) FROM @eligible AS e JOIN settings.catalog_source_refresh_jobs AS j
@@ -143,8 +152,7 @@ const enqueueDueSql = `${catalogRefreshPublicationLockSql}
     FROM settings.catalog_source_refresh_jobs AS j WHERE j.catalog_source_key=b.catalog_source_key
     ORDER BY j.job_key DESC
   ) AS lastJob
-  WHERE b.portal_environment=@environment AND ${currentCertifiedCatalogSourceSql}
-    AND (b.source_role<>'sag-admin' OR @includeSag=1)
+  WHERE b.portal_environment=@environment AND ${currentQueueSourceSql}
     AND (r.revision_key IS NULL OR h.attempted_at<=DATEADD(minute,-5,@now))
     AND NOT EXISTS(SELECT 1 FROM settings.catalog_source_refresh_jobs AS j
       WHERE j.catalog_source_key=b.catalog_source_key AND j.finished_at IS NULL)
@@ -157,19 +165,20 @@ const enqueueDueSql = `${catalogRefreshPublicationLockSql}
 const claimSql = `${catalogRefreshPublicationLockSql}
   DECLARE @now datetime2(3)=SYSUTCDATETIME();
   ${reapJobsSql(false)}
-  DECLARE @claimed TABLE(job_key bigint NOT NULL,attempt_no tinyint NOT NULL);
+  DECLARE @claimed TABLE(job_key bigint NOT NULL,attempt_no tinyint NOT NULL,dispatch_kind varchar(7) NOT NULL);
   ;WITH eligible AS (
-    SELECT TOP (@count) j.job_key FROM settings.catalog_source_refresh_jobs AS j
-    JOIN settings.catalog_source_bindings AS b ON b.catalog_source_key=j.catalog_source_key ${sourceJoin}
+    SELECT TOP (@count) j.job_key, CASE WHEN ${sagV2} THEN 'sag-v2' ELSE 'legacy' END AS dispatch_kind
+    FROM settings.catalog_source_refresh_jobs AS j
+    JOIN settings.catalog_source_bindings AS b WITH (UPDLOCK,HOLDLOCK) ON b.catalog_source_key=j.catalog_source_key ${sourceJoin}
     WHERE j.portal_environment=@environment AND b.portal_environment=@environment AND j.finished_at IS NULL
       AND j.job_status IN ('queued','retry') AND j.attempt_no<5 AND j.available_at<=@now
       AND j.binding_version=b.row_version AND j.profile_version=p.row_version AND j.match_key_version=@matchKeyVersion
-      AND (b.source_role<>'sag-admin' OR @includeSag=1) AND ${currentCertifiedCatalogSourceSql}
+      AND ${currentQueueSourceSql}
     ORDER BY j.available_at,j.job_key
   )
   UPDATE j SET job_status='processing',updated_at=@now,attempt_no=j.attempt_no+1,
     worker_id=@workerId,lease_token=NEWID(),lease_expires_at=DATEADD(second,120,@now)
-  OUTPUT inserted.job_key,inserted.attempt_no INTO @claimed
+  OUTPUT inserted.job_key,inserted.attempt_no,eligible.dispatch_kind INTO @claimed
   FROM settings.catalog_source_refresh_jobs AS j JOIN eligible ON eligible.job_key=j.job_key;
 
   INSERT settings.catalog_source_refresh_attempts(job_key,attempt_no,event_kind,occurred_at)
@@ -178,7 +187,7 @@ const claimSql = `${catalogRefreshPublicationLockSql}
   SELECT CONVERT(char(36),j.job_id) AS jobId,CONVERT(char(36),j.worker_id) AS workerId,
     CONVERT(char(36),j.lease_token) AS leaseToken,j.attempt_no AS attempt,CONVERT(char(36),b.source_id) AS sourceId,
     j.portal_environment AS environment,j.binding_version AS bindingRevision,j.profile_version AS profileRevision,
-    j.match_key_version AS matchKeyVersion
+    j.match_key_version AS matchKeyVersion,c.dispatch_kind AS dispatchKind
   FROM @claimed AS c JOIN settings.catalog_source_refresh_jobs AS j ON j.job_key=c.job_key
   JOIN settings.catalog_source_bindings AS b ON b.catalog_source_key=j.catalog_source_key
   ORDER BY j.job_key;
@@ -197,7 +206,8 @@ const completeSql = (publication: boolean) => `${publication ? "SET NOCOUNT ON;"
   SELECT @jobKey=j.job_key,@leaseUntil=j.lease_expires_at
   FROM settings.catalog_source_refresh_jobs AS j WITH (UPDLOCK,HOLDLOCK)
   JOIN settings.catalog_source_bindings AS b ON b.catalog_source_key=j.catalog_source_key
-  WHERE ${catalogRefreshFenceSql}${publication ? " AND j.attempt_ordinal=CONVERT(bigint,@reservedOrdinal)" : ""};
+  WHERE ${catalogRefreshFenceSql} AND b.row_version=j.binding_version AND ((${legacyErp}) OR (${legacySag}))
+    ${publication ? " AND j.attempt_ordinal=CONVERT(bigint,@reservedOrdinal)" : ""};
   DECLARE @now datetime2(3)=SYSUTCDATETIME();
   IF @jobKey IS NULL OR @leaseUntil<=@now BEGIN SELECT CONVERT(bit,0) AS completed; RETURN; END;
 
@@ -233,12 +243,12 @@ const completeSql = (publication: boolean) => `${publication ? "SET NOCOUNT ON;"
 
 const statusSql = `SET NOCOUNT ON;${authorizedScopeSql}
   DECLARE @sagPending bit=0;
-  IF @allowed=1 AND @includeSag=1 AND EXISTS(SELECT 1 FROM @scope) AND EXISTS(
+  IF @allowed=1 AND EXISTS(SELECT 1 FROM @scope) AND EXISTS(
     SELECT 1 FROM settings.catalog_source_bindings AS b ${sourceJoin}
     JOIN settings.catalog_source_refresh_jobs AS j ON j.catalog_source_key=b.catalog_source_key
     WHERE b.portal_environment=@environment AND b.source_role='sag-admin' AND j.portal_environment=@environment
       AND j.finished_at IS NULL AND j.binding_version=b.row_version AND j.profile_version=p.row_version
-      AND ${currentCertifiedCatalogSourceSql}) SET @sagPending=1;
+      AND j.match_key_version=@matchKeyVersion AND ${currentQueueSourceSql}) SET @sagPending=1;
   SELECT @allowed AS allowed,@sagPending AS sagPending;
   SELECT CONVERT(char(36),s.source_id) AS sourceId,
     CASE WHEN j.job_status='cancelled' THEN 'failed' ELSE j.job_status END AS status,j.updated_at AS updatedAt
@@ -262,7 +272,8 @@ function scopeParameters(request: sql.Request, input: CatalogRefreshScope) {
 
 function configurationParameters(request: sql.Request, input: CatalogRefreshSettings) {
   return request.input("environment", sql.VarChar(10), input.environment)
-    .input("matchKeyVersion", sql.SmallInt, input.matchKeyVersion).input("includeSag", sql.Bit, input.includeSag);
+    .input("matchKeyVersion", sql.SmallInt, input.matchKeyVersion).input("includeSag", sql.Bit, input.includeSag)
+    .input("includeSagV2", sql.Bit, input.includeSagV2 === true);
 }
 
 export function bindCatalogRefreshFence(request: sql.Request, claim: CatalogRefreshClaim) {
@@ -295,13 +306,28 @@ export function enqueueDueCatalogRefreshSources(input: CatalogRefreshSettings) {
   });
 }
 
-export function claimCatalogRefreshJobs(input: CatalogRefreshSettings, workerId: string, count: number): Promise<CatalogRefreshClaim[]> {
+export function claimCatalogRefreshJobs(input: CatalogRefreshSettings, workerId: string, count: number): Promise<CatalogRefreshWork[]> {
   if (count !== 1 && count !== 2) throw new Error("invalid_catalog_refresh_claim_count");
+  const configuration = { ...input };
   return runSqlTransaction(async tx => {
-    type Row = Omit<CatalogRefreshClaim, "bindingRevision" | "profileRevision"> & { bindingRevision: Buffer; profileRevision: Buffer };
-    const { recordset } = await configurationParameters(tx.request(), input)
+    type Row = Omit<CatalogRefreshClaim, "bindingRevision" | "profileRevision"> & {
+      bindingRevision: Buffer; profileRevision: Buffer; dispatchKind: unknown;
+    };
+    const { recordset } = await configurationParameters(tx.request(), configuration)
       .input("workerId", sql.UniqueIdentifier, workerId).input("count", sql.TinyInt, count).query<Row>(claimSql);
-    return recordset.map(row => ({ ...row, bindingRevision: row.bindingRevision.toString("hex"), profileRevision: row.profileRevision.toString("hex") }));
+    if (!Array.isArray(recordset) || recordset.length > count) throw new Error("invalid_catalog_refresh_claim_result");
+    return recordset.map(row => {
+      const { dispatchKind: kind, bindingRevision, profileRevision, environment, matchKeyVersion } = row;
+      if ((kind !== "legacy" && (kind !== "sag-v2" || configuration.includeSagV2 !== true)) ||
+        environment !== configuration.environment || matchKeyVersion !== configuration.matchKeyVersion ||
+        typeof row.workerId !== "string" || row.workerId.toLowerCase() !== workerId.toLowerCase() ||
+        !Buffer.isBuffer(bindingRevision) || bindingRevision.length !== 8 || !Buffer.isBuffer(profileRevision) || profileRevision.length !== 8) {
+        throw new Error("invalid_catalog_refresh_claim_result");
+      }
+      return { kind, claim: { jobId: row.jobId, workerId: row.workerId, leaseToken: row.leaseToken, sourceId: row.sourceId,
+        attempt: row.attempt, environment, bindingRevision: bindingRevision.toString("hex"),
+        profileRevision: profileRevision.toString("hex"), matchKeyVersion } };
+    });
   });
 }
 
@@ -321,10 +347,9 @@ export async function completePublishedCatalogRefresh(tx: sql.Transaction, claim
   if (recordset[0]?.completed !== true) throw new Error("catalog_publication_forbidden");
 }
 
-export function readCatalogRefreshStatus(input: CatalogRefreshScope & { includeSag: boolean }): Promise<CatalogRefreshStatus | null> {
+export function readCatalogRefreshStatus(input: CatalogRefreshScope & CatalogRefreshSettings): Promise<CatalogRefreshStatus | null> {
   return runSqlTransaction(async tx => {
-    const rows = await scopeParameters(tx.request(), input).input("environment", sql.VarChar(10), input.environment)
-      .input("includeSag", sql.Bit, input.includeSag).query(statusSql);
+    const rows = await scopeParameters(configurationParameters(tx.request(), input), input).query(statusSql);
     if (!Array.isArray(rows.recordsets) || rows.recordsets.length !== 2) throw new Error("invalid_catalog_refresh_status_result");
     const [visibility, jobs]: [{ allowed: boolean; sagPending: boolean }[],
       { sourceId: string; status: CatalogRefreshStatus["items"][number]["status"]; updatedAt: Date }[]] = [rows.recordsets[0], rows.recordsets[1]];
