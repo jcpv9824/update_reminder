@@ -268,7 +268,8 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
             databaseKey bigint NULL, environment varchar(20) NOT NULL, validUntil datetime2(3) NOT NULL
           );
           INSERT @accepted
-          SELECT r.linkId,b.catalog_source_key,r.recordId,c.client_key,d.domain_key,db.database_key,r.environment,pt.valid_until
+          SELECT r.linkId,b.catalog_source_key,r.recordId,c.client_key,d.domain_key,db.database_key,r.environment,
+            CASE WHEN revision.verified_until<pt.valid_until THEN revision.verified_until ELSE pt.valid_until END
           FROM OPENJSON(@links) WITH (
             linkId nvarchar(260), clientId nvarchar(150), domainId nvarchar(150), databaseId nvarchar(150),
             catalogSourceId uniqueidentifier, recordId nvarchar(260), environment varchar(20)
@@ -293,13 +294,24 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
             ON target.physical_target_key=pt.physical_target_key AND target.target_id=@physicalId
             AND target.portal_environment=@portalEnvironment AND target.target_kind=@kind
             AND (@kind='domain' OR target.database_name_fingerprint=HASHBYTES('SHA2_256',CONVERT(varbinary(max),ap.initial_catalog)))
-          LEFT JOIN settings.catalog_source_bindings AS b ON b.source_id=r.catalogSourceId
+          LEFT JOIN settings.catalog_source_bindings AS b WITH (HOLDLOCK) ON b.source_id=r.catalogSourceId
             AND b.portal_environment=@portalEnvironment AND b.source_state='active' AND b.validated_at IS NOT NULL
-          LEFT JOIN settings.external_database_connections AS p ON p.external_database_connection_key=b.external_database_connection_key
+          LEFT JOIN settings.external_database_connections AS p WITH (HOLDLOCK) ON p.external_database_connection_key=b.external_database_connection_key
             AND p.status='active' AND p.active=1 AND p.encrypt_connection=1 AND p.password_configured=1
             AND b.validated_profile_version=p.row_version
+          LEFT JOIN settings.catalog_customer_revision_heads AS h WITH (HOLDLOCK) ON h.catalog_source_key=b.catalog_source_key
+            AND h.attempt_status='succeeded' AND h.attempted_at<=@registryNow
+          LEFT JOIN core.catalog_customer_source_revisions AS revision ON revision.revision_key=h.revision_key
+            AND revision.catalog_source_key=b.catalog_source_key AND revision.source_role=b.source_role
+            AND revision.binding_version=b.row_version AND revision.profile_version=p.row_version
+            AND revision.sealed_at<=@registryNow AND revision.observed_at<=@registryNow AND revision.verified_until>@registryNow
+          LEFT JOIN core.catalog_customer_revision_rows AS evidence ON evidence.revision_key=revision.revision_key
+            AND evidence.source_record_id=TRY_CONVERT(int,r.recordId)
+            AND CONVERT(nvarchar(11),evidence.source_record_id) COLLATE Latin1_General_100_BIN2=r.recordId COLLATE Latin1_General_100_BIN2
+            AND DATALENGTH(CONVERT(nvarchar(11),evidence.source_record_id))=DATALENGTH(r.recordId)
           WHERE (@kind='domain' OR db.database_key IS NOT NULL)
-            AND (r.catalogSourceId IS NULL OR p.external_database_connection_key IS NOT NULL);
+            AND (r.catalogSourceId IS NULL OR (b.validated_at<=@registryNow AND evidence.source_record_id IS NOT NULL
+              AND (b.source_role<>'erp-customers' OR evidence.active_code='S')));
           IF EXISTS(SELECT 1 FROM @accepted WHERE validUntil<=SYSUTCDATETIME())
           BEGIN
             SELECT linkId,validUntil FROM @accepted WHERE 1=0;

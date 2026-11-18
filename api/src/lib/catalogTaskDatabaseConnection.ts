@@ -62,10 +62,15 @@ WHERE task.target_type='database' AND task.status IN ('pending','in_progress','f
         JOIN settings.external_database_connections bp ON bp.external_database_connection_key=b.external_database_connection_key
         JOIN settings.catalog_customer_revision_heads h ON h.catalog_source_key=b.catalog_source_key AND h.attempt_status='succeeded'
         JOIN core.catalog_customer_source_revisions r ON r.revision_key=h.revision_key AND r.catalog_source_key=b.catalog_source_key
+        JOIN core.catalog_customer_revision_rows evidence ON evidence.revision_key=r.revision_key
+          AND evidence.source_record_id=TRY_CONVERT(int,l.catalog_record_id)
+          AND CONVERT(nvarchar(11),evidence.source_record_id) COLLATE Latin1_General_100_BIN2=l.catalog_record_id
+          AND DATALENGTH(CONVERT(nvarchar(11),evidence.source_record_id))=DATALENGTH(l.catalog_record_id)
         WHERE b.catalog_source_key=l.catalog_source_key AND b.portal_environment=@environment AND b.source_state='active'
-          AND b.validated_at IS NOT NULL AND b.validated_profile_version=bp.row_version
-          AND r.binding_version=b.row_version AND r.profile_version=bp.row_version
-          AND r.sealed_at IS NOT NULL AND r.observed_at<=@now AND r.verified_until>@now
+          AND b.validated_at<=@now AND b.validated_profile_version=bp.row_version
+          AND r.binding_version=b.row_version AND r.profile_version=bp.row_version AND r.source_role=b.source_role
+          AND h.attempted_at<=@now AND r.sealed_at<=@now AND r.observed_at<=@now AND r.verified_until>@now
+          AND (b.source_role<>'erp-customers' OR evidence.active_code='S')
           AND bp.active=1 AND bp.status='active' AND bp.encrypt_connection=1 AND bp.password_configured=1))
       AND EXISTS(SELECT 1 FROM core.catalog_physical_target_links tlink
         JOIN core.catalog_physical_targets t ON t.physical_target_key=tlink.physical_target_key

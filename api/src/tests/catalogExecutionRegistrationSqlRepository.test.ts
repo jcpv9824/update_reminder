@@ -96,6 +96,12 @@ describe("atomic catalog execution registration", () => {
     expect(mock.query.mock.calls[5][0]).toContain("core.catalog_physical_target_links AS pt WITH (UPDLOCK,HOLDLOCK)");
     expect(mock.query.mock.calls[5][0]).toContain("pt.access_profile_version=ap.row_version");
     expect(mock.query.mock.calls[5][0]).toContain("pt.valid_until>@registryNow");
+    expect(mock.query.mock.calls[5][0]).toContain("h.attempt_status='succeeded'");
+    expect(mock.query.mock.calls[5][0]).toContain("revision.binding_version=b.row_version AND revision.profile_version=p.row_version");
+    expect(mock.query.mock.calls[5][0]).toContain("evidence.source_record_id=TRY_CONVERT(int,r.recordId)");
+    expect(mock.query.mock.calls[5][0]).toContain("DATALENGTH(r.recordId)");
+    expect(mock.query.mock.calls[5][0]).toContain("b.source_role<>'erp-customers' OR evidence.active_code='S'");
+    expect(mock.query.mock.calls[5][0]).toContain("WHEN revision.verified_until<pt.valid_until THEN revision.verified_until");
     expect(mock.query.mock.calls[5][1].physicalId).toBe(physicalId);
     expect(JSON.parse(mock.query.mock.calls[5][1].links)).toEqual([expect.objectContaining({ linkId: "link1", catalogSourceId: sourceId }),
       expect.objectContaining({ linkId: "link2", catalogSourceId: null })]);

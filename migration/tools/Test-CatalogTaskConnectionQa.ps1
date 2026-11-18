@@ -20,6 +20,11 @@ if(!$cutoffQuery -or $cutoffQuery -match '(?im)^\s*(INSERT|UPDATE|DELETE|MERGE|A
 }
 $cutoffQuery=$cutoffQuery.Replace('${catalogDomainRouteFingerprintSql}',$routeHash)
 $literal+="DECLARE @cutoffProbe nvarchar(max)=N'"+$cutoffQuery.Replace("'","''")+"';"
+$registerQuery=(Get-Content -Raw -LiteralPath (Join-Path $root 'api/src/lib/catalogExecutionRegistrationSqlRepository.ts')).Split([char]96) |
+  Where-Object { $_ -match '^\s*DECLARE @registryNow' } | Select-Object -First 1
+if(!$registerQuery -or $registerQuery -notmatch 'INSERT workflow\.catalog_task_execution_links'){ throw 'Expected the guarded link registration batch.' }
+$registerQuery=$registerQuery.Replace('${catalogDomainRouteFingerprintSql}',$routeHash)
+$literal+="DECLARE @registerProbe nvarchar(max)=N'"+$registerQuery.Replace("'","''")+"';"
 $fixture=@'
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
@@ -28,6 +33,8 @@ DECLARE @tag nvarchar(72)=N'qa-taskconn-'+LOWER(CONVERT(char(36),NEWID()));
 DECLARE @stamp datetime2(3)=SYSUTCDATETIME(), @target bigint, @physical uniqueidentifier, @taskKey bigint, @execution bigint;
 DECLARE @task nvarchar(150)=@tag+N'-task', @assigned nvarchar(150)=@tag+N'-assigned', @other nvarchar(150)=@tag+N'-broad';
 DECLARE @a nvarchar(150)=@tag+N'-a-db', @b nvarchar(150)=@tag+N'-b-db';
+DECLARE @sourceKey bigint,@origin uniqueidentifier,@customerKey bigint,@version smallint,@revision bigint,@lock int;
+DECLARE @bindingVersion binary(8),@profileVersion binary(8);
 DECLARE @params nvarchar(max)=N'@actor nvarchar(150), @db nvarchar(150), @task nvarchar(260), @environment varchar(10), @permission nvarchar(160)';
 DECLARE @rows TABLE(serverHostPort nvarchar(500),initialCatalog nvarchar(256),userId nvarchar(256),secretName nvarchar(256),
   databaseId nvarchar(150),taskId nvarchar(260),linkId nvarchar(260),profileVersion varchar(16),linkVersion varchar(16),executionVersion varchar(16));
@@ -103,6 +110,68 @@ BEGIN TRY
   INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.view_database_connection';
   IF (SELECT COUNT(*) FROM @rows WHERE databaseId=@b AND linkId=@b)<>1 THROW 53883,N'Surviving representative was not resolved.',1;
   DELETE FROM @rows;
+
+  EXEC @lock=sys.sp_getapplock @Resource=N'portal-sag:catalog-customer-publication:qa',@LockMode=N'Exclusive',
+    @LockOwner=N'Transaction',@DbPrincipal=N'public',@LockTimeout=5000;
+  IF @lock<0 THROW 53888,N'Could not reserve QA fixture publication.',1;
+  SELECT @version=match_key_version FROM settings.catalog_match_key_registry WHERE portal_environment='qa';
+  IF @version IS NULL
+  BEGIN
+    SET @version=1;
+    INSERT settings.catalog_match_key_registry(portal_environment,match_key_version,vault_secret_version,key_verifier)
+      VALUES('qa',@version,CONVERT(binary(16),NEWID()),HASHBYTES('SHA2_256',N'qa fixture, not a key'));
+  END;
+  INSERT settings.external_database_connections(source_id,display_name,server_host,database_name,login_name,
+    password_configured,password_secret_name,created_by,updated_by)
+    VALUES(@tag,@tag,N'fixture.invalid',N'synthetic',N'synthetic',1,N'fixture-no-key','fixture','fixture');
+  INSERT settings.catalog_source_bindings(external_database_connection_key,display_name,source_role,portal_environment,
+    contract_version,source_state,issuer_scope,validated_at,validated_profile_version,created_by,updated_by)
+    SELECT external_database_connection_key,@tag,'erp-customers','qa','erp_v1','active','CO',@stamp,row_version,'fixture','fixture'
+    FROM settings.external_database_connections WHERE source_id=@tag;
+  SET @sourceKey=SCOPE_IDENTITY();
+  SELECT @origin=source_id,@bindingVersion=row_version,@profileVersion=validated_profile_version
+    FROM settings.catalog_source_bindings WHERE catalog_source_key=@sourceKey;
+  INSERT core.catalog_customer_ids DEFAULT VALUES;
+  SET @customerKey=SCOPE_IDENTITY();
+  DECLARE @attempt bigint=9223372036854775790,@validUntil datetime2(3)=DATEADD(minute,3,@stamp);
+  INSERT core.catalog_customer_source_revisions(catalog_source_key,source_role,binding_version,profile_version,match_key_version,
+    attempt_ordinal,expected_rows,expected_scopes,observed_at,verified_until)
+    VALUES(@sourceKey,'erp-customers',@bindingVersion,@profileVersion,@version,@attempt,2,0,@stamp,@validUntil);
+  SET @revision=SCOPE_IDENTITY();
+  INSERT core.catalog_customer_revision_rows(revision_key,source_role,source_record_id,catalog_customer_key,official_name,active_code)
+    VALUES(@revision,'erp-customers',1,@customerKey,N'QA Fixture','S'),(@revision,'erp-customers',2,@customerKey,N'QA Fixture','N');
+  UPDATE core.catalog_customer_source_revisions SET sealed_at=@stamp WHERE revision_key=@revision;
+  INSERT settings.catalog_customer_revision_heads(catalog_source_key,attempt_status,attempted_at,attempt_ordinal)
+    VALUES(@sourceKey,'failed',@stamp,@attempt-1);
+  UPDATE workflow.catalog_task_execution_links SET catalog_source_key=@sourceKey,catalog_record_id=N'1' WHERE link_id=@b;
+  INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.reveal_database_password';
+  IF EXISTS(SELECT 1 FROM @rows) THROW 53894,N'A sealed but unpublished record authorized access after a failed attempt.',1;
+  UPDATE settings.catalog_customer_revision_heads SET revision_key=@revision,attempt_status='succeeded',attempt_ordinal=@attempt
+    WHERE catalog_source_key=@sourceKey;
+  INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.reveal_database_password';
+  IF (SELECT COUNT(*) FROM @rows)<>1 THROW 53889,N'Current exact ERP record did not authorize the assigned task.',1;
+  DELETE FROM @rows;
+  UPDATE workflow.catalog_task_execution_links SET catalog_record_id=N'2' WHERE link_id=@b;
+  INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.reveal_database_password';
+  IF EXISTS(SELECT 1 FROM @rows) THROW 53890,N'Inactive ERP record authorized a grant.',1;
+  UPDATE workflow.catalog_task_execution_links SET catalog_record_id=N'3' WHERE link_id=@b;
+  INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.reveal_database_password';
+  IF EXISTS(SELECT 1 FROM @rows) THROW 53891,N'Missing ERP record authorized a grant.',1;
+
+  DECLARE @planned nvarchar(max),@record nvarchar(260)=N'1 ';
+  DECLARE @registrationParams nvarchar(180)=N'@executionId bigint,@kind varchar(20),@portalEnvironment varchar(10),@physicalId uniqueidentifier,@links nvarchar(max)';
+  DECLARE @accepted TABLE(linkId nvarchar(260),validUntil datetime2(3));
+  SELECT @planned=(SELECT @tag+N'-registration' AS linkId,@record AS recordId,db.source_id AS databaseId,
+      c.source_id AS clientId,d.source_id AS domainId,CONVERT(char(36),@origin) AS catalogSourceId,'test' AS environment
+    FROM core.databases db JOIN core.domains d ON d.domain_key=db.domain_key JOIN core.clients c ON c.client_key=db.client_key
+    WHERE db.source_id=@b FOR JSON PATH);
+  INSERT @accepted EXEC sys.sp_executesql @registerProbe,@registrationParams,@execution,'database','qa',@physical,@planned;
+  IF EXISTS(SELECT 1 FROM @accepted) THROW 53892,N'An inexact record was registered.',1;
+  SET @planned=JSON_MODIFY(@planned,'$[0].recordId',N'1');
+  INSERT @accepted EXEC sys.sp_executesql @registerProbe,@registrationParams,@execution,'database','qa',@physical,@planned;
+  IF (SELECT COUNT(*) FROM @accepted WHERE validUntil=@validUntil)<>1 THROW 53893,N'The registered link did not inherit the earlier evidence expiry.',1;
+
+  UPDATE workflow.catalog_task_execution_links SET catalog_record_id=N'1' WHERE link_id=@b;
   UPDATE core.database_access_profiles SET sql_user_id=N'changed-fixture' WHERE source_id=@tag+N'-b-profile';
   INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.reveal_database_password';
   IF EXISTS(SELECT 1 FROM @rows) THROW 53884,N'A changed profile reused an earlier grant.',1;
@@ -112,13 +181,20 @@ BEGIN CATCH
   IF XACT_STATE()<>0 ROLLBACK TRANSACTION;
   THROW;
 END CATCH;
-SELECT 7 AS passed,
+SELECT 13 AS passed,
   (SELECT COUNT(*) FROM workflow.update_tasks WHERE source_id=@task)
   +(SELECT COUNT(*) FROM security.users WHERE source_id IN (@assigned,@other))
-  +(SELECT COUNT(*) FROM core.catalog_physical_targets WHERE target_id=@physical) AS remaining_fixtures;
+  +(SELECT COUNT(*) FROM core.catalog_physical_targets WHERE target_id=@physical)
+  +(SELECT COUNT(*) FROM settings.external_database_connections WHERE source_id=@tag)
+  +(SELECT COUNT(*) FROM settings.catalog_source_bindings WHERE catalog_source_key=@sourceKey)
+  +(SELECT COUNT(*) FROM core.catalog_customer_ids WHERE catalog_customer_key=@customerKey)
+  +(SELECT COUNT(*) FROM core.catalog_customer_source_revisions WHERE revision_key=@revision) AS remaining_fixtures;
 '@
 $invoke=Join-Path $PSScriptRoot '../connect-sql-server/Invoke-PortalSAGWeb-EphemeralRequest.ps1'
 $response=(& $invoke -SessionDirectory $session -Sql ($literal + [Environment]::NewLine + $fixture) -Mode write -TimeoutSeconds 35 -MaxRows 1) | ConvertFrom-Json -Depth 16
 $row=$response.resultSets[0].rows[0]
-if(!$response.success -or $row.passed -ne 7 -or $row.remaining_fixtures -ne 0){ throw 'QA connection and cutoff rehearsal did not pass or left residual data.' }
+if(!$response.success -or $row.passed -ne 13 -or $row.remaining_fixtures -ne 0){
+  $number=$response.error.number
+  throw "QA connection, cutoff and registration rehearsal did not pass or left residual data (SQL error number: $number)."
+}
 $row | ConvertTo-Json -Compress

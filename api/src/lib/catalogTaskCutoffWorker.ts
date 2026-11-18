@@ -68,6 +68,7 @@ async function readEvidence(transaction: sql.Transaction, snapshot: CatalogExecu
             AND r.binding_version=b.row_version AND r.profile_version=profile.row_version
             AND data.source_record_id=TRY_CONVERT(int,l.catalog_record_id)
             AND CONVERT(nvarchar(11),data.source_record_id) COLLATE Latin1_General_100_BIN2=l.catalog_record_id
+            AND DATALENGTH(CONVERT(nvarchar(11),data.source_record_id))=DATALENGTH(l.catalog_record_id)
             AND (b.source_role<>'erp-customers' OR data.active_code='S')
         ))
       ORDER BY t.registered_at DESC,t.physical_target_link_key DESC
