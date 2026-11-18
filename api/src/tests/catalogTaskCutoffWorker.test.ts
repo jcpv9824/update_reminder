@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { runCatalogTaskCutoffSweep } from "../lib/catalogTaskCutoffWorker";
+import { readCatalogTaskCutoffEvidence, runCatalogTaskCutoffSweep } from "../lib/catalogTaskCutoffWorker";
 import type { CatalogExecutionSnapshot } from "../lib/catalogExecutionSqlRepository";
 import { reconcileCatalogTaskOccurrence } from "../lib/catalogTaskTargetPlanning";
 
@@ -22,6 +22,40 @@ function setup() {
 }
 
 describe("catalog cutoff sweep", () => {
+  it("requires original-boundary bridge and approval proof and never falls back to local for that UUID", async () => {
+    const query = vi.fn().mockResolvedValue({ recordset: [] });
+    const input = vi.fn().mockReturnThis();
+    const transaction = { request: () => ({ input, query }) } as unknown as Parameters<typeof readCatalogTaskCutoffEvidence>[0];
+    await expect(readCatalogTaskCutoffEvidence(transaction, snapshot, "qa")).resolves.toEqual([]);
+    expect(input).toHaveBeenCalledWith("env", expect.anything(), "qa");
+    expect(input).toHaveBeenCalledWith("execution", expect.anything(), Buffer.from(key, "hex"));
+    const statement = query.mock.calls[0][0] as string;
+    expect(statement).not.toContain("core.catalog_operational_link_evidence");
+    for (const condition of [
+      "bridge.link_id=TRY_CONVERT(uniqueidentifier,l.link_id) AND DATALENGTH(l.link_id)=72",
+      "bridge.portal_environment=@env AND bridge.catalog_source_key=l.catalog_source_key",
+      "bridge.client_key=l.client_key AND bridge.domain_key=l.domain_key",
+      "bridge.database_key=l.database_key OR (bridge.database_key IS NULL AND l.database_key IS NULL)",
+      "bridge.target_kind=e.execution_kind COLLATE Latin1_General_100_BIN2",
+      "bridge.link_environment=l.link_environment COLLATE Latin1_General_100_BIN2",
+      "bridge.source_record_id=TRY_CONVERT(int,l.catalog_record_id)",
+      "data.catalog_customer_key=owner.catalog_customer_key",
+      "bridge.registered_at<=boundary.as_of AND owner.registered_at<=boundary.as_of",
+      "a.approved_at<=boundary.as_of AND a.revision_key<=r.revision_key",
+      "a.binding_version=r.binding_version AND a.profile_version=r.profile_version",
+      "(bridge.retired_at IS NULL OR bridge.retired_at>boundary.as_of)",
+      "(owner.retired_at IS NULL OR owner.retired_at>boundary.as_of)",
+      "h.attempt_status='succeeded' AND h.attempted_at<=boundary.as_of",
+      "r.sealed_at<=boundary.as_of AND r.observed_at<=boundary.as_of AND r.verified_until>boundary.as_of",
+      "r.binding_version=b.row_version AND r.profile_version=profile.row_version",
+      "t.registered_at<=boundary.as_of AND target.created_at<=boundary.as_of",
+      "l.catalog_source_key IS NOT NULL AND externalProof.valid_until IS NOT NULL",
+      "known.link_id=TRY_CONVERT(uniqueidentifier,l.link_id)",
+      "CASE WHEN externalProof.valid_until<t.valid_until THEN externalProof.valid_until ELSE t.valid_until END AS valid_until",
+    ]) expect(statement).toContain(condition);
+    expect(statement).toMatch(/SELECT l\.link_id AS linkId, @checkedAt AS checkedAt, boundary\.as_of AS effectiveAt, proof\.valid_until AS validUntil/i);
+  });
+
   it("does nothing until the flag is on and does not infer the environment", async () => {
     const io = setup();
     await expect(runCatalogTaskCutoffSweep(io, {})).resolves.toBeNull();

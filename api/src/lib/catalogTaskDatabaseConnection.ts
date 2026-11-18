@@ -10,7 +10,8 @@ type RequestAction = { kind: "view" | "reveal" } | { kind: "copy"; part: TaskCon
 type GrantInput = { databaseId: string; taskId: string; actor: CurrentUser; environment: CatalogEnvironment; action: RequestAction };
 type Grant = { serverHostPort: string; initialCatalog: string; userId: string; secretName: string | null;
   databaseId: string; taskId: string; linkId: string | null; profileVersion: string; linkVersion: string | null;
-  executionVersion: string | null; };
+  executionVersion: string | null; catalogSourceId: string | null; catalogRevisionId: string | null;
+  catalogBindingVersion: string | null; catalogProfileVersion: string | null; catalogVerifiedUntil: Date | null; };
 const permission = (action: RequestAction) => action.kind === "view" ? "updates.tasks.view_database_connection"
   : action.kind === "reveal" || (action.kind === "copy" && action.part === "password") ? "updates.tasks.reveal_database_password"
   : "updates.tasks.copy_database_connection_part";
@@ -32,7 +33,12 @@ SELECT TOP(2) p.server_host_port AS serverHostPort,p.initial_catalog AS initialC
   p.password_secret_name AS secretName,db.source_id AS databaseId,task.source_id AS taskId,l.link_id AS linkId,
   CONVERT(varchar(16),CONVERT(binary(8),p.row_version),2) AS profileVersion,
   CONVERT(varchar(16),CONVERT(binary(8),l.row_version),2) AS linkVersion,
-  CONVERT(varchar(16),CONVERT(binary(8),e.row_version),2) AS executionVersion
+  CONVERT(varchar(16),CONVERT(binary(8),e.row_version),2) AS executionVersion,
+  LOWER(CONVERT(char(36),approved.catalog_source_id)) AS catalogSourceId,
+  CONVERT(varchar(20),approved.revision_key) AS catalogRevisionId,
+  CONVERT(varchar(16),CONVERT(binary(8),approved.binding_version),2) AS catalogBindingVersion,
+  CONVERT(varchar(16),CONVERT(binary(8),approved.profile_version),2) AS catalogProfileVersion,
+  approved.verified_until AS catalogVerifiedUntil
 FROM actor a
 JOIN workflow.update_tasks task ON task.source_id=@task AND task.source_id COLLATE Latin1_General_100_BIN2=@task COLLATE Latin1_General_100_BIN2
 JOIN core.databases db ON db.source_id=@db AND db.source_id COLLATE Latin1_General_100_BIN2=@db COLLATE Latin1_General_100_BIN2
@@ -43,6 +49,24 @@ LEFT JOIN workflow.catalog_task_executions e ON e.task_key=task.task_key
 LEFT JOIN workflow.catalog_task_execution_links l ON l.catalog_execution_key=e.catalog_execution_key
   AND l.database_key=db.database_key AND l.domain_key=db.domain_key AND l.client_key=db.client_key
   AND l.link_environment=db.environment_id AND l.link_state='active' AND l.retired_at IS NULL
+OUTER APPLY (
+  SELECT bridge.catalog_source_id,bridge.revision_key,bridge.binding_version,bridge.profile_version,bridge.verified_until
+  FROM core.catalog_operational_link_evidence AS bridge
+  WHERE l.catalog_source_key IS NOT NULL
+    AND bridge.link_id=TRY_CONVERT(uniqueidentifier,l.link_id) AND DATALENGTH(l.link_id)=72
+    AND bridge.portal_environment COLLATE Latin1_General_100_BIN2=@environment COLLATE Latin1_General_100_BIN2
+    AND DATALENGTH(bridge.portal_environment)=DATALENGTH(@environment)
+    AND bridge.client_key=l.client_key AND bridge.domain_key=l.domain_key AND bridge.database_key=l.database_key
+    AND bridge.target_kind='database'
+    AND bridge.link_environment COLLATE Latin1_General_100_BIN2=l.link_environment COLLATE Latin1_General_100_BIN2
+    AND DATALENGTH(bridge.link_environment)=DATALENGTH(l.link_environment)
+    AND bridge.catalog_source_key=l.catalog_source_key
+    AND bridge.source_record_id=TRY_CONVERT(int,l.catalog_record_id)
+    AND CONVERT(nvarchar(11),bridge.source_record_id) COLLATE Latin1_General_100_BIN2=l.catalog_record_id COLLATE Latin1_General_100_BIN2
+    AND DATALENGTH(CONVERT(nvarchar(11),bridge.source_record_id))=DATALENGTH(l.catalog_record_id)
+    AND bridge.retired_at IS NULL AND bridge.owner_retired_at IS NULL
+    AND bridge.evidence_state='verified' AND bridge.verified_until>@now
+) AS approved
 WHERE task.target_type='database' AND task.status IN ('pending','in_progress','failed','blocked','reopened') AND db.status='active'
   AND (EXISTS(SELECT 1 FROM workflow.task_assignees WHERE task_key=task.task_key AND user_key=a.user_key)
     OR (NOT EXISTS(SELECT 1 FROM workflow.task_assignees WHERE task_key=task.task_key)
@@ -58,7 +82,10 @@ WHERE task.target_type='database' AND task.status IN ('pending','in_progress','f
         WHERE visible_link.catalog_execution_key=e.catalog_execution_key AND visible_link.link_state='active' AND visible_link.retired_at IS NULL
         ORDER BY CASE WHEN visible_link.database_key=task.database_key AND visible_link.client_key=task.client_key
           AND visible_link.domain_key=task.domain_key THEN 0 ELSE 1 END,visible_link.catalog_execution_link_key)
-      AND (l.catalog_source_key IS NULL OR EXISTS(SELECT 1 FROM settings.catalog_source_bindings b
+      AND ((l.catalog_source_key IS NULL AND NOT EXISTS (
+        SELECT 1 FROM core.catalog_operational_links AS knownExternal
+        WHERE knownExternal.link_id=TRY_CONVERT(uniqueidentifier,l.link_id)
+      )) OR (approved.revision_key IS NOT NULL AND EXISTS(SELECT 1 FROM settings.catalog_source_bindings b
         JOIN settings.external_database_connections bp ON bp.external_database_connection_key=b.external_database_connection_key
         JOIN settings.catalog_customer_revision_heads h ON h.catalog_source_key=b.catalog_source_key AND h.attempt_status='succeeded'
         JOIN core.catalog_customer_source_revisions r ON r.revision_key=h.revision_key AND r.catalog_source_key=b.catalog_source_key
@@ -71,7 +98,7 @@ WHERE task.target_type='database' AND task.status IN ('pending','in_progress','f
           AND r.binding_version=b.row_version AND r.profile_version=bp.row_version AND r.source_role=b.source_role
           AND h.attempted_at<=@now AND r.sealed_at<=@now AND r.observed_at<=@now AND r.verified_until>@now
           AND (b.source_role<>'erp-customers' OR evidence.active_code='S')
-          AND bp.active=1 AND bp.status='active' AND bp.encrypt_connection=1 AND bp.password_configured=1))
+          AND bp.active=1 AND bp.status='active' AND bp.encrypt_connection=1 AND bp.password_configured=1)))
       AND EXISTS(SELECT 1 FROM core.catalog_physical_target_links tlink
         JOIN core.catalog_physical_targets t ON t.physical_target_key=tlink.physical_target_key
           AND t.portal_environment=@environment AND t.target_kind='database' AND t.target_id=TRY_CONVERT(uniqueidentifier,e.verified_target_id)
@@ -92,7 +119,12 @@ async function readGrant(transaction: sql.Transaction, input: GrantInput): Promi
 
 const defaultIo = { transaction: runSqlTransaction, read: readGrant, audit: writeSqlAuditLog, secret: getSecret };
 const stamp = (grant: Grant) => JSON.stringify([grant.databaseId, grant.taskId, grant.linkId, grant.profileVersion,
-  grant.linkVersion, grant.executionVersion, grant.secretName]);
+  grant.linkVersion, grant.executionVersion, grant.secretName, grant.catalogSourceId, grant.catalogRevisionId,
+  grant.catalogBindingVersion, grant.catalogProfileVersion, grant.catalogVerifiedUntil]);
+
+// Thrown inside the transaction so a revoked/expired grant also rolls back its
+// staged disclosure audit. Only this private sentinel becomes a denied result.
+class GrantInvalidatedDuringAudit extends Error {}
 
 export async function readAuditedTaskDatabaseConnection(input: GrantInput, io = defaultIo) {
   const { action } = input;
@@ -110,6 +142,10 @@ export async function readAuditedTaskDatabaseConnection(input: GrantInput, io = 
         ? "task_database_password_revealed" : "task_database_connection_copied",
       metadata: { databaseId: row.databaseId, ...(row.linkId ? { linkId: row.linkId } : {}),
         ...(action.kind === "copy" ? { part: action.part } : {}) } });
+    // Auditing can await SQL locks/I/O long enough for time-based evidence to expire.
+    // Re-run the server-clock grant check before disclosure, in the same transaction.
+    const final = await io.read(tx, input);
+    if (!final || stamp(final) !== stamp(row)) throw new GrantInvalidatedDuringAudit();
     if (needsPassword) return { kind: "password" as const, value: value! };
     if (action.kind === "copy") {
       const part = action.part;
@@ -118,5 +154,8 @@ export async function readAuditedTaskDatabaseConnection(input: GrantInput, io = 
     }
     return { kind: "info" as const, info: { server: row.serverHostPort, databaseName: row.initialCatalog,
       user: row.userId, hasPassword: !!row.secretName } };
+  }).catch(error => {
+    if (error instanceof GrantInvalidatedDuringAudit) return null;
+    throw error;
   });
 }

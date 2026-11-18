@@ -36,9 +36,12 @@ DECLARE @a nvarchar(150)=@tag+N'-a-db', @b nvarchar(150)=@tag+N'-b-db';
 DECLARE @sourceKey bigint,@origin uniqueidentifier,@customerKey bigint,@version smallint,@revision bigint,@lock int;
 DECLARE @bindingVersion binary(8),@profileVersion binary(8);
 DECLARE @operationalOwner bigint,@operationalLink bigint,@logicalLinkId uniqueidentifier=NEWID(),@wrongLinkId uniqueidentifier=NEWID();
+DECLARE @canonicalLinkId varchar(36)=LOWER(CONVERT(char(36),@logicalLinkId));
 DECLARE @params nvarchar(max)=N'@actor nvarchar(150), @db nvarchar(150), @task nvarchar(260), @environment varchar(10), @permission nvarchar(160)';
 DECLARE @rows TABLE(serverHostPort nvarchar(500),initialCatalog nvarchar(256),userId nvarchar(256),secretName nvarchar(256),
-  databaseId nvarchar(150),taskId nvarchar(260),linkId nvarchar(260),profileVersion varchar(16),linkVersion varchar(16),executionVersion varchar(16));
+  databaseId nvarchar(150),taskId nvarchar(260),linkId nvarchar(260),profileVersion varchar(16),linkVersion varchar(16),executionVersion varchar(16),
+  catalogSourceId varchar(36),catalogRevisionId varchar(20),catalogBindingVersion varchar(16),catalogProfileVersion varchar(16),
+  catalogVerifiedUntil datetime2(3));
 BEGIN TRY
   BEGIN TRANSACTION;
   INSERT security.users(source_id,display_name,email,email_normalized,created_at,created_by,updated_at,updated_by)
@@ -144,20 +147,66 @@ BEGIN TRY
   UPDATE core.catalog_customer_source_revisions SET sealed_at=@stamp WHERE revision_key=@revision;
   INSERT settings.catalog_customer_revision_heads(catalog_source_key,attempt_status,attempted_at,attempt_ordinal)
     VALUES(@sourceKey,'failed',@stamp,@attempt-1);
-  UPDATE workflow.catalog_task_execution_links SET catalog_source_key=@sourceKey,catalog_record_id=N'1' WHERE link_id=@b;
+  UPDATE workflow.catalog_task_execution_links SET link_id=@canonicalLinkId,catalog_source_key=@sourceKey,catalog_record_id=N'1' WHERE link_id=@b;
   INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.reveal_database_password';
   IF EXISTS(SELECT 1 FROM @rows) THROW 53894,N'A sealed but unpublished record authorized access after a failed attempt.',1;
   UPDATE settings.catalog_customer_revision_heads SET revision_key=@revision,attempt_status='succeeded',attempt_ordinal=@attempt
     WHERE catalog_source_key=@sourceKey;
+  INSERT core.catalog_operational_owners(portal_environment,catalog_customer_key,client_key,registered_by)
+    SELECT 'qa',@customerKey,client_key,N'fixture' FROM core.databases WHERE source_id=@b;
+  SELECT @operationalOwner=owner_key FROM core.catalog_operational_owners
+    WHERE portal_environment='qa' AND catalog_customer_key=@customerKey;
+  INSERT core.catalog_operational_links(link_id,owner_key,portal_environment,client_key,domain_key,database_key,
+    catalog_source_key,source_record_id,target_kind,link_environment,registered_by)
+    SELECT @logicalLinkId,@operationalOwner,'qa',client_key,domain_key,database_key,@sourceKey,1,'database','test',N'fixture'
+    FROM core.databases WHERE source_id=@b;
+  SELECT @operationalLink=link_key FROM core.catalog_operational_links WHERE link_id=@logicalLinkId;
   INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.reveal_database_password';
-  IF (SELECT COUNT(*) FROM @rows)<>1 THROW 53889,N'Current exact ERP record did not authorize the assigned task.',1;
+  IF EXISTS(SELECT 1 FROM @rows) THROW 53910,N'Published ERP data exposed a task without its link approval.',1;
+  -- Separate the actual registration and approval instants (datetime2(3)).
+  WAITFOR DELAY '00:00:00.025';
+  INSERT core.catalog_operational_link_approvals(link_key,binding_version,profile_version,revision_key,approval_reference,approved_by)
+    VALUES(@operationalLink,@bindingVersion,@profileVersion,@revision,'QA-TASK-CONNECTION',N'fixture');
+  INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.reveal_database_password';
+  IF NOT EXISTS (SELECT 1 FROM @rows WHERE linkId=@canonicalLinkId AND catalogRevisionId=CONVERT(varchar(20),@revision)
+    AND catalogVerifiedUntil=@validUntil) OR (SELECT COUNT(*) FROM @rows)<>1
+    THROW 53889,N'Current exact approved ERP link did not authorize the assigned task.',1;
   DELETE FROM @rows;
-  UPDATE workflow.catalog_task_execution_links SET catalog_record_id=N'2' WHERE link_id=@b;
+  UPDATE workflow.catalog_task_execution_links SET catalog_record_id=N'2' WHERE link_id=@canonicalLinkId;
   INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.reveal_database_password';
   IF EXISTS(SELECT 1 FROM @rows) THROW 53890,N'Inactive ERP record authorized a grant.',1;
-  UPDATE workflow.catalog_task_execution_links SET catalog_record_id=N'3' WHERE link_id=@b;
+  UPDATE workflow.catalog_task_execution_links SET catalog_record_id=N'3' WHERE link_id=@canonicalLinkId;
   INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.reveal_database_password';
   IF EXISTS(SELECT 1 FROM @rows) THROW 53891,N'Missing ERP record authorized a grant.',1;
+
+  DECLARE @wrongLinkText varchar(36)=LOWER(CONVERT(char(36),@wrongLinkId));
+  UPDATE workflow.catalog_task_execution_links SET catalog_record_id=N'1',link_id=@wrongLinkText WHERE link_id=@canonicalLinkId;
+  INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.reveal_database_password';
+  IF EXISTS(SELECT 1 FROM @rows) THROW 53911,N'A different logical UUID authorized a grant.',1;
+  UPDATE workflow.catalog_task_execution_links SET link_id=@canonicalLinkId,catalog_source_key=NULL WHERE link_id=@wrongLinkText;
+  INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.reveal_database_password';
+  IF EXISTS(SELECT 1 FROM @rows) THROW 53912,N'An external logical UUID authorized a local grant.',1;
+  DELETE FROM @cutoffRows;
+  INSERT @cutoffRows EXEC sys.sp_executesql @cutoffProbe,N'@env varchar(10),@execution varbinary(32)','qa',@executionHash;
+  IF NOT EXISTS (SELECT 1 FROM @cutoffRows WHERE linkId=@canonicalLinkId AND validUntil IS NULL)
+    THROW 53913,N'An external logical UUID was treated as local at cutoff.',1;
+  UPDATE workflow.catalog_task_execution_links SET catalog_source_key=@sourceKey WHERE link_id=@canonicalLinkId;
+  DELETE FROM @cutoffRows;
+  INSERT @cutoffRows EXEC sys.sp_executesql @cutoffProbe,N'@env varchar(10),@execution varbinary(32)','qa',@executionHash;
+  IF NOT EXISTS (SELECT 1 FROM @cutoffRows WHERE linkId=@canonicalLinkId AND validUntil=@validUntil)
+    THROW 53914,N'The cutoff did not use the approved ERP link and earlier expiry.',1;
+  DECLARE @approvalAt datetime2(3)=(SELECT approved_at FROM core.catalog_operational_link_approvals WHERE link_key=@operationalLink);
+  DECLARE @beforeApproval datetime2(3)=DATEADD(millisecond,-1,@approvalAt);
+  IF NOT EXISTS (SELECT 1 FROM core.catalog_operational_links WHERE link_key=@operationalLink AND registered_at<=@beforeApproval)
+    THROW 53915,N'Fixture did not separate registration and approval timestamps.',1;
+  UPDATE workflow.catalog_task_executions SET cutoff_at=@beforeApproval WHERE catalog_execution_key=@execution;
+  DELETE FROM @cutoffRows;
+  INSERT @cutoffRows EXEC sys.sp_executesql @cutoffProbe,N'@env varchar(10),@execution varbinary(32)','qa',@executionHash;
+  IF NOT EXISTS (SELECT 1 FROM @cutoffRows WHERE linkId=@canonicalLinkId AND effectiveAt=@beforeApproval AND validUntil IS NULL)
+    THROW 53916,N'An approval after cutoff was accepted retroactively.',1;
+  UPDATE workflow.catalog_task_executions SET cutoff_at=DATEADD(minute,5,@stamp) WHERE catalog_execution_key=@execution;
+  -- Replace this fixture-only execution alias with the one produced by the real registration batch.
+  DELETE FROM workflow.catalog_task_execution_links WHERE catalog_execution_key=@execution AND link_id=@canonicalLinkId;
 
   -- Advance the same profile's sealed head so the negative revision probe is
   -- a genuine historical revision, not an arbitrary nonexistent number.
@@ -174,20 +223,8 @@ BEGIN TRY
     SET revision_key=@revision,attempt_status='succeeded',attempted_at=@currentAt,attempt_ordinal=@attempt
     WHERE catalog_source_key=@sourceKey;
 
-  INSERT core.catalog_operational_owners(portal_environment,catalog_customer_key,client_key,registered_by)
-    SELECT 'qa',@customerKey,client_key,N'fixture' FROM core.databases WHERE source_id=@b;
-  SELECT @operationalOwner=owner_key FROM core.catalog_operational_owners
-    WHERE portal_environment='qa' AND catalog_customer_key=@customerKey;
-  INSERT core.catalog_operational_links(link_id,owner_key,portal_environment,client_key,domain_key,database_key,
-    catalog_source_key,source_record_id,target_kind,link_environment,registered_by)
-    SELECT @logicalLinkId,@operationalOwner,'qa',client_key,domain_key,database_key,@sourceKey,1,'database','test',N'fixture'
-    FROM core.databases WHERE source_id=@b;
-  SELECT @operationalLink=link_key FROM core.catalog_operational_links WHERE link_id=@logicalLinkId;
-  INSERT core.catalog_operational_link_approvals(link_key,binding_version,profile_version,revision_key,approval_reference,approved_by)
-    VALUES(@operationalLink,@bindingVersion,@profileVersion,@revision,'QA-TASK-CONNECTION',N'fixture');
-
   DECLARE @planned nvarchar(max),@record nvarchar(260)=N'1 ';
-  DECLARE @canonicalLinkId varchar(36)=LOWER(CONVERT(char(36),@logicalLinkId)),@currentRevision varchar(20)=CONVERT(varchar(20),@revision);
+  DECLARE @currentRevision varchar(20)=CONVERT(varchar(20),@revision);
   DECLARE @registrationParams nvarchar(180)=N'@executionId bigint,@kind varchar(20),@portalEnvironment varchar(10),@physicalId uniqueidentifier,@links nvarchar(max)';
   DECLARE @accepted TABLE(linkId nvarchar(260),validUntil datetime2(3));
   SELECT @planned=(SELECT @canonicalLinkId AS linkId,@record AS recordId,db.source_id AS databaseId,
@@ -214,17 +251,32 @@ BEGIN TRY
   IF (SELECT COUNT(*) FROM @accepted WHERE linkId=@canonicalLinkId AND validUntil=@validUntil)<>1
     THROW 53893,N'The registered link was not exact or did not inherit the earlier evidence expiry.',1;
 
-  UPDATE workflow.catalog_task_execution_links SET catalog_record_id=N'1' WHERE link_id=@b;
+  SAVE TRANSACTION fixtureProfile;
   UPDATE core.database_access_profiles SET sql_user_id=N'changed-fixture' WHERE source_id=@tag+N'-b-profile';
   INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.reveal_database_password';
   IF EXISTS(SELECT 1 FROM @rows) THROW 53884,N'A changed profile reused an earlier grant.',1;
+  ROLLBACK TRANSACTION fixtureProfile;
+  DECLARE @beforeRetirement datetime2(3)=SYSUTCDATETIME();
+  WAITFOR DELAY '00:00:00.025';
+  UPDATE core.catalog_operational_links SET retired_at=SYSUTCDATETIME() WHERE link_key=@operationalLink;
+  INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.reveal_database_password';
+  IF EXISTS(SELECT 1 FROM @rows) THROW 53917,N'A retired 042 link authorized a grant.',1;
+  DELETE FROM @cutoffRows;
+  INSERT @cutoffRows EXEC sys.sp_executesql @cutoffProbe,N'@env varchar(10),@execution varbinary(32)','qa',@executionHash;
+  IF NOT EXISTS (SELECT 1 FROM @cutoffRows WHERE linkId=@canonicalLinkId AND validUntil IS NULL)
+    THROW 53918,N'A retired 042 link remained verified for the current cutoff sweep.',1;
+  UPDATE workflow.catalog_task_executions SET cutoff_at=@beforeRetirement WHERE catalog_execution_key=@execution;
+  DELETE FROM @cutoffRows;
+  INSERT @cutoffRows EXEC sys.sp_executesql @cutoffProbe,N'@env varchar(10),@execution varbinary(32)','qa',@executionHash;
+  IF NOT EXISTS (SELECT 1 FROM @cutoffRows WHERE linkId=@canonicalLinkId AND effectiveAt=@beforeRetirement AND validUntil=@validUntil)
+    THROW 53919,N'A retirement after cutoff erased earlier logical link evidence.',1;
   ROLLBACK TRANSACTION;
 END TRY
 BEGIN CATCH
   IF XACT_STATE()<>0 ROLLBACK TRANSACTION;
   THROW;
 END CATCH;
-SELECT 16 AS passed,
+SELECT 25 AS passed,
   (SELECT COUNT(*) FROM workflow.update_tasks WHERE source_id=@task)
   +(SELECT COUNT(*) FROM security.users WHERE source_id IN (@assigned,@other))
   +(SELECT COUNT(*) FROM core.catalog_physical_targets WHERE target_id=@physical)
@@ -240,7 +292,7 @@ SELECT 16 AS passed,
 $invoke=Join-Path $PSScriptRoot '../connect-sql-server/Invoke-PortalSAGWeb-EphemeralRequest.ps1'
 $response=(& $invoke -SessionDirectory $session -Sql ($literal + [Environment]::NewLine + $fixture) -Mode write -TimeoutSeconds 35 -MaxRows 1) | ConvertFrom-Json -Depth 16
 $row=$response.resultSets[0].rows[0]
-if(!$response.success -or $row.passed -ne 16 -or $row.remaining_fixtures -ne 0){
+if(!$response.success -or $row.passed -ne 25 -or $row.remaining_fixtures -ne 0){
   $number=$response.error.number
   throw "QA connection, cutoff and registration rehearsal did not pass or left residual data (SQL error number: $number)."
 }

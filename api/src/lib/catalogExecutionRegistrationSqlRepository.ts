@@ -343,7 +343,7 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
           WHERE (@kind='domain' OR db.database_key IS NOT NULL)
             AND ((r.catalogSourceId IS NULL AND NOT EXISTS (
               SELECT 1 FROM core.catalog_operational_links AS externalLink WITH (HOLDLOCK)
-              WHERE externalLink.link_id=TRY_CONVERT(uniqueidentifier,r.linkId) AND externalLink.portal_environment=@portalEnvironment
+              WHERE externalLink.link_id=TRY_CONVERT(uniqueidentifier,r.linkId)
             )) OR (bridge.link_id IS NOT NULL AND b.validated_at<=@registryNow AND evidence.source_record_id IS NOT NULL
               AND (b.source_role<>'erp-customers' OR evidence.active_code='S')));
           IF EXISTS(SELECT 1 FROM @accepted WHERE validUntil<=SYSUTCDATETIME())
