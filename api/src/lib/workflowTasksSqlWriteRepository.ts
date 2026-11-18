@@ -78,6 +78,16 @@ export function buildSqlTaskTransition(
   return updated;
 }
 
+/** A legacy task projection may retain old result text. Only a new explicit
+ * clean completion is affirmative evidence in the append-only history. */
+export function buildSqlTaskStatusHistoryMetadata(previousStatus: UpdateTask["status"], newStatus: UpdateTask["status"],
+  action: string, body: SqlTaskTransitionBody) {
+  return { previousStatus, newStatus,
+    ...(newStatus === "completed" && action === "task_completed" && body.result === "success" && body.withProblems !== true
+      ? { explicitCompletionSuccess: true as const } : {}),
+  };
+}
+
 async function lockTask(transaction: sql.Transaction, sourceId: string): Promise<TaskRow | null> {
   const request = new sql.Request(transaction);
   request.input("sourceId", sql.NVarChar(260), sourceId);
@@ -188,7 +198,8 @@ export async function changeSqlWorkflowTaskStatus(
     history.input("actorId", sql.NVarChar(150), actor.id);
     history.input("actorEmail", sql.NVarChar(254), actor.email);
     history.input("now", sql.DateTime2(3), now);
-    history.input("metadataJson", sql.NVarChar(sql.MAX), JSON.stringify({ previousStatus: before.status, newStatus }));
+    history.input("metadataJson", sql.NVarChar(sql.MAX), JSON.stringify(
+      buildSqlTaskStatusHistoryMetadata(before.status, newStatus, auditAction, body)));
     await history.query(`
       INSERT workflow.task_status_history
         (task_key,previous_status,new_status,action,comment,performed_by,performed_by_email,performed_at,is_inferred,metadata_json)

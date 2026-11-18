@@ -2,6 +2,17 @@ import { describe, it, expect } from "vitest";
 import { AUDIT_DATA_CLASSIFICATION, buildAuditLogEntry, sanitizeStoredAuditLogEntry } from "../lib/audit";
 
 describe("buildAuditLogEntry", () => {
+  it("retains only the opaque observation identifier in one-time schedule proof audit", () => {
+    const metadata = { scheduleId: "synthetic-once", runDate: "2030-01-01",
+      reason: "one_time_schedule_executed", observationId: "9007199254740993" };
+    const entry = buildAuditLogEntry({
+      entityType: "schedule", entityId: metadata.scheduleId, action: "schedule_one_time_completed",
+      performedBy: "system", performedByEmail: "system",
+      metadata: { ...metadata, sourceFence: "redacted", pairs: [{ evidence: "redacted" }], diagnostics: "redacted" },
+    });
+    expect(entry.metadata).toEqual(metadata);
+  });
+
   it("limits manual catalog generation audit to date, outcome and counters", () => {
     const metadata = {
       date: "2026-11-18", status: "unverified", created: 0, existing: 0, held: 1, conflicts: 0,

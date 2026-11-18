@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildSqlTaskTransition, changeSqlWorkflowTaskStatus } from "../lib/workflowTasksSqlWriteRepository";
+import { buildSqlTaskStatusHistoryMetadata, buildSqlTaskTransition, changeSqlWorkflowTaskStatus } from "../lib/workflowTasksSqlWriteRepository";
 import type { UpdateTask } from "../types/models";
 
 const io = vi.hoisted(() => ({ input: vi.fn(), query: vi.fn(), audit: vi.fn() }));
@@ -94,6 +94,22 @@ describe("Workflow task SQL write contract", () => {
       id: "task-1", status: "completed", completedBy: "user-2", completedWithProblems: true,
       completionNote: "Terminó", problemNote: "Advertencia", result: "ok",
     }));
+  });
+
+  it("does not certify inherited success when a reopened task is completed without a new result", () => {
+    const initial = buildSqlTaskTransition(task, "completed", "task_completed", { result: "success" }, "u",
+      new Date("2026-07-22T21:00:00.000Z"));
+    const reopened = buildSqlTaskTransition(initial, "pending", "task_reopened", {}, "u",
+      new Date("2026-07-22T22:00:00.000Z"));
+    const later = buildSqlTaskTransition(reopened, "completed", "task_completed", {}, "u",
+      new Date("2026-07-22T23:00:00.000Z"));
+    expect(later.result).toBe("success");
+    expect(buildSqlTaskStatusHistoryMetadata(reopened.status, later.status, "task_completed", {}))
+      .toEqual({ previousStatus: "pending", newStatus: "completed" });
+    expect(buildSqlTaskStatusHistoryMetadata(reopened.status, later.status, "task_completed", { result: "success" }))
+      .toEqual({ previousStatus: "pending", newStatus: "completed", explicitCompletionSuccess: true });
+    expect(buildSqlTaskStatusHistoryMetadata(reopened.status, later.status, "task_completed", { result: "success", withProblems: true }))
+      .not.toHaveProperty("explicitCompletionSuccess");
   });
 
   it("preserves block history when resolving and clears the completion problem flag when reopening", () => {

@@ -193,7 +193,7 @@ const ACTION_METADATA_SCHEMAS: Record<string, AuditSchema> = {
   task_obsoleted: fields("reason", "taskId", "scheduleId", "targetType", "targetId", "domainId", "scheduledFor"),
   tasks_refreshed_manually: refreshFields,
   catalog_tasks_evaluated_manually: fields("date", "status", "created", "existing", "held", "conflicts", "accountedOrigins", "manualIntentsSaved"),
-  schedule_one_time_completed: fields("reason", "runDate", "scheduleId"),
+  schedule_one_time_completed: fields("reason", "runDate", "scheduleId", "observationId"),
   schedule_updated: fields("oneTimeScheduleRescheduled", "oldDate", "newDate", "cancelledOpenTasks"),
   schedule_deleted: fields("cancelledOpenTasks"),
   reminder_email_sent: fields("daysBefore", "targetType"),
