@@ -238,7 +238,8 @@ y [LOCK_TIMEOUT](https://learn.microsoft.com/en-us/sql/t-sql/statements/set-lock
 
 ## Contrato en desarrollo: observaciones de bases desde SAG Admin
 
-El lector dedicado v2 pasó 70 pruebas enfocadas y el build del API. Sobre la
+El lector dedicado v2 pasó 70 pruebas enfocadas, 62 pruebas en el conjunto
+independiente de QA y el build del API. Sobre la
 fuente real, la ejecución de solo lectura completó 86 Customers y 122
 Companies en 2.051 ms, con cero referencias a padres no encontrados. La prueba
 sólo emitió conteos y tiempo. No guardó filas ni publicó una revisión.

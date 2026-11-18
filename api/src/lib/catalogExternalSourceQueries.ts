@@ -1,5 +1,7 @@
 /** Fixed, SELECT-only contracts. The transport owns TLS, credentials and target authorization. */
 export type CatalogExternalContract = "erp_v1" | "sag_admin_v1";
+/** Discovery is available only through its dedicated reader, not activation or v1 publication. */
+export type CatalogExternalTransportContract = CatalogExternalContract | "sag_admin_v2";
 
 export interface CatalogErpSourceRecord {
   sourceRecordId: number;
@@ -23,8 +25,17 @@ export interface CatalogSagSourceRecord {
   demoStartedOn: string | null;
 }
 
+export interface CatalogSagCompanyDiscoveryRecord {
+  companyRecordId: number;
+  /** The reported parent; null or an ID absent in the Customer stream is retained. */
+  customerRecordId: number | null;
+  displayName: string | null;
+  /** A source observation, not a determination of customer inactivity. */
+  isAvailable: boolean | null;
+}
+
 export interface CatalogExternalReadStatement {
-  tag: "schema" | "page";
+  tag: "schema" | "page" | "counts" | "customerPage" | "companyPage";
   sql: string;
   /** Bind only these parameters as SQL int. Never interpolate them into the SQL. */
   parameters: Readonly<Partial<{ afterId: number | null; pageSize: number }>>;
@@ -41,7 +52,7 @@ export interface CatalogExternalReadSession {
 export interface CatalogExternalSourceTransport {
   /** One authorized source and a single consistent revision. Dispose and cancel on timeout. */
   withConsistentRead<T>(
-    request: Readonly<{ contract: CatalogExternalContract; timeoutMs: number; signal: AbortSignal }>,
+    request: Readonly<{ contract: CatalogExternalTransportContract; timeoutMs: number; signal: AbortSignal }>,
     read: (session: CatalogExternalReadSession) => Promise<T>,
   ): Promise<T>;
 }
@@ -61,7 +72,19 @@ type UnavailableReason = "invalid_options" | "contract_unapproved" | "schema_unv
 export type CatalogExternalReadResult<T> = { status: "complete"; records: readonly T[] } |
   { status: "unavailable"; reason: UnavailableReason };
 
+export type CatalogSagDiscoveryV2Result = { status: "complete"; customers: readonly CatalogSagSourceRecord[];
+  companies: readonly CatalogSagCompanyDiscoveryRecord[] } | { status: "unavailable"; reason: UnavailableReason };
+
 const textTypes = [167, 175, 231, 239] as const;
+const sagCustomerFields = [
+  ["dbo.Customers", "Id", [56]],
+  ["dbo.Customers", "Document", textTypes],
+  ["dbo.Customers", "CountryId", [56]],
+  ["dbo.Customers", "Environment", textTypes],
+  ["dbo.Customers", "LicensedModules", textTypes],
+  ["dbo.Customers", "Url", textTypes],
+  ["dbo.Customers", "FechasEnvironment", textTypes],
+] as const;
 const fields = {
   erp_v1: [
     ["dbo.clientes", "ka_nl_tercero", [56]],
@@ -70,19 +93,18 @@ const fields = {
     ["dbo.terceros", "n_nit", [106, 108]],
     ["dbo.terceros", "sc_nombre", textTypes],
   ],
-  sag_admin_v1: [
-    ["dbo.Customers", "Id", [56]],
-    ["dbo.Customers", "Document", textTypes],
-    ["dbo.Customers", "CountryId", [56]],
-    ["dbo.Customers", "Environment", textTypes],
-    ["dbo.Customers", "LicensedModules", textTypes],
-    ["dbo.Customers", "Url", textTypes],
-    ["dbo.Customers", "FechasEnvironment", textTypes],
+  sag_admin_v1: sagCustomerFields,
+  sag_admin_v2: [
+    ...sagCustomerFields,
+    ["dbo.Companies", "Id", [56]],
+    ["dbo.Companies", "CustomerId", [56]],
+    ["dbo.Companies", "Name", textTypes],
+    ["dbo.Companies", "IsAvailable", [104]],
   ],
 } as const;
 
 // Only compiler-owned, closed identifiers reach this SQL builder.
-function schemaStatement(contract: CatalogExternalContract): string {
+function schemaStatement(contract: CatalogExternalTransportContract): string {
   const scope = fields[contract];
   const tables = [...new Set(scope.map(([table]) => table))];
   const matches = scope.map(([table, column, types]) => `EXISTS (
@@ -194,11 +216,34 @@ const pages = {
   ORDER BY c.Id ASC`,
 } as const;
 
+const sagDiscoveryCounts = `SELECT
+  CONVERT(varchar(20),(SELECT COUNT_BIG(*) FROM dbo.Customers)) AS customerCount,
+  CONVERT(varchar(20),(SELECT COUNT_BIG(*) FROM dbo.Companies)) AS companyCount;`;
+
+const sagDiscoveryCompanyPage = `SELECT TOP (@pageSize)
+  co.Id AS companyRecordId,
+  co.CustomerId AS customerRecordId,
+  CASE WHEN DATALENGTH(CONVERT(nvarchar(max),co.Name))<=1024
+    THEN CONVERT(nvarchar(512),co.Name) END AS displayName,
+  co.IsAvailable AS isAvailable
+FROM dbo.Companies AS co
+WHERE @afterId IS NULL OR co.Id > @afterId
+ORDER BY co.Id ASC`;
+
 /** Shared with the transport: callers cannot introduce any other SQL text. */
 export function catalogExternalSelectSql(
-  contract: CatalogExternalContract, tag: CatalogExternalReadStatement["tag"],
+  contract: CatalogExternalTransportContract, tag: CatalogExternalReadStatement["tag"],
 ): string {
-  return tag === "schema" ? schemaStatement(contract) : pages[contract];
+  if (contract === "sag_admin_v2") {
+    if (tag === "schema") return schemaStatement(contract);
+    if (tag === "counts") return sagDiscoveryCounts;
+    if (tag === "customerPage") return pages.sag_admin_v1;
+    if (tag === "companyPage") return sagDiscoveryCompanyPage;
+  } else if (contract === "erp_v1" || contract === "sag_admin_v1") {
+    if (tag === "schema") return schemaStatement(contract);
+    if (tag === "page") return pages[contract];
+  }
+  throw new Unavailable("contract_unapproved");
 }
 
 class Unavailable extends Error {
@@ -287,7 +332,7 @@ const schemaTimeoutMs = 15_000;
 const defaultPageTimeoutMs = 4_000;
 const verificationTimeoutMs = 30_000;
 
-function selectBoundedStatement(session: CatalogExternalReadSession, contract: CatalogExternalContract,
+function selectBoundedStatement(session: CatalogExternalReadSession, contract: CatalogExternalTransportContract,
   tag: CatalogExternalReadStatement["tag"], parameters: CatalogExternalReadStatement["parameters"],
   parent: AbortSignal, pageTimeoutMs = defaultPageTimeoutMs) {
   const timeoutMs = tag === "schema" ? schemaTimeoutMs : pageTimeoutMs;
@@ -365,6 +410,85 @@ export async function readCatalogExternalSource(
       throw new Unavailable("cancelled");
     }), totalTimeoutMs, options.signal);
     return { status: "complete", records };
+  } catch (error) {
+    return { status: "unavailable", reason: error instanceof Unavailable ? error.reason : "connection_failed" };
+  }
+}
+
+function parseSagCompany(value: unknown): CatalogSagCompanyDiscoveryRecord {
+  const row = rowWithKeys(value, ["companyRecordId", "customerRecordId", "displayName", "isAvailable"]);
+  if (row.isAvailable !== null && typeof row.isAvailable !== "boolean") throw new Unavailable("invalid_rows");
+  const name = optionalText(row.displayName, 512);
+  return { companyRecordId: sqlInt(row.companyRecordId),
+    customerRecordId: row.customerRecordId === null ? null : sqlInt(row.customerRecordId),
+    displayName: name && !/\p{C}/u.test(name) ? name : null, isAvailable: row.isAvailable };
+}
+
+function parseDiscoveryCount(value: unknown): bigint {
+  if (typeof value !== "string" || !/^(?:0|[1-9][0-9]{0,18})$/.test(value)) throw new Unavailable("invalid_rows");
+  const count = BigInt(value);
+  if (count > 9_223_372_036_854_775_807n) throw new Unavailable("invalid_rows");
+  return count;
+}
+
+async function readExpectedDiscoveryPages<T>(session: CatalogExternalReadSession, signal: AbortSignal,
+  tag: "customerPage" | "companyPage", count: number, pageSize: number, pageTimeoutMs: number,
+  parse: (value: unknown) => T, idOf: (row: T) => number): Promise<T[]> {
+  const records: T[] = [];
+  let afterId: number | null = null;
+  while (!signal.aborted) {
+    // Over-read one slot at the declared end, including a declared empty collection.
+    // Only a short final page with exactly the expected total proves EOF.
+    const remaining = count - records.length;
+    const limit = Math.min(pageSize, remaining + 1);
+    const rows = await selectBoundedStatement(session, "sag_admin_v2", tag, { afterId, pageSize: limit }, signal, pageTimeoutMs);
+    if (!Array.isArray(rows) || rows.length > limit || rows.length > remaining) throw new Unavailable("invalid_rows");
+    for (const raw of rows) {
+      const row = parse(raw);
+      const id = idOf(row);
+      if (afterId !== null && id <= afterId) throw new Unavailable("invalid_rows");
+      afterId = id;
+      records.push(row);
+    }
+    if (rows.length < limit) {
+      if (records.length !== count) throw new Unavailable("invalid_rows");
+      return records;
+    }
+  }
+  throw new Unavailable("cancelled");
+}
+
+/** Discovery only. Returns one complete, protected input or no rows; never resolves a target or publishes a revision. */
+export async function readCatalogSagDiscoveryV2(transport: CatalogExternalSourceTransport,
+  options: CatalogExternalReadOptions = {}): Promise<CatalogSagDiscoveryV2Result> {
+  try {
+    const pageSize = positiveInt(options.pageSize, 500, 1000);
+    const maxRows = positiveInt(options.maxRows, 50_000, 100_000);
+    const pageTimeoutMs = positiveInt(options.statementTimeoutMs, defaultPageTimeoutMs, 15_000);
+    const totalTimeoutMs = positiveInt(options.totalTimeoutMs, 20_000, 120_000);
+    return await bounded(signal => transport.withConsistentRead({ contract: "sag_admin_v2", timeoutMs: totalTimeoutMs, signal }, async session => {
+      if (session.consistency !== "verified") throw new Unavailable("consistency_unverified");
+      const schema = await selectBoundedStatement(session, "sag_admin_v2", "schema", {}, signal);
+      if (!Array.isArray(schema) || schema.length !== 1) throw new Unavailable("schema_unverified");
+      let proof: Record<string, unknown>;
+      try { proof = rowWithKeys(schema[0], ["compatible", "readOnly"]); }
+      catch { throw new Unavailable("schema_unverified"); }
+      if (proof.compatible !== true) throw new Unavailable("schema_unverified");
+      if (proof.readOnly !== true) throw new Unavailable("write_access");
+
+      const rows = await selectBoundedStatement(session, "sag_admin_v2", "counts", {}, signal);
+      if (!Array.isArray(rows) || rows.length !== 1) throw new Unavailable("invalid_rows");
+      const row = rowWithKeys(rows[0], ["customerCount", "companyCount"]);
+      const customerCount = parseDiscoveryCount(row.customerCount);
+      const companyCount = parseDiscoveryCount(row.companyCount);
+      if (customerCount + companyCount > BigInt(maxRows)) throw new Unavailable("row_limit");
+
+      const customers = await readExpectedDiscoveryPages(session, signal, "customerPage", Number(customerCount), pageSize,
+        pageTimeoutMs, parseSag, row => row.sourceRecordId);
+      const companies = await readExpectedDiscoveryPages(session, signal, "companyPage", Number(companyCount), pageSize,
+        pageTimeoutMs, parseSagCompany, row => row.companyRecordId);
+      return { status: "complete" as const, customers, companies };
+    }), totalTimeoutMs, options.signal);
   } catch (error) {
     return { status: "unavailable", reason: error instanceof Unavailable ? error.reason : "connection_failed" };
   }

@@ -56,6 +56,22 @@ pwsh -NoProfile -File migration/tools/Test-CatalogRefreshQueueQa.ps1 -SessionDir
 pwsh -NoProfile -File migration/tools/Test-CatalogRefreshQueueQa.ps1 -SessionDirectory <sesion-qa> -ProbeStage all
 ```
 
+## Evidencia de observaciones SAG 052 (2026-11-18)
+
+`Test-CatalogSagCompanyEvidenceQa.ps1` pasó **34/34 casos, 2.411 ms**,
+con transacciones revertidas y cero residuos. Probó el conjunto vacío v2,
+la ausencia de evidencia v1, la conservación de padres no resueltos, los
+límites y conteos exactos, la inmutabilidad y la publicación con evento 050.
+No prueba carreras entre sesiones ni la escritura desde el publicador del API.
+
+Luego se exportó `e11ab72` y se comprobó el SHA-256 del archivo 052:
+`fc2c24becab9cfa7236ef8a8975c2610b9d9264d6ada849f585f6b44b1ec8066`.
+El ejecutor aplicó 052 y verificó 017–030 y 031–052 en `PortalSAGWeb-TEST`.
+Una lectura posterior confirmó una aplicación exitosa, cero filas de evidencia
+Company y cero fuentes activas. No se aplicó 052 a producción ni se activó v2.
+El ensayo que exige ausencia de 052 requiere otra base QA o una restauración
+controlada; no debe ejecutarse en esta base ya migrada.
+
 ## Matriz pendiente de certificación integral
 
 | Caso | Resultado esperado |

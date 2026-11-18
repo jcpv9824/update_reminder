@@ -55,7 +55,8 @@ export function createCatalogExternalSqlTransport(target: CatalogSqlConnectionTa
 
   return {
     async withConsistentRead({ contract, timeoutMs, signal }, read) {
-      if (contract !== "erp_v1" && contract !== "sag_admin_v1") throw failure("contract_unapproved");
+      const discovery = contract === "sag_admin_v2";
+      if (contract !== "erp_v1" && contract !== "sag_admin_v1" && !discovery) throw failure("contract_unapproved");
       if (!validMs(timeoutMs, MAX_TOTAL_MS)) throw failure("invalid_options");
       if (signal.aborted) throw failure("cancelled");
 
@@ -114,6 +115,7 @@ export function createCatalogExternalSqlTransport(target: CatalogSqlConnectionTa
         lifetime.signal.throwIfAborted();
         let schemaChecked = false;
         let schemaVerified = false;
+        let discoveryCountsRead = false;
         let closed = false;
         const session: CatalogExternalReadSession = {
           consistency: "verified",
@@ -123,9 +125,9 @@ export function createCatalogExternalSqlTransport(target: CatalogSqlConnectionTa
             if (statement.signal.aborted) { stop("cancelled"); throw failure("cancelled"); }
             if (!validMs(statement.timeoutMs, MAX_STATEMENT_MS)) throw failure("invalid_options");
             const { tag, parameters } = statement;
-            if ((tag !== "schema" && tag !== "page") || statement.sql !== catalogExternalSelectSql(contract, tag)) {
-              throw failure("contract_unapproved");
-            }
+            const fixedSql = catalogExternalSelectSql(contract, tag);
+            if (statement.sql !== fixedSql) throw failure("contract_unapproved");
+            const isPage = tag === "page" || tag === "customerPage" || tag === "companyPage";
 
             if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) throw failure("invalid_options");
             const keys = Reflect.ownKeys(parameters);
@@ -133,15 +135,20 @@ export function createCatalogExternalSqlTransport(target: CatalogSqlConnectionTa
               if (schemaChecked || keys.length !== 0) throw failure("contract_unapproved");
               schemaChecked = true;
             } else {
-              const { afterId, pageSize } = parameters;
               if (!schemaVerified) throw failure("schema_unverified");
-              if (keys.length !== 2 || !keys.includes("afterId") || !keys.includes("pageSize") ||
-                  (afterId !== null && (typeof afterId !== "number" || !Number.isInteger(afterId) || afterId < -2147483648 || afterId > 2147483647)) ||
-                  pageSize === undefined || !validMs(pageSize, 1000)) throw failure("invalid_options");
+              if (tag === "counts") {
+                if (discoveryCountsRead || keys.length !== 0) throw failure("contract_unapproved");
+              } else {
+                if (discovery && !discoveryCountsRead) throw failure("contract_unapproved");
+                const { afterId, pageSize } = parameters;
+                if (keys.length !== 2 || !keys.includes("afterId") || !keys.includes("pageSize") ||
+                    (afterId !== null && (typeof afterId !== "number" || !Number.isInteger(afterId) || afterId < -2147483648 || afterId > 2147483647)) ||
+                    pageSize === undefined || !validMs(pageSize, 1000)) throw failure("invalid_options");
+              }
             }
 
             const request = new sql.Request(transaction);
-            if (tag === "page") {
+            if (isPage) {
               request.input("afterId", sql.Int, parameters.afterId);
               request.input("pageSize", sql.Int, parameters.pageSize);
             }
@@ -156,11 +163,12 @@ export function createCatalogExternalSqlTransport(target: CatalogSqlConnectionTa
             try {
               const { recordset } = await Promise.race([
                 statementStopped,
-                driverOperation(() => request.query<Record<string, unknown>>(catalogExternalSelectSql(contract, tag))),
+                driverOperation(() => request.query<Record<string, unknown>>(fixedSql)),
               ]);
               if (tag === "schema") {
                 schemaVerified = recordset?.length === 1 && recordset[0]?.compatible === true && recordset[0]?.readOnly === true;
               }
+              if (tag === "counts") discoveryCountsRead = true;
               return recordset;
             } finally {
               clearTimeout(statementTimer);
@@ -185,7 +193,7 @@ export function createCatalogExternalSqlTransport(target: CatalogSqlConnectionTa
             } finally { active = undefined; }
           }
           const value = await read(session);
-          if (!schemaVerified || active) throw failure("consistency_unverified");
+          if (!schemaVerified || active || (discovery && !discoveryCountsRead)) throw failure("consistency_unverified");
           return value;
         } finally {
           closed = true;

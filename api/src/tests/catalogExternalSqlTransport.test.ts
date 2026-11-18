@@ -27,7 +27,7 @@ vi.mock("mssql", () => ({ default: {
 } }));
 
 import { createCatalogExternalSqlTransport } from "../lib/catalogExternalSqlTransport";
-import { catalogExternalSelectSql, readCatalogExternalSource, type CatalogExternalReadStatement } from "../lib/catalogExternalSourceQueries";
+import { catalogExternalSelectSql, readCatalogExternalSource, readCatalogSagDiscoveryV2, type CatalogExternalReadStatement } from "../lib/catalogExternalSourceQueries";
 
 const target = { server: "db.example.test", port: 15433, database: "fixture-db", username: "fixture-user", password: "fixture-secret" };
 const proof = { recordset: [{ compatible: true, readOnly: true }] };
@@ -36,6 +36,14 @@ const statement = (tag: "schema" | "page", options?: Partial<CatalogExternalRead
   tag, sql: catalogExternalSelectSql("erp_v1", tag), timeoutMs: 500,
   parameters: tag === "page" ? { afterId: null, pageSize: 1 } : {}, signal: new AbortController().signal, ...options,
 });
+const v2Options = { ...runOptions, contract: "sag_admin_v2" } as const;
+const v2Statement = (tag: "schema" | "counts" | "customerPage" | "companyPage",
+  overrides?: Partial<CatalogExternalReadStatement>): CatalogExternalReadStatement => ({
+  tag, sql: catalogExternalSelectSql("sag_admin_v2", tag), timeoutMs: 500,
+  parameters: tag === "customerPage" || tag === "companyPage" ? { afterId: null, pageSize: 1 } : {},
+  signal: new AbortController().signal, ...overrides,
+});
+const emptyCounts = { recordset: [{ customerCount: "0", companyCount: "0" }] };
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -47,6 +55,72 @@ beforeEach(() => {
 });
 
 describe("external catalog SQL transport", () => {
+  it("runs v2 schema, counts and separate pages in one strictly encrypted SNAPSHOT transaction", async () => {
+    fakes.query.mockResolvedValueOnce(proof).mockResolvedValueOnce(emptyCounts)
+      .mockResolvedValueOnce({ recordset: [] }).mockResolvedValueOnce({ recordset: [] });
+    const transport = createCatalogExternalSqlTransport(target);
+    expect(await readCatalogSagDiscoveryV2(transport)).toEqual({ status: "complete", customers: [], companies: [] });
+    expect(fakes.begin).toHaveBeenCalledExactlyOnceWith(Symbol.for("Snapshot"));
+    expect(fakes.rollback).toHaveBeenCalledOnce();
+    expect(fakes.config).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ options: expect.objectContaining({
+      encrypt: true, trustServerCertificate: false, fallbackToDefaultDb: false,
+    }) }));
+    expect(fakes.query.mock.calls.map(([sql]) => sql)).toEqual([
+      v2Statement("schema").sql, v2Statement("counts").sql, v2Statement("customerPage").sql, v2Statement("companyPage").sql,
+    ]);
+    expect(fakes.query.mock.calls.every(([, tx]) => tx === fakes.query.mock.calls[0][1])).toBe(true);
+    expect(fakes.bind.mock.calls.map(([name, _, value]) => [name, value])).toEqual([
+      ["afterId", null], ["pageSize", 1], ["afterId", null], ["pageSize", 1],
+    ]);
+  });
+
+  it("refuses v2 when snapshot isolation is not available, without running metadata or data statements", async () => {
+    fakes.begin.mockRejectedValueOnce({ number: 3952 });
+    expect(await readCatalogSagDiscoveryV2(createCatalogExternalSqlTransport(target)))
+      .toEqual({ status: "unavailable", reason: "consistency_unverified" });
+    expect(fakes.begin).toHaveBeenCalledExactlyOnceWith(Symbol.for("Snapshot"));
+    expect(fakes.query).not.toHaveBeenCalled();
+  });
+
+  it("does not forward cross-contract tags or mutated SQL, and requires counts before v2 pages", async () => {
+    const transport = createCatalogExternalSqlTransport(target);
+    await expect(transport.withConsistentRead(runOptions, session => session.select(v2Statement("schema"))))
+      .rejects.toThrow("contract_unapproved");
+    await expect(transport.withConsistentRead(v2Options, session => session.select(statement("page"))))
+      .rejects.toThrow("contract_unapproved");
+    await expect(transport.withConsistentRead(v2Options, session => session.select(v2Statement("counts"))))
+      .rejects.toThrow("schema_unverified");
+    expect(fakes.query).not.toHaveBeenCalled();
+
+    for (const invalid of [v2Statement("companyPage"), v2Statement("counts", { parameters: { pageSize: 1 } }),
+      v2Statement("counts", { sql: "SELECT 1;" })]) {
+      fakes.query.mockClear().mockResolvedValueOnce(proof);
+      await expect(transport.withConsistentRead(v2Options, async session => {
+        await session.select(v2Statement("schema"));
+        return session.select(invalid);
+      })).rejects.toThrow("contract_unapproved");
+      expect(fakes.query).toHaveBeenCalledOnce();
+    }
+    fakes.query.mockClear().mockResolvedValueOnce(proof).mockResolvedValueOnce(emptyCounts);
+    await expect(transport.withConsistentRead(v2Options, async session => {
+      await session.select(v2Statement("schema"));
+      await session.select(v2Statement("counts"));
+      return session.select(v2Statement("counts"));
+    })).rejects.toThrow("contract_unapproved");
+    expect(fakes.query).toHaveBeenCalledTimes(2);
+
+    for (const invalid of [{ afterId: null, pageSize: 1001 }, { afterId: -2_147_483_649, pageSize: 1 },
+      { afterId: null, pageSize: 1, database: "not a supported parameter" }]) {
+      fakes.query.mockClear().mockResolvedValueOnce(proof).mockResolvedValueOnce(emptyCounts);
+      await expect(transport.withConsistentRead(v2Options, async session => {
+        await session.select(v2Statement("schema"));
+        await session.select(v2Statement("counts"));
+        return session.select(v2Statement("companyPage", { parameters: invalid }));
+      })).rejects.toThrow("invalid_options");
+      expect(fakes.query).toHaveBeenCalledTimes(2);
+    }
+  });
+
   it("asserts the instance on the same fixed, verified TCP connection before reading data", async () => {
     fakes.query.mockResolvedValueOnce({ recordset: [{ instanceName: "SAG_ERP" }] }).mockResolvedValueOnce(proof)
       .mockResolvedValueOnce({ recordset: [] });
