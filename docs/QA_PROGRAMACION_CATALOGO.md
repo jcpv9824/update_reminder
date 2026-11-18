@@ -85,6 +85,16 @@ la ejecución al rol general. Una prueba positiva de `COMMIT` con el principal
 dedicado requiere una base desechable autorizada en SQL Server 2019. La
 instancia instalada localmente usa la versión 17; no acredita esa prueba.
 
+La primera compilación de 053 en SQL Server 2019 rechazó la comparación entre
+la clave de `OPENJSON` y la lista esperada por collation binaria distinta.
+El rollback conservó 052 y no dejó procedimientos, rol ni historia de 053.
+Tras fijar explícitamente la collation, el artefacto con SHA-256
+`0f1d24f0df57953a016d1ac3dbd30f7f318decf0dd18bc6d1d1cb0df43feeeab`
+se aplicó dos veces dentro de un ensayo con rollback. Se verificaron tres
+grants EXECUTE y ausencia de miembros para el rol dedicado; no se instaló
+053 de forma permanente. Aún faltan las pruebas funcionales de autorización,
+transición, auditoría y confirmación.
+
 ## Verificación de preparación del reporte (2026-11-18)
 
 El conjunto enfocado de conteo, perfiles, permisos de destinatarios y outbox
@@ -111,6 +121,16 @@ e ID inexistente. No se escribieron perfiles ni se mostraron identificadores.
 Las pruebas locales relacionadas pasaron 39/39. Esto no certifica el alta
 operativa: el registro de destino todavía debe conservar el namespace de SQL
 verificado; no se puede derivar de un nombre ni revertir su hash.
+
+Se añadió `resolveCatalogSqlInstanceRoute`, un resolvedor que no realiza
+consultas de red. Admite exclusivamente configuración del servidor con
+rutas explícitas `(ambiente, host DNS, puerto)` e identificador de instancia
+opaco. Un duplicado o una fila inválida invalida la configuración; no se
+admiten IP literales, comodines, puertos implícitos ni alias deducidos de DNS.
+El resultado sólo permite intentar una verificación de identidad: el
+fingerprint de la base debe coincidir con el destino aprobado. Falta guardar
+la asociación del namespace y conectar el flujo de certificación. No se
+creó configuración ni se habilitó ruta pública.
 
 La consulta de recursos de Azure no encontró slots en la Function App de
 producción y encontró una sola Static Web App en el grupo productivo. No se
