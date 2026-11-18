@@ -28,6 +28,12 @@ function io() {
     register: vi.fn().mockResolvedValue({ status: "registered", taskId: "written" }) };
 }
 
+function observingIo() {
+  const deps = { ...io(), observeOneTimeSchedules: vi.fn().mockResolvedValue(undefined) };
+  deps.register.mockImplementation(async ({ task }) => ({ status: "existing", taskId: task.id, oneTimeExpectationVerified: true }));
+  return deps;
+}
+
 describe("catalog schedule day", () => {
   it("requires the population fence and routes a certified default day through the atomic writer", async () => {
     const revision = { id: "catalog-population-v1:00000000-0000-0000-0000-000000000099", complete: true };
@@ -61,6 +67,68 @@ describe("catalog schedule day", () => {
       rules: [...data.rules].reverse() }, deps)).toMatchObject({ existing: 1 });
     expect(deps.register.mock.calls[1][0].task.id).toBe(first.task.id);
     expect(deps.register.mock.calls[1][0].group.executionKey).toBe(first.group.executionKey);
+  });
+
+  it("observes the exact nonempty pair set per due once rule, including two aliases of one execution", async () => {
+    const deps = observingIo();
+    const alias = { ...rule(1), scope: { kind: "database" as const, linkIds: ["link2", "link1"] } };
+    await expect(generateCatalogScheduleDay({ ...data, rules: [rule(2, "daily"), alias] }, deps))
+      .resolves.toEqual({ status: "evaluated", registered: 0, existing: 1, held: 0, conflicts: 0 });
+    const key = deps.register.mock.calls[0][0].group.executionKey;
+    expect(deps.observeOneTimeSchedules).toHaveBeenCalledExactlyOnceWith([{
+      scheduleId: "schedule1", scheduleVersion: "0000000000000001", operationId: "release1",
+      pairs: [{ linkId: "link1", executionKey: key }, { linkId: "link2", executionKey: key }],
+    }]);
+    expect(deps.observeOneTimeSchedules.mock.invocationCallOrder[0]).toBeGreaterThan(deps.register.mock.invocationCallOrder[0]);
+  });
+
+  it.each(["release1", "changed-operation"])("combines both target kinds only for one operation: %s", async operationId => {
+    const deps = observingIo();
+    const single = rule(1);
+    const { databaseId: _unused, ...domain } = data.inventory[1].link;
+    const domainRule = { ...single, operationId, scope: { kind: "domain" as const, linkIds: [domain.linkId] } };
+    await generateCatalogScheduleDay({ ...data, rules: [single, domainRule], inventory: [data.inventory[0], {
+      ...data.inventory[1], link: { ...domain, kind: "domain" },
+    }] }, deps);
+    const executions = new Map(deps.register.mock.calls.map(([{ group }]) => [group.sources[0].link.linkId, group.executionKey]));
+    expect(deps.register).toHaveBeenCalledTimes(2);
+    expect(deps.observeOneTimeSchedules).toHaveBeenCalledExactlyOnceWith([{
+      scheduleId: "schedule1", scheduleVersion: "0000000000000001", operationId: "release1",
+      pairs: operationId !== "release1" ? null : ["link1", "link2"].map(linkId => ({ linkId, executionKey: executions.get(linkId) })),
+    }]);
+  });
+
+  it.each(["wrong-id", "ordinary", "receipt-only", "mixed-receipt", "conflict"])(
+    "does not certify a group lacking exact trusted registration evidence: %s", async failure => {
+      const deps = observingIo();
+      deps.register.mockImplementation(async ({ task }) => {
+        if (failure === "conflict") return { status: "conflict", reason: "evidence-unverified" };
+        return { status: "existing", taskId: failure === "wrong-id" ? "old-id" : task.id,
+          ...(failure === "ordinary" ? {} : { oneTimeExpectationVerified: true }),
+          ...(failure === "receipt-only" ? { receiptOnly: true } : {}),
+          ...(failure === "mixed-receipt" ? { accountedOrigins: 1 } : {}) };
+      });
+      await generateCatalogScheduleDay(data, deps);
+      expect(deps.observeOneTimeSchedules).toHaveBeenCalledExactlyOnceWith([
+        { scheduleId: "schedule1", scheduleVersion: "0000000000000001", operationId: "release1", pairs: null },
+        { scheduleId: "schedule2", scheduleVersion: "0000000000000002", operationId: "release1", pairs: null },
+      ]);
+    },
+  );
+
+  it.each(["empty", "incomplete-scope", "held", "plan-conflict"])("does not certify %s work", async failure => {
+    const deps = observingIo();
+    const first = { ...rule(1), scope: { kind: "database" as const,
+      linkIds: failure === "empty" ? [] : failure === "held" ? ["link1", "missing"] : ["link1"] },
+      ...(failure === "incomplete-scope" ? { oneTimeSelectionIncomplete: true as const } : {}) };
+    const second = { ...rule(2), operationId: failure === "plan-conflict" ? "other" : "release1" };
+    const result = await generateCatalogScheduleDay({ ...data, rules: [first, second] }, deps);
+    expect(result).toMatchObject({ status: "evaluated" });
+    expect(deps.observeOneTimeSchedules.mock.calls[0][0]).toEqual([
+      expect.objectContaining({ scheduleId: "schedule1", pairs: null }),
+      expect.objectContaining({ scheduleId: "schedule2", pairs: failure === "plan-conflict" ? null
+        : [expect.objectContaining({ linkId: "link2" })] }),
+    ]);
   });
 
   it("does not include a receipt-only disposition in the operative task counts", async () => {

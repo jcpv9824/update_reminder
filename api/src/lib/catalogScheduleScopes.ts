@@ -21,9 +21,11 @@ const kinds = (value: string): CatalogTaskKind[] => value === "domains_only" ? [
 export function compileCatalogScheduleScopes(input: PersistedDay, roster: Roster): DayScopePlan {
   const manual = new Set(input.manualScheduleIds);
   const links = input.inventory.map(item => item.link);
+  const knownCustomers = new Set<string>();
   const byOwner = new Map<string, CatalogTaskLink[]>();
   const domainLinks = new Map<string, CatalogTaskLink[]>();
   for (const link of links) {
+    knownCustomers.add(link.customerId);
     const owner = key(link.customerId, link.kind);
     const group = byOwner.get(owner) ?? [];
     group.push(link);
@@ -67,10 +69,12 @@ export function compileCatalogScheduleScopes(input: PersistedDay, roster: Roster
       const responsible = assignment(schedule, kind, scoped);
       if (responsible === null) return { status: "unverified" };
       const selected = new Set<string>();
+      let selectionIncomplete = false;
       const add = (found: CatalogTaskLink[]) => found.forEach(link => selected.add(link.linkId));
       const addFixed = (sources: CatalogTaskLink[], id: string, owner: string, domain = "") => {
         const found = sources.filter(link => targetId(link) === id);
         if (!found.length) missing.add(key(schedule.id, kind, owner, domain, id));
+        if (!found.length || found.some(link => link.state === "inactive")) selectionIncomplete = true;
         add(found);
       };
       if (licensing) {
@@ -85,17 +89,32 @@ export function compileCatalogScheduleScopes(input: PersistedDay, roster: Roster
           if (covered.some(parent => parent.state === "active")) return true;
           if (!parents?.length || covered.some(parent => parent.state === "unverifiable")) {
             missing.add(key(schedule.id, "parent_unverified", link.linkId));
+            // Count holds as before. For completeness, known dynamically excluded choices
+            // cannot require a parent, but an unknown module result cannot prove exclusion.
+            const modules = link.moduleIds;
+            if (link.state !== "inactive" && (modules === null || (licensing.licenseMatchMode === "all"
+              ? licensing.licenseModuleIds.every(id => modules.includes(id))
+              : licensing.licenseModuleIds.some(id => modules.includes(id))))) selectionIncomplete = true;
           }
           return false;
         }));
       } else if (schedule.scopeGroups?.length) {
         for (const group of schedule.scopeGroups) {
           const owned = byOwner.get(key(group.clientId, kind)) ?? [];
-          if (group.includeAllDomains) { add(owned); continue; }
+          if (group.includeAllDomains) {
+            if (!knownCustomers.has(group.clientId)) selectionIncomplete = true;
+            add(owned);
+            continue;
+          }
           for (const domain of group.domains) {
             const underDomain = owned.filter(link => link.domainId === domain.domainId);
             if (kind === "domain") addFixed(underDomain, domain.domainId, group.clientId, domain.domainId);
-            else if (domain.includeAllDatabases) add(underDomain);
+            else if (domain.includeAllDatabases) {
+              const parents = domainLinks.get(key(group.clientId, domain.domainId));
+              if (!parents?.some(parent => parent.state === "active") ||
+                  parents.some(parent => parent.state === "unverifiable")) selectionIncomplete = true;
+              add(underDomain);
+            }
             else for (const id of domain.databaseIds) addFixed(underDomain, id, group.clientId, domain.domainId);
           }
         }
@@ -104,7 +123,9 @@ export function compileCatalogScheduleScopes(input: PersistedDay, roster: Roster
           .filter(link => !schedule.domainId || link.domainId === schedule.domainId);
         for (const id of schedule.targetIds) addFixed(owned, id, schedule.clientId, schedule.domainId);
       }
-      rules.push({ calendar, operationId, ...responsible, scope: { kind, linkIds: [...selected].sort(),
+      rules.push({ calendar, operationId, ...responsible,
+        ...(calendar.frequencyType === "once" && selectionIncomplete ? { oneTimeSelectionIncomplete: true as const } : {}),
+        scope: { kind, linkIds: [...selected].sort(),
         ...(licensing ? { modules: { mode: licensing.licenseMatchMode, ids: licensing.licenseModuleIds } } : {}) } });
     }
   }

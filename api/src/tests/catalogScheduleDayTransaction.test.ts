@@ -100,4 +100,62 @@ describe("atomic certified catalog business day", () => {
     expect(m.rollback).toHaveBeenCalledOnce();
     expect(m.commit).not.toHaveBeenCalled();
   });
+
+  const once = { ...roster[0], schedule: { id: "a", active: true, frequencyType: "once", startDate: date } };
+  const executionKey = "a".repeat(64);
+  const operationId = "approved";
+  const onceWrite = { ...write, task: { ...write.task, id: "t1" },
+    group: { ...write.group, executionKey, operationId, sources: [{ scheduleId: "a", link: { linkId: "link-a" } }] },
+  } as CatalogExecutionRegistration;
+  const observedOnce = { scheduleId: "a", scheduleVersion: once.version, operationId,
+    pairs: [{ linkId: "link-a", executionKey }] };
+
+  it("passes one-time evidence to the observer in the same transaction and before the final deadline guard", async () => {
+    m.roster.mockResolvedValue([once]);
+    m.register.mockResolvedValue({ outcome: { ...outcome, oneTimeExpectationVerified: true }, validUntil: earliest });
+    const observer = vi.fn();
+    const result = await runSqlCatalogScheduleDayTransaction(context, async io => {
+      await io.register(onceWrite);
+      await io.observeOneTimeSchedules!([observedOnce]);
+      return "evaluated";
+    }, observer);
+    expect(result).toEqual({ status: "committed", value: "evaluated" });
+    expect(m.register).toHaveBeenCalledExactlyOnceWith(m.tx, onceWrite, {
+      replayMode: "certified-day", verifyOneTimeExpectation: true,
+    });
+    expect(observer).toHaveBeenCalledExactlyOnceWith(m.tx, context, [observedOnce], earliest);
+    expect(observer.mock.invocationCallOrder[0]).toBeLessThan(m.clock.mock.invocationCallOrder[1]);
+    expect(observer.mock.invocationCallOrder[0]).toBeLessThan(m.commit.mock.invocationCallOrder[0]);
+  });
+
+  it.each(["unproven", "wrong execution", "wrong operation", "wrong version", "missing observation"])(
+    "rolls back before observing a %s one-time proof", async failure => {
+      m.roster.mockResolvedValue([once]);
+      m.register.mockResolvedValue({ outcome: { ...outcome, ...(failure === "unproven" ? {} : { oneTimeExpectationVerified: true }) },
+        validUntil: earliest });
+      const observer = vi.fn();
+      const candidate = { ...observedOnce, ...(failure === "wrong execution" ? { pairs: [{ linkId: "link-a", executionKey: "b".repeat(64) }] } : {}),
+        ...(failure === "wrong operation" ? { operationId: "other" } : {}),
+        ...(failure === "wrong version" ? { scheduleVersion: "0000000000000003" } : {}) };
+      expect(await runSqlCatalogScheduleDayTransaction(context, async io => {
+        await io.register(onceWrite);
+        if (failure !== "missing observation") await io.observeOneTimeSchedules!([candidate]);
+      }, observer)).toEqual({ status: "unverified" });
+      expect(observer).not.toHaveBeenCalled();
+      expect(m.commit).not.toHaveBeenCalled();
+      expect(m.rollback).toHaveBeenCalledOnce();
+    });
+
+  it("passes an explicitly blocked observation without inventing pairs, and rolls it back if the cutoff is crossed", async () => {
+    m.roster.mockResolvedValue([once]);
+    m.clock.mockResolvedValueOnce({ recordset: [{ status: "valid" }] }).mockResolvedValueOnce({ recordset: [{ status: "cutoff" }] });
+    const observer = vi.fn();
+    const blocked = { ...observedOnce, pairs: null };
+    expect(await runSqlCatalogScheduleDayTransaction(context, async io => {
+      await io.observeOneTimeSchedules!([blocked]);
+    }, observer)).toEqual({ status: "cutoff" });
+    expect(observer).toHaveBeenCalledExactlyOnceWith(m.tx, context, [blocked], approval);
+    expect(m.commit).not.toHaveBeenCalled();
+    expect(m.rollback).toHaveBeenCalledOnce();
+  });
 });

@@ -203,6 +203,18 @@ describe("certified-day additive schedule provenance", () => {
     expect(queries[0][0]).toContain("WHERE NOT EXISTS");
   });
 
+  it("does not mistake even a freshly revalidated origin receipt for an attached one-time pair", async () => {
+    mock.license.mockResolvedValue(licenseExpiry);
+    rows([existing], existingLinks, [addedSchedule], [{ now }], [{ linkId: lateId, validUntil: proofExpiry }],
+      [{ count: 1 }], [{ result: "registered" }]);
+    expect(await registerSqlCatalogTaskExecutionInTransaction(transaction, lateAlias(),
+      { ...mode, verifyOneTimeExpectation: true })).toEqual({
+      outcome: { status: "existing", taskId: task.id, accountedOrigins: 1, receiptOnly: true },
+      validUntil: licenseExpiry,
+    });
+    expect(mock.query.mock.calls.some(([statement]) => statement.includes("OPENJSON(@expected)"))).toBe(false);
+  });
+
   it("appends a regular missing source but does not make a receipt-only schedule operative", async () => {
     const known = addition();
     const late = lateAlias();
@@ -329,6 +341,40 @@ describe("certified-day read-only subset replay", () => {
     expect(mock.rollback).not.toHaveBeenCalled();
     expect(existing.representativeTarget).toBe("database1");
     expect(existing.primaryScheduleId).toBe("schedule_1");
+  });
+
+  it.each([true, false])("recertifies the persisted versioned pair for one-time planning (active pair: %s)", async activePair => {
+    const expiry = new Date(now.valueOf() + 90_000);
+    rows([existing], existingLinks, [scheduleRows[1]], [{ now }],
+      [{ linkId: "link2", validUntil: expiry }], [{ count: activePair ? 1 : 0 }], [{ result: "registered" }]);
+    const result = await registerSqlCatalogTaskExecutionInTransaction(transaction, timerInput(),
+      { ...mode, verifyOneTimeExpectation: true });
+    expect(result).toEqual({ outcome: { status: "existing", taskId: task.id,
+      ...(activePair ? { oneTimeExpectationVerified: true } : {}) }, validUntil: expiry });
+    const [proof, bindings] = mock.query.mock.calls[5];
+    expect(proof).toContain("l.link_state='active' AND l.retired_at IS NULL");
+    expect(proof).toContain("source.detached_at IS NULL");
+    expect(proof).toContain("s.row_version=TRY_CONVERT(binary(8),r.scheduleVersion,2)");
+    expect(bindings.executionId).toBe("2");
+    expect(JSON.parse(bindings.expected)).toEqual([
+      { linkId: "link2", scheduleId: "schedule_2", scheduleVersion: "0000000000000002" },
+    ]);
+    expect(mock.insert).not.toHaveBeenCalled();
+  });
+
+  it("does not certify an existing origin when its source or destination proof is no longer current", async () => {
+    rows([existing], existingLinks, [scheduleRows[1]], [{ now }], []);
+    await expect(registerSqlCatalogTaskExecutionInTransaction(transaction, timerInput(),
+      { ...mode, verifyOneTimeExpectation: true })).rejects.toThrow("catalog-reference-changed");
+    expect(mock.query.mock.calls.some(([statement]) => statement.includes("OPENJSON(@expected)"))).toBe(false);
+  });
+
+  it("does not enter one-time evidence mode without the certified-day transaction and population revision", async () => {
+    await expect(registerSqlCatalogTaskExecutionInTransaction(transaction, timerInput(),
+      { verifyOneTimeExpectation: true })).rejects.toThrow("invalid-plan");
+    await expect(registerSqlCatalogTaskExecutionInTransaction(transaction, input(),
+      { ...mode, verifyOneTimeExpectation: true })).rejects.toThrow("invalid-plan");
+    expect(mock.query).not.toHaveBeenCalled();
   });
 
   it("retains extra historical detached/retired pairs without using them to satisfy requested membership", async () => {

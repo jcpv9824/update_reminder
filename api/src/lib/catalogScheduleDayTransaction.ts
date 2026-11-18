@@ -5,6 +5,7 @@ import { catalogRegistrationConflictReason, registerSqlCatalogTaskExecutionInTra
   type CatalogExecutionRegistration, type CatalogExecutionRegistrationResult } from "./catalogExecutionRegistrationSqlRepository";
 import { readSqlCatalogPhysicalTargets, readSqlCatalogPhysicalTargetsInTransaction } from "./catalogPhysicalTargetSqlRepository";
 import type { CatalogInventoryProofScope } from "./catalogScheduleInventory";
+import type { CatalogOneTimeScheduleObservation } from "./catalogScheduleDay";
 import { readSqlCatalogSchedulePopulationCoverageInTransaction } from "./catalogSchedulePopulationCoverage";
 import { readSqlCatalogScheduleRosterInTransaction } from "./schedulingSqlRepository";
 import { runSqlTransaction } from "./sqlTransaction";
@@ -16,7 +17,10 @@ export type CatalogScheduleDayTransactionContext = Readonly<{
 type TransactionIo = {
   resolve: typeof readSqlCatalogPhysicalTargets;
   register: (input: CatalogExecutionRegistration) => Promise<CatalogExecutionRegistrationResult>;
+  observeOneTimeSchedules?: (items: readonly CatalogOneTimeScheduleObservation[]) => Promise<void>;
 };
+type OneTimeObserver = (transaction: sql.Transaction, context: CatalogScheduleDayTransactionContext,
+  items: readonly CatalogOneTimeScheduleObservation[], validUntil: Date) => Promise<void>;
 type Stop = "cutoff" | "unverified";
 type Result<T> = { status: "committed"; value: T } | { status: Stop };
 class DayStop extends Error { constructor(readonly status: Stop) { super(status); } }
@@ -39,7 +43,7 @@ async function checkClock(transaction: sql.Transaction, cutoffAt: Date, validUnt
  * before any tasks. Keep both task-day locks until the whole batch commits.
  */
 export async function runSqlCatalogScheduleDayTransaction<T>(context: CatalogScheduleDayTransactionContext,
-  work: (io: TransactionIo) => Promise<T>): Promise<Result<T>> {
+  work: (io: TransactionIo) => Promise<T>, observe?: OneTimeObserver): Promise<Result<T>> {
   const { cutoffAt, date, revisionId, roster, scope, manualIntents } = context;
   if (date !== scope.date || !(cutoffAt instanceof Date) || !Number.isFinite(cutoffAt.valueOf()) || roster.size > 5000) {
     return { status: "unverified" };
@@ -57,6 +61,10 @@ export async function runSqlCatalogScheduleDayTransaction<T>(context: CatalogSch
       const actual = await readSqlCatalogScheduleRosterInTransaction(transaction, date);
       if (actual.length !== roster.size || new Set(actual.map(row => row.schedule.id)).size !== roster.size ||
           actual.some(row => roster.get(row.schedule.id) !== row.version)) return stop("unverified");
+      const oneTime = new Map(actual.filter(({ schedule }) => schedule.active && schedule.frequencyType === "once" &&
+        schedule.startDate === date).map(({ schedule, version }) => [schedule.id, version]));
+      const verified = new Map<string, Map<string, { executionKey: string; operationId: string }>>();
+      let observed = false;
       const currentIntents = await readSqlCatalogManualDayIntentsInTransaction(transaction, { date, portalEnvironment: scope.portalEnvironment });
       if (currentIntents.size !== manualIntents.size ||
         [...currentIntents].some(([id, version]) => manualIntents.get(id) !== version)) return stop("unverified");
@@ -69,14 +77,48 @@ export async function runSqlCatalogScheduleDayTransaction<T>(context: CatalogSch
               registration.group.occurrenceId !== date || registration.group.revisionId !== revisionId ||
               registration.cutoffAt.valueOf() !== cutoffAt.valueOf() ||
               [...registration.scheduleVersions].some(([id, version]) => roster.get(id) !== version)) return stop("unverified");
-          const { outcome, validUntil } = await registerSqlCatalogTaskExecutionInTransaction(transaction, registration, { replayMode: "certified-day" });
-          if (outcome.status === "registered" && (!(validUntil instanceof Date) || !Number.isFinite(validUntil.valueOf()))) {
+          if (observed) return stop("unverified");
+          const verifyOneTimeExpectation = observe !== undefined && [...registration.scheduleVersions.keys()].some(id => oneTime.has(id));
+          const { outcome, validUntil } = await registerSqlCatalogTaskExecutionInTransaction(transaction, registration, {
+            replayMode: "certified-day", ...(verifyOneTimeExpectation ? { verifyOneTimeExpectation: true as const } : {}),
+          });
+          if ((outcome.status === "registered" || outcome.oneTimeExpectationVerified) &&
+            (!(validUntil instanceof Date) || !Number.isFinite(validUntil.valueOf()))) {
             return stop("unverified");
           }
           if (validUntil && validUntil < deadline) deadline = validUntil;
+          if (verifyOneTimeExpectation && outcome.oneTimeExpectationVerified && outcome.taskId === registration.task.id) {
+            for (const { scheduleId, link } of registration.group.sources) {
+              if (!oneTime.has(scheduleId)) continue;
+              const byLink = verified.get(scheduleId) ?? new Map();
+              const candidate = { executionKey: registration.group.executionKey, operationId: registration.group.operationId };
+              const prior = byLink.get(link.linkId);
+              if (prior && (prior.executionKey !== candidate.executionKey || prior.operationId !== candidate.operationId)) return stop("unverified");
+              byLink.set(link.linkId, candidate);
+              verified.set(scheduleId, byLink);
+            }
+          }
           return outcome;
         },
+        ...(observe ? { observeOneTimeSchedules: async (items: readonly CatalogOneTimeScheduleObservation[]) => {
+          if (observed || items.length !== oneTime.size || new Set(items.map(item => item.scheduleId)).size !== oneTime.size) {
+            return stop("unverified");
+          }
+          for (const item of items) {
+            if (oneTime.get(item.scheduleId) !== item.scheduleVersion) return stop("unverified");
+            if (item.pairs === null) continue;
+            const byLink = verified.get(item.scheduleId);
+            if (!byLink || !item.pairs.length || item.pairs.length !== byLink.size ||
+                new Set(item.pairs.map(pair => pair.linkId)).size !== byLink.size || item.pairs.some(pair => {
+                  const proof = byLink.get(pair.linkId);
+                  return !proof || proof.executionKey !== pair.executionKey || proof.operationId !== item.operationId;
+                })) return stop("unverified");
+          }
+          observed = true;
+          if (items.length) await observe(transaction, context, items, deadline);
+        } } : {}),
       });
+      if (observe && oneTime.size && !observed) return stop("unverified");
       await checkClock(transaction, cutoffAt, deadline);
       return { status: "committed", value };
     });

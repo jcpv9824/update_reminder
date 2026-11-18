@@ -11,7 +11,18 @@ export type CatalogScheduleRule = Omit<CatalogTaskRequest, "scheduleId"> & {
   calendar: CalendarSchedule & { id: string; timezone: string; version: string };
   /** Required by SQL workflow; explicit person assignment still takes precedence. */
   workflowRole: string;
+  /** A persisted selection could not be reconstructed fully; this does not change task eligibility. */
+  oneTimeSelectionIncomplete?: true;
 };
+
+type CatalogOneTimeSchedulePair = Readonly<{ linkId: string; executionKey: string }>;
+export type CatalogOneTimeScheduleObservation = Readonly<{
+  scheduleId: string;
+  scheduleVersion: string;
+  operationId: string;
+  /** null explicitly invalidates proof for this occurrence; an empty proof is never emitted. */
+  pairs: readonly CatalogOneTimeSchedulePair[] | null;
+}>;
 
 export type CatalogScheduleDay = {
   date: string;
@@ -35,17 +46,63 @@ export type CatalogScheduleDay = {
 type DayResult = { status: "cutoff" | "unverified" } | { status: "evaluated";
   registered: number; existing: number; held: number; conflicts: number; accountedOrigins?: number };
 const dependencies = { resolve: readSqlCatalogPhysicalTargets, register: registerSqlCatalogTaskExecution };
+type CatalogScheduleDayIO = typeof dependencies & {
+  /** Supplied by the certified SQL day transaction only; no standalone persistence. */
+  observeOneTimeSchedules?: (observations: readonly CatalogOneTimeScheduleObservation[]) => Promise<void>;
+};
 const ruleKey = (scheduleId: string, kind: CatalogTaskKind) => JSON.stringify([scheduleId, kind]);
 const validDay = (date: string) => /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(Date.parse(date))
   && new Date(date).toISOString().slice(0, 10) === date;
 // The workflow stores a 240-unit display label separately from the 500-unit domain name.
 const webTargetLabel = (name: string) => name.length <= 240 ? name : name.slice(0, 239).replace(/[\uD800-\uDBFF]$/, "") + "…";
 
+type OneTimeScope = Omit<CatalogOneTimeScheduleObservation, "pairs"> & {
+  invalid: boolean;
+  kinds: Set<CatalogTaskKind>;
+  pairs: Map<string, string>;
+};
+
+/** Collect one nonempty all-or-nothing set per schedule, not one row per deduplicated task. */
+function collectOneTimeScheduleObservations(rules: readonly CatalogScheduleRule[]) {
+  const scopes = new Map<string, OneTimeScope>();
+  for (const rule of rules) {
+    const { calendar, operationId } = rule;
+    if (calendar.frequencyType !== "once") continue;
+    const scope = scopes.get(calendar.id) ?? {
+      scheduleId: calendar.id, scheduleVersion: calendar.version, operationId,
+      invalid: false, kinds: new Set<CatalogTaskKind>(), pairs: new Map<string, string>(),
+    };
+    if (rule.oneTimeSelectionIncomplete || !operationId.trim() || scope.operationId !== operationId ||
+        scope.scheduleVersion !== calendar.version || scope.kinds.has(rule.scope.kind)) scope.invalid = true;
+    scope.kinds.add(rule.scope.kind);
+    scopes.set(calendar.id, scope);
+  }
+  return {
+    invalidate(scheduleId: string) {
+      const scope = scopes.get(scheduleId);
+      if (scope) scope.invalid = true;
+    },
+    verify(scheduleId: string, operationId: string, linkId: string, executionKey: string) {
+      const scope = scopes.get(scheduleId);
+      if (!scope || scope.invalid) return;
+      if (scope.operationId !== operationId || scope.pairs.has(linkId)) scope.invalid = true;
+      else scope.pairs.set(linkId, executionKey);
+    },
+    observations(): CatalogOneTimeScheduleObservation[] {
+      return [...scopes.keys()].sort().map(id => {
+        const { scheduleId, scheduleVersion, operationId, invalid, pairs } = scopes.get(id)!;
+        return { scheduleId, scheduleVersion, operationId, pairs: invalid || !pairs.size ? null
+          : [...pairs.keys()].sort().map(linkId => ({ linkId, executionKey: pairs.get(linkId)! })) };
+      });
+    },
+  };
+}
+
 /**
  * Runs one Bogotá business date using the full trusted roster, not browser-provided targets.
  * Legacy task cleanup and schedule completion are deliberately not part of registration.
  */
-export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io?: typeof dependencies): Promise<DayResult> {
+export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io?: CatalogScheduleDayIO): Promise<DayResult> {
   if (!validDay(input.date) || !Number.isFinite(input.checkedAt.valueOf()) || !Number.isFinite(input.cutoffAt.valueOf())
     || input.inventory.length > 5000 || input.rules.length > 5000) throw new Error("invalid_catalog_schedule_day");
   if (input.checkedAt >= input.cutoffAt) return { status: "cutoff" };
@@ -62,6 +119,7 @@ export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io?:
     return result.status === "committed" ? result.value : { status: result.status };
   }
   const { resolve, register } = io ?? dependencies;
+  const observeOneTimeSchedules = io?.observeOneTimeSchedules;
   const selectedManual = new Set(input.manualScheduleIds);
   const foundManual = new Set<string>();
   const activeRules: CatalogScheduleRule[] = [];
@@ -100,13 +158,22 @@ export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io?:
   }, resolve);
   result.conflicts = plan.conflicts.length;
   result.held = plan.held.length;
+  const oneTime = observeOneTimeSchedules ? collectOneTimeScheduleObservations(activeRules) : undefined;
+  if (oneTime) {
+    for (const hold of plan.held) oneTime.invalidate(hold.scheduleId);
+    for (const conflict of plan.conflicts) for (const source of conflict.sources) oneTime.invalidate(source.scheduleId);
+  }
   const now = input.checkedAt.toISOString();
   for (const group of plan.tasks) {
     const workflowRoles = new Set(group.sources.map(source => bySchedule.get(ruleKey(source.scheduleId, group.kind))!.workflowRole));
     const { assignment } = group;
     const workflowRole = [...workflowRoles][0];
     if (workflowRoles.size !== 1 || !workflowRole || assignment.kind === "unassigned" ||
-      (assignment.kind === "role" && assignment.id !== workflowRole)) { result.conflicts++; continue; }
+      (assignment.kind === "role" && assignment.id !== workflowRole)) {
+      result.conflicts++;
+      if (oneTime) for (const source of group.sources) oneTime.invalidate(source.scheduleId);
+      continue;
+    }
     const representative = group.sources[0];
     const { link, clientName, domainName, targetName } = inventory.get(representative.link.linkId)!;
     const task: UpdateTask = {
@@ -130,10 +197,25 @@ export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io?:
         [source.scheduleId, versions.get(source.scheduleId)!])) });
     if (write.status === "conflict") {
       result.conflicts++;
+      if (oneTime) for (const source of group.sources) oneTime.invalidate(source.scheduleId);
     } else {
       if (write.accountedOrigins) result.accountedOrigins = (result.accountedOrigins ?? 0) + write.accountedOrigins;
       if (!write.receiptOnly) result[write.status]++;
+      if (oneTime) {
+        // Until registration proves individual accepted aliases independently, any receipt
+        // makes the whole group unusable as completion evidence.
+        const certified = write.taskId === task.id && !write.receiptOnly && !write.accountedOrigins &&
+          write.oneTimeExpectationVerified === true;
+        for (const source of group.sources) {
+          if (!certified) oneTime.invalidate(source.scheduleId);
+          else oneTime.verify(source.scheduleId, source.operationId, source.link.linkId, group.executionKey);
+        }
+      }
     }
+  }
+  if (oneTime && observeOneTimeSchedules) {
+    const observations = oneTime.observations();
+    if (observations.length) await observeOneTimeSchedules(observations);
   }
   return result;
 }

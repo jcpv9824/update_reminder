@@ -44,6 +44,41 @@ describe("persisted catalog scope adapter", () => {
     expect(foreign).toMatchObject({ missingSelections: 1, rules: [{ scope: { linkIds: [] } }] });
   });
 
+  it("carries missing or inactive explicit selections only on the affected rule without changing the held count", () => {
+    const inactive = input.inventory.map(item => item.link.linkId === "a:shared:same:production"
+      ? { ...item, link: { ...item.link, state: "inactive" as const } } : item);
+    const groups = [{ clientId: "a", includeAllDomains: false, domains: [
+      { domainId: "shared", includeAllDatabases: false, databaseIds: ["same", "removed"] },
+    ] }];
+    const fixed = compileCatalogScheduleScopes({ ...input, inventory: inactive }, row({ scopeGroups: groups }));
+    expect(fixed).toMatchObject({ status: "ready", missingSelections: 1, rules: [
+      { scope: { kind: "domain", linkIds: ["a:shared:domain:production"] } },
+      { oneTimeSelectionIncomplete: true, scope: { kind: "database", linkIds: ["a:shared:same:production"] } },
+    ] });
+    if (fixed.status !== "ready") throw new Error("expected a ready plan");
+    expect(fixed.rules[0]).not.toHaveProperty("oneTimeSelectionIncomplete");
+    const inactiveOnly = compileCatalogScheduleScopes({ ...input, inventory: inactive }, row({ scopeGroups: groups.map(group => ({
+      ...group, domains: group.domains.map(domain => ({ ...domain, databaseIds: ["same"] })),
+    })) }));
+    expect(inactiveOnly).toMatchObject({ missingSelections: 0, rules: [{}, { oneTimeSelectionIncomplete: true }] });
+  });
+
+  it("distinguishes dynamic inactive rows from a missing explicitly selected parent domain", () => {
+    const inactive = input.inventory.map(item => item.link.linkId === "a:shared:same:production"
+      ? { ...item, link: { ...item.link, state: "inactive" as const } } : item);
+    const dynamic = [{ clientId: "a", includeAllDomains: false, domains: [
+      { domainId: "shared", includeAllDatabases: true, databaseIds: [] },
+    ] }];
+    const plan = compileCatalogScheduleScopes({ ...input, inventory: inactive }, row({
+      manualTargetTypes: "databases_only", scopeGroups: dynamic,
+    }));
+    if (plan.status !== "ready") throw new Error("expected a ready plan");
+    expect(plan.rules[0]).not.toHaveProperty("oneTimeSelectionIncomplete");
+    expect(compileCatalogScheduleScopes(input, row({ manualTargetTypes: "databases_only", scopeGroups: dynamic.map(group => ({
+      ...group, domains: [...group.domains, { domainId: "gone", includeAllDatabases: true, databaseIds: [] }],
+    })) }))).toMatchObject({ missingSelections: 0, rules: [{ oneTimeSelectionIncomplete: true }] });
+  });
+
   it("never turns an all-licenses rule into a narrower predicate when a module goes inactive", async () => {
     const roster = row({ selectionMode: "licensing", licensingScope: { licenseMatchMode: "all", targetTypes: "databases_only",
       environment: "production", licenseModuleIds: ["A", "B"], activeOnly: true } });

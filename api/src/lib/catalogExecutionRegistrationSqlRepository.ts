@@ -49,6 +49,8 @@ export type CatalogExecutionRegistrationResult = { status: "registered" | "exist
   accountedOrigins?: number;
   /** All requested pairs were accounting receipts, with no operative pair in the request. */
   receiptOnly?: true;
+  /** Every requested operative pair was re-proven for its current schedule version. Internal only. */
+  oneTimeExpectationVerified?: true;
 }
   | { status: "conflict"; reason: Conflict };
 
@@ -61,6 +63,8 @@ export type CatalogExecutionRegistrationTransactionResult = {
 export type CatalogExecutionReplayOptions = Readonly<{
   /** Approved day callers can reconcile existing active links or record separate non-grant origins. */
   replayMode?: "exact" | "certified-day";
+  /** Opt in from the certified day only; read-only subset replay alone is not completion proof. */
+  verifyOneTimeExpectation?: true;
 }>;
 
 class RegistrationConflict extends Error {
@@ -295,7 +299,9 @@ export async function registerSqlCatalogTaskExecutionInTransaction(
 ): Promise<CatalogExecutionRegistrationTransactionResult> {
   const replayMode = options.replayMode ?? "exact";
   if (replayMode !== "exact" && replayMode !== "certified-day") return conflict("invalid-plan");
-  return registerParsedExecutionInTransaction(transaction, input, parseInput(input), replayMode);
+  if (options.verifyOneTimeExpectation && (replayMode !== "certified-day" ||
+      !input.group.revisionId.startsWith(catalogPopulationRevisionPrefix))) return conflict("invalid-plan");
+  return registerParsedExecutionInTransaction(transaction, input, parseInput(input), replayMode, options.verifyOneTimeExpectation === true);
 }
 
 async function registerParsedExecutionInTransaction(
@@ -303,6 +309,7 @@ async function registerParsedExecutionInTransaction(
   input: CatalogExecutionRegistration,
   planned: ReturnType<typeof parseInput>,
   replayMode: "exact" | "certified-day" = "exact",
+  verifyOneTimeExpectation = false,
 ): Promise<CatalogExecutionRegistrationTransactionResult> {
     const { group, task, cutoffAt, portalEnvironment } = input;
     const executionKey = Buffer.from(group.executionKey, "hex");
@@ -312,7 +319,7 @@ async function registerParsedExecutionInTransaction(
       let receipts: Attachment[] = [];
       if (existing) {
         ({ attachments: attachmentsToInsert, receipts } = await verifyReplay(transaction, input, existing, planned, replayMode));
-        if (!attachmentsToInsert.length && !receipts.length) {
+        if (!verifyOneTimeExpectation && !attachmentsToInsert.length && !receipts.length) {
           return { outcome: { status: "existing", taskId: existing.taskId }, validUntil: null };
         }
       }
@@ -605,6 +612,26 @@ async function registerParsedExecutionInTransaction(
         if (recorded.recordset[0]?.count !== origins.length) return conflict("catalog-reference-changed");
       }
 
+      let oneTimeExpectationVerified = false;
+      if (verifyOneTimeExpectation && !receipts.length) {
+        const proven = await new sql.Request(transaction).input("executionId", sql.BigInt, executionId)
+          .input("expected", sql.NVarChar(sql.MAX), JSON.stringify([...planned.attachments.values()].map(pair =>
+            ({ ...pair, scheduleVersion: input.scheduleVersions.get(pair.scheduleId) }))))
+          .query<{ count: number }>(`
+            SELECT COUNT(*) AS [count]
+            FROM OPENJSON(@expected) WITH (linkId nvarchar(260),scheduleId nvarchar(150),scheduleVersion char(16)) AS r
+            JOIN workflow.catalog_task_execution_links l WITH (HOLDLOCK)
+              ON l.catalog_execution_key=@executionId AND l.link_id=r.linkId COLLATE Latin1_General_100_BIN2
+              AND DATALENGTH(l.link_id)=DATALENGTH(r.linkId) AND l.link_state='active' AND l.retired_at IS NULL
+            JOIN workflow.catalog_task_execution_sources source WITH (HOLDLOCK)
+              ON source.catalog_execution_link_key=l.catalog_execution_link_key AND source.detached_at IS NULL
+            JOIN scheduling.update_schedules s WITH (HOLDLOCK)
+              ON s.schedule_key=source.schedule_key AND s.source_id COLLATE Latin1_General_100_BIN2=r.scheduleId COLLATE Latin1_General_100_BIN2
+              AND DATALENGTH(s.source_id)=DATALENGTH(r.scheduleId) AND s.active=1 AND s.deleted_at IS NULL
+              AND s.row_version=TRY_CONVERT(binary(8),r.scheduleVersion,2);`);
+        oneTimeExpectationVerified = proven.recordset[0]?.count === planned.attachments.size;
+      }
+
       const eventToken = createHash("sha256").update(`catalog-task-registered-v1:${group.executionKey}`, "utf8").digest();
       const event = await new sql.Request(transaction).input("executionId", sql.BigInt, executionId)
         .input("insertRegistrationEvent", sql.Bit, !existing)
@@ -625,6 +652,7 @@ async function registerParsedExecutionInTransaction(
           taskId: existing?.taskId ?? task.id,
           ...(receipts.length ? { accountedOrigins: receipts.length } : {}),
           ...(receipts.length && receipts.length === planned.attachments.size ? { receiptOnly: true as const } : {}),
+          ...(oneTimeExpectationVerified ? { oneTimeExpectationVerified: true as const } : {}),
         },
         validUntil: evidenceValidUntil,
       };
