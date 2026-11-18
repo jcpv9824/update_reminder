@@ -72,6 +72,19 @@ Company y cero fuentes activas. No se aplicó 052 a producción ni se activó v2
 El ensayo que exige ausencia de 052 requiere otra base QA o una restauración
 controlada; no debe ejecutarse en esta base ya migrada.
 
+La revisión del lector congelado `0922e25` pasó 62 pruebas independientes y
+la suite total pasó **1.535/1.535 en 161 archivos (199,91 s)** con
+`npm test -- --maxWorkers=2`. También pasaron `check:no-cosmos-runtime` y
+ambas auditorías de dependencias en el mismo código. Estas pruebas no
+incluyen las operaciones SQL del publicador v2 de la 053.
+
+Para 053, las operaciones públicas serán dueñas de su transacción de
+publicación; no existe un modo especial de confirmación para pruebas. Los
+ensayos con rollback en QA pueden verificar transiciones internas y negar
+la ejecución al rol general. Una prueba positiva de `COMMIT` con el principal
+dedicado requiere una base desechable autorizada en SQL Server 2019. La
+instancia instalada localmente usa la versión 17; no acredita esa prueba.
+
 ## Matriz pendiente de certificación integral
 
 | Caso | Resultado esperado |
