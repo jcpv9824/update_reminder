@@ -56,6 +56,8 @@ describe("catalog execution SQL read repository", () => {
     expect(result?.links[0].schedules).toEqual(link.schedules);
     expect(mocks.input).toHaveBeenCalledWith("executionKey", ["varbinary", 32], Buffer.from(key, "hex"));
     expect(mocks.query.mock.calls[0][0].trim()).toMatch(/^SELECT\b/);
+    expect(mocks.query.mock.calls[0][0]).toContain("CONVERT(binary(8),e.row_version)");
+    expect(mocks.query.mock.calls[0][0]).toContain("CONVERT(binary(8),link.row_version)");
   });
 
   it("parameterizes the exact workflow task ID and does not create a missing execution", async () => {

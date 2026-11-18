@@ -73,7 +73,7 @@ export async function readSqlCatalogReportingProfiles(input: {
         SELECT LOWER(CONVERT(char(36), t.target_id)) AS target_id,
           LOWER(CONVERT(char(36), r.reporting_profile_id)) AS profile_id,
           LOWER(CONVERT(char(36), r.trusted_instance_id)) AS instance_id,
-          p.source_id AS connection_id, LOWER(CONVERT(char(16),p.row_version,2)) AS version,
+          p.source_id AS connection_id, LOWER(CONVERT(char(16),CONVERT(binary(8),p.row_version),2)) AS version,
           r.verified_identity_fingerprint AS fingerprint, r.count_contract,
           r.active_column,r.active_storage,r.active_bit,r.active_text,r.inactive_text
         FROM core.catalog_physical_targets t

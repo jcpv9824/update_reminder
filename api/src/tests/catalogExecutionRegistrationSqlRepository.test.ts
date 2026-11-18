@@ -41,7 +41,8 @@ const input = (): CatalogExecutionRegistration => {
   return { group: { occurrenceId, revisionId: "revision1", kind: "database", targetId: physicalId, operationId: "release1", assignment,
     executionKey: catalogTaskExecutionKey(occurrenceId, "database", physicalId),
     sources: [1, 2].map(n => ({ scheduleId: `schedule_${n}`, operationId: "release1", assignment, link: logical(n) })) },
-  task, cutoffAt, portalEnvironment: "qa", catalogSourceIdsByLink: new Map([["link1", sourceId], ["link2", null]]) };
+  task, cutoffAt, portalEnvironment: "qa", catalogSourceIdsByLink: new Map([["link1", sourceId], ["link2", null]]),
+    scheduleVersions: new Map([["schedule_1", "0000000000000001"], ["schedule_2", "0000000000000002"]]) };
 };
 
 const scheduleRows = [{ scheduleId: "schedule_1", scheduleKey: "1", origin: "licensing" },
@@ -59,6 +60,14 @@ const rows = (...response: object[][]) => {
 beforeEach(() => { vi.resetAllMocks(); mock.insert.mockResolvedValue(17); mock.lockDay.mockResolvedValue(true); });
 
 describe("atomic catalog execution registration", () => {
+  it("rejects alternate occurrence IDs for the same business date before taking locks", async () => {
+    const valid = input();
+    const alternate = "manual-2030-06-22";
+    const group = { ...valid.group, occurrenceId: alternate,
+      executionKey: catalogTaskExecutionKey(alternate, "database", physicalId) };
+    await expect(registerSqlCatalogTaskExecution({ ...valid, group })).resolves.toEqual({ status: "conflict", reason: "invalid-plan" });
+    expect(mock.begin).not.toHaveBeenCalled();
+  });
   it("locks the execution and every legacy logical target, then writes all origins and an immutable event in one transaction", async () => {
     rows([], [{ collision: false }], scheduleRows, [{ now }], [{ key: "2" }],
       [{ linkId: "link1", validUntil: cutoffAt }, { linkId: "link2", validUntil: cutoffAt }],
@@ -73,6 +82,14 @@ describe("atomic catalog execution registration", () => {
     expect(mock.query.mock.calls[0][0]).toContain("UPDLOCK,HOLDLOCK");
     expect(mock.query.mock.calls[0][0]).toContain("WHERE e.execution_key");
     expect(mock.query.mock.calls[1][1].targetIds).toBe('["database1","database2"]');
+    expect(mock.query.mock.calls[1][0]).toContain("e.verified_target_id=@physicalId");
+    expect(mock.query.mock.calls[2][0]).toContain("s.row_version=TRY_CONVERT(binary(8),ids.expected_version,2)");
+    expect(mock.query.mock.calls[2][0]).toContain("grant_row.permission_key=N'updates.tasks.view'");
+    expect(mock.query.mock.calls[2][0]).toContain("task_role.database_task_visibility");
+    expect(mock.query.mock.calls[2][1]).toMatchObject({ assignmentKind: "role", targetKind: "database" });
+    expect(JSON.parse(mock.query.mock.calls[2][1].schedules)).toEqual([
+      { id: "schedule_1", version: "0000000000000001" }, { id: "schedule_2", version: "0000000000000002" },
+    ]);
     expect(mock.insert).toHaveBeenCalledExactlyOnceWith(mock.tx, expect.objectContaining({ targetId: "database1", createdBy: "system",
       sources: [{ scheduleId: "schedule_1", scheduleType: "licensing", createdAt: now.toISOString() }] }));
     expect(mock.query.mock.calls[5][0]).toContain("b.portal_environment=@portalEnvironment");
@@ -88,6 +105,13 @@ describe("atomic catalog execution registration", () => {
     expect(mock.query.mock.calls[8][0]).toContain("@finalNow>=@validUntil");
     expect(mock.query.mock.calls[8][1].validUntil).toEqual(cutoffAt);
     expect(Buffer.isBuffer(mock.query.mock.calls[8][1].token)).toBe(true);
+  });
+
+  it("does not register after a concurrent scope or assignment edit changes a schedule version", async () => {
+    rows([], [{ collision: false }], scheduleRows.slice(0, 1));
+    await expect(registerSqlCatalogTaskExecution(input())).resolves.toEqual({ status: "conflict", reason: "catalog-reference-changed" });
+    expect(mock.insert).not.toHaveBeenCalled();
+    expect(mock.rollback).toHaveBeenCalledOnce();
   });
 
   it("rolls back the task if accepted evidence expires while waiting on later writes", async () => {

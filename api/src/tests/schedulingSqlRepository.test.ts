@@ -14,8 +14,9 @@ vi.mock("../lib/sql", () => ({
     request: () => sqlMocks.request,
   })),
 }));
+vi.mock("../lib/sqlTransaction", () => ({ runSqlTransaction: (read: (tx: unknown) => unknown) => read({ request: () => sqlMocks.request }) }));
 
-import { mapSqlSchedule, readSqlSchedules } from "../lib/schedulingSqlRepository";
+import { mapSqlSchedule, readSqlCatalogScheduleRoster, readSqlSchedules } from "../lib/schedulingSqlRepository";
 
 const at = new Date("2026-07-21T12:00:00.000Z");
 
@@ -33,6 +34,26 @@ describe("Scheduling SQL mapping", () => {
     expect(sqlMocks.request.query.mock.calls[0][0]).toMatch(
       /WHERE\s+s\.deleted_at\s+IS\s+NULL/i,
     );
+    expect(sqlMocks.request.query.mock.calls[0][0]).not.toContain("version_hex");
+  });
+
+  it("loads candidate schedules for one day with an exact SQL Server 2019 version without legacy truncation", async () => {
+    await expect(readSqlCatalogScheduleRoster("2026-07-23")).resolves.toEqual([]);
+    const query = sqlMocks.request.query.mock.calls[0][0];
+    expect(query).toContain("CONVERT(binary(8),s.row_version)");
+    expect(query).toContain("s.active=1 AND s.start_date<=CONVERT(date,@today,23)");
+    expect(query).toContain("TOP (@catalogTake)");
+    expect(query).not.toContain("workflow.update_tasks");
+    expect(sqlMocks.request.input).toHaveBeenCalledWith("catalogTake", expect.anything(), 5001);
+  });
+
+  it("refuses invalid dates, incomplete rosters and malformed schedule versions", async () => {
+    await expect(readSqlCatalogScheduleRoster("2026-02-30")).rejects.toThrow("schedule_date");
+    expect(sqlMocks.request.query).not.toHaveBeenCalled();
+    sqlMocks.request.query.mockResolvedValueOnce({ recordset: Array(5001).fill({}) });
+    await expect(readSqlCatalogScheduleRoster("2026-07-23")).rejects.toThrow("roster_limit");
+    sqlMocks.request.query.mockResolvedValueOnce({ recordset: [{ version_hex: "not-hex" }] });
+    await expect(readSqlCatalogScheduleRoster("2026-07-23")).rejects.toThrow("roster_invalid");
   });
 
   it("reconstructs normalized schedule scope, reminders, licensing and shared-task summary", () => {

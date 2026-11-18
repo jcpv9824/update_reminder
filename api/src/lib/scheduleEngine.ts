@@ -34,8 +34,11 @@ function getWeekdayUTC(date: Date): Weekday {
   return map[date.getUTCDay()];
 }
 
+export type CalendarSchedule = Pick<UpdateSchedule, "active" | "startDate" | "endDate" | "frequencyType" |
+  "weekdays" | "everyNWeeks" | "intervalDays" | "preferredWeekdays" | "dayOfMonth">;
+
 export function isScheduleDueOnDate(
-  schedule: UpdateSchedule,
+  schedule: CalendarSchedule,
   isoDate: string
 ): boolean {
   if (!schedule.active) return false;

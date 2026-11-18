@@ -1,6 +1,7 @@
 import sql from "mssql";
 import type { PageResult } from "./pagination";
 import { getSqlPool } from "./sql";
+import { runSqlTransaction } from "./sqlTransaction";
 import type { UpdateSchedule, Weekday } from "../types/models";
 
 export type ScheduleSummaryDto = {
@@ -14,6 +15,7 @@ export type ScheduleSummaryDto = {
 export type SqlScheduleDto = UpdateSchedule & { summary: ScheduleSummaryDto };
 
 type ScheduleRow = {
+  version_hex?: string;
   schedule_key: number;
   source_id: string;
   client_source_id: string;
@@ -185,15 +187,21 @@ function escapeLike(value: string): string {
   return value.replace(/\[/g, "[[]").replace(/%/g, "[%]").replace(/_/g, "[_]");
 }
 
-export async function readSqlSchedules(
-  filters: { sourceId?: string; clientId?: string | null; origin?: string | null; search?: string | null },
-  pagination: { enabled: boolean; page: number; pageSize: number },
+type ScheduleFilters = { sourceId?: string; clientId?: string | null; origin?: string | null; search?: string | null };
+type SchedulePage = { enabled: boolean; page: number; pageSize: number };
+const catalogRosterMax = 5000;
+
+async function queryScheduleRows(
+  request: sql.Request, filters: ScheduleFilters, pagination: SchedulePage,
   today: string,
-): Promise<SqlScheduleDto[] | PageResult<SqlScheduleDto>> {
-  const pool = await getSqlPool();
-  const request = pool.request();
+  catalogRoster = false,
+): Promise<ScheduleRow[]> {
   const conditions: string[] = ["s.deleted_at IS NULL"];
   request.input("today", sql.VarChar(10), today);
+  if (catalogRoster) {
+    request.input("catalogTake", sql.Int, catalogRosterMax + 1);
+    conditions.push("s.active=1 AND s.start_date<=CONVERT(date,@today,23) AND (s.end_date IS NULL OR s.end_date>=CONVERT(date,@today,23))");
+  }
   if (filters.sourceId) {
     request.input("sourceId", sql.NVarChar(150), filters.sourceId);
     conditions.push("s.source_id=@sourceId");
@@ -232,7 +240,8 @@ export async function readSqlSchedules(
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 
   const result = await request.query<ScheduleRow>(`
-    SELECT ${pagination.enabled ? "COUNT_BIG(*) OVER() AS total_count," : "TOP (500) 0 AS total_count,"}
+    SELECT ${catalogRoster ? "TOP (@catalogTake) 0 AS total_count,LOWER(CONVERT(char(16),CONVERT(binary(8),s.row_version),2)) AS version_hex,"
+    : pagination.enabled ? "COUNT_BIG(*) OVER() AS total_count," : "TOP (500) 0 AS total_count,"}
       s.schedule_key,s.source_id,client.source_id AS client_source_id,
       COALESCE(s.client_name_snapshot,client.name) AS client_name,
       domain_record.source_id AS domain_source_id,
@@ -303,11 +312,12 @@ export async function readSqlSchedules(
             WHERE excluded_database.schedule_key=s.schedule_key ORDER BY excluded_database_record.source_id FOR JSON PATH),N'[]')) AS excludedDatabaseIds
         FROM scheduling.licensing_scope license_scope
         WHERE license_scope.schedule_key=s.schedule_key FOR JSON PATH,WITHOUT_ARRAY_WRAPPER) AS licensing_scope_json,
-      summary.proximas,summary.vencidas,summary.con_error,summary.completadas
+      ${catalogRoster ? "NULL AS proximas,NULL AS vencidas,NULL AS con_error,NULL AS completadas"
+    : "summary.proximas,summary.vencidas,summary.con_error,summary.completadas"}
     FROM scheduling.update_schedules s
     JOIN core.clients client ON client.client_key=s.client_key
     LEFT JOIN core.domains domain_record ON domain_record.domain_key=s.domain_key
-    OUTER APPLY (
+    ${catalogRoster ? "" : `OUTER APPLY (
       SELECT
         SUM(CASE WHEN task.status NOT IN ('completed','cancelled','failed','blocked') AND task.task_date>=CONVERT(date,@today,23) THEN 1 ELSE 0 END) AS proximas,
         SUM(CASE WHEN task.status NOT IN ('completed','cancelled','failed','blocked') AND task.task_date<CONVERT(date,@today,23) THEN 1 ELSE 0 END) AS vencidas,
@@ -320,13 +330,36 @@ export async function readSqlSchedules(
           UNION
           SELECT primary_task.task_key FROM workflow.update_tasks primary_task WHERE primary_task.primary_schedule_key=s.schedule_key
         )
-    ) summary
+    ) summary`}
     ${where}
     ORDER BY s.created_at DESC,s.source_id
     ${pagination.enabled ? "OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY" : ""};
   `);
+  return result.recordset;
+}
 
-  const items = result.recordset.map(mapSqlSchedule);
+export async function readSqlSchedules(filters: ScheduleFilters, pagination: SchedulePage, today: string):
+  Promise<SqlScheduleDto[] | PageResult<SqlScheduleDto>> {
+  const rows = await queryScheduleRows((await getSqlPool()).request(), filters, pagination, today);
+  const items = rows.map(mapSqlSchedule);
   if (!pagination.enabled) return items;
-  return { items, page: pagination.page, pageSize: pagination.pageSize, total: Number(result.recordset[0]?.total_count ?? 0) };
+  return { items, page: pagination.page, pageSize: pagination.pageSize, total: Number(rows[0]?.total_count ?? 0) };
+}
+
+/** Internal roster. Parent versions and normalized children are read together; the API list keeps its existing DTO. */
+export async function readSqlCatalogScheduleRoster(today: string): Promise<ReadonlyArray<{
+  schedule: UpdateSchedule; version: string;
+}>> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(today) || !Number.isFinite(Date.parse(today)) ||
+    new Date(today).toISOString().slice(0, 10) !== today) throw new Error("invalid_catalog_schedule_date");
+  return runSqlTransaction(async transaction => {
+    const rows = await queryScheduleRows(transaction.request(), {}, { enabled: false, page: 1, pageSize: catalogRosterMax }, today, true);
+    if (rows.length > catalogRosterMax) throw new Error("catalog_schedule_roster_limit");
+    return rows.map(row => {
+      const version = row.version_hex;
+      if (!version || !/^[a-f0-9]{16}$/.test(version)) throw new Error("catalog_schedule_roster_invalid");
+      const { summary: _summary, ...schedule } = mapSqlSchedule(row);
+      return { schedule, version };
+    });
+  });
 }

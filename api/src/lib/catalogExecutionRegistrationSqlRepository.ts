@@ -22,6 +22,8 @@ export type CatalogExecutionRegistration = Readonly<{
   task: UpdateTask;
   cutoffAt: Date;
   portalEnvironment: CatalogEnvironment;
+  /** Parent schedule ROWVERSIONs captured with their normalized scope and assignment. */
+  scheduleVersions: ReadonlyMap<string, string>;
   /** An explicit null means local reconciliation. Missing entries are not local evidence. */
   catalogSourceIdsByLink: ReadonlyMap<string, string | null>;
 }>;
@@ -64,6 +66,7 @@ function parseInput(input: CatalogExecutionRegistration) {
       !safeText(task.id, 260) || !safeText(task.clientId, 150) || !safeText(task.domainId, 150) || !safeText(task.targetId, 150) ||
       !safeText(task.taskBucket, 100) || !safeText(task.clientName, 200) || !safeText(task.domainName, 500) || !safeText(task.targetName, 240) ||
       !day.test(task.taskDate) || !Number.isFinite(Date.parse(task.taskDate)) || new Date(task.taskDate).toISOString().slice(0, 10) !== task.taskDate ||
+      group.occurrenceId !== task.taskDate ||
       task.targetType !== group.kind || task.status !== "pending" || task.result != null || !!task.notes || task.completedAt != null ||
       !safeText(task.assignedRole, 80) || !safeText(group.assignment.id, group.assignment.kind === "role" ? 80 : 150) ||
       !assignmentMatches(group.assignment, task.assignedRole, task.assignedUserIds ?? [])) return conflict("invalid-plan");
@@ -93,7 +96,10 @@ function parseInput(input: CatalogExecutionRegistration) {
         task.targetId === (link.databaseId ?? link.domainId)) representative = true;
   }
   if (!representative || links.size !== input.catalogSourceIdsByLink.size) return conflict("invalid-plan");
-  return { root, links, attachments, schedules: [...new Set([...attachments.values()].map(item => item.scheduleId))].sort(),
+  const schedules = [...new Set([...attachments.values()].map(item => item.scheduleId))].sort();
+  if (input.scheduleVersions.size !== schedules.length || schedules.some(id =>
+    !/^[a-f0-9]{16}$/.test(input.scheduleVersions.get(id) ?? ""))) return conflict("invalid-plan");
+  return { root, links, attachments, schedules,
     targetIds: [...new Set([...links.values()].map(item => item.databaseId ?? item.domainId))].sort() };
 }
 
@@ -173,10 +179,15 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
 
       const collision = await new sql.Request(transaction)
         .input("taskId", sql.NVarChar(260), task.id).input("kind", sql.VarChar(20), group.kind)
+        .input("physicalId", sql.NVarChar(150), group.targetId)
         .input("taskDate", sql.Date, task.taskDate).input("targetIds", sql.NVarChar(sql.MAX), JSON.stringify(planned.targetIds))
         .query<{ collision: boolean }>(`
           SELECT CONVERT(bit, CASE WHEN EXISTS (
             SELECT 1 FROM workflow.update_tasks WITH (UPDLOCK,HOLDLOCK) WHERE source_id=@taskId
+          ) OR EXISTS (
+            SELECT 1 FROM workflow.catalog_task_executions AS e WITH (UPDLOCK,HOLDLOCK)
+            JOIN workflow.update_tasks AS t ON t.task_key=e.task_key
+            WHERE e.execution_kind=@kind AND e.verified_target_id=@physicalId AND t.task_date=@taskDate
           ) OR EXISTS (
             SELECT 1 FROM workflow.task_source_aliases WITH (UPDLOCK,HOLDLOCK) WHERE alias_source_id=@taskId
           ) OR EXISTS (
@@ -188,15 +199,25 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
 
       const schedules = await new sql.Request(transaction)
         .input("workflowRole", sql.NVarChar(80), task.assignedRole)
-        .input("schedules", sql.NVarChar(sql.MAX), JSON.stringify(planned.schedules))
+        .input("assignmentKind", sql.VarChar(10), group.assignment.kind)
+        .input("targetKind", sql.VarChar(20), group.kind)
+        .input("schedules", sql.NVarChar(sql.MAX), JSON.stringify(planned.schedules.map(id =>
+          ({ id, version: input.scheduleVersions.get(id) }))))
         .query<{ scheduleId: string; scheduleKey: SqlKey; origin: OriginKind }>(`
           SELECT s.source_id AS scheduleId, s.schedule_key AS scheduleKey,
             CASE WHEN s.origin='licensing' THEN 'licensing' WHEN s.origin='special' THEN 'special' ELSE 'normal' END AS origin
-          FROM OPENJSON(@schedules) WITH (schedule_id nvarchar(150) '$') AS ids
+          FROM OPENJSON(@schedules) WITH (schedule_id nvarchar(150) '$.id', expected_version char(16) '$.version') AS ids
           JOIN scheduling.update_schedules AS s WITH (UPDLOCK,HOLDLOCK) ON s.source_id=ids.schedule_id
+            AND s.row_version=TRY_CONVERT(binary(8),ids.expected_version,2)
           WHERE s.active=1 AND s.deleted_at IS NULL AND EXISTS (
             SELECT 1 FROM security.roles AS task_role WHERE task_role.role_id=@workflowRole
               AND task_role.role_id COLLATE Latin1_General_100_BIN2=@workflowRole COLLATE Latin1_General_100_BIN2 AND task_role.active=1
+              AND (@assignmentKind='user' OR task_role.role_id=N'super_admin' OR (
+                CASE WHEN @targetKind='database' THEN task_role.database_task_visibility ELSE task_role.domain_task_visibility END IN ('assigned','all')
+                AND EXISTS (SELECT 1 FROM security.role_permissions grant_row
+                  JOIN security.permissions permission ON permission.permission_key=grant_row.permission_key AND permission.active=1
+                  WHERE grant_row.role_id=task_role.role_id AND grant_row.permission_key=N'updates.tasks.view')
+              ))
           );`);
       const bySchedule = new Map(schedules.recordset.map(row => [row.scheduleId, row]));
       if (bySchedule.size !== planned.schedules.length || planned.schedules.some(id => !bySchedule.has(id))) return conflict("catalog-reference-changed");
