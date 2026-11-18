@@ -60,7 +60,7 @@ describe("catalog reporting profile registration", () => {
     ]);
   });
 
-  it.each(["proof-replayed", "proof-stale", "reference-changed", "connection-in-use"])("does not audit rejected evidence (%s)", async reason => {
+  it.each(["authority-changed", "proof-replayed", "proof-stale", "reference-changed", "connection-in-use"])("does not audit rejected evidence (%s)", async reason => {
     respond({ result: reason });
     await expect(registerSqlCatalogReportingProfile(base)).resolves.toEqual({ status: "conflict", reason });
     expect(mock.audit).not.toHaveBeenCalled();
@@ -96,5 +96,17 @@ describe("catalog reporting profile registration", () => {
     expect(stmt).toContain("operational.row_version=l.access_profile_version");
     expect(stmt).toContain("OUTPUT inserted.reporting_profile_id INTO @newProfile(profile_id)");
     expect(stmt).not.toMatch(/DELETE\s+settings\.catalog_reporting_profiles|password_secret|server_host|sql_user|UPDATE\s+core\./i);
+  });
+
+  it("revalidates the exact active protected super administrator before reading the target or rotating evidence", () => {
+    const stmt = REGISTER_CATALOG_REPORTING_PROFILE_SQL;
+    const end = stmt.indexOf("SELECT 'authority-changed' AS result");
+    expect(end).toBeGreaterThan(0);
+    expect(end).toBeLessThan(stmt.indexOf("FROM core.catalog_physical_targets"));
+    const guard = stmt.slice(0, end);
+    for (const clause of ["security.users AS u WITH (HOLDLOCK)", "security.user_roles AS ur WITH (HOLDLOCK)",
+      "security.roles AS r WITH (HOLDLOCK)", "u.active=1", "r.active=1", "r.system_role=1", "r.protected_role=1",
+      "r.role_id=N'super_admin'", "u.source_id COLLATE Latin1_General_100_BIN2=@actor COLLATE Latin1_General_100_BIN2",
+      "DATALENGTH(u.source_id)=DATALENGTH(@actor)"]) expect(guard).toContain(clause);
   });
 });

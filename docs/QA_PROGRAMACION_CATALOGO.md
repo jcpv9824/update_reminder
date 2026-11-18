@@ -102,6 +102,16 @@ pruebas. Para acreditar el flujo real hacen falta el registro auditado,
 una cuenta de conteo de solo lectura dedicada, y un ensayo de entrega sin
 usar credenciales de tareas. Las pruebas anteriores no sustituyen ese ensayo.
 
+El registro del perfil vuelve a verificar al `super_admin` activo y protegido
+dentro de la transacción, antes de consultar el destino y antes de retirar o
+insertar perfiles. Una pérdida de autoridad devuelve `authority-changed` sin
+auditar éxito. La prueba del SQL real en QA pasó cuatro casos: administrador
+exacto que llegó al control de vigencia, usuario sin rol, ID con espacio final
+e ID inexistente. No se escribieron perfiles ni se mostraron identificadores.
+Las pruebas locales relacionadas pasaron 39/39. Esto no certifica el alta
+operativa: el registro de destino todavía debe conservar el namespace de SQL
+verificado; no se puede derivar de un nombre ni revertir su hash.
+
 La consulta de recursos de Azure no encontró slots en la Function App de
 producción y encontró una sola Static Web App en el grupo productivo. No se
 crearon recursos, slots ni se usó producción como ambiente de prueba.

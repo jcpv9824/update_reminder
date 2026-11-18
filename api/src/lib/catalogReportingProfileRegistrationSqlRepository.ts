@@ -19,7 +19,7 @@ export type CatalogReportingProfileRegistration = Readonly<{
   actor: { id: string };
 }>;
 
-type SqlConflict = "proof-stale" | "proof-replayed" | "reference-changed" | "connection-in-use";
+type SqlConflict = "authority-changed" | "proof-stale" | "proof-replayed" | "reference-changed" | "connection-in-use";
 export type CatalogReportingProfileRegistrationResult = { status: "registered"; reportingProfileId: string }
   | { status: "conflict"; reason: "invalid-proof" | SqlConflict };
 type Row = { result: "registered"; profile_id: string; replaced_profile_id: string | null } | { result: SqlConflict };
@@ -56,6 +56,21 @@ function bindCountContract(evidence: CatalogActiveUserContract) {
 
 /** Fixed parameterized SQL. All expected conflicts are decided before changing rows. */
 export const REGISTER_CATALOG_REPORTING_PROFILE_SQL = `
+  -- Recheck and lock the operator after the external proof and through the audit commit.
+  IF NOT EXISTS (
+    SELECT 1 FROM security.users AS u WITH (HOLDLOCK)
+    JOIN security.user_roles AS ur WITH (HOLDLOCK) ON ur.user_key=u.user_key
+    JOIN security.roles AS r WITH (HOLDLOCK) ON r.role_id=ur.role_id
+    WHERE u.source_id=@actor AND u.active=1 AND r.role_id=N'super_admin'
+      AND r.active=1 AND r.system_role=1 AND r.protected_role=1
+      AND u.source_id COLLATE Latin1_General_100_BIN2=@actor COLLATE Latin1_General_100_BIN2
+      AND DATALENGTH(u.source_id)=DATALENGTH(@actor)
+  )
+  BEGIN
+    SELECT 'authority-changed' AS result;
+    RETURN;
+  END;
+
   DECLARE @now datetime2(3)=SYSUTCDATETIME();
   IF @verifiedAt>@now OR @validUntil<=@now
   BEGIN
@@ -176,7 +191,7 @@ export async function registerSqlCatalogReportingProfile(input: CatalogReporting
 
     const row = recordset[0];
     if (recordset.length !== 1 || !row) throw new Error("catalog_reporting_profile_registration_incomplete");
-    if (row.result === "proof-stale" || row.result === "proof-replayed" || row.result === "reference-changed" || row.result === "connection-in-use") {
+    if (row.result === "authority-changed" || row.result === "proof-stale" || row.result === "proof-replayed" || row.result === "reference-changed" || row.result === "connection-in-use") {
       return { status: "conflict", reason: row.result };
     }
     if (row.result !== "registered" || !uuid(row.profile_id) || (row.replaced_profile_id !== null && !uuid(row.replaced_profile_id))) {
