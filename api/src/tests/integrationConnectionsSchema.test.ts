@@ -6,6 +6,10 @@ const sql = readFileSync(
   join(process.cwd(), "..", "migration", "sql", "027_integration_connections.sql"),
   "utf8",
 );
+const profilesSql = readFileSync(
+  join(process.cwd(), "..", "migration", "sql", "030_object_storage_profiles.sql"),
+  "utf8",
+);
 
 describe("migration 027 integration connections", () => {
   it("stores secret references and never secret values", () => {
@@ -38,5 +42,14 @@ describe("migration 027 integration connections", () => {
       expect(sql).toContain(`configuration.integrations.${action}`);
     }
     expect(sql).toContain("super_admin");
+  });
+});
+
+describe("migration 030 object storage profiles", () => {
+  it("adds a legacy-compatible database selector and accepts empty endpoints only for inactive profiles", () => {
+    expect(profilesSql).toContain("database_name NVARCHAR(128) NULL");
+    expect(profilesSql).toContain("PortalSAGWeb-TEST");
+    expect(profilesSql).toContain("active=0 AND endpoint_url=N''");
+    expect(profilesSql).not.toMatch(/\b(?:UPDATE|DELETE|INSERT)\s+settings\./i);
   });
 });

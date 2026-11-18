@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getSecret: vi.fn(),
@@ -38,6 +38,8 @@ import {
   readIntegrationConnections,
   saveExternalDatabaseConnection,
   saveSeaweedFSConnection,
+  testSavedSeaweedFSConnection,
+  testTransientSeaweedFSConnection,
 } from "../lib/integrationConnectionsService";
 
 const actor = { id: "admin-1", email: "admin@example.com" };
@@ -89,6 +91,8 @@ const databaseStored = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv("PORTAL_SAG_ENVIRONMENT", "production");
+  vi.stubEnv("SQL_DATABASE", "PortalSAGWeb");
   mocks.readSeaweed.mockResolvedValue(null);
   mocks.readDatabases.mockResolvedValue([]);
   mocks.readDatabase.mockResolvedValue(null);
@@ -101,6 +105,7 @@ beforeEach(() => {
   mocks.saveDatabase.mockResolvedValue(databaseStored);
   mocks.recordDatabaseTest.mockResolvedValue(databaseStored);
 });
+afterEach(() => vi.unstubAllEnvs());
 
 describe("integrationConnectionsService", () => {
   it("never exposes Key Vault secret names on reads", async () => {
@@ -149,9 +154,91 @@ describe("integrationConnectionsService", () => {
 
     expect(mocks.validateSeaweed).toHaveBeenCalledBefore(mocks.setSecret);
     expect(mocks.setSecret).toHaveBeenCalledTimes(2);
+    expect(mocks.validateSeaweed).toHaveBeenCalledWith(expect.objectContaining({ databaseName: "PortalSAGWeb" }), actor.id);
+    expect(mocks.saveSeaweed).toHaveBeenCalledWith(expect.objectContaining({ databaseName: "PortalSAGWeb" }), actor, undefined);
     expect(JSON.stringify(mocks.saveSeaweed.mock.calls[0][0])).not.toContain("access-value");
     expect(JSON.stringify(mocks.saveSeaweed.mock.calls[0][0])).not.toContain("secret-value");
     expect(JSON.stringify(result)).not.toContain("SecretName");
+  });
+
+  it("persists erased advanced fields and false path style as an untested inactive draft", async () => {
+    mocks.readSeaweed.mockResolvedValue(seaweedStored);
+    mocks.saveSeaweed.mockResolvedValue({
+      ...seaweedStored, databaseName: "PortalSAGWeb", displayName: "", endpoint: "", region: "",
+      forcePathStyle: false, lastTest: null,
+    });
+    const result = await saveSeaweedFSConnection({
+      etag: seaweedStored.etag, displayName: "", endpoint: "", region: "", databaseName: "PortalSAGWeb",
+      bucket: "portal-files", forcePathStyle: false, active: false,
+    }, actor);
+    expect(mocks.getSecret).not.toHaveBeenCalled();
+    expect(mocks.setSecret).not.toHaveBeenCalled();
+    expect(mocks.validateSeaweed).not.toHaveBeenCalled();
+    expect(mocks.recordSeaweedTest).not.toHaveBeenCalled();
+    expect(mocks.saveSeaweed).toHaveBeenCalledWith(expect.objectContaining({
+      displayName: "", endpoint: "", region: "", databaseName: "PortalSAGWeb",
+      active: false, forcePathStyle: false, credentialsConfigured: true,
+      accessKeySecretName: seaweedStored.accessKeySecretName, secretKeySecretName: seaweedStored.secretKeySecretName,
+    }), actor, seaweedStored.etag);
+    expect(result).toMatchObject({ displayName: "", endpoint: "", region: "", forcePathStyle: false, lastTest: null });
+  });
+
+  it("cannot activate an incomplete profile or persist new keys in an incomplete draft", async () => {
+    const draft = { displayName: "", endpoint: "", region: "", bucket: "portal-files", forcePathStyle: false };
+    await expect(saveSeaweedFSConnection({ ...draft, active: true }, actor)).rejects.toMatchObject({ status: 400 });
+    await expect(saveSeaweedFSConnection({
+      ...draft, active: false, accessKey: "fixture-access", secretKey: "fixture-secret",
+    }, actor)).rejects.toMatchObject({ status: 400 });
+    expect(mocks.setSecret).not.toHaveBeenCalled();
+    expect(mocks.saveSeaweed).not.toHaveBeenCalled();
+  });
+
+  it("blocks a cross-environment path before probing or reading credentials", async () => {
+    await expect(testTransientSeaweedFSConnection({
+      databaseName: "PortalSAGWeb-TEST", endpoint: "https://s3.example.com", region: "us-east-1",
+      bucket: "portal-files", forcePathStyle: true, accessKey: "access", secretKey: "secret",
+    }, actor)).rejects.toMatchObject({ status: 400 });
+    expect(mocks.validateSeaweed).not.toHaveBeenCalled();
+    expect(mocks.getSecret).not.toHaveBeenCalled();
+  });
+
+  it("uses separate QA secret names and never reads legacy production references from QA", async () => {
+    vi.stubEnv("PORTAL_SAG_ENVIRONMENT", "qa");
+    vi.stubEnv("SQL_DATABASE", "PortalSAGWeb-TEST");
+    const legacy = {
+      ...seaweedStored, accessKeySecretName: "portal-sag-seaweedfs-access-key",
+      secretKeySecretName: "portal-sag-seaweedfs-secret-key",
+    };
+    mocks.readSeaweed.mockResolvedValue(legacy);
+    expect((await readIntegrationConnections()).objectStorage).toMatchObject({ credentialsConfigured: false, lastTest: null });
+    await expect(testSavedSeaweedFSConnection(actor)).rejects.toMatchObject({ status: 400 });
+    expect(mocks.getSecret).not.toHaveBeenCalled();
+    await saveSeaweedFSConnection({
+      etag: legacy.etag, displayName: "QA", endpoint: "https://s3.example.com", region: "us-east-1",
+      bucket: "portal-files", forcePathStyle: true, accessKey: "fixture-access", secretKey: "fixture-secret",
+      databaseName: "PortalSAGWeb-TEST", active: false,
+    }, actor);
+    expect(mocks.setSecret.mock.calls.map(([name]) => name)).toEqual([
+      "portal-sag-qa-seaweedfs-access-key", "portal-sag-qa-seaweedfs-secret-key",
+    ]);
+    expect(mocks.validateSeaweed).toHaveBeenCalledWith(expect.objectContaining({ databaseName: "PortalSAGWeb-TEST" }), actor.id);
+  });
+
+  it("refuses to attach a saved test result to a newer profile revision", async () => {
+    mocks.readSeaweed.mockResolvedValue(seaweedStored);
+    mocks.getSecret.mockResolvedValue("fixture-only");
+    mocks.recordSeaweedTest.mockResolvedValue(null);
+    await expect(testSavedSeaweedFSConnection(actor)).rejects.toMatchObject({ status: 409 });
+    expect(mocks.recordSeaweedTest).toHaveBeenCalledWith(success, actor, seaweedStored.etag);
+  });
+
+  it("honors client If-Match before probing and accepts a cleared display label", async () => {
+    mocks.readSeaweed.mockResolvedValue({ ...seaweedStored, displayName: "" });
+    mocks.getSecret.mockResolvedValue("fixture-only");
+    await expect(testSavedSeaweedFSConnection(actor, "1111111111111111")).rejects.toMatchObject({ status: 409 });
+    expect(mocks.getSecret).not.toHaveBeenCalled();
+    await expect(testSavedSeaweedFSConnection(actor, seaweedStored.etag))
+      .resolves.toMatchObject({ result: { succeeded: true } });
   });
 
   it("does not write an external SQL password when validation fails", async () => {

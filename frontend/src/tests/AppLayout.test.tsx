@@ -17,7 +17,7 @@ vi.mock("../auth/AuthContext", () => ({
   }),
 }));
 
-vi.mock("../api/client", () => ({ api: apiMock }));
+vi.mock("../api/client", () => ({ api: apiMock, apiUrl: (path: string) => `/api${path}` }));
 
 function renderLayout() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -51,7 +51,10 @@ describe("AppLayout", () => {
 
   it("usa el icono blanco de SAG y no repite el logo en el pie de usuario", () => {
     renderLayout();
-    expect(screen.getByAltText("SAG")).toHaveAttribute("src", "/brand/sag-white-icon.png");
+    const logo = screen.getByAltText("SAG");
+    expect(logo).toHaveAttribute("src", "/api/public/brand/sidebar");
+    fireEvent.error(logo);
+    expect(logo).toHaveAttribute("src", "/brand/sag-white-icon.png");
     expect(screen.getByTestId("usuario-sidebar-icon")).toBeInTheDocument();
     expect(document.querySelector(".usuario-sidebar img")).toBeNull();
   });

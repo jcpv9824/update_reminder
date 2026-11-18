@@ -46,6 +46,7 @@ export type SeaweedFSConnection = {
   endpoint: string;
   region: string;
   bucket: string;
+  databaseName?: string;
   forcePathStyle: boolean;
   credentialsConfigured: boolean;
   active: boolean;

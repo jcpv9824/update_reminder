@@ -46,26 +46,36 @@ const HttpsEndpoint = z.string().trim().max(500).transform((value, ctx) => {
   }
 });
 
+const SeaweedRegion = z.string().trim().min(1).max(100).regex(/^[a-z0-9-]+$/i);
+const SeaweedDatabaseName = z.string().trim().regex(/^PortalSAGWeb(?:-TEST)?$/, "Seleccione la base del ambiente del Portal.");
+const EmptyText = z.string().trim().pipe(z.literal(""));
 const SeaweedBase = z.object({
-  displayName: z.string().trim().min(1).max(160),
-  endpoint: HttpsEndpoint,
-  region: z.string().trim().min(1).max(100).regex(/^[a-z0-9-]+$/i),
   bucket: S3Bucket,
+  databaseName: SeaweedDatabaseName.optional(),
   forcePathStyle: z.boolean(),
-  active: z.boolean(),
 }).strict();
 
 const SeaweedSaveSchema = SeaweedBase.extend({
+  displayName: z.string().trim().max(160),
+  endpoint: z.union([HttpsEndpoint, EmptyText]),
+  region: z.union([SeaweedRegion, EmptyText]),
+  active: z.boolean(),
   etag: Etag.optional(),
   accessKey: Secret.optional(),
   secretKey: Secret.optional(),
 }).superRefine((value, ctx) => {
+  const complete = Boolean(value.endpoint && value.region);
   if (Boolean(value.accessKey) !== Boolean(value.secretKey)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Debe enviar la clave de acceso y la clave secreta juntas." });
   }
+  if (!complete && (value.active || value.accessKey || value.secretKey)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Complete los parámetros adicionales para habilitar el perfil o validar claves nuevas." });
+  }
 });
 
-const SeaweedTestSchema = SeaweedBase.omit({ displayName: true, active: true }).extend({
+const SeaweedTestSchema = SeaweedBase.extend({
+  endpoint: HttpsEndpoint,
+  region: SeaweedRegion,
   accessKey: Secret,
   secretKey: Secret,
 }).strict();
@@ -186,7 +196,12 @@ app.http("integrationSeaweedTestSaved", {
       if (!user) return forbidden();
       const limited = await limitTest(req, user.id);
       if (limited) return limited;
-      return ok(await testSavedSeaweedFSConnection(user));
+      // Older clients did not send If-Match; still protect the server-side
+      // snapshot when persisting the resulting validation.
+      const header = req.headers.get("if-match");
+      const parsed = Etag.optional().safeParse(header === null ? undefined : etagFromRequest(req));
+      if (!parsed.success) return firstIssue(parsed.error);
+      return ok(await testSavedSeaweedFSConnection(user, parsed.data));
     } catch (error) {
       return serverError(error);
     }

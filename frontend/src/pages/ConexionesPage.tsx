@@ -19,6 +19,7 @@ type SeaweedForm = {
   endpoint: string;
   region: string;
   bucket: string;
+  databaseName: string;
   forcePathStyle: boolean;
   accessKey: string;
   secretKey: string;
@@ -40,9 +41,10 @@ type DatabaseForm = {
 
 const EMPTY_SEAWEED: SeaweedForm = {
   displayName: "SeaweedFS principal",
-  endpoint: "",
+  endpoint: "https://storcube.sagweb.co:8333",
   region: "us-east-1",
   bucket: "",
+  databaseName: "",
   forcePathStyle: true,
   accessKey: "",
   secretKey: "",
@@ -66,6 +68,7 @@ function seaweedForm(value: SeaweedFSConnection | null): SeaweedForm {
     endpoint: value.endpoint,
     region: value.region,
     bucket: value.bucket,
+    databaseName: value.databaseName ?? "",
     forcePathStyle: value.forcePathStyle,
     accessKey: "",
     secretKey: "",
@@ -134,12 +137,35 @@ export default function ConexionesPage() {
     if (data) setSeaweed(seaweedForm(data.objectStorage));
   }, [data]);
 
+  function changeSeaweed(change: Partial<SeaweedForm>) {
+    setSeaweed((current) => ({ ...current, ...change }));
+    setSeaweedResult(null);
+  }
+
+  const storedSeaweed = data?.objectStorage;
+  const savedTargetMatches = Boolean(storedSeaweed &&
+    storedSeaweed.endpoint === seaweed.endpoint.trim() &&
+    storedSeaweed.region === seaweed.region.trim() &&
+    storedSeaweed.bucket === seaweed.bucket.trim() &&
+    storedSeaweed.databaseName === seaweed.databaseName.trim() &&
+    storedSeaweed.forcePathStyle === seaweed.forcePathStyle);
+  const hasNewKey = Boolean(seaweed.accessKey || seaweed.secretKey);
+  const hasKeyPair = Boolean(seaweed.accessKey.trim() && seaweed.secretKey);
+  const databaseNameValid = /^[A-Za-z0-9_-]{1,128}$/.test(seaweed.databaseName.trim());
+  const completeTarget = Boolean(seaweed.endpoint.trim() && seaweed.region.trim() &&
+    seaweed.bucket.trim() && databaseNameValid);
+  const canTestTarget = completeTarget && (hasKeyPair || (!hasNewKey && savedTargetMatches && storedSeaweed?.credentialsConfigured));
+  const isDraft = !seaweed.active && !hasNewKey;
+  const canSaveTarget = isDraft ? databaseNameValid && Boolean(seaweed.bucket.trim()) :
+    completeTarget && (hasNewKey ? hasKeyPair : storedSeaweed?.credentialsConfigured);
+
   function seaweedBody() {
     return {
       displayName: seaweed.displayName.trim(),
       endpoint: seaweed.endpoint.trim(),
       region: seaweed.region.trim(),
       bucket: seaweed.bucket.trim(),
+      databaseName: seaweed.databaseName.trim(),
       forcePathStyle: seaweed.forcePathStyle,
       ...(seaweed.accessKey ? { accessKey: seaweed.accessKey } : {}),
       ...(seaweed.secretKey ? { secretKey: seaweed.secretKey } : {}),
@@ -148,9 +174,11 @@ export default function ConexionesPage() {
   }
 
   const testSeaweed = useMutation({
-    mutationFn: () => data?.objectStorage?.credentialsConfigured && !seaweed.accessKey && !seaweed.secretKey
+    mutationFn: () => savedTargetMatches && storedSeaweed?.credentialsConfigured && !hasNewKey
       ? api.post<{ connection: SeaweedFSConnection; result: ConnectionTestStatus }>(
         `${BASE}/object-storage/seaweedfs/test-saved`,
+        undefined,
+        { headers: { "If-Match": `"${storedSeaweed.etag}"` } },
       )
       : api.post<{ result: ConnectionTestStatus }>(
         `${BASE}/object-storage/seaweedfs/test`,
@@ -158,6 +186,7 @@ export default function ConexionesPage() {
           endpoint: seaweed.endpoint.trim(),
           region: seaweed.region.trim(),
           bucket: seaweed.bucket.trim(),
+          databaseName: seaweed.databaseName.trim(),
           forcePathStyle: seaweed.forcePathStyle,
           accessKey: seaweed.accessKey,
           secretKey: seaweed.secretKey,
@@ -166,7 +195,7 @@ export default function ConexionesPage() {
     onSuccess: (response) => {
       setSeaweedResult(response.result);
       setNotice({ type: response.result.succeeded ? "exito" : "error", text: response.result.message });
-      queryClient.invalidateQueries({ queryKey: ["integration-connections"] });
+      if ("connection" in response) queryClient.invalidateQueries({ queryKey: ["integration-connections"] });
     },
     onError: (error) => setNotice({ type: "error", text: messageOf(error) }),
   });
@@ -183,7 +212,9 @@ export default function ConexionesPage() {
       }));
       setSeaweed(seaweedForm(saved));
       setSeaweedResult(saved.lastTest ?? null);
-      setNotice({ type: "exito", text: "SeaweedFS fue validado y guardado. El proveedor activo no cambió." });
+      setNotice({ type: "exito", text: saved.lastTest?.succeeded
+        ? "SeaweedFS fue validado y guardado. El proveedor activo no cambió."
+        : "Perfil guardado. El proveedor activo no cambió." });
     },
     onError: (error) => setNotice({ type: "error", text: messageOf(error) }),
   });
@@ -282,26 +313,40 @@ export default function ConexionesPage() {
             <h2>Almacenamiento de objetos · SeaweedFS</h2>
             <p className="texto-ayuda">La prueba escribe, verifica, lee y elimina un objeto temporal.</p>
           </div>
-          <Result value={seaweedResult ?? data.objectStorage?.lastTest} />
+          <Result value={seaweedResult ?? (savedTargetMatches && !hasNewKey ? storedSeaweed?.lastTest : null)} />
         </div>
+        <fieldset className="conexion-storage-form" disabled={testSeaweed.isPending || saveSeaweed.isPending}>
         <div className="conexion-grid">
-          <label>Nombre<input value={seaweed.displayName} onChange={(e) => setSeaweed({ ...seaweed, displayName: e.target.value })} /></label>
-          <label>Endpoint HTTPS<input value={seaweed.endpoint} onChange={(e) => setSeaweed({ ...seaweed, endpoint: e.target.value })} placeholder="https://s3.ejemplo.com" /></label>
-          <label>Región de firma<input value={seaweed.region} onChange={(e) => setSeaweed({ ...seaweed, region: e.target.value })} /></label>
-          <label>Bucket<input value={seaweed.bucket} onChange={(e) => setSeaweed({ ...seaweed, bucket: e.target.value })} /></label>
-          <label>Access key<input type="password" autoComplete="new-password" value={seaweed.accessKey} onChange={(e) => setSeaweed({ ...seaweed, accessKey: e.target.value })} placeholder={data.objectStorage?.credentialsConfigured ? "Configurada; deje vacío para conservar" : ""} /></label>
-          <label>Secret key<input type="password" autoComplete="new-password" value={seaweed.secretKey} onChange={(e) => setSeaweed({ ...seaweed, secretKey: e.target.value })} placeholder={data.objectStorage?.credentialsConfigured ? "Configurada; deje vacío para conservar" : ""} /></label>
+          <label>Bucket<input value={seaweed.bucket} onChange={(e) => changeSeaweed({ bucket: e.target.value })} /></label>
+          <label>Nombre de la base de datos<input value={seaweed.databaseName} onChange={(e) => changeSeaweed({ databaseName: e.target.value })} /></label>
+          <label>Access key<input type="password" autoComplete="new-password" value={seaweed.accessKey} onChange={(e) => changeSeaweed({ accessKey: e.target.value })} placeholder={storedSeaweed?.credentialsConfigured ? "Configurada; deje vacío para conservar" : ""} /></label>
+          <label>Secret key<input type="password" autoComplete="new-password" value={seaweed.secretKey} onChange={(e) => changeSeaweed({ secretKey: e.target.value })} placeholder={storedSeaweed?.credentialsConfigured ? "Configurada; deje vacío para conservar" : ""} /></label>
         </div>
+        <p className="texto-ayuda">Carpeta: <code>{seaweed.databaseName.trim() || "<base de datos>"}/Archivos/</code></p>
+        <details className="logo-adicionales">
+          <summary>Configurar parámetros adicionales (opcional)</summary>
+          <div className="conexion-grid">
+            <label>Nombre del perfil<input value={seaweed.displayName} onChange={(e) => changeSeaweed({ displayName: e.target.value })} /></label>
+            <label>Endpoint HTTPS<input value={seaweed.endpoint} onChange={(e) => changeSeaweed({ endpoint: e.target.value })} /></label>
+            <label>Región de firma<input value={seaweed.region} onChange={(e) => changeSeaweed({ region: e.target.value })} /></label>
+          </div>
+          <div className="conexion-opciones">
+            <label><input type="checkbox" checked={seaweed.forcePathStyle} onChange={(e) => changeSeaweed({ forcePathStyle: e.target.checked })} /> Usar path-style</label>
+          </div>
+          <p className="texto-ayuda">Para guardar un perfil con parámetros vacíos, deshabilítelo primero. Los valores borrados no se volverán a rellenar al abrirlo.</p>
+        </details>
         <div className="conexion-opciones">
-          <label><input type="checkbox" checked={seaweed.forcePathStyle} onChange={(e) => setSeaweed({ ...seaweed, forcePathStyle: e.target.checked })} /> Usar path-style</label>
-          <label><input type="checkbox" checked={seaweed.active} onChange={(e) => setSeaweed({ ...seaweed, active: e.target.checked })} /> Perfil habilitado</label>
-          <span className="texto-ayuda">Credenciales: {data.objectStorage?.credentialsConfigured ? "configuradas" : "pendientes"}</span>
+          <label><input type="checkbox" checked={seaweed.active} onChange={(e) => changeSeaweed({ active: e.target.checked })} /> Perfil habilitado</label>
+          <span className="texto-ayuda">Credenciales: {storedSeaweed?.credentialsConfigured ? "configuradas" : "pendientes"}</span>
         </div>
-        <Alerta tipo="info">Guardar no cambia el proveedor activo. Blob Storage seguirá en producción hasta un cambio controlado posterior. La validación CORS del navegador es una comprobación separada.</Alerta>
+        <Alerta tipo="info">Guardar no cambia el proveedor activo. La validación CORS del navegador es una comprobación separada.</Alerta>
+        {storedSeaweed?.credentialsConfigured && !savedTargetMatches && !hasNewKey
+          ? <p className="texto-ayuda">Guarde los cambios o vuelva a ingresar las dos llaves para probar este destino. La prueba no usa los datos guardados si editó el destino.</p> : null}
         <div className="acciones-formulario">
-          {can("test_object_storage") ? <button onClick={() => testSeaweed.mutate()} disabled={testSeaweed.isPending}>{testSeaweed.isPending ? "Validando..." : "Probar conexión"}</button> : null}
-          {can("edit_object_storage") ? <button className="primario" onClick={() => saveSeaweed.mutate()} disabled={saveSeaweed.isPending}>{saveSeaweed.isPending ? "Validando y guardando..." : "Guardar y validar"}</button> : null}
+          {can("test_object_storage") ? <button onClick={() => testSeaweed.mutate()} disabled={testSeaweed.isPending || saveSeaweed.isPending || !canTestTarget}>{testSeaweed.isPending ? "Validando..." : "Probar conexión"}</button> : null}
+          {can("edit_object_storage") ? <button className="primario" onClick={() => saveSeaweed.mutate()} disabled={saveSeaweed.isPending || testSeaweed.isPending || !canSaveTarget}>{saveSeaweed.isPending ? "Guardando..." : isDraft ? "Guardar borrador" : "Guardar y validar"}</button> : null}
         </div>
+        </fieldset>
       </section>
 
       <section className="tarjeta conexion-panel">

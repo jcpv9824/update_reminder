@@ -22,7 +22,10 @@ describe("LoginPage seguro", () => {
   it("inicia con correo y contraseña y no muestra login Microsoft", async () => {
     entrarMock.mockResolvedValue({ authenticated: true });
     renderPage();
-    expect(screen.getByAltText("SAG")).toHaveAttribute("src", "/brand/sag-two-tone-icon.png");
+    const logo = screen.getByAltText("SAG");
+    expect(logo).toHaveAttribute("src", "/api/public/brand/login");
+    fireEvent.error(logo);
+    expect(logo).toHaveAttribute("src", "/brand/sag-two-tone-icon.png");
     expect(screen.getByText("PORTAL")).toBeInTheDocument();
     expect(screen.getByText("SAG WEB")).toBeInTheDocument();
     credentials();

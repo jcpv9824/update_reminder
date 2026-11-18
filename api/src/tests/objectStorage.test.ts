@@ -5,6 +5,7 @@ const awsMocks = vi.hoisted(() => ({
   clientConfigs: [] as Array<Record<string, unknown>>,
   send: vi.fn(),
   signedUrl: vi.fn(),
+  addRelativeTo: vi.fn(),
 }));
 
 vi.mock("@aws-sdk/client-s3", async (importOriginal) => {
@@ -12,6 +13,7 @@ vi.mock("@aws-sdk/client-s3", async (importOriginal) => {
   return {
     ...actual,
     S3Client: class {
+      middlewareStack = { addRelativeTo: awsMocks.addRelativeTo };
       constructor(config: Record<string, unknown>) {
         awsMocks.clientConfigs.push(config);
       }
@@ -59,6 +61,7 @@ afterEach(() => {
   awsMocks.clientConfigs.length = 0;
   awsMocks.send.mockReset();
   awsMocks.signedUrl.mockReset();
+  awsMocks.addRelativeTo.mockReset();
   for (const name of names) {
     const value = original[name];
     if (value === undefined) delete process.env[name];
@@ -176,6 +179,52 @@ describe("selectable private object storage configuration", () => {
     expect(awsMocks.clientConfigs[0]).toMatchObject({
       endpoint: "https://seaweedfs.example.com",
       forcePathStyle: true,
+    });
+  });
+
+  it("signs storcube without the port but preserves the port on the client-facing URL", async () => {
+    clearConfig();
+    process.env.OBJECT_STORAGE_PROVIDER = "seaweedfs";
+    process.env.SEAWEEDFS_ENDPOINT = "https://storcube.sagweb.co:8333";
+    process.env.SEAWEEDFS_BUCKET = "portal-sag-content";
+    process.env.SEAWEEDFS_ACCESS_KEY_ID = "fixture-access";
+    process.env.SEAWEEDFS_SECRET_ACCESS_KEY = "fixture-secret";
+    awsMocks.signedUrl.mockResolvedValue("https://storcube.sagweb.co/a%20b?fixture=a%2Bb");
+
+    const upload = () => createPrivateObjectUpload({
+      objectId: "guide_upload_1234",
+      extension: ".mp4",
+      mimeType: "video/mp4",
+      sizeBytes: 1024,
+    });
+    expect((await upload()).url).toBe("https://storcube.sagweb.co:8333/a%20b?fixture=a%2Bb");
+    expect(awsMocks.clientConfigs.map((config) => config.endpoint)).toEqual([
+      "https://storcube.sagweb.co:8333", "https://storcube.sagweb.co",
+    ]);
+    expect(awsMocks.addRelativeTo).toHaveBeenCalledWith(expect.any(Function), {
+      name: "storcubeCanonicalHost", relation: "before", toMiddleware: "httpSigningMiddleware",
+    });
+    awsMocks.signedUrl.mockResolvedValue("https://unrelated.example.com/");
+    await expect(upload()).rejects.toThrow(/origen/);
+  });
+
+  it("rebuilds the client when the secret changes but the access key does not", async () => {
+    clearConfig();
+    process.env.OBJECT_STORAGE_PROVIDER = "seaweedfs";
+    process.env.SEAWEEDFS_ENDPOINT = "https://rotation.example.com";
+    process.env.SEAWEEDFS_BUCKET = "portal-sag-content";
+    process.env.SEAWEEDFS_ACCESS_KEY_ID = "fixture-access";
+    process.env.SEAWEEDFS_SECRET_ACCESS_KEY = "first-fixture-secret";
+    const locator = {
+      storageProvider: "s3" as const, storageBucket: "portal-sag-content", storageObjectKey: "fixture",
+    };
+    awsMocks.send.mockResolvedValue({ ContentLength: 512 });
+    await statPrivateObject(locator);
+    process.env.SEAWEEDFS_SECRET_ACCESS_KEY = "second-fixture-secret";
+    await statPrivateObject(locator);
+    expect(awsMocks.clientConfigs).toHaveLength(2);
+    expect(awsMocks.clientConfigs[1].credentials).toEqual({
+      accessKeyId: "fixture-access", secretAccessKey: "second-fixture-secret",
     });
   });
 

@@ -14,6 +14,7 @@ import { ETIQUETAS_ROLES } from "../types";
 import { DEFAULT_ROLE_DEFINITIONS, type RoleDefinition } from "../permissionModel";
 import { hasPermissionForRoleIds } from "../permissionAccess";
 import { MODULOS } from "../menu";
+import LogoPortal from "./LogoPortal";
 
 function normalizarBusqueda(texto: string) {
   return texto
@@ -69,7 +70,7 @@ export default function AppLayout() {
       <aside className="barra-lateral">
         <div className="barra-lateral-contenido">
           <header className="marca-portal">
-            <img src="/brand/sag-white-icon.png" alt="SAG" className="marca-portal-logo" />
+            <LogoPortal uso="sidebar" className="marca-portal-logo" />
             <div className="marca-portal-texto" aria-label="PORTAL SAG WEB">
               <span>PORTAL</span>
               <strong>SAG WEB</strong>

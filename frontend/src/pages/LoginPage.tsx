@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import LogoPortal from "../components/LogoPortal";
 
 type Step = "credentials" | "password-change";
 
@@ -47,7 +48,7 @@ export default function LoginPage() {
     <div className="login-pantalla">
       <div className="login-tarjeta">
         <div className="login-marca">
-          <img src="/brand/sag-two-tone-icon.png" alt="SAG" />
+          <LogoPortal uso="login" />
           <div className="login-marca-texto" aria-label="PORTAL SAG WEB">
             <span>PORTAL</span>
             <strong>SAG WEB</strong>

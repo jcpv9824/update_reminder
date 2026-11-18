@@ -17,6 +17,7 @@ type SeaweedRow = {
   endpoint_url: string;
   signing_region: string;
   bucket_name: string;
+  database_name: string | null;
   force_path_style: boolean;
   access_key_secret_name: string | null;
   secret_key_secret_name: string | null;
@@ -95,6 +96,7 @@ function mapSeaweed(row: SeaweedRow): StoredSeaweedFSConnection {
     endpoint: row.endpoint_url,
     region: row.signing_region,
     bucket: row.bucket_name,
+    ...(row.database_name ? { databaseName: row.database_name } : {}),
     forcePathStyle: Boolean(row.force_path_style),
     credentialsConfigured: Boolean(row.credentials_configured),
     active: Boolean(row.active),
@@ -132,7 +134,7 @@ function mapExternalDatabase(row: ExternalDatabaseRow): StoredExternalDatabaseCo
 }
 
 const SEAWEED_PROJECTION = `
-  source_id,provider,display_name,endpoint_url,signing_region,bucket_name,
+  source_id,provider,display_name,endpoint_url,signing_region,bucket_name,database_name,
   force_path_style,access_key_secret_name,secret_key_secret_name,
   credentials_configured,active,last_test_succeeded,last_tested_at,last_tested_by,
   last_test_message,created_at,created_by,updated_at,updated_by,row_version`;
@@ -217,6 +219,7 @@ export async function saveSqlSeaweedFSConnection(
       request.input("endpoint", sql.NVarChar(500), input.endpoint);
       request.input("region", sql.NVarChar(100), input.region);
       request.input("bucket", sql.NVarChar(255), input.bucket);
+      request.input("databaseName", sql.NVarChar(128), input.databaseName ?? null);
       request.input("pathStyle", sql.Bit, input.forcePathStyle);
       request.input("accessSecret", sql.NVarChar(127), input.accessKeySecretName);
       request.input("secretSecret", sql.NVarChar(127), input.secretKeySecretName);
@@ -227,7 +230,7 @@ export async function saveSqlSeaweedFSConnection(
       const result = await request.query<{ changed: number }>(`
         UPDATE settings.object_storage_connections
         SET display_name=@displayName,endpoint_url=@endpoint,signing_region=@region,
-          bucket_name=@bucket,force_path_style=@pathStyle,
+          bucket_name=@bucket,database_name=@databaseName,force_path_style=@pathStyle,
           access_key_secret_name=@accessSecret,secret_key_secret_name=@secretSecret,
           credentials_configured=@configured,active=@active,
           last_test_succeeded=NULL,last_tested_at=NULL,last_tested_by=NULL,last_test_message=NULL,
@@ -245,6 +248,7 @@ export async function saveSqlSeaweedFSConnection(
       request.input("endpoint", sql.NVarChar(500), input.endpoint);
       request.input("region", sql.NVarChar(100), input.region);
       request.input("bucket", sql.NVarChar(255), input.bucket);
+      request.input("databaseName", sql.NVarChar(128), input.databaseName ?? null);
       request.input("pathStyle", sql.Bit, input.forcePathStyle);
       request.input("accessSecret", sql.NVarChar(127), input.accessKeySecretName);
       request.input("secretSecret", sql.NVarChar(127), input.secretKeySecretName);
@@ -254,11 +258,11 @@ export async function saveSqlSeaweedFSConnection(
       request.input("actor", sql.NVarChar(150), actor.id);
       await request.query(`
         INSERT settings.object_storage_connections
-          (source_id,provider,display_name,endpoint_url,signing_region,bucket_name,
+          (source_id,provider,display_name,endpoint_url,signing_region,bucket_name,database_name,
            force_path_style,access_key_secret_name,secret_key_secret_name,
            credentials_configured,active,created_at,created_by,updated_at,updated_by)
         VALUES
-          (@sourceId,'seaweedfs',@displayName,@endpoint,@region,@bucket,@pathStyle,
+          (@sourceId,'seaweedfs',@displayName,@endpoint,@region,@bucket,@databaseName,@pathStyle,
            @accessSecret,@secretSecret,@configured,@active,@now,@actor,@now,@actor);
       `);
     }
@@ -376,6 +380,7 @@ export async function saveSqlExternalDatabaseConnection(
 export async function recordSeaweedFSConnectionTest(
   status: ConnectionTestStatus,
   actor: Actor,
+  expectedEtag: string,
 ): Promise<StoredSeaweedFSConnection | null> {
   return runSqlTransaction(async (transaction) => {
     const request = new sql.Request(transaction);
@@ -383,12 +388,15 @@ export async function recordSeaweedFSConnectionTest(
     request.input("testedAt", sql.DateTime2(3), new Date(status.testedAt));
     request.input("testedBy", sql.NVarChar(150), actor.id);
     request.input("message", sql.NVarChar(300), status.message);
-    await request.query(`
+    request.input("expectedEtag", sql.VarBinary(8), etagBytes(expectedEtag));
+    const update = await request.query<{ changed: number }>(`
       UPDATE settings.object_storage_connections
       SET last_test_succeeded=@succeeded,last_tested_at=@testedAt,last_tested_by=@testedBy,
         last_test_message=@message,updated_at=@testedAt,updated_by=@testedBy
-      WHERE provider='seaweedfs';
+      WHERE provider='seaweedfs' AND row_version=@expectedEtag;
+      SELECT @@ROWCOUNT AS changed;
     `);
+    if (Number(update.recordset[0]?.changed ?? 0) !== 1) return null;
     const read = new sql.Request(transaction);
     const result = await read.query<SeaweedRow>(`
       SELECT ${SEAWEED_PROJECTION}

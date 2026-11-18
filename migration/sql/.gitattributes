@@ -1,0 +1,2 @@
+# Keep the reviewed bytes used by MANIFEST.sha256 on Windows checkouts.
+030_object_storage_profiles.sql text eol=lf

@@ -66,7 +66,8 @@ $migrations=@(
   @{version='026';name='026_guide_builder.sql'},
   @{version='027';name='027_integration_connections.sql'},
   @{version='028';name='028_company_logo_permissions.sql'},
-  @{version='029';name='029_company_storage_labels.sql'}
+  @{version='029';name='029_company_storage_labels.sql'},
+  @{version='030';name='030_object_storage_profiles.sql'}
 )
 
 foreach($migration in $migrations){
@@ -115,7 +116,7 @@ COMMIT TRANSACTION;
 
 $verificationSql=@'
 SELECT
-  (SELECT COUNT(*) FROM migration.schema_migrations WHERE migration_version IN ('017','018','019','020','021','022','023','024','025','026','027','028','029') AND succeeded=1) AS applied_count,
+  (SELECT COUNT(*) FROM migration.schema_migrations WHERE migration_version IN ('017','018','019','020','021','022','023','024','025','026','027','028','029','030') AND succeeded=1) AS applied_count,
   (SELECT COUNT_BIG(*) FROM core.domains WHERE RIGHT(domain_name_normalized,1)=N'/') AS trailing_domain_identities,
   COL_LENGTH(N'licensing.license_modules',N'description') AS license_description_bytes,
   (SELECT COUNT(*) FROM sys.check_constraints
@@ -166,11 +167,16 @@ SELECT
     WHERE role_id=N'super_admin' AND permission_key LIKE N'implementation.company[_]logo.%') AS company_logo_super_admin_permission_count,
   (SELECT COUNT(*) FROM security.permissions
     WHERE permission_key LIKE N'implementation.company[_]logo.%'
-      AND description LIKE N'Almacenamiento de archivos y logo / %' AND active=1) AS company_storage_label_count;
+      AND description LIKE N'Almacenamiento de archivos y logo / %' AND active=1) AS company_storage_label_count,
+  COL_LENGTH(N'settings.object_storage_connections',N'database_name') AS storage_database_name_bytes,
+  (SELECT COUNT(*) FROM sys.check_constraints
+    WHERE parent_object_id=OBJECT_ID(N'settings.object_storage_connections')
+      AND name IN (N'CK_object_storage_connections_endpoint', N'CK_object_storage_connections_database')
+      AND is_disabled=0 AND is_not_trusted=0) AS storage_profile_check_count;
 '@
 $verification=Invoke-SessionSql -Sql $verificationSql -Mode read -TimeoutSeconds 120 -MaxRows 10
 $row=$verification.resultSets[0].rows[0]
-if($row.applied_count -ne 13 -or $row.trailing_domain_identities -ne 0 -or
+if($row.applied_count -ne 14 -or $row.trailing_domain_identities -ne 0 -or
    $row.license_description_bytes -ne 4000 -or $row.outbox_constraint_ready -ne 1 -or
    $row.untrusted_or_disabled_fks -ne 0 -or $row.untrusted_or_disabled_checks -ne 0 -or
    $row.attempt_completion_trigger_ready -ne 1 -or $row.per_run_blob_index_ready -ne 1 -or
@@ -182,8 +188,9 @@ if($row.applied_count -ne 13 -or $row.trailing_domain_identities -ne 0 -or
    $row.integration_tables_ready -ne 1 -or $row.integration_permission_count -ne 7 -or
    $row.integration_super_admin_permission_count -ne 7 -or
    $row.company_logo_permission_count -ne 2 -or $row.company_logo_super_admin_permission_count -ne 2 -or
-   $row.company_storage_label_count -ne 2){
+   $row.company_storage_label_count -ne 2 -or
+   $row.storage_database_name_bytes -ne 256 -or $row.storage_profile_check_count -ne 2){
   throw 'Pending-migration post-verification failed.'
 }
 
-Write-Host "$expectedDatabase migrations 017-029 are applied and verified." -ForegroundColor Green
+Write-Host "$expectedDatabase migrations 017-030 are applied and verified." -ForegroundColor Green

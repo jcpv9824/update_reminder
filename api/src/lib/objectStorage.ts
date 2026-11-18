@@ -14,11 +14,11 @@ import {
   type UserDelegationKey,
 } from "@azure/storage-blob";
 import { createWriteStream } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import sql from "mssql";
-import { getSqlPool } from "./sql";
+import { configuredPortalDatabase, getSqlPool } from "./sql";
 import { runSqlTransaction } from "./sqlTransaction";
 
 export type ObjectStorageProvider = "s3" | "azure_blob";
@@ -126,7 +126,7 @@ const AZURE_SETTING_NAMES = [
   "PUBLIC_DOWNLOADS_STORAGE_CONTAINER",
 ] as const;
 
-let cachedSeaweedFSClient: { signature: string; client: S3Client } | null = null;
+let cachedSeaweedFSClient: { signature: string; client: S3Client; presigner: S3Client } | null = null;
 let cachedAzureService: { accountUrl: string; client: BlobServiceClient } | null = null;
 let cachedDelegation: { accountUrl: string; key: UserDelegationKey; expiresAt: Date } | null = null;
 
@@ -279,29 +279,68 @@ function getWriteConfig(): SeaweedFSConfig | AzureBlobConfig | null {
     : readAzureBlobConfig(true);
 }
 
-function getSeaweedFSClient(config: SeaweedFSConfig): S3Client {
-  const signature = [
+function getSeaweedFSClients(config: SeaweedFSConfig) {
+  const signature = createHash("sha256").update(JSON.stringify([
     config.endpoint,
     config.region,
     config.accessKeyId,
+    config.secretAccessKey,
     config.forcePathStyle ? "path" : "virtual",
-  ].join("|");
+  ])).digest("hex");
   if (!cachedSeaweedFSClient || cachedSeaweedFSClient.signature !== signature) {
-    cachedSeaweedFSClient?.client.destroy();
+    if (cachedSeaweedFSClient) {
+      cachedSeaweedFSClient.client.destroy();
+      if (cachedSeaweedFSClient.presigner !== cachedSeaweedFSClient.client) cachedSeaweedFSClient.presigner.destroy();
+    }
+    const options = {
+      region: config.region,
+      forcePathStyle: config.forcePathStyle,
+      credentials: {
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey,
+      },
+    };
+    const isStorcubeProxy = config.endpoint === "https://storcube.sagweb.co:8333" && config.forcePathStyle;
+    const checksums = isStorcubeProxy
+      ? { requestChecksumCalculation: "WHEN_REQUIRED" as const, responseChecksumValidation: "WHEN_REQUIRED" as const }
+      : {};
+    const client = new S3Client({ ...options, ...checksums, endpoint: config.endpoint });
+    let presigner = client;
+    if (isStorcubeProxy) {
+      // This gateway's reverse proxy strips the port from Host before S3 verifies signatures.
+      type Middleware = Parameters<typeof client.middlewareStack.addRelativeTo>[0];
+      const canonicalHost = ((next: (args: unknown) => Promise<unknown>) => async (args: unknown) => {
+        const request = (args as { request?: { hostname?: string; headers?: Record<string, string> } }).request;
+        if (request?.hostname === "storcube.sagweb.co" && request.headers) request.headers.host = request.hostname;
+        return next(args);
+      }) as Middleware;
+      client.middlewareStack.addRelativeTo(
+        canonicalHost,
+        { name: "storcubeCanonicalHost", relation: "before", toMiddleware: "httpSigningMiddleware" },
+      );
+      presigner = new S3Client({ ...options, ...checksums, endpoint: "https://storcube.sagweb.co" });
+    }
     cachedSeaweedFSClient = {
       signature,
-      client: new S3Client({
-        endpoint: config.endpoint,
-        region: config.region,
-        forcePathStyle: config.forcePathStyle,
-        credentials: {
-          accessKeyId: config.accessKeyId,
-          secretAccessKey: config.secretAccessKey,
-        },
-      }),
+      client,
+      presigner,
     };
   }
-  return cachedSeaweedFSClient.client;
+  return cachedSeaweedFSClient;
+}
+
+function getSeaweedFSClient(config: SeaweedFSConfig): S3Client {
+  return getSeaweedFSClients(config).client;
+}
+
+async function signSeaweedFSUrl(config: SeaweedFSConfig, command: GetObjectCommand | PutObjectCommand): Promise<string> {
+  const { client, presigner } = getSeaweedFSClients(config);
+  const signed = await getSignedUrl(presigner, command, { expiresIn: config.signedUrlSeconds });
+  if (presigner === client) return signed;
+  const url = new URL(signed);
+  if (url.origin !== "https://storcube.sagweb.co") throw new Error("El origen de la URL firmada no coincide con storcube.");
+  url.port = "8333";
+  return url.toString();
 }
 
 function getAzureService(config: AzureBlobConfig): BlobServiceClient {
@@ -374,7 +413,7 @@ export async function createPrivateObjectUpload(input: {
         storageBucket: config.bucket,
         storageObjectKey: objectName,
       },
-      url: await getSignedUrl(getSeaweedFSClient(config), command, { expiresIn: config.signedUrlSeconds }),
+      url: await signSeaweedFSUrl(config, command),
       method: "PUT",
       headers: {
         "Content-Type": input.mimeType,
@@ -851,18 +890,51 @@ export async function createPrivateObjectUrl(
     if (config.bucket !== input.storageBucket) {
       throw new Error("La ubicación privada del objeto no coincide con la configuración SeaweedFS activa.");
     }
-    return getSignedUrl(
-      getSeaweedFSClient(config),
+    return signSeaweedFSUrl(
+      config,
       new GetObjectCommand({
         Bucket: input.storageBucket,
         Key: input.storageObjectKey,
         ResponseContentType: input.mimeType,
         ResponseContentDisposition: buildObjectContentDisposition(input.disposition ?? "attachment", input.filename),
       }),
-      { expiresIn: config.signedUrlSeconds },
     );
   }
   return createAzureBlobUrl(readAzureBlobConfig(true)!, input);
+}
+
+const portalBrandImages = {
+  login: { filename: "sag-two-tone-icon.png", size: 3581, sha256: "b04ea5e25b94ea73508101053f7d7aacb38bff0ec9adba3b41d32c9d537ebc5a" },
+  sidebar: { filename: "sag-white-icon.png", size: 2901, sha256: "c172ae65f1ac2c2c1c1b0bb74baf0483650f5e80c2c7e5102af00adeb0f8f625" },
+} as const;
+
+export async function readPortalBrandImage(name: "login" | "sidebar"): Promise<Buffer> {
+  const image = portalBrandImages[name];
+  const config = readSeaweedFSConfig(true)!;
+  const abortSignal = AbortSignal.timeout(4000);
+  const result = await getSeaweedFSClient(config).send(new GetObjectCommand({
+    Bucket: config.bucket,
+    Key: `${configuredPortalDatabase()}/Archivos/branding/${image.filename}`,
+  }), { abortSignal });
+  const stream = result.Body as Readable | undefined;
+  if (!stream || result.ContentLength !== image.size || result.ContentType !== "image/png") {
+    stream?.destroy?.();
+    throw new Error("Invalid portal image metadata.");
+  }
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const part of stream) {
+    abortSignal.throwIfAborted();
+    const chunk = Buffer.from(part);
+    bytes += chunk.length;
+    if (bytes > image.size) throw new Error("Invalid portal image length.");
+    chunks.push(chunk);
+  }
+  const body = Buffer.concat(chunks, bytes);
+  if (bytes !== image.size || createHash("sha256").update(body).digest("hex") !== image.sha256) {
+    throw new Error("Invalid portal image integrity.");
+  }
+  return body;
 }
 
 export function buildObjectContentDisposition(

@@ -51,14 +51,18 @@ function parseServer(env: NodeJS.ProcessEnv): { server: string; port: number } {
   return { server, port: integerSetting(portEnv, "SQL_SERVER_PORT", 1433, 1, 65535) };
 }
 
-export function buildSqlConfigFromEnv(env: NodeJS.ProcessEnv = process.env): SqlConfig {
-  const { server, port } = parseServer(env);
+export function configuredPortalDatabase(env: NodeJS.ProcessEnv = process.env): string {
   const database = required(env, "SQL_DATABASE");
   const requiredDatabase = expectedDatabase(env);
   if (database !== requiredDatabase) {
     throw new Error(`SQL_DATABASE debe ser ${requiredDatabase} para PORTAL_SAG_ENVIRONMENT.`);
   }
+  return database;
+}
 
+export function buildSqlConfigFromEnv(env: NodeJS.ProcessEnv = process.env): SqlConfig {
+  const { server, port } = parseServer(env);
+  const database = configuredPortalDatabase(env);
   return {
     server,
     port,

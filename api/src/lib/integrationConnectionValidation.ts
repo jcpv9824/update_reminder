@@ -6,13 +6,17 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { Agent as HttpsAgent, type AgentOptions } from "node:https";
+import { isIP } from "node:net";
 import sql from "mssql";
 import type { ConnectionTestStatus } from "../types/models";
+import { createGuardedLookup } from "./outboundGuard";
 
 export type SeaweedFSValidationInput = {
   endpoint: string;
   region: string;
   bucket: string;
+  databaseName: string;
   forcePathStyle: boolean;
   accessKey: string;
   secretKey: string;
@@ -42,12 +46,38 @@ function isMissingObject(error: unknown): boolean {
     || candidate.$metadata?.httpStatusCode === 404;
 }
 
+const STORCUBE_ENDPOINT = "https://storcube.sagweb.co:8333";
+
+function approvedStorageEndpoint(value: string): string | null {
+  try {
+    const target = new URL(value);
+    if (target.protocol !== "https:" || target.username || target.password
+        || target.pathname !== "/" || target.search || target.hash
+        || isIP(target.hostname.replace(/^\[|\]$/g, ""))) return null;
+    if (target.origin === STORCUBE_ENDPOINT) return target.origin;
+    const configured = process.env.SEAWEEDFS_ENDPOINT?.trim();
+    // Other endpoints need explicit authorization in the runtime deployment.
+    if (configured && target.origin === new URL(configured).origin) return target.origin;
+  } catch {
+    // Never return provider/URL diagnostics that might include credential material.
+  }
+  return null;
+}
+
 export async function validateSeaweedFSConnection(
   input: SeaweedFSValidationInput,
   testedBy: string,
 ): Promise<ConnectionTestStatus> {
+  const endpoint = approvedStorageEndpoint(input.endpoint);
+  if (!endpoint || !/^PortalSAGWeb(?:-TEST)?$/.test(input.databaseName)) {
+    return status(false, testedBy, "Seleccione el endpoint HTTPS autorizado y la base del ambiente del Portal.");
+  }
+  const isStorcubeProxy = endpoint === STORCUBE_ENDPOINT;
+  if (isStorcubeProxy && !input.forcePathStyle) {
+    return status(false, testedBy, "El gateway storcube requiere habilitar path-style.");
+  }
   const client = new S3Client({
-    endpoint: input.endpoint,
+    endpoint,
     region: input.region,
     forcePathStyle: input.forcePathStyle,
     credentials: {
@@ -55,15 +85,36 @@ export async function validateSeaweedFSConnection(
       secretAccessKey: input.secretKey,
     },
     maxAttempts: 2,
+    ...(isStorcubeProxy ? { requestChecksumCalculation: "WHEN_REQUIRED", responseChecksumValidation: "WHEN_REQUIRED" } as const : {}),
+    requestHandler: {
+      httpsAgent: new HttpsAgent({
+        keepAlive: false,
+        lookup: createGuardedLookup() as unknown as AgentOptions["lookup"],
+      }),
+      connectionTimeout: 10_000,
+      requestTimeout: 20_000,
+    },
   });
+  if (isStorcubeProxy) {
+    type Middleware = Parameters<typeof client.middlewareStack.addRelativeTo>[0];
+    const canonicalHost = ((next: (args: unknown) => Promise<unknown>) => async (args: unknown) => {
+      const request = (args as { request?: { hostname?: string; headers?: Record<string, string> } }).request;
+      if (request?.hostname === "storcube.sagweb.co" && request.headers) request.headers.host = request.hostname;
+      return next(args);
+    }) as Middleware;
+    client.middlewareStack.addRelativeTo(canonicalHost, {
+      name: "storcubeProbeCanonicalHost", relation: "before", toMiddleware: "httpSigningMiddleware",
+    });
+  }
   const body = randomBytes(48);
   const sha256 = createHash("sha256").update(body).digest("hex");
-  const key = `portal-sag/runtime/connection-tests/${randomUUID()}.probe`;
+  const key = `${input.databaseName}/Archivos/connection-tests/${randomUUID()}.probe`;
   let uploaded = false;
   try {
     await client.send(new PutObjectCommand({
       Bucket: input.bucket,
       Key: key,
+      IfNoneMatch: "*",
       Body: body,
       ContentLength: body.length,
       ContentType: "application/octet-stream",

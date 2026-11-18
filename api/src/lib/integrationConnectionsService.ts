@@ -6,6 +6,7 @@ import type {
 } from "../types/models";
 import * as keyVault from "./keyVault";
 import { toKeyVaultSecretName } from "./keyVaultNames";
+import { configuredPortalDatabase } from "./sql";
 import {
   deleteSqlExternalDatabaseConnection,
   readStoredExternalDatabaseConnection,
@@ -33,6 +34,7 @@ export type SeaweedFSSaveInput = {
   endpoint: string;
   region: string;
   bucket: string;
+  databaseName?: string;
   forcePathStyle: boolean;
   accessKey?: string;
   secretKey?: string;
@@ -54,7 +56,12 @@ export type ExternalDatabaseSaveInput = {
 
 function safeSeaweed(record: StoredSeaweedFSConnection): SeaweedFSConnection {
   const { accessKeySecretName, secretKeySecretName, ...safe } = record;
-  return safe;
+  const qa = process.env.PORTAL_SAG_ENVIRONMENT?.trim().toLowerCase() === "qa"
+    || process.env.SQL_DATABASE?.trim() === "PortalSAGWeb-TEST";
+  const qaNames = seaweedSecretNames("PortalSAGWeb-TEST", null);
+  return qa && (accessKeySecretName !== qaNames.access || secretKeySecretName !== qaNames.secret)
+    ? { ...safe, credentialsConfigured: false, lastTest: null }
+    : safe;
 }
 
 function safeExternal(record: StoredExternalDatabaseConnection): ExternalDatabaseConnection {
@@ -89,9 +96,36 @@ function validationError(status: ConnectionTestStatus): Error & { status?: numbe
   return Object.assign(new Error(status.message), { status: 400 });
 }
 
+function seaweedDatabaseName(supplied: string | undefined): string {
+  let databaseName: string;
+  try {
+    databaseName = configuredPortalDatabase();
+  } catch {
+    throw Object.assign(new Error("La base operativa del Portal no está configurada correctamente."), { status: 503 });
+  }
+  if (supplied !== undefined && supplied !== databaseName) {
+    throw Object.assign(new Error("La base seleccionada no corresponde al ambiente actual del Portal."), { status: 400 });
+  }
+  return databaseName;
+}
+
+function seaweedSecretNames(databaseName: string, current: StoredSeaweedFSConnection | null) {
+  if (databaseName === "PortalSAGWeb-TEST") {
+    return {
+      access: "portal-sag-qa-seaweedfs-access-key",
+      secret: "portal-sag-qa-seaweedfs-secret-key",
+    };
+  }
+  return {
+    access: current?.accessKeySecretName ?? "portal-sag-seaweedfs-access-key",
+    secret: current?.secretKeySecretName ?? "portal-sag-seaweedfs-secret-key",
+  };
+}
+
 async function resolveSeaweedCredentials(
   input: Pick<SeaweedFSSaveInput, "accessKey" | "secretKey">,
   current: StoredSeaweedFSConnection | null,
+  databaseName: string,
 ): Promise<{ accessKey: string; secretKey: string; changed: boolean }> {
   const suppliedAccess = input.accessKey?.trim() || "";
   const suppliedSecret = input.secretKey || "";
@@ -103,6 +137,12 @@ async function resolveSeaweedCredentials(
   }
   if (!current?.credentialsConfigured || !current.accessKeySecretName || !current.secretKeySecretName) {
     throw Object.assign(new Error("Debe ingresar las credenciales SeaweedFS."), { status: 400 });
+  }
+  if (databaseName === "PortalSAGWeb-TEST") {
+    const names = seaweedSecretNames(databaseName, current);
+    if (current.accessKeySecretName !== names.access || current.secretKeySecretName !== names.secret) {
+      throw Object.assign(new Error("Debe configurar las dos credenciales de SeaweedFS para el ambiente de pruebas."), { status: 400 });
+    }
   }
   return {
     accessKey: await readRequiredSecret(current.accessKeySecretName, "la clave de acceso SeaweedFS"),
@@ -126,30 +166,59 @@ export async function readIntegrationConnections(): Promise<{
 }
 
 export async function testTransientSeaweedFSConnection(
-  input: SeaweedFSValidationInput,
+  input: Omit<SeaweedFSValidationInput, "databaseName"> & { databaseName?: string },
   actor: Actor,
 ): Promise<ConnectionTestStatus> {
-  return validateSeaweedFSConnection(input, actor.id);
+  return validateSeaweedFSConnection({ ...input, databaseName: seaweedDatabaseName(input.databaseName) }, actor.id);
 }
 
 export async function saveSeaweedFSConnection(
   input: SeaweedFSSaveInput,
   actor: Actor,
 ): Promise<SeaweedFSConnection> {
+  const databaseName = seaweedDatabaseName(input.databaseName);
   const current = await readStoredSeaweedFSConnection();
-  const credentials = await resolveSeaweedCredentials(input, current);
+  if ((current && current.etag.toLowerCase() !== input.etag?.toLowerCase()) || (!current && input.etag)) {
+    throw Object.assign(new Error("La configuración cambió; recargue antes de guardar."), { status: 409 });
+  }
+  const complete = Boolean(input.endpoint.trim() && input.region.trim());
+  const suppliedKeys = Boolean(input.accessKey || input.secretKey);
+  if (!complete && (input.active || suppliedKeys)) {
+    throw Object.assign(new Error("Complete los parámetros adicionales para habilitar el perfil o validar claves nuevas."), { status: 400 });
+  }
+  const profile = {
+    id: current?.id ?? "seaweedfs-primary",
+    provider: "seaweedfs" as const,
+    displayName: input.displayName,
+    endpoint: input.endpoint,
+    region: input.region,
+    bucket: input.bucket,
+    databaseName,
+    forcePathStyle: input.forcePathStyle,
+    active: input.active,
+  };
+  if (!input.active && !suppliedKeys) {
+    // A draft may intentionally contain blanks. Do not probe it or repopulate its fields.
+    return safeSeaweed(await saveSqlSeaweedFSConnection({
+      ...profile,
+      credentialsConfigured: current?.credentialsConfigured ?? false,
+      accessKeySecretName: current?.accessKeySecretName ?? null,
+      secretKeySecretName: current?.secretKeySecretName ?? null,
+    }, actor, input.etag));
+  }
+  const credentials = await resolveSeaweedCredentials(input, current, databaseName);
   const validation = await validateSeaweedFSConnection({
     endpoint: input.endpoint,
     region: input.region,
     bucket: input.bucket,
+    databaseName,
     forcePathStyle: input.forcePathStyle,
     accessKey: credentials.accessKey,
     secretKey: credentials.secretKey,
   }, actor.id);
   if (!validation.succeeded) throw validationError(validation);
 
-  const accessSecretName = current?.accessKeySecretName ?? "portal-sag-seaweedfs-access-key";
-  const secretSecretName = current?.secretKeySecretName ?? "portal-sag-seaweedfs-secret-key";
+  const { access: accessSecretName, secret: secretSecretName } = seaweedSecretNames(databaseName, current);
   let priorAccess: string | null = null;
   let priorSecretValue: string | null = null;
   if (credentials.changed) {
@@ -168,15 +237,8 @@ export async function saveSeaweedFSConnection(
   let saved: StoredSeaweedFSConnection;
   try {
     saved = await saveSqlSeaweedFSConnection({
-      id: current?.id ?? "seaweedfs-primary",
-      provider: "seaweedfs",
-      displayName: input.displayName,
-      endpoint: input.endpoint,
-      region: input.region,
-      bucket: input.bucket,
-      forcePathStyle: input.forcePathStyle,
+      ...profile,
       credentialsConfigured: true,
-      active: input.active,
       accessKeySecretName: accessSecretName,
       secretKeySecretName: secretSecretName,
     }, actor, input.etag);
@@ -187,28 +249,39 @@ export async function saveSeaweedFSConnection(
     }
     throw error;
   }
-  const tested = await recordSeaweedFSConnectionTest(validation, actor).catch(() => null);
+  const tested = await recordSeaweedFSConnectionTest(validation, actor, saved.etag).catch(() => null);
   return safeSeaweed(tested ?? saved);
 }
 
-export async function testSavedSeaweedFSConnection(actor: Actor): Promise<{
+export async function testSavedSeaweedFSConnection(actor: Actor, expectedEtag?: string): Promise<{
   connection: SeaweedFSConnection;
   result: ConnectionTestStatus;
 }> {
   const current = await readStoredSeaweedFSConnection();
+  if (expectedEtag !== undefined && current?.etag.toLowerCase() !== expectedEtag.toLowerCase()) {
+    throw Object.assign(new Error("La configuración cambió; recargue antes de probar."), { status: 409 });
+  }
   if (!current?.accessKeySecretName || !current.secretKeySecretName) {
     throw Object.assign(new Error("La conexión SeaweedFS no está configurada."), { status: 404 });
   }
+  if (!current.endpoint || !current.region) {
+    throw Object.assign(new Error("Complete y guarde los parámetros adicionales antes de probar este perfil."), { status: 400 });
+  }
+  const databaseName = seaweedDatabaseName(current.databaseName);
+  const credentials = await resolveSeaweedCredentials({}, current, databaseName);
   const result = await validateSeaweedFSConnection({
     endpoint: current.endpoint,
     region: current.region,
     bucket: current.bucket,
+    databaseName,
     forcePathStyle: current.forcePathStyle,
-    accessKey: await readRequiredSecret(current.accessKeySecretName, "la clave de acceso SeaweedFS"),
-    secretKey: await readRequiredSecret(current.secretKeySecretName, "la clave secreta SeaweedFS"),
+    accessKey: credentials.accessKey,
+    secretKey: credentials.secretKey,
   }, actor.id);
+  const tested = await recordSeaweedFSConnectionTest(result, actor, current.etag);
+  if (!tested) throw Object.assign(new Error("La configuración cambió durante la prueba; recargue y vuelva a probar."), { status: 409 });
   return {
-    connection: safeSeaweed(await recordSeaweedFSConnectionTest(result, actor) ?? current),
+    connection: safeSeaweed(tested),
     result,
   };
 }
