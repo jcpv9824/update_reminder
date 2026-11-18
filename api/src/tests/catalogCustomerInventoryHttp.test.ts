@@ -12,7 +12,7 @@ const fact: CatalogSagInventoryEvidence = {
 const fixture: CatalogCustomerInventoryEvidence = {
   state: "verified", verifiedAt: "2026-11-17T03:00:00.000Z", items: [fact, fact, {
     ...fact, environment: "production", testStartedOn: null, productionStartedOn: "2026-11-10", licenseCodes: ["B"],
-  }],
+  }], licenseModules: [{ code: "A", moduleId: "internal-id", name: "Módulo aprobado", description: "Descripción" }],
 };
 function setup(source: CatalogCustomerInventoryEvidence | null = fixture) {
   const allowed = new Set(["authorized-erp"]);
@@ -35,8 +35,9 @@ describe("read-only customer inventory routes", () => {
       ],
     }] });
     const licenses = await handle(req(), "licenses");
-    expect(licenses.jsonBody).toEqual({ state: "verified", verifiedAt: fixture.verifiedAt, partial: false, items: [
-      { code: "A", environments: ["test"] }, { code: "B", environments: ["production", "test"] },
+    expect(licenses.jsonBody).toEqual({ state: "verified", verifiedAt: fixture.verifiedAt, partial: true, items: [
+      { code: "A", moduleName: "Módulo aprobado", moduleDescription: "Descripción", environments: ["test"] },
+      { code: "B", environments: ["production", "test"] },
     ] });
     expect(licenses.headers).toEqual({ "Cache-Control": "no-store" });
     expect(deps.readEvidence).toHaveBeenCalledWith(id, allowed);

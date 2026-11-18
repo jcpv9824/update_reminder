@@ -28,7 +28,11 @@ describe("indicadores de Clientes en la ruta", () => {
       if (path === detallePath) return cliente;
       if (path === dominiosPath) return { state: "verified", verifiedAt: null, partial: false, items: [] };
       if (path === licenciasPath) return { state: "verified", verifiedAt: null, partial: false,
-        items: [{ code: "F", environments: ["production", "unknown"] }] };
+        items: [
+          { code: "F", environments: ["production", "unknown"] },
+          { code: "C", environments: ["test"], moduleName: "Contabilidad", moduleDescription: "Gestión contable" },
+          { code: "N", environments: ["demo"], moduleName: "Nómina" },
+        ] };
       return { items: [cliente], sources: [], sag: { state: "verified", verifiedAt: null }, partial: false,
         total: 1, page: 1, pageSize: 25 };
     });
@@ -43,8 +47,18 @@ describe("indicadores de Clientes en la ruta", () => {
     expect(get).toHaveBeenCalledWith(endpoint, { signal: expect.any(AbortSignal) });
     expect(called(noEndpoint)).toBe(false);
     if (endpoint === licenciasPath) {
-      expect(screen.getByText("F")).toBeInTheDocument();
-      expect(screen.getByText(/Producción, Ambiente no verificado/)).toBeInTheDocument();
+      const legado = screen.getByText("F").closest("li");
+      expect(legado).toHaveTextContent("Correspondencia no verificada");
+      expect(legado).toHaveTextContent("Producción, Ambiente no verificado");
+      const certificado = screen.getByText("C").closest("li");
+      expect(certificado).toHaveTextContent("Contabilidad");
+      expect(certificado).toHaveTextContent("Gestión contable");
+      expect(certificado).toHaveTextContent("Pruebas");
+      expect(certificado).not.toHaveTextContent("Correspondencia no verificada");
+      const sinDescripcion = screen.getByText("N").closest("li");
+      expect(sinDescripcion).toHaveTextContent("Nómina");
+      expect(sinDescripcion).toHaveTextContent("Demostración");
+      expect(sinDescripcion).not.toHaveTextContent("Correspondencia no verificada");
     }
   });
 });

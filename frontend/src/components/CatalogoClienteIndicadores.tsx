@@ -12,7 +12,12 @@ type DominioObservado = Readonly<{
   host: string;
   observations: readonly Readonly<{ environment: Ambiente; startedOn: string | null }>[];
 }>;
-type LicenciaObservada = Readonly<{ code: string; environments: readonly Ambiente[] }>;
+type LicenciaObservada = Readonly<{
+  code: string;
+  environments: readonly Ambiente[];
+  moduleName?: string;
+  moduleDescription?: string;
+}>;
 type CargarIndicador<T> = (id: string, signal: AbortSignal) => Promise<Indicador<T>>;
 export type IndicadorDominiosCliente = Indicador<DominioObservado>;
 export type IndicadorLicenciasCliente = Indicador<LicenciaObservada>;
@@ -58,13 +63,22 @@ export default function CatalogoClienteIndicadores({ scopeKey, customerId, indic
       {indicadores.licencias && (
         <IndicadorColapsable scopeKey={scopeKey} customerId={customerId} tipo="licencias" titulo="Licencias observadas"
           load={indicadores.licencias} renderItem={(licencia) => (
-            <li key={licencia.code}>
-              <strong>{licencia.code}</strong>
-              {licencia.environments.length > 0 && <> · {licencia.environments.map(ambiente => AMBIENTES[ambiente]).join(", ")}</>}
-            </li>
+            <FilaLicencia key={licencia.code} licencia={licencia} />
           )} />
       )}
     </>
+  );
+}
+
+function FilaLicencia({ licencia }: { licencia: LicenciaObservada }) {
+  const nombre = typeof licencia.moduleName === "string" ? licencia.moduleName.trim() : "";
+  const descripcion = typeof licencia.moduleDescription === "string" ? licencia.moduleDescription.trim() : "";
+  return (
+    <li>
+      <strong>{licencia.code}</strong>{" · "}{nombre || "Correspondencia no verificada"}
+      {licencia.environments.length > 0 && <> · {licencia.environments.map(ambiente => AMBIENTES[ambiente]).join(", ")}</>}
+      {nombre && descripcion && <div className="texto-ayuda">{descripcion}</div>}
+    </li>
   );
 }
 

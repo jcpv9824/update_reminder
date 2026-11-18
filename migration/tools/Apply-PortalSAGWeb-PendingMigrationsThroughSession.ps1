@@ -82,7 +82,9 @@ if($IncludeCatalog){
     @{version='036';name='036_catalog_physical_targets.sql'},
     @{version='037';name='037_catalog_reporting_profiles.sql'},
     @{version='038';name='038_catalog_match_key_registry.sql'},
-    @{version='039';name='039_catalog_physical_registration_time.sql'}
+    @{version='039';name='039_catalog_physical_registration_time.sql'},
+    @{version='040';name='040_catalog_sag_license_module_map.sql'},
+    @{version='041';name='041_catalog_sag_license_approval_versions.sql'}
   )
   # Check the entire selected package before submitting its first write.
   foreach($entry in $migrations){
@@ -224,7 +226,7 @@ if($IncludeCatalog){
   $catalogVerificationSql=@'
 SELECT
   (SELECT COUNT(*) FROM migration.schema_migrations
-    WHERE migration_version IN ('031','032','033','034','035','036','037','038','039') AND succeeded=1) AS catalog_migration_count,
+    WHERE migration_version IN ('031','032','033','034','035','036','037','038','039','040','041') AND succeeded=1) AS catalog_migration_count,
   (SELECT COUNT(*) FROM (VALUES
     (N'settings.catalog_source_bindings'), (N'workflow.catalog_task_executions'),
     (N'workflow.catalog_task_execution_links'), (N'workflow.catalog_task_execution_sources'),
@@ -232,7 +234,8 @@ SELECT
     (N'settings.catalog_customer_revision_heads'), (N'security.catalog_source_readers'),
     (N'core.catalog_sag_revision_evidence'), (N'core.catalog_physical_targets'),
     (N'core.catalog_physical_target_links'),(N'settings.catalog_reporting_profiles'),
-    (N'settings.catalog_match_key_registry')) AS expected(name)
+    (N'settings.catalog_match_key_registry'), (N'settings.catalog_sag_license_module_map'),
+    (N'settings.catalog_sag_license_module_approvals')) AS expected(name)
     WHERE OBJECT_ID(expected.name,N'U') IS NOT NULL) AS catalog_tables_ready,
   (SELECT COUNT(*) FROM sys.triggers WHERE is_disabled=0 AND object_id IN (
     OBJECT_ID(N'core.TR_catalog_sag_revision_evidence_sealed',N'TR'),
@@ -246,7 +249,11 @@ SELECT
     OBJECT_ID(N'settings.TR_catalog_match_key_registry_immutable',N'TR'),
     OBJECT_ID(N'core.TR_catalog_customer_revision_requires_match_key',N'TR'),
     OBJECT_ID(N'core.TR_catalog_physical_target_links_register',N'TR'),
-    OBJECT_ID(N'core.TR_catalog_physical_target_links_registered_at_immutable',N'TR'))) AS catalog_triggers_ready,
+    OBJECT_ID(N'core.TR_catalog_physical_target_links_registered_at_immutable',N'TR'),
+    OBJECT_ID(N'settings.TR_catalog_sag_license_module_map_stamp',N'TR'),
+    OBJECT_ID(N'settings.TR_catalog_sag_license_module_map_immutable',N'TR'),
+    OBJECT_ID(N'settings.TR_catalog_sag_license_module_approvals_stamp',N'TR'),
+    OBJECT_ID(N'settings.TR_catalog_sag_license_module_approvals_immutable',N'TR'))) AS catalog_triggers_ready,
   CASE WHEN COL_LENGTH(N'core.catalog_physical_target_links',N'registered_at') IS NOT NULL
     THEN 1 ELSE 0 END AS physical_registration_time_ready,
   CASE WHEN COL_LENGTH(N'core.catalog_customer_source_revisions',N'has_sag_inventory_evidence')=1
@@ -254,10 +261,10 @@ SELECT
 '@
   $catalogVerification=Invoke-SessionSql -Sql $catalogVerificationSql -Mode read -TimeoutSeconds 120 -MaxRows 5
   $catalogRow=$catalogVerification.resultSets[0].rows[0]
-  if($catalogRow.catalog_migration_count -ne 9 -or $catalogRow.catalog_tables_ready -ne 13 -or
-     $catalogRow.catalog_triggers_ready -ne 12 -or $catalogRow.sag_evidence_flag_ready -ne 1 -or
+  if($catalogRow.catalog_migration_count -ne 11 -or $catalogRow.catalog_tables_ready -ne 15 -or
+     $catalogRow.catalog_triggers_ready -ne 16 -or $catalogRow.sag_evidence_flag_ready -ne 1 -or
      $catalogRow.physical_registration_time_ready -ne 1){
     throw 'Catalog migration post-verification failed.'
   }
-  Write-Host "$expectedDatabase migrations 031-039 are applied and verified." -ForegroundColor Green
+  Write-Host "$expectedDatabase migrations 031-041 are applied and verified." -ForegroundColor Green
 }

@@ -1,11 +1,13 @@
 import type { HttpRequest, HttpResponseInit } from "@azure/functions";
 import type { CatalogSagInventoryEvidence } from "./catalogSagInventoryEvidence";
+import type { CertifiedCatalogLicenseModule } from "./catalogLicenseMembership";
 
 export type InventoryView = "domains" | "licenses";
 export type CatalogCustomerInventoryEvidence = {
   state: "verified" | "stale" | "unavailable";
   verifiedAt: string | null;
   items: readonly CatalogSagInventoryEvidence[];
+  licenseModules?: readonly CertifiedCatalogLicenseModule[];
 };
 type Decision = { actorId: string } | { status: 401 | 403 };
 type Env = CatalogSagInventoryEvidence["environment"];
@@ -49,9 +51,13 @@ function licenseProjection(source: CatalogCustomerInventoryEvidence) {
       codes.set(code, environments);
     }
   }
-  const items = [...codes.keys()].sort().map(code => ({
-    code, environments: environmentOrder.filter(environment => codes.get(code)!.has(environment)),
-  }));
+  const approved = new Map((source.licenseModules ?? []).map(module => [module.code, module]));
+  const items = [...codes.keys()].sort().map(code => {
+    const module = approved.get(code);
+    if (!module) partial = true;
+    return { code, environments: environmentOrder.filter(environment => codes.get(code)!.has(environment)),
+      ...(module ? { moduleName: module.name, ...(module.description ? { moduleDescription: module.description } : {}) } : {}) };
+  });
   return { partial, items };
 }
 

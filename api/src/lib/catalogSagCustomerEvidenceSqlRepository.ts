@@ -2,6 +2,7 @@ import sql from "mssql";
 import type { CatalogEnvironment } from "./catalogSourceConfiguration";
 import { normalizeCatalogSagInventoryEvidence, type CatalogSagInventoryEvidence } from "./catalogSagInventoryEvidence";
 import { getSqlPool } from "./sql";
+import type { CertifiedCatalogLicenseModule } from "./catalogLicenseMembership";
 
 type ReadScope = Readonly<{
   customerId: string;
@@ -14,6 +15,7 @@ export type CatalogSagCustomerEvidence = Readonly<{
   state: "verified" | "stale" | "unavailable";
   verifiedAt: string | null;
   items: readonly CatalogSagInventoryEvidence[];
+  licenseModules?: readonly CertifiedCatalogLicenseModule[];
 }>;
 
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -138,6 +140,21 @@ const readEvidence = `
   SELECT domain_candidate,environment_kind,license_codes,CONVERT(char(10),test_started_on,23) AS test_started_on,
     CONVERT(char(10),production_started_on,23) AS production_started_on,CONVERT(char(10),demo_started_on,23) AS demo_started_on
   FROM @details WHERE @state IN ('verified','stale') ORDER BY source_record_id;
+  SELECT mapping.sag_code, module.source_id AS module_id, module.name AS module_name, module.description AS module_description
+  FROM core.catalog_customer_source_revisions AS sag
+  JOIN settings.catalog_sag_license_module_approvals AS mapping ON mapping.catalog_source_key=sag.catalog_source_key
+    AND mapping.binding_version=sag.binding_version AND mapping.profile_version=sag.profile_version
+  JOIN settings.catalog_source_bindings AS currentBinding ON currentBinding.catalog_source_key=sag.catalog_source_key
+    AND currentBinding.row_version=sag.binding_version AND currentBinding.source_state='active' AND currentBinding.source_role='sag-admin'
+  JOIN settings.external_database_connections AS currentProfile ON currentProfile.external_database_connection_key=currentBinding.external_database_connection_key
+    AND currentProfile.row_version=sag.profile_version AND currentBinding.validated_profile_version=currentProfile.row_version
+    AND currentProfile.status='active' AND currentProfile.active=1 AND currentProfile.encrypt_connection=1 AND currentProfile.password_configured=1
+  JOIN licensing.license_modules AS module ON module.module_key=mapping.module_key AND module.status='active' AND module.deleted_at IS NULL
+  WHERE sag.revision_key=@sagKey AND @state IN ('verified','stale')
+    AND mapping.approved_at<=@now
+    AND EXISTS (SELECT 1 FROM @details AS detail
+      WHERE CHARINDEX(mapping.sag_code,detail.license_codes COLLATE Latin1_General_100_BIN2)>0)
+  ORDER BY mapping.sag_code;
 `;
 
 function fail(): never {
@@ -157,6 +174,19 @@ function mapItem(row: Record<string, unknown>): CatalogSagInventoryEvidence {
   return item;
 }
 
+function mapModules(rows: Array<Record<string, unknown>>): CertifiedCatalogLicenseModule[] {
+  if (rows.length > 25) return fail();
+  const seen = new Set<string>();
+  return rows.map(({ sag_code: code, module_id: moduleId, module_name: name, module_description: description }) => {
+    if (typeof code !== "string" || !/^[A-SU-Z]$/.test(code) || seen.has(code) ||
+      typeof moduleId !== "string" || !moduleId.trim() || moduleId.length > 150 ||
+      typeof name !== "string" || !name.trim() || name.length > 200 ||
+      (description !== null && (typeof description !== "string" || description.length > 2000))) return fail();
+    seen.add(code);
+    return { code, moduleId, name, description };
+  });
+}
+
 /** Service-only; callers must provide an authorization-derived ERP source set. */
 export async function readSqlCatalogSagCustomerEvidence(scope: ReadScope): Promise<CatalogSagCustomerEvidence | null> {
   if (!isUuid(scope.customerId) || scope.allowedSourceIds.size === 0) return null;
@@ -173,18 +203,22 @@ export async function readSqlCatalogSagCustomerEvidence(scope: ReadScope): Promi
       .input("allowedSourceIds", sql.NVarChar(2048), JSON.stringify([...scope.allowedSourceIds].map(id => id.toLowerCase())))
       .input("itemLimit", sql.Int, maxItems)
       .query(readEvidence);
-    if (!Array.isArray(recordsets) || recordsets.length !== 2 || !recordsets.every(Array.isArray)) fail();
-    const [headers, rows] = recordsets as unknown as [Array<Record<string, unknown>>, Array<Record<string, unknown>>];
-    if (headers.length === 0 && rows.length === 0) return null;
+    if (!Array.isArray(recordsets) || recordsets.length !== 3 || !recordsets.every(Array.isArray)) fail();
+    const [headers, rows, modules] = recordsets as unknown as Array<Array<Record<string, unknown>>>;
+    if (headers.length === 0 && rows.length === 0 && modules.length === 0) return null;
     if (headers.length !== 1 || rows.length > maxItems) fail();
     const { evidence_state: state, verified_at: observedAt } = headers[0];
     if (state !== "verified" && state !== "stale" && state !== "unavailable") fail();
     if (state === "unavailable") {
-      if (observedAt !== null || rows.length !== 0) fail();
+      if (observedAt !== null || rows.length !== 0 || modules.length !== 0) fail();
       return { state, verifiedAt: null, items: [] };
     }
     if (!(observedAt instanceof Date) || !Number.isFinite(observedAt.valueOf())) fail();
-    return { state, verifiedAt: observedAt.toISOString(), items: rows.map(mapItem) };
+    const items = rows.map(mapItem);
+    const licenseModules = mapModules(modules);
+    const observedCodes = new Set(items.flatMap(item => item.licenseCodes ?? []));
+    if (licenseModules.some(module => !observedCodes.has(module.code))) return fail();
+    return { state, verifiedAt: observedAt.toISOString(), items, ...(licenseModules.length ? { licenseModules } : {}) };
   } catch {
     // Never expose comparison tokens, authority denials, connection or SQL details.
     fail();

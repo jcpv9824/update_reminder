@@ -65,7 +65,7 @@ const inventory = createCatalogCustomerInventoryHttp({
     try {
       const actor = await loadUserProfile(await requireUser(request));
       if (!actor) return { status: 403 };
-      const roles = await loadRoleDefinitions();
+      const roles = (await loadRoleDefinitions()).filter(role => role.active !== false);
       if (!canViewClients(actor, roles) || (view === "domains" ? !canViewDomains(actor, roles)
         : !canViewLicensingOption(actor, roles))) return { status: 403 };
       return { actorId: actor.id };

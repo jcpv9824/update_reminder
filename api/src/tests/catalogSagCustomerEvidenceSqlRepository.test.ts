@@ -21,13 +21,13 @@ describe("SAG per-customer evidence read", () => {
     fake.pool.mockResolvedValue({ request: fake.request });
     fake.request.mockReturnValue({ input: fake.input, query: fake.query });
     fake.input.mockReturnThis();
-    fake.query.mockResolvedValue({ recordsets: [[{ evidence_state: "verified", verified_at: time }], [evidence]] });
+    fake.query.mockResolvedValue({ recordsets: [[{ evidence_state: "verified", verified_at: time }], [evidence], []] });
   });
 
   it("passes only bound parameters, exposes allowlisted details and queries authorized exact identities", async () => {
     fake.query.mockResolvedValueOnce({ recordsets: [[{ evidence_state: "verified", verified_at: time }], [{
       ...evidence, source_record_id: 19, document_number_token: Buffer.alloc(32, 200), database_name: "not a projection",
-    }]] });
+    }], []] });
     await expect(readSqlCatalogSagCustomerEvidence(scope)).resolves.toEqual({
       state: "verified", verifiedAt: time.toISOString(), items: [{
         domainCandidate: "qa.example.test", environment: "test", licenseCodes: ["A", "S"], testStartedOn: "2026-11-16",
@@ -58,33 +58,46 @@ describe("SAG per-customer evidence read", () => {
     await expect(readSqlCatalogSagCustomerEvidence({ ...scope, allowedSourceIds: new Set() })).resolves.toBeNull();
     await expect(readSqlCatalogSagCustomerEvidence({ ...scope, customerId: "invalid" })).resolves.toBeNull();
     expect(fake.pool).not.toHaveBeenCalled();
-    fake.query.mockResolvedValue({ recordsets: [[], []] });
+    fake.query.mockResolvedValue({ recordsets: [[], [], []] });
     await expect(readSqlCatalogSagCustomerEvidence(scope)).resolves.toBeNull();
   });
 
   it("keeps stale exact evidence labeled and distinguishes verified empty from unavailable", async () => {
-    fake.query.mockResolvedValueOnce({ recordsets: [[{ evidence_state: "stale", verified_at: time }], [{ ...evidence, license_codes: "" }]] });
+    fake.query.mockResolvedValueOnce({ recordsets: [[{ evidence_state: "stale", verified_at: time }], [{ ...evidence, license_codes: "" }], []] });
     await expect(readSqlCatalogSagCustomerEvidence(scope)).resolves.toMatchObject({
       state: "stale", verifiedAt: time.toISOString(), items: [{ licenseCodes: [] }],
     });
-    fake.query.mockResolvedValueOnce({ recordsets: [[{ evidence_state: "verified", verified_at: time }], []] });
+    fake.query.mockResolvedValueOnce({ recordsets: [[{ evidence_state: "verified", verified_at: time }], [], []] });
     await expect(readSqlCatalogSagCustomerEvidence(scope)).resolves.toEqual({ state: "verified", verifiedAt: time.toISOString(), items: [] });
-    fake.query.mockResolvedValueOnce({ recordsets: [[{ evidence_state: "unavailable", verified_at: null }], []] });
+    fake.query.mockResolvedValueOnce({ recordsets: [[{ evidence_state: "unavailable", verified_at: null }], [], []] });
     await expect(readSqlCatalogSagCustomerEvidence(scope)).resolves.toEqual({ state: "unavailable", verifiedAt: null, items: [] });
   });
 
   it("rejects malformed result shapes, noncanonical fields, or overflow instead of returning partial data", async () => {
     const validHeader = [{ evidence_state: "verified", verified_at: time }];
     for (const recordsets of [
-      [[{ evidence_state: "verified", verified_at: "2026-11-17" }], [evidence]],
-      [[{ evidence_state: "unavailable", verified_at: null }], [evidence]],
-      [[], [evidence]], [validHeader, Array.from({ length: 129 }, () => evidence)],
-      [validHeader, [{ ...evidence, domain_candidate: "https://qa.example.test/path" }]],
-      [validHeader, [{ ...evidence, license_codes: "T" }]],
+      [[{ evidence_state: "verified", verified_at: "2026-11-17" }], [evidence], []],
+      [[{ evidence_state: "unavailable", verified_at: null }], [evidence], []],
+      [[], [evidence], []], [validHeader, Array.from({ length: 129 }, () => evidence), []],
+      [validHeader, [{ ...evidence, domain_candidate: "https://qa.example.test/path" }], []],
+      [validHeader, [{ ...evidence, license_codes: "T" }], []],
     ]) {
       fake.query.mockResolvedValueOnce({ recordsets });
       await expect(readSqlCatalogSagCustomerEvidence(scope)).rejects.toThrow("catalog_sag_customer_evidence_unavailable");
     }
+  });
+
+  it("resolves approved modules only for codes in the authorized SAG revision", async () => {
+    const approved = { sag_code: "A", module_id: "module-a", module_name: "Operación", module_description: "Descripción" };
+    fake.query.mockResolvedValueOnce({ recordsets: [[{ evidence_state: "verified", verified_at: time }], [evidence], [approved]] });
+    await expect(readSqlCatalogSagCustomerEvidence(scope)).resolves.toMatchObject({ licenseModules: [{ code: "A", moduleId: "module-a",
+      name: "Operación", description: "Descripción" }] });
+    const query = fake.query.mock.calls[0][0];
+    expect(query).toContain("mapping.catalog_source_key=sag.catalog_source_key");
+    expect(query).toContain("mapping.binding_version=sag.binding_version AND mapping.profile_version=sag.profile_version");
+    expect(query).toContain("module.status='active' AND module.deleted_at IS NULL");
+    fake.query.mockResolvedValueOnce({ recordsets: [[{ evidence_state: "verified", verified_at: time }], [evidence], [{ ...approved, sag_code: "B" }]] });
+    await expect(readSqlCatalogSagCustomerEvidence(scope)).rejects.toThrow("catalog_sag_customer_evidence_unavailable");
   });
 
   it("validates service scope and hides all driver failures", async () => {
