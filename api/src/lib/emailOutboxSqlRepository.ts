@@ -173,7 +173,6 @@ export async function completeSqlEmailAttempt(
   result: { ok: boolean; providerMessageId?: string; error?: string },
 ): Promise<void> {
   await runSqlTransaction(async (transaction) => {
-    const now = new Date();
     const terminalFailure = !result.ok && claimed.attemptNo >= 5;
     const status = result.ok ? "sent" : terminalFailure ? "cancelled" : "failed";
     const request = new sql.Request(transaction);
@@ -181,22 +180,30 @@ export async function completeSqlEmailAttempt(
     request.input("workerId", sql.NVarChar(150), workerId);
     request.input("attemptNo", sql.Int, claimed.attemptNo);
     request.input("status", sql.VarChar(20), status);
-    request.input("now", sql.DateTime2(3), now);
     request.input("providerId", sql.NVarChar(300), result.providerMessageId ?? null);
     request.input("error", sql.NVarChar(2000), result.error?.slice(0, 2000) ?? null);
     request.input("retrySeconds", sql.Int, Math.min(3600, 30 * (2 ** Math.max(0, claimed.attemptNo - 1))));
     const updated = await request.query(`
+      -- Take the row lock before sampling the clock: a lock wait must not
+      -- authorize an already expired lease using an earlier timestamp.
+      DECLARE @lockedKey BIGINT;
+      SELECT @lockedKey=notification_key
+      FROM notifications.email_notifications WITH (UPDLOCK,HOLDLOCK)
+      WHERE notification_key=@notificationKey;
+      DECLARE @now DATETIME2(3)=SYSUTCDATETIME();
       UPDATE notifications.email_notifications SET status=@status,claimed_by=NULL,claim_expires_at=NULL,
         next_attempt_at=CASE WHEN @status='failed' THEN DATEADD(second,@retrySeconds,@now) ELSE NULL END,
         sent_at=CASE WHEN @status='sent' THEN @now ELSE sent_at END,
         provider_message_id=@providerId,last_error=@error,updated_at=@now,updated_by=@workerId
-      WHERE notification_key=@notificationKey AND claimed_by=@workerId AND status='processing';
+      WHERE notification_key=@notificationKey AND claimed_by=@workerId AND status='processing'
+        AND attempt_count=@attemptNo AND claim_expires_at>@now;
       IF @@ROWCOUNT<>1 THROW 51071,N'La concesión de la notificación expiró.',1;
 
       UPDATE notifications.email_notification_attempts
       SET completed_at=@now,attempt_status=CASE WHEN @status='sent' THEN 'sent' ELSE 'failed' END,
         provider_message_id=@providerId,error_message=@error
-      WHERE notification_key=@notificationKey AND attempt_no=@attemptNo;
+      WHERE notification_key=@notificationKey AND attempt_no=@attemptNo AND completed_at IS NULL;
+      IF @@ROWCOUNT<>1 THROW 51071,N'La concesión de la notificación expiró.',1;
 
       UPDATE notifications.email_notification_recipients
       SET delivery_status=CASE WHEN @status='sent' THEN 'sent' ELSE 'failed' END,error_message=@error
@@ -232,4 +239,34 @@ export async function completeSqlEmailAttempt(
       metadata,
     });
   }, sql.ISOLATION_LEVEL.READ_COMMITTED);
+}
+
+/** Execute inside a short transaction. SQL's clock is sampled after acquiring the row lock. */
+export const renewSqlEmailClaimSql = `
+  DECLARE @lockedKey BIGINT;
+  SELECT @lockedKey=notification_key
+  FROM notifications.email_notifications WITH (UPDLOCK,HOLDLOCK)
+  WHERE notification_key=@notificationKey;
+  DECLARE @now DATETIME2(3)=SYSUTCDATETIME();
+  UPDATE notifications.email_notifications
+  SET claim_expires_at=DATEADD(second,@leaseSeconds,@now),updated_at=@now,updated_by=@workerId
+  WHERE notification_key=@notificationKey AND status='processing'
+    AND claimed_by=@workerId AND attempt_count=@attemptNo AND claim_expires_at>@now;
+  SELECT @@ROWCOUNT AS renewed;
+`;
+
+export async function renewSqlEmailClaim(claimed: ClaimedEmail, workerId: string): Promise<boolean> {
+  const started = performance.now();
+  const renewed = await runSqlTransaction(async transaction => {
+    const request = new sql.Request(transaction);
+    request.input("notificationKey", sql.BigInt, claimed.notificationKey);
+    request.input("workerId", sql.NVarChar(150), workerId);
+    request.input("attemptNo", sql.Int, claimed.attemptNo);
+    request.input("leaseSeconds", sql.Int, 120);
+    const result = await request.query<{ renewed: number }>(renewSqlEmailClaimSql);
+    return result.recordset[0]?.renewed === 1;
+  }, sql.ISOLATION_LEVEL.READ_COMMITTED);
+  // A delayed response cannot grant a fresh client-side 60s send window.
+  // Even if SQL renewed early, at least 90s of its 120s lease must remain.
+  return renewed && performance.now() - started < 30_000;
 }

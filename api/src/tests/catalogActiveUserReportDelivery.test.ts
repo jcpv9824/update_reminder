@@ -5,7 +5,7 @@ const fake = vi.hoisted(() => ({
   route: null as ((req: HttpRequest) => Promise<HttpResponseInit>) | null,
   env: vi.fn(), check: vi.fn(), counts: vi.fn(), masters: vi.fn(), enqueue: vi.fn(),
   catalogMasters: vi.fn(), resolveScope: vi.fn(), verifyScope: vi.fn(),
-  claim: vi.fn(), complete: vi.fn(), send: vi.fn(), render: vi.fn(),
+  claim: vi.fn(), renew: vi.fn(), complete: vi.fn(), send: vi.fn(), render: vi.fn(),
 }));
 vi.mock("@azure/functions", () => ({
   app: {
@@ -31,7 +31,7 @@ vi.mock("../lib/catalogReportRecipients", async importOriginal => ({
   mayDeliverCatalogMastersReport: fake.verifyScope,
 }));
 vi.mock("../lib/emailOutboxSqlRepository", () => ({
-  enqueueSqlEmail: fake.enqueue, claimSqlEmailBatch: fake.claim, completeSqlEmailAttempt: fake.complete,
+  enqueueSqlEmail: fake.enqueue, claimSqlEmailBatch: fake.claim, renewSqlEmailClaim: fake.renew, completeSqlEmailAttempt: fake.complete,
 }));
 vi.mock("../lib/settingsService", () => ({ loadEmailAlertsSettings: async () => ({}) }));
 vi.mock("../lib/emailService", () => ({ sendEmail: fake.send, renderResetPasswordEmail: vi.fn() }));
@@ -41,6 +41,9 @@ import { processSqlEmailOutbox } from "../functions/processEmailOutbox";
 
 const req = { json: async () => ({ recipients: "alice@example.test" }) } as unknown as HttpRequest;
 const scope = { senderId: "alice", environment: "qa", sourceIds: ["11111111-1111-4111-8111-111111111111"], recipientIds: ["alice"] };
+const queueReport = (metadata: Record<string, unknown>) => fake.claim.mockResolvedValueOnce([{
+  type: "masters_report", subject: "Reporte", recipients: [{ type: "to", email: "alice@example.test" }], metadata,
+}]).mockResolvedValue([]);
 describe("catalog report authorization at generation and delivery", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -55,6 +58,7 @@ describe("catalog report authorization at generation and delivery", () => {
     fake.verifyScope.mockResolvedValue(true);
     fake.render.mockReturnValue({ subject: "Reporte", html: "<p>Reporte</p>", text: "Reporte" });
     fake.enqueue.mockResolvedValue({ created: true });
+    fake.renew.mockResolvedValue(true);
     fake.send.mockResolvedValue({ ok: true, provider: "fake" });
   });
   afterEach(() => vi.unstubAllEnvs());
@@ -82,13 +86,11 @@ describe("catalog report authorization at generation and delivery", () => {
 
   it("does not send queued count details to recipients whose access is now revoked", async () => {
     fake.check.mockResolvedValue(false);
-    fake.claim.mockResolvedValue([{
-      type: "masters_report", subject: "Reporte", recipients: [{ type: "to", email: "alice@example.test" }],
-      metadata: { catalogActiveUsers: true, html: "<p>Reporte</p>", text: "Reporte" },
-    }]);
+    queueReport({ catalogActiveUsers: true, html: "<p>Reporte</p>", text: "Reporte" });
     expect(await processSqlEmailOutbox(vi.fn())).toMatchObject({ sent: 0, failed: 1 });
     expect(fake.send).not.toHaveBeenCalled();
     fake.check.mockResolvedValue(true);
+    queueReport({ catalogActiveUsers: true, html: "<p>Reporte</p>", text: "Reporte" });
     expect(await processSqlEmailOutbox(vi.fn())).toMatchObject({ sent: 1, failed: 0 });
     expect(fake.send).toHaveBeenCalledTimes(1);
   });
@@ -113,13 +115,12 @@ describe("catalog report authorization at generation and delivery", () => {
     expect(fake.masters).not.toHaveBeenCalled();
     expect(fake.catalogMasters).toHaveBeenCalledWith({ portalEnvironment: "qa", allowedSourceIds: new Set(scope.sourceIds) });
     expect(fake.enqueue.mock.calls.at(-1)?.[0].metadata.catalogReportScope).toEqual(scope);
-    fake.claim.mockResolvedValue([{
-      type: "masters_report", subject: "Reporte", recipients: [{ type: "to", email: "alice@example.test" }],
-      metadata: { ...fake.enqueue.mock.calls.at(-1)?.[0].metadata, html: "<p>Reporte</p>", text: "Reporte" },
-    }]);
+    const metadata = { ...fake.enqueue.mock.calls.at(-1)?.[0].metadata, html: "<p>Reporte</p>", text: "Reporte" };
+    queueReport(metadata);
     fake.verifyScope.mockResolvedValueOnce(false);
     expect(await processSqlEmailOutbox(vi.fn())).toMatchObject({ sent: 0, failed: 1 });
     expect(fake.send).not.toHaveBeenCalled();
+    queueReport(metadata);
     expect(await processSqlEmailOutbox(vi.fn())).toMatchObject({ sent: 1, failed: 0 });
     expect(fake.verifyScope).toHaveBeenLastCalledWith(scope, ["alice@example.test"], "qa");
   });
@@ -131,10 +132,7 @@ describe("catalog report authorization at generation and delivery", () => {
     fake.catalogMasters.mockRejectedValue(new Error("private driver detail"));
     expect(await fake.route!(req)).toEqual({ status: 503, jsonBody: { error: "El reporte del catálogo no está disponible." } });
     for (const read of [fake.masters, fake.counts, fake.enqueue]) expect(read).not.toHaveBeenCalled();
-    fake.claim.mockResolvedValue([{
-      type: "masters_report", subject: "Reporte", recipients: [{ type: "to", email: "alice@example.test" }],
-      metadata: { html: "<p>Reporte</p>", text: "Reporte" },
-    }]);
+    queueReport({ html: "<p>Reporte</p>", text: "Reporte" });
     expect(await processSqlEmailOutbox(vi.fn())).toMatchObject({ sent: 0, failed: 1 });
     expect(fake.send).not.toHaveBeenCalled();
   });
