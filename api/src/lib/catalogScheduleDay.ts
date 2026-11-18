@@ -4,6 +4,8 @@ import { readSqlCatalogPhysicalTargets, planCatalogTasksWithVerifiedTargets } fr
 import type { CatalogEnvironment } from "./catalogSourceConfiguration";
 import { catalogAssignedUsers, type CatalogTaskKind, type CatalogTaskLink, type CatalogTaskRequest } from "./catalogTaskTargetPlanning";
 import { getTaskDateBucket, isScheduleDueOnDate, type CalendarSchedule } from "./scheduleEngine";
+import { catalogPopulationRevisionPrefix } from "./catalogSchedulePopulationCoverage";
+import { runSqlCatalogScheduleDayTransaction, type CatalogScheduleDayTransactionContext } from "./catalogScheduleDayTransaction";
 
 export type CatalogScheduleRule = Omit<CatalogTaskRequest, "scheduleId"> & {
   calendar: CalendarSchedule & { id: string; timezone: string; version: string };
@@ -20,6 +22,8 @@ export type CatalogScheduleDay = {
   /** Original business cutoff from the trusted schedule occurrence, never from HTTP. */
   cutoffAt: Date;
   revision: { id: string; complete: boolean };
+  /** Original complete input, retained for the atomic SQL re-read after external planning. */
+  populationFence?: Pick<CatalogScheduleDayTransactionContext, "scope" | "roster">;
   rules: readonly CatalogScheduleRule[];
   inventory: readonly { link: CatalogTaskLink; sourceId: string | null;
     sourceEvidence?: CatalogExecutionSourceEvidence;
@@ -41,11 +45,21 @@ const webTargetLabel = (name: string) => name.length <= 240 ? name : name.slice(
  * Runs one Bogotá business date using the full trusted roster, not browser-provided targets.
  * Legacy task cleanup and schedule completion are deliberately not part of registration.
  */
-export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io = dependencies): Promise<DayResult> {
+export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io?: typeof dependencies): Promise<DayResult> {
   if (!validDay(input.date) || !Number.isFinite(input.checkedAt.valueOf()) || !Number.isFinite(input.cutoffAt.valueOf())
     || input.inventory.length > 5000 || input.rules.length > 5000) throw new Error("invalid_catalog_schedule_day");
   if (input.checkedAt >= input.cutoffAt) return { status: "cutoff" };
   if (!input.revision.complete) return { status: "unverified" };
+  if (!io && input.revision.id.startsWith(catalogPopulationRevisionPrefix)) {
+    if (!input.populationFence || input.populationFence.scope.portalEnvironment !== input.portalEnvironment) {
+      return { status: "unverified" };
+    }
+    const result = await runSqlCatalogScheduleDayTransaction({
+      ...input.populationFence, date: input.date, cutoffAt: input.cutoffAt, revisionId: input.revision.id,
+    }, scoped => generateCatalogScheduleDay(input, scoped));
+    return result.status === "committed" ? result.value : { status: result.status };
+  }
+  const { resolve, register } = io ?? dependencies;
   const selectedManual = new Set(input.manualScheduleIds);
   const foundManual = new Set<string>();
   const activeRules: CatalogScheduleRule[] = [];
@@ -81,7 +95,7 @@ export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io =
     occurrenceId: input.date, revision: input.revision, links: input.inventory.map(row => row.link),
     requests: activeRules.map(rule => ({ scheduleId: rule.calendar.id, operationId: rule.operationId,
       assignment: rule.assignment, scope: rule.scope })),
-  }, io.resolve);
+  }, resolve);
   result.conflicts = plan.conflicts.length;
   result.held = plan.held.length;
   const now = input.checkedAt.toISOString();
@@ -103,7 +117,7 @@ export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io =
       status: "pending", result: null, notes: "", createdAt: now, createdBy: "system", updatedAt: now, updatedBy: "system",
       completedAt: null, completedBy: null,
     };
-    const write = await io.register({ group, task, portalEnvironment: input.portalEnvironment,
+    const write = await register({ group, task, portalEnvironment: input.portalEnvironment,
       ...(input.matchKeyVersion !== undefined ? { matchKeyVersion: input.matchKeyVersion } : {}),
       cutoffAt: input.cutoffAt, catalogSourceIdsByLink: new Map(group.sources.map(({ link: row }) =>
         [row.linkId, inventory.get(row.linkId)!.sourceId])),

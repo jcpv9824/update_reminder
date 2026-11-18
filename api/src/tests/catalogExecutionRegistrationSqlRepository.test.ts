@@ -24,8 +24,10 @@ vi.mock("../lib/catalogSchedulePopulationCoverage", () => ({
   lockSqlCatalogSchedulePopulationApproval: mock.population,
 }));
 
-import { registerSqlCatalogTaskExecution, type CatalogExecutionRegistration } from "../lib/catalogExecutionRegistrationSqlRepository";
+import { registerSqlCatalogTaskExecution, registerSqlCatalogTaskExecutionInTransaction,
+  catalogRegistrationConflictReason, type CatalogExecutionRegistration } from "../lib/catalogExecutionRegistrationSqlRepository";
 import { catalogTaskExecutionKey } from "../lib/catalogTaskTargetPlanning";
+import { runSqlTransaction } from "../lib/sqlTransaction";
 
 const sourceId = "00000000-0000-0000-0000-000000000001";
 const externalLinkId = "00000000-0000-0000-0000-000000000021";
@@ -68,6 +70,114 @@ const rows = (...response: object[][]) => {
 };
 
 beforeEach(() => { vi.resetAllMocks(); mock.insert.mockResolvedValue(17); mock.lockDay.mockResolvedValue(true); });
+
+describe("caller-owned catalog registration transaction", () => {
+  const ownedTransaction = { callerOwned: true } as unknown as Parameters<typeof registerSqlCatalogTaskExecutionInTransaction>[0];
+
+  it.each(["population", "physical", "licensing"])("returns the minimum %s deadline without owning transaction lifetime", async earliest => {
+    const deadlines = {
+      population: new Date(now.valueOf() + (earliest === "population" ? 10_000 : 40_000)),
+      physical: new Date(now.valueOf() + (earliest === "physical" ? 10_000 : 50_000)),
+      licensing: new Date(now.valueOf() + (earliest === "licensing" ? 10_000 : 60_000)),
+    };
+    const value = input();
+    const revisionId = "catalog-population-v1:00000000-0000-0000-0000-000000000099";
+    mock.population.mockResolvedValue(deadlines.population);
+    mock.license.mockResolvedValue(deadlines.licensing);
+    rows([], [{ collision: false }], licensedRows, [{ now }], [{ key: "2" }],
+      [{ linkId: externalLinkId, validUntil: deadlines.physical }, { linkId: "link2", validUntil: cutoffAt }],
+      [{ count: 2 }], [{ count: 1 }], [{ result: "registered" }]);
+    const result = await registerSqlCatalogTaskExecutionInTransaction(ownedTransaction, {
+      ...value, matchKeyVersion: 3, group: { ...value.group, revisionId },
+    });
+    expect(result).toEqual({ outcome: { status: "registered", taskId: task.id }, validUntil: new Date(now.valueOf() + 10_000) });
+    expect(mock.begin).not.toHaveBeenCalled();
+    expect(mock.commit).not.toHaveBeenCalled();
+    expect(mock.rollback).not.toHaveBeenCalled();
+    expect(mock.lockDay).toHaveBeenCalledExactlyOnceWith(ownedTransaction, task);
+    expect(mock.query.mock.calls.every(([, , tx]) => tx === ownedTransaction)).toBe(true);
+    expect(mock.insert).toHaveBeenCalledWith(ownedTransaction, expect.anything());
+    expect(mock.population).toHaveBeenCalledWith(ownedTransaction, "qa", revisionId);
+    expect(mock.license).toHaveBeenCalledWith(ownedTransaction, expect.anything());
+    expect(mock.query.mock.calls[8][1].validUntil).toEqual(result.validUntil);
+    expect(mock.query.mock.calls[8][0]).toContain("@finalNow>=@validUntil");
+    expect(mock.query.mock.calls[8][0]).toContain("@finalNow>=@cutoffAt");
+  });
+
+  it("returns an exact replay with null deadline and no fresh writes or nested transaction", async () => {
+    rows([existing], existingLinks);
+    expect(await registerSqlCatalogTaskExecutionInTransaction(ownedTransaction, input())).toEqual({
+      outcome: { status: "existing", taskId: task.id }, validUntil: null,
+    });
+    expect(mock.lockDay).toHaveBeenCalledExactlyOnceWith(ownedTransaction, task);
+    expect(mock.query).toHaveBeenCalledTimes(2);
+    expect(mock.insert).not.toHaveBeenCalled();
+    expect(mock.population).not.toHaveBeenCalled();
+    expect(mock.license).not.toHaveBeenCalled();
+    expect(mock.begin).not.toHaveBeenCalled();
+    expect(mock.commit).not.toHaveBeenCalled();
+    expect(mock.rollback).not.toHaveBeenCalled();
+  });
+
+  it("throws preflight conflicts for caller rollback instead of returning a conflict outcome", async () => {
+    let failure: unknown;
+    try {
+      await registerSqlCatalogTaskExecutionInTransaction(ownedTransaction, { ...input(), catalogEvidenceByLink: undefined });
+    } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(Error);
+    expect(catalogRegistrationConflictReason(failure)).toBe("invalid-plan");
+    expect(mock.lockDay).not.toHaveBeenCalled();
+    expect(mock.query).not.toHaveBeenCalled();
+    expect(mock.begin).not.toHaveBeenCalled();
+    expect(mock.commit).not.toHaveBeenCalled();
+    expect(mock.rollback).not.toHaveBeenCalled();
+  });
+
+  it("does not swallow a provisional-write conflict or independently roll back the caller's transaction", async () => {
+    rows([], [{ collision: false }], scheduleRows, [{ now }], [{ key: "2" }], [{ linkId: externalLinkId }]);
+    let failure: unknown;
+    try { await registerSqlCatalogTaskExecutionInTransaction(ownedTransaction, input()); }
+    catch (error) { failure = error; }
+    expect(catalogRegistrationConflictReason(failure)).toBe("catalog-reference-changed");
+    expect(mock.insert).toHaveBeenCalledOnce();
+    expect(mock.begin).not.toHaveBeenCalled();
+    expect(mock.commit).not.toHaveBeenCalled();
+    expect(mock.rollback).not.toHaveBeenCalled();
+  });
+
+  it.each(["cutoff-passed", "catalog-reference-changed"])("lets one outer owner roll back all provisional writes on final %s", async result => {
+    rows([], [{ collision: false }], scheduleRows, [{ now }], [{ key: "2" }],
+      [{ linkId: externalLinkId, validUntil: cutoffAt }, { linkId: "link2", validUntil: cutoffAt }],
+      [{ count: 2 }], [{ count: 1 }], [{ result }]);
+    const continued = vi.fn();
+    let failure: unknown;
+    try {
+      await runSqlTransaction(async tx => {
+        await registerSqlCatalogTaskExecutionInTransaction(tx, input());
+        continued();
+      });
+    } catch (error) { failure = error; }
+    expect(catalogRegistrationConflictReason(failure)).toBe(result);
+    expect(mock.insert).toHaveBeenCalledOnce();
+    expect(mock.begin).toHaveBeenCalledOnce();
+    expect(mock.rollback).toHaveBeenCalledOnce();
+    expect(mock.commit).not.toHaveBeenCalled();
+    expect(continued).not.toHaveBeenCalled();
+  });
+
+  it("propagates driver errors untouched and does not classify lookalike conflicts", async () => {
+    const failure = Object.assign(new Error("driver failed"), { number: 2627 });
+    mock.lockDay.mockRejectedValueOnce(failure);
+    await expect(registerSqlCatalogTaskExecutionInTransaction(ownedTransaction, input())).rejects.toBe(failure);
+    for (const error of [failure, null, undefined, "invalid-plan", { reason: "invalid-plan" },
+      Object.assign(new Error("invalid-plan"), { name: "RegistrationConflict", reason: "invalid-plan" })]) {
+      expect(catalogRegistrationConflictReason(error)).toBeNull();
+    }
+    expect(mock.begin).not.toHaveBeenCalled();
+    expect(mock.commit).not.toHaveBeenCalled();
+    expect(mock.rollback).not.toHaveBeenCalled();
+  });
+});
 
 describe("atomic catalog execution registration", () => {
   it("rejects alternate occurrence IDs for the same business date before taking locks", async () => {

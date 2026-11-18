@@ -163,10 +163,24 @@ export async function lockSqlCatalogSchedulePopulationApproval(transaction: sql.
 export async function readSqlCatalogSchedulePopulationCoverage(
   scope: CatalogInventoryProofScope,
 ): Promise<CatalogSchedulePopulationCoverage> {
-  if (!scope || !environment(scope.portalEnvironment) || !instant(scope.checkedAt) ||
-    !Array.isArray(scope.links) || scope.links.length < 1 || scope.links.length > 5000) return incomplete;
+  if (!validScope(scope)) return incomplete;
   try {
-    const result = await runSqlTransaction(async transaction => {
+    const result = await runSqlTransaction(transaction => readSqlCatalogSchedulePopulationCoverageInTransaction(transaction, scope));
+    return result.complete && result.validUntil.valueOf() <= Date.now() ? incomplete : result;
+  } catch { return unavailable(); }
+}
+
+function validScope(scope: CatalogInventoryProofScope): boolean {
+  return !!scope && environment(scope.portalEnvironment) && instant(scope.checkedAt) &&
+    Array.isArray(scope.links) && scope.links.length >= 1 && scope.links.length <= 5000;
+}
+
+/** Retain every source/edge/approval read lock in the caller's SERIALIZABLE transaction. */
+export async function readSqlCatalogSchedulePopulationCoverageInTransaction(
+  transaction: sql.Transaction, scope: CatalogInventoryProofScope,
+): Promise<CatalogSchedulePopulationCoverage> {
+  if (!validScope(scope)) return incomplete;
+  try {
       const { recordsets } = await new sql.Request(transaction)
         .input("portalEnvironment", sql.VarChar(10), scope.portalEnvironment)
         .query(readCatalogSchedulePopulationSql);
@@ -187,7 +201,5 @@ export async function readSqlCatalogSchedulePopulationCoverage(
       });
       return assessCatalogSchedulePopulation({ ...scope, plannedLinks: scope.links, now: new Date(),
         approvals, sources, edges });
-    });
-    return result.complete && result.validUntil.valueOf() <= Date.now() ? incomplete : result;
   } catch { return unavailable(); }
 }

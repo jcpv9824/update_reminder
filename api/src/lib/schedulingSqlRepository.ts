@@ -350,16 +350,26 @@ export async function readSqlSchedules(filters: ScheduleFilters, pagination: Sch
 export async function readSqlCatalogScheduleRoster(today: string): Promise<ReadonlyArray<{
   schedule: UpdateSchedule; version: string;
 }>> {
+  validateCatalogRosterDate(today);
+  return runSqlTransaction(transaction => readSqlCatalogScheduleRosterInTransaction(transaction, today));
+}
+
+function validateCatalogRosterDate(today: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(today) || !Number.isFinite(Date.parse(today)) ||
     new Date(today).toISOString().slice(0, 10) !== today) throw new Error("invalid_catalog_schedule_date");
-  return runSqlTransaction(async transaction => {
-    const rows = await queryScheduleRows(transaction.request(), {}, { enabled: false, page: 1, pageSize: catalogRosterMax }, today, true);
-    if (rows.length > catalogRosterMax) throw new Error("catalog_schedule_roster_limit");
-    return rows.map(row => {
-      const version = row.version_hex;
-      if (!version || !/^[a-f0-9]{16}$/.test(version)) throw new Error("catalog_schedule_roster_invalid");
-      const { summary: _summary, ...schedule } = mapSqlSchedule(row);
-      return { schedule, version };
-    });
+}
+
+/** Same normalized roster, retaining the range locks in the caller's SERIALIZABLE transaction. */
+export async function readSqlCatalogScheduleRosterInTransaction(transaction: sql.Transaction, today: string): Promise<ReadonlyArray<{
+  schedule: UpdateSchedule; version: string;
+}>> {
+  validateCatalogRosterDate(today);
+  const rows = await queryScheduleRows(transaction.request(), {}, { enabled: false, page: 1, pageSize: catalogRosterMax }, today, true);
+  if (rows.length > catalogRosterMax) throw new Error("catalog_schedule_roster_limit");
+  return rows.map(row => {
+    const version = row.version_hex;
+    if (!version || !/^[a-f0-9]{16}$/.test(version)) throw new Error("catalog_schedule_roster_invalid");
+    const { summary: _summary, ...schedule } = mapSqlSchedule(row);
+    return { schedule, version };
   });
 }

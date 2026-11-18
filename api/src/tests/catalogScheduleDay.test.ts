@@ -3,6 +3,9 @@ import { generateCatalogScheduleDay, type CatalogScheduleDay, type CatalogSchedu
 import type { CatalogTaskLink } from "../lib/catalogTaskTargetPlanning";
 import type { UpdateSchedule } from "../types/models";
 
+const { runAtomic } = vi.hoisted(() => ({ runAtomic: vi.fn() }));
+vi.mock("../lib/catalogScheduleDayTransaction", () => ({ runSqlCatalogScheduleDayTransaction: runAtomic }));
+
 const date = "2030-06-22";
 const physicalId = "31140f4d-81c3-4938-9ab2-a275473feb17";
 const link = (n: number): CatalogTaskLink => ({ customerId: `client${n}`, domainId: `domain${n}`, databaseId: `db${n}`,
@@ -26,6 +29,22 @@ function io() {
 }
 
 describe("catalog schedule day", () => {
+  it("requires the population fence and routes a certified default day through the atomic writer", async () => {
+    const revision = { id: "catalog-population-v1:00000000-0000-0000-0000-000000000099", complete: true };
+    await expect(generateCatalogScheduleDay({ ...data, revision })).resolves.toEqual({ status: "unverified" });
+    expect(runAtomic).not.toHaveBeenCalled();
+    const scope = { date, portalEnvironment: data.portalEnvironment, checkedAt: data.checkedAt, links: [] };
+    const roster = new Map(data.rules.map(({ calendar }) => [calendar.id, calendar.version]));
+    const scoped = io();
+    runAtomic.mockImplementationOnce(async (_context, work) => ({ status: "committed", value: await work(scoped) }));
+    await expect(generateCatalogScheduleDay({ ...data, revision, populationFence: { scope, roster } }))
+      .resolves.toMatchObject({ status: "evaluated", registered: 1 });
+    expect(runAtomic).toHaveBeenCalledExactlyOnceWith({
+      scope, roster, date, cutoffAt: data.cutoffAt, revisionId: revision.id,
+    }, expect.any(Function));
+    expect(scoped.register).toHaveBeenCalledOnce();
+  });
+
   it("registers one task with both aliases and a stable ID across revisions and input order", async () => {
     const deps = io();
     const result = await generateCatalogScheduleDay(data, deps);

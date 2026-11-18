@@ -12,6 +12,7 @@ type RequestedLink = Readonly<{
 }> & ({ kind: "domain"; databaseId?: never } | { kind: "database"; databaseId: string });
 
 type ResolvedTarget = CatalogTaskLink["target"];
+type ReadInput = { portalEnvironment: CatalogEnvironment; links: readonly RequestedLink[] };
 type Resolver = typeof readSqlCatalogPhysicalTargets;
 const maxLinks = 5000;
 const opaqueId = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -60,10 +61,19 @@ ORDER BY w.ordinal;
 `.trim();
 
 /** Internal. The caller must restrict requested links to a trusted, authorized catalogue selection. */
-export async function readSqlCatalogPhysicalTargets(input: {
-  portalEnvironment: CatalogEnvironment;
-  links: readonly RequestedLink[];
-}): Promise<ResolvedTarget[]> {
+export function readSqlCatalogPhysicalTargets(input: ReadInput): Promise<ResolvedTarget[]> {
+  return readWithRequest(input, async () => (await getSqlPool()).request());
+}
+
+/** Same trusted input; the caller retains ownership of the existing SQL transaction. */
+export function readSqlCatalogPhysicalTargetsInTransaction(
+  transaction: sql.Transaction,
+  input: Parameters<typeof readSqlCatalogPhysicalTargets>[0],
+): ReturnType<typeof readSqlCatalogPhysicalTargets> {
+  return readWithRequest(input, () => transaction.request());
+}
+
+async function readWithRequest(input: ReadInput, request: () => sql.Request | Promise<sql.Request>): Promise<ResolvedTarget[]> {
   if (!["qa", "production"].includes(input.portalEnvironment) || input.links.length > maxLinks) fail();
   if (!input.links.length) return [];
   const links = input.links.map(link => {
@@ -73,8 +83,7 @@ export async function readSqlCatalogPhysicalTargets(input: {
       kind: link.kind, ...(link.kind === "database" ? { databaseId: link.databaseId } : {}) };
   });
   try {
-    const pool = await getSqlPool();
-    const result = await pool.request()
+    const result = await (await request())
       .input("portalEnvironment", sql.VarChar(10), input.portalEnvironment)
       .input("requestedLinks", sql.NVarChar(sql.MAX), JSON.stringify(links))
       .query<{ ordinal: number; target_status: string; physical_id: string | null }>(

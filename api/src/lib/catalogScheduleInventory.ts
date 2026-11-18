@@ -10,7 +10,7 @@ import { readSqlCatalogSchedulePopulationCoverage } from "./catalogSchedulePopul
 type SourceWitness = CatalogExecutionSourceEvidence;
 type InventoryRow = CatalogScheduleDay["inventory"][number];
 type PersistedDay = Parameters<typeof generateCatalogPersistedScheduleDay>[0];
-type OperationalDay = Omit<PersistedDay, "revision" | "inventory">;
+type OperationalDay = Omit<PersistedDay, "revision" | "inventory" | "populationFence">;
 
 export type CatalogInventoryProofScope = Readonly<{
   portalEnvironment: OperationalDay["portalEnvironment"];
@@ -35,6 +35,8 @@ export type CatalogScheduleInventoryDependencies = {
   readLicenseProof?: (scope: CatalogInventoryProofScope) => Promise<ReadonlyMap<string, readonly string[] | null>>;
   /** Tests/internal composition only; normal execution uses the existing persisted generator. */
   persisted?: Parameters<typeof generateCatalogPersistedScheduleDay>[1];
+  /** Only the approved reader sets this from the original normalized SQL roster. */
+  populationRoster?: ReadonlyMap<string, string>;
 };
 
 const fail = (): never => { throw new Error("catalog_schedule_inventory_unverified"); };
@@ -134,6 +136,7 @@ export async function generateCatalogOperationalScheduleDay(
     : input.matchKeyVersion === undefined ? new Map<string, readonly string[] | null>()
       : await readCatalogScheduleLicenseProof({ ...scope, matchKeyVersion: input.matchKeyVersion });
   return generateCatalogPersistedScheduleDay({ ...input, revision,
+    ...(io.populationRoster ? { populationFence: { scope, roster: io.populationRoster } } : {}),
     inventory: composeCatalogScheduleInventory(links, modulesByLink, input.checkedAt) }, io.persisted);
 }
 
@@ -144,7 +147,7 @@ export async function generateCatalogOperationalScheduleDay(
  */
 export async function generateApprovedCatalogOperationalScheduleDay(
   input: Omit<OperationalDay, "operationsBySchedule">,
-  io: Omit<CatalogScheduleInventoryDependencies, "certifyCoverage"> &
+  io: Omit<CatalogScheduleInventoryDependencies, "certifyCoverage" | "populationRoster"> &
     Partial<Pick<CatalogScheduleInventoryDependencies, "certifyCoverage">> &
     { readOperations?: typeof readSqlCatalogScheduleOperationApprovals } = {},
 ): ReturnType<typeof generateCatalogPersistedScheduleDay> {
@@ -160,7 +163,9 @@ export async function generateApprovedCatalogOperationalScheduleDay(
   const operationsBySchedule = await (io.readOperations ?? readSqlCatalogScheduleOperationApprovals)(
     input.portalEnvironment, roster.map(({ schedule, version }) => ({ scheduleId: schedule.id, scheduleVersion: version })),
   );
-  return generateCatalogOperationalScheduleDay({ ...input, operationsBySchedule }, { ...dependencies, persisted: {
+  const populationRoster = new Map(roster.map(({ schedule, version }) => [schedule.id, version]));
+  if (populationRoster.size !== roster.length) return fail();
+  return generateCatalogOperationalScheduleDay({ ...input, operationsBySchedule }, { ...dependencies, populationRoster, persisted: {
     readRoster: async () => roster,
     generate: io.persisted?.generate ?? generateCatalogScheduleDay,
   } });

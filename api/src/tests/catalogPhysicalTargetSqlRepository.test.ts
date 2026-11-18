@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  planCatalogTasksWithVerifiedTargets, readSqlCatalogPhysicalTargets,
+  planCatalogTasksWithVerifiedTargets, readSqlCatalogPhysicalTargets, readSqlCatalogPhysicalTargetsInTransaction,
 } from "../lib/catalogPhysicalTargetSqlRepository";
 import type { CatalogTaskLink, CatalogTaskRequest } from "../lib/catalogTaskTargetPlanning";
 
@@ -70,5 +70,35 @@ describe("physical target registry reader", () => {
     fakes.query.mockRejectedValueOnce(new Error("synthetic SQL sensitive detail"));
     await expect(readSqlCatalogPhysicalTargets({ portalEnvironment: "qa", links: links.slice(0, 1) }))
       .rejects.toEqual(new Error("catalog_physical_inventory_unavailable"));
+  });
+
+  it("binds SQL to the caller's transaction without using the pool or touching its lifecycle", async () => {
+    const query = vi.fn().mockResolvedValue({ recordset: [{ ordinal: 0, target_status: "verified", physical_id: id }] });
+    const input = vi.fn().mockReturnThis();
+    const transaction = { request: vi.fn(() => ({ input, query })), begin: vi.fn(), commit: vi.fn(), rollback: vi.fn() };
+    const tx = transaction as unknown as Parameters<typeof readSqlCatalogPhysicalTargetsInTransaction>[0];
+    await expect(readSqlCatalogPhysicalTargetsInTransaction(tx, { portalEnvironment: "qa", links: links.slice(0, 1) }))
+      .resolves.toEqual([{ status: "verified", id }]);
+    expect(transaction.request).toHaveBeenCalledOnce();
+    expect(query).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("core.catalog_physical_target_links"));
+    expect(input).toHaveBeenCalledWith("portalEnvironment", expect.anything(), "qa");
+    expect(fakes.pool).not.toHaveBeenCalled();
+    expect(transaction.begin).not.toHaveBeenCalled();
+    expect(transaction.commit).not.toHaveBeenCalled();
+    expect(transaction.rollback).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid links and resolves empty lists before requesting either SQL path", async () => {
+    const request = vi.fn();
+    const transaction = { request } as unknown as Parameters<typeof readSqlCatalogPhysicalTargetsInTransaction>[0];
+    const invalidLink = { ...links[0], domainId: "  invalid" };
+    for (const read of [readSqlCatalogPhysicalTargets, (input: Parameters<typeof readSqlCatalogPhysicalTargets>[0]) =>
+      readSqlCatalogPhysicalTargetsInTransaction(transaction, input)]) {
+      await expect(read({ portalEnvironment: "qa", links: [] })).resolves.toEqual([]);
+      await expect(read({ portalEnvironment: "qa", links: [invalidLink] }))
+        .rejects.toThrow("catalog_physical_inventory_unavailable");
+    }
+    expect(request).not.toHaveBeenCalled();
+    expect(fakes.pool).not.toHaveBeenCalled();
   });
 });

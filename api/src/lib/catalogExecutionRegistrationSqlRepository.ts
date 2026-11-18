@@ -46,10 +46,21 @@ type Conflict = "invalid-plan" | "cutoff-passed" | "legacy-task-collision" | "ex
 export type CatalogExecutionRegistrationResult = { status: "registered" | "existing"; taskId: string }
   | { status: "conflict"; reason: Conflict };
 
+export type CatalogExecutionRegistrationTransactionResult = {
+  outcome: Exclude<CatalogExecutionRegistrationResult, { status: "conflict" }>;
+  /** null is reserved for an exact replay; new registrations return their minimum proof expiry. */
+  validUntil: Date | null;
+};
+
 class RegistrationConflict extends Error {
   constructor(readonly reason: Conflict) { super(reason); }
 }
 const conflict = (reason: Conflict): never => { throw new RegistrationConflict(reason); };
+
+/** Translate only this module's business guard, never a driver error or lookalike object. */
+export function catalogRegistrationConflictReason(error: unknown): Conflict | null {
+  return error instanceof RegistrationConflict ? error.reason : null;
+}
 const safeText = (value: unknown, max: number): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= max && value === value.trim() && !/\p{Cc}/u.test(value);
 const sourceIdFormat = /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i;
@@ -204,15 +215,45 @@ async function verifyReplay(transaction: sql.Transaction, input: CatalogExecutio
 /** One atomic registration; this never adopts legacy work, edits existing assignments or revives an occurrence. */
 export async function registerSqlCatalogTaskExecution(input: CatalogExecutionRegistration): Promise<CatalogExecutionRegistrationResult> {
   try {
+    // Preserve the public wrapper's validation-before-transaction behavior.
     const planned = parseInput(input);
+    const result = await runSqlTransaction(transaction => registerParsedExecutionInTransaction(transaction, input, planned));
+    return result.outcome;
+  } catch (error) {
+    // The transaction has rolled back before a known conflict becomes a public result.
+    const reason = catalogRegistrationConflictReason(error);
+    if (reason !== null) return { status: "conflict", reason };
+    throw error;
+  }
+}
+
+/**
+ * Register inside the caller-owned transaction, including the reentrant task-day
+ * lock. Never begins/commits/rolls back or converts conflicts to return values.
+ * The caller must roll back every provisional write on rejection and must fold
+ * each non-null validUntil into its final SQL-clock check before committing the
+ * batch (and independently check the batch date cutoff). Exact replays produce
+ * no new writes and therefore return no new evidence deadline.
+ */
+export async function registerSqlCatalogTaskExecutionInTransaction(
+  transaction: sql.Transaction,
+  input: CatalogExecutionRegistration,
+): Promise<CatalogExecutionRegistrationTransactionResult> {
+  return registerParsedExecutionInTransaction(transaction, input, parseInput(input));
+}
+
+async function registerParsedExecutionInTransaction(
+  transaction: sql.Transaction,
+  input: CatalogExecutionRegistration,
+  planned: ReturnType<typeof parseInput>,
+): Promise<CatalogExecutionRegistrationTransactionResult> {
     const { group, task, cutoffAt, portalEnvironment } = input;
     const executionKey = Buffer.from(group.executionKey, "hex");
-    return await runSqlTransaction(async transaction => {
       if (!await lockCatalogTaskDay(transaction, task)) return conflict("coexistence-lock-unavailable");
       const existing = await lockExecution(transaction, executionKey);
       if (existing) {
         await verifyReplay(transaction, input, existing, planned);
-        return { status: "existing", taskId: existing.taskId };
+        return { outcome: { status: "existing", taskId: existing.taskId }, validUntil: null };
       }
       // Older immutable executions may have used display text. They can be
       // replayed exactly, but only an opaque approved ID can create new work.
@@ -450,11 +491,5 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
       const result = event.recordset[0]?.result;
       if (result === "cutoff-passed") return conflict("cutoff-passed");
       if (result !== "registered") return conflict("catalog-reference-changed");
-      return { status: "registered", taskId: task.id };
-    });
-  } catch (error) {
-    // Only the known business guard is translated; SQL uniqueness/errors roll back and remain failures.
-    if (error instanceof RegistrationConflict) return { status: "conflict", reason: error.reason };
-    throw error;
-  }
+      return { outcome: { status: "registered", taskId: task.id }, validUntil: evidenceValidUntil };
 }
