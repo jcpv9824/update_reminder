@@ -10,12 +10,9 @@ async function main() {
     return 2;
   }
   const profile = parseEnv(readFileSync(filename, "utf8"));
-  const server = /^(?<host>[^,;\s]+)(?:\s*,\s*(?<port>[0-9]{1,5}))?$/.exec(profile.SOURCE_SQL_SERVER?.trim() ?? "")?.groups;
-  const separatePort = profile.SOURCE_SQL_PORT?.trim();
-  const inputPort = server?.port ?? separatePort ?? "1433";
-  const port = Number(inputPort);
-  if (!server || (server.port && separatePort && Number(server.port) !== Number(separatePort))
-    || !/^[0-9]{1,5}$/.test(inputPort) || port < 1 || port > 65535
+  const { parseCatalogOriginConnectionAddress } = require("../dist/src/lib/catalogOriginConnectionAddress");
+  const address = parseCatalogOriginConnectionAddress(profile.SOURCE_SQL_SERVER, profile.SOURCE_SQL_PORT);
+  if (!address
     || !profile.SOURCE_SQL_DATABASE?.trim() || !profile.SOURCE_SQL_USER?.trim() || !profile.SOURCE_SQL_PASSWORD) {
     console.log(JSON.stringify({ contract, status: "invalid_local_profile" }));
     return 2;
@@ -23,7 +20,7 @@ async function main() {
   const { createCatalogExternalSqlTransport } = require("../dist/src/lib/catalogExternalSqlTransport");
   const { verifyCatalogExternalSource } = require("../dist/src/lib/catalogExternalSourceQueries");
   const transport = createCatalogExternalSqlTransport({
-    server: server.host, port, database: profile.SOURCE_SQL_DATABASE.trim(),
+    ...address, database: profile.SOURCE_SQL_DATABASE.trim(),
     username: profile.SOURCE_SQL_USER.trim(), password: profile.SOURCE_SQL_PASSWORD,
   });
   const status = await verifyCatalogExternalSource(transport, contract);

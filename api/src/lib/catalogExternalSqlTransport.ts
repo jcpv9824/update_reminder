@@ -7,6 +7,7 @@ import {
   type CatalogExternalSourceTransport,
 } from "./catalogExternalSourceQueries";
 import { createGuardedSqlConnector, resolveHost, type SocketConnector } from "./outboundGuard";
+import { catalogSqlInstanceNamePattern } from "./catalogOriginConnectionAddress";
 
 /** Construct server-side from an enabled binding and its resolved secret; never from HTTP input. */
 export type CatalogSqlConnectionTarget = Readonly<{
@@ -15,6 +16,8 @@ export type CatalogSqlConnectionTarget = Readonly<{
   database: string;
   username: string;
   password: string;
+  /** Optional assertion only: never passed as a driver address or used for discovery. */
+  expectedInstanceName?: string;
 }>;
 
 const HOST = /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/i;
@@ -44,10 +47,11 @@ export function createCatalogExternalSqlTransport(target: CatalogSqlConnectionTa
   if (typeof target.server !== "string" || !HOST.test(target.server) || target.server.includes("..") ||
       !Number.isInteger(target.port) || target.port < 1 || target.port > 65535 ||
       !validSqlId(target.database) || !validSqlId(target.username) ||
-      typeof target.password !== "string" || !target.password.length || target.password.length > 512) {
+      typeof target.password !== "string" || !target.password.length || target.password.length > 512 ||
+      (target.expectedInstanceName !== undefined && !catalogSqlInstanceNamePattern.test(target.expectedInstanceName))) {
     throw failure();
   }
-  const { server, port, database, username, password } = target;
+  const { server, port, database, username, password, expectedInstanceName } = target;
 
   return {
     async withConsistentRead({ contract, timeoutMs, signal }, read) {
@@ -82,8 +86,10 @@ export function createCatalogExternalSqlTransport(target: CatalogSqlConnectionTa
         socket.once("close", () => sockets.delete(socket));
         return socket;
       });
-      const connector: SocketConnector = (options, lookup, driverSignal) =>
-        guarded(options, lookup, AbortSignal.any([driverSignal, lifetime.signal]));
+      const connector: SocketConnector = async (options, lookup, driverSignal) => {
+        if (options.host.toLowerCase() !== server.toLowerCase() || options.port !== port) throw failure();
+        return guarded(options, lookup, AbortSignal.any([driverSignal, lifetime.signal]));
+      };
 
       const run = async () => {
         pool = new sql.ConnectionPool({
@@ -166,6 +172,18 @@ export function createCatalogExternalSqlTransport(target: CatalogSqlConnectionTa
         };
 
         try {
+          if (expectedInstanceName !== undefined) {
+            const request = new sql.Request(transaction);
+            active = request;
+            try {
+              const { recordset } = await driverOperation(() => request.query<{ instanceName: string | null }>(
+                "SELECT CONVERT(nvarchar(128), SERVERPROPERTY('InstanceName')) AS instanceName;"));
+              lifetime.signal.throwIfAborted();
+              const reported = recordset.length === 1 ? recordset[0]?.instanceName : null;
+              if (typeof reported !== "string" || !catalogSqlInstanceNamePattern.test(reported) ||
+                reported.toUpperCase() !== expectedInstanceName.toUpperCase()) throw failure();
+            } finally { active = undefined; }
+          }
           const value = await read(session);
           if (!schemaVerified || active) throw failure("consistency_unverified");
           return value;

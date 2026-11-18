@@ -62,6 +62,10 @@ La actualización explícita lee exclusivamente la versión de Key Vault indicad
 
 Después de compilar el API, ejecutar desde `api/`: `node scripts/verify-catalog-origin.cjs <archivo-env-fuera-del-repo> <erp_v1|sag_admin_v1>`. El comando sólo devuelve el contrato y el estado; no copia el archivo, no publica datos ni modifica la configuración. El servidor debe ser un hostname con puerto numérico opcional (`servidor,puerto` o variable separada). Las credenciales nunca se pasan por argumentos.
 
+Si el perfil local especifica una instancia, el puerto debe ser explícito: `servidor\INSTANCIA,puerto` o `servidor,puerto\INSTANCIA` para el formato local anterior. El transporte solo conecta al hostname y puerto dados, sin SQL Browser ni redirecciones. Después de validar TLS comprueba la instancia en la misma transacción de solo lectura antes de consultar el esquema o la proyección. Un puerto contradictorio, un cambio de destino o una instancia inesperada termina el preflight sin leer datos de clientes.
+
+En la última prueba local del ERP, el puerto respondió, la conexión TLS se completó y se inició la transacción `SNAPSHOT`, pero el nombre devuelto por `SERVERPROPERTY('InstanceName')` no coincidió con la instancia indicada. El preflight no consultó el esquema ni registros. Validar el puerto y la identidad esperada con el administrador del origen antes de volver a ejecutar; no desactivar la comprobación ni replantear permisos por este resultado.
+
 El inventario actual de Azure no tiene un API o frontend dedicado de QA. El workflow principal apunta al API de producción, así que no se usa como prueba de QA. La base `PortalSAGWeb-TEST` sí está disponible; al revisar, no tenía perfiles SQL guardados para certificar.
 
 Una consulta de solo lectura encontró 20 módulos activos en el maestro de licencias de QA, ninguno con un código de una letra compatible con el formato observado en SAG Admin. El detalle conserva los códigos observados; para asignarles nombres y usarlos como filtros de actualización hace falta una correspondencia verificada, no una unión por coincidencia aproximada de nombre.

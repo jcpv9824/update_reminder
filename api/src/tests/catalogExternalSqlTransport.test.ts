@@ -47,6 +47,44 @@ beforeEach(() => {
 });
 
 describe("external catalog SQL transport", () => {
+  it("asserts the instance on the same fixed, verified TCP connection before reading data", async () => {
+    fakes.query.mockResolvedValueOnce({ recordset: [{ instanceName: "SAG_ERP" }] }).mockResolvedValueOnce(proof)
+      .mockResolvedValueOnce({ recordset: [] });
+    const result = await readCatalogExternalSource(createCatalogExternalSqlTransport({ ...target, expectedInstanceName: "Sag_Erp" }), "erp_v1");
+    expect(result).toEqual({ status: "complete", records: [] });
+    const config = fakes.config.mock.calls[0][0];
+    expect(config).toMatchObject({ server: target.server, port: target.port,
+      options: { serverName: target.server, trustServerCertificate: false } });
+    expect(config.options).not.toHaveProperty("instanceName");
+    expect(fakes.query.mock.calls[0][0]).toContain("SERVERPROPERTY('InstanceName')");
+    expect(fakes.query.mock.calls.every(([, tx]) => tx === fakes.query.mock.calls[0][1])).toBe(true);
+  });
+
+  it("rejects the wrong or default instance before any schema or customer query", async () => {
+    for (const instanceName of [null, "OTHER"]) {
+      fakes.query.mockClear().mockResolvedValueOnce({ recordset: [{ instanceName }] });
+      await expect(readCatalogExternalSource(createCatalogExternalSqlTransport({ ...target, expectedInstanceName: "SAG_ERP" }), "erp_v1"))
+        .resolves.toEqual({ status: "unavailable", reason: "connection_failed" });
+      expect(fakes.query).toHaveBeenCalledOnce();
+      expect(fakes.query.mock.calls[0][0]).toContain("SERVERPROPERTY('InstanceName')");
+    }
+  });
+
+  it("does not allow the driver's routing to change the configured host or port", async () => {
+    const guarded = vi.fn().mockResolvedValue({});
+    fakes.guard.mockReturnValueOnce(guarded);
+    fakes.connectPool.mockImplementationOnce(async () => {
+      const connector = fakes.config.mock.calls[0][0].options.connector;
+      const signal = new AbortController().signal;
+      await expect(connector({ host: "other.example.test", port: target.port }, vi.fn(), signal)).rejects.toThrow("connection_failed");
+      await expect(connector({ host: target.server, port: target.port + 1 }, vi.fn(), signal)).rejects.toThrow("connection_failed");
+      expect(guarded).not.toHaveBeenCalled();
+      await expect(connector({ host: target.server.toUpperCase(), port: target.port }, vi.fn(), signal)).resolves.toEqual({});
+      expect(guarded).toHaveBeenCalledOnce();
+    });
+    fakes.query.mockResolvedValueOnce(proof).mockResolvedValueOnce({ recordset: [] });
+    await expect(readCatalogExternalSource(createCatalogExternalSqlTransport(target), "erp_v1")).resolves.toEqual({ status: "complete", records: [] });
+  });
   it("uses verified TLS, no default database fallback and one SNAPSHOT transaction for schema and all pages", async () => {
     fakes.query.mockResolvedValueOnce(proof).mockResolvedValueOnce({ recordset: [{ sourceRecordId: 12, officialName: "Fixture", documentNumber: "123", activeCode: "S" }] })
       .mockResolvedValueOnce({ recordset: [] });
