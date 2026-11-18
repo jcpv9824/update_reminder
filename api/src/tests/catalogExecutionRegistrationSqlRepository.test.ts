@@ -175,7 +175,7 @@ describe("certified-day additive schedule provenance", () => {
     rows([{ ...existing, status }], existingLinks, [addedSchedule], [{ now }], [{ linkId: lateId, validUntil: proofExpiry }],
       [{ count: 1 }], [{ result: "registered" }]);
     expect(await registerSqlCatalogTaskExecutionInTransaction(transaction, request, mode))
-      .toEqual({ outcome: { status: "existing", taskId: task.id }, validUntil: licenseExpiry });
+      .toEqual({ outcome: { status: "existing", taskId: task.id, accountedOrigins: 1, receiptOnly: true }, validUntil: licenseExpiry });
     expect(mock.insert).not.toHaveBeenCalled();
     expect(mock.query.mock.calls[4][1]).toMatchObject({ executionId: "2", insertLinks: false, physicalId });
     expect(mock.license).toHaveBeenCalledExactlyOnceWith(transaction, { executionId: "2", portalEnvironment: "qa", matchKeyVersion: 3,
@@ -195,7 +195,7 @@ describe("certified-day additive schedule provenance", () => {
       rows([existing], existingLinks, [addedSchedule], [{ now }], [{ linkId: lateId, validUntil: proofExpiry }],
         [{ count: 1 }], [{ result: "registered" }]);
       expect(await registerSqlCatalogTaskExecutionInTransaction(transaction, lateAlias(), mode))
-        .toEqual({ outcome: { status: "existing", taskId: task.id }, validUntil: licenseExpiry });
+        .toEqual({ outcome: { status: "existing", taskId: task.id, accountedOrigins: 1, receiptOnly: true }, validUntil: licenseExpiry });
     }
     const queries = mock.query.mock.calls.filter(([sql]) => sql.includes("INSERT workflow.catalog_task_origin_receipts"));
     expect(queries).toHaveLength(2);
@@ -215,7 +215,8 @@ describe("certified-day additive schedule provenance", () => {
     rows([existing], existingLinks, [addedSchedule, { ...addedSchedule, scheduleId: "schedule_4", scheduleKey: "4", selectionMode: "manual" }], [{ now }],
       [{ linkId: externalLinkId, validUntil: proofExpiry }, { linkId: lateId, validUntil: proofExpiry }],
       [{ count: 1 }], [{ count: 1 }], [{ count: 1 }], [{ result: "registered" }]);
-    expect((await registerSqlCatalogTaskExecutionInTransaction(transaction, combined, mode)).outcome.status).toBe("existing");
+    expect((await registerSqlCatalogTaskExecutionInTransaction(transaction, combined, mode)).outcome)
+      .toEqual({ status: "existing", taskId: task.id, accountedOrigins: 1 });
     const receipt = mock.query.mock.calls.find(([sql]) => sql.includes("INSERT workflow.catalog_task_origin_receipts"))!;
     const schedule = mock.query.mock.calls.find(([sql]) => sql.includes("INSERT workflow.task_sources"))!;
     const regular = mock.query.mock.calls.find(([sql]) => sql.includes("INSERT workflow.catalog_task_execution_sources"))!;
@@ -224,6 +225,22 @@ describe("certified-day additive schedule provenance", () => {
     expect(JSON.parse(schedule[1].origins)).toEqual([{ key: "3", origin: "licensing" }]);
     expect(mock.license).toHaveBeenCalledExactlyOnceWith(transaction, { executionId: "2", portalEnvironment: "qa", matchKeyVersion: 3,
       attachments: [{ linkId: externalLinkId, scheduleId: "schedule_3", moduleIds: ["module1"] }] });
+  });
+
+  it("keeps an already-attached requested pair operative alongside accounting receipts", async () => {
+    const known = input();
+    const late = lateAlias();
+    const combined = { ...late, group: { ...late.group, sources: [known.group.sources[0], ...late.group.sources] },
+      catalogSourceIdsByLink: new Map([[externalLinkId, sourceId], ...late.catalogSourceIdsByLink]),
+      catalogEvidenceByLink: new Map([[externalLinkId, known.catalogEvidenceByLink!.get(externalLinkId)!], ...late.catalogEvidenceByLink!]),
+      scheduleVersions: new Map([["schedule_1", "0000000000000001"], ...late.scheduleVersions]) };
+    mock.license.mockResolvedValue(licenseExpiry);
+    rows([existing], existingLinks, [scheduleRows[0], addedSchedule], [{ now }],
+      [{ linkId: externalLinkId, validUntil: proofExpiry }, { linkId: lateId, validUntil: proofExpiry }],
+      [{ count: 1 }], [{ result: "registered" }]);
+    expect((await registerSqlCatalogTaskExecutionInTransaction(transaction, combined, mode)).outcome)
+      .toEqual({ status: "existing", taskId: task.id, accountedOrigins: 1 });
+    expect(mock.query.mock.calls.some(([sql]) => /INSERT workflow\.(catalog_task_execution_sources|task_sources)/.test(sql))).toBe(false);
   });
 
   it("does not accept a local-only late alias without the distinct 042 proof", async () => {

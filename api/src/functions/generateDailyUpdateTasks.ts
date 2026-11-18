@@ -1,4 +1,4 @@
-import { app, InvocationContext, Timer } from "@azure/functions";
+import { app, HttpRequest, HttpResponseInit, InvocationContext, Timer } from "@azure/functions";
 import { writeAuditLog } from "../lib/audit";
 import { expandSchedulesWithDomainInheritance, expectedTaskKeysForDate, markOneTimeScheduleCompleted, obsoleteTasksOutsideExpected, oneTimeSchedulesReadyToComplete, summarizeTaskGenerationForDate } from "../lib/taskGenerator";
 import { isScheduleDueOnDate } from "../lib/scheduleEngine";
@@ -9,6 +9,7 @@ import { readSqlDomains, readSqlPublicDatabases } from "../lib/coreMastersSqlRep
 import { readSqlLicenseModules } from "../lib/licensingSqlRepository";
 import { readSqlWorkflowTasks } from "../lib/workflowTasksSqlRepository";
 import { runCatalogTaskCutoffSweep } from "../lib/catalogTaskCutoffWorker";
+import { getTaskGenerationMode, runCatalogGeneration } from "../lib/catalogGenerationRuntime";
 import {
   completeSqlOneTimeSchedule,
   createSqlGeneratedTask,
@@ -328,88 +329,119 @@ async function sweepCatalogCutoffs(log: (message: string) => void): Promise<void
 app.timer("generateDailyUpdateTasks", {
   schedule: "0 0 6 * * *",
   handler: async (_t: Timer, ctx: InvocationContext) => {
-    const isoDate = todayInBogotaIso();
-    ctx.log(`Iniciando generación de tareas para ${isoDate}...`);
-    await sweepCatalogCutoffs(message => ctx.log(message));
+    let mode: ReturnType<typeof getTaskGenerationMode> | undefined;
     try {
+      mode = getTaskGenerationMode();
+      if (mode === "catalog") {
+        const result = await runCatalogGeneration({ trigger: "timer" });
+        await sweepCatalogCutoffs(message => ctx.log(message));
+        ctx.log(`Catálogo: estado=${result.status}; creadas=${result.created}; existentes=${result.existing}; retenidas=${result.held}; conflictos=${result.conflicts}; procedencias=${result.accountedOrigins}.`);
+        return;
+      }
+      const isoDate = todayInBogotaIso();
+      ctx.log(`Iniciando generación de tareas para ${isoDate}...`);
+      await sweepCatalogCutoffs(message => ctx.log(message));
       const r = await runTaskGeneration(isoDate, (m) => ctx.log(m));
       ctx.log(`Generación completada. Tareas nuevas: ${r.created}; omitidas: ${r.skipped}.`);
-    } catch (e: any) {
-      ctx.error("Error durante la generación de tareas", e);
+    } catch (error) {
+      if (mode === "legacy") ctx.error("Error durante la generación de tareas", error);
+      else ctx.error("No se pudo ejecutar la generación del catálogo.");
     }
   },
 });
 
-// Endpoint manual para disparar la generación (admin / client_manager).
+async function readCatalogGenerationBody(req: HttpRequest): Promise<unknown> {
+  try {
+    const raw = await req.text();
+    if (raw.length === 0) return undefined;
+    if (raw.length > 65_536) throw new Error("Límite del cuerpo excedido.");
+    return JSON.parse(raw) as unknown;
+  } catch {
+    throw Object.assign(new Error("Cuerpo de la solicitud inválido."), { status: 400 });
+  }
+}
+
+async function handleManualGeneration(trigger: "generate" | "refresh", req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> {
+  let mode: ReturnType<typeof getTaskGenerationMode> | undefined;
+  try {
+    const { requireUser, loadUserProfile } = await import("../lib/auth");
+    const { canGenerateScheduleTasks } = await import("../lib/managementAccess");
+    const { loadRoleDefinitions } = await import("../lib/roleDefinitionStore");
+    const auth = await requireUser(req);
+    const profile = await loadUserProfile(auth);
+    const roleDefinitions = profile ? await loadRoleDefinitions() : [];
+    if (!profile || !canGenerateScheduleTasks(profile, roleDefinitions)) {
+      return { status: 403, jsonBody: { error: "No tiene permisos para generar tareas." } };
+    }
+    mode = getTaskGenerationMode();
+    if (mode === "catalog") {
+      const body = await readCatalogGenerationBody(req);
+      if (trigger === "refresh" && body !== null && typeof body === "object" && "manualScheduleIds" in body) {
+        return { status: 400, jsonBody: { error: "El refresco no admite una selección manual de programaciones." } };
+      }
+      const result = await runCatalogGeneration({ trigger, body, actorId: profile.id });
+      if (trigger === "refresh") await sweepCatalogCutoffs(message => ctx.log(message));
+      const { date, status, created, existing, held, conflicts, accountedOrigins, manualIntentsSaved, message } = result;
+      const metadata = { date, status, created, existing, held, conflicts, accountedOrigins, manualIntentsSaved };
+      try {
+        await writeAuditLog({
+          entityType: "task",
+          entityId: trigger === "generate" ? "catalog_manual_generate" : "catalog_manual_refresh",
+          action: "catalog_tasks_evaluated_manually",
+          performedBy: profile.id,
+          performedByEmail: profile.email,
+          metadata,
+        });
+      } catch {
+        // The catalog transaction already resolved. An audit write failure must
+        // not falsely report that persisted intents or tasks were rolled back.
+        ctx.error("No se pudo auditar la evaluación de tareas del catálogo.");
+      }
+      const httpStatus = status === "cutoff" ? 409 : status === "unverified" ? 503 : 200;
+      return { status: httpStatus, jsonBody: { ...metadata, message } };
+    }
+
+    if (trigger === "refresh") await sweepCatalogCutoffs(message => ctx.log(message));
+    const body = (await req.json().catch(() => ({}))) as any;
+    const date = typeof body.date === "string" ? body.date : todayInBogotaIso();
+    const windowStart = typeof body.windowStart === "string" ? body.windowStart : undefined;
+    const windowEnd = typeof body.windowEnd === "string" ? body.windowEnd : undefined;
+    const r = await runTaskGeneration(date, (m) => ctx.log(m), { windowStart, windowEnd });
+    await writeAuditLog({
+      entityType: "task",
+      entityId: "manual_refresh",
+      action: "tasks_refreshed_manually",
+      performedBy: profile.id,
+      performedByEmail: profile.email,
+      metadata: { date, windowStart: r.windowStart, windowEnd: r.windowEnd, created: r.created, updated: r.updated, obsoleted: r.obsoleted, skipped: r.skipped },
+    });
+    return { status: 200, jsonBody: trigger === "refresh" ? { ...r, message: "Tareas actualizadas correctamente." } : r };
+  } catch (error: any) {
+    if (mode === "legacy") {
+      ctx.error(trigger === "refresh" ? "Error en refresco manual" : "Error en generación manual", error);
+      const message = trigger === "refresh" ? "No se pudieron actualizar las tareas." : "Error al generar tareas.";
+      return { status: error?.status ?? 500, jsonBody: { error: error?.status === 503 ? error.message : message } };
+    }
+    const status = error?.status;
+    if (status === 400) return { status, jsonBody: { error: "Solicitud de generación inválida." } };
+    if (status === 401) return { status, jsonBody: { error: "No autenticado." } };
+    if (status === 403) return { status, jsonBody: { error: "No tiene permisos para generar tareas." } };
+    if (status === 409) return { status, jsonBody: { error: "No se pudo confirmar la solicitud para la fecha indicada." } };
+    ctx.error("No se pudo ejecutar la evaluación manual de tareas.");
+    return { status: status === 503 ? 503 : 500, jsonBody: { error: "No se pudo ejecutar la generación de tareas." } };
+  }
+}
+
 app.http("generateDailyUpdateTasksManual", {
   route: "tasks/generate",
   methods: ["POST"],
   authLevel: "anonymous",
-  handler: async (req, ctx) => {
-    try {
-      const { requireUser, loadUserProfile } = await import("../lib/auth");
-      const { canGenerateScheduleTasks } = await import("../lib/managementAccess");
-      const { loadRoleDefinitions } = await import("../lib/roleDefinitionStore");
-      const auth = await requireUser(req);
-      const profile = await loadUserProfile(auth);
-      const roleDefinitions = profile ? await loadRoleDefinitions() : [];
-      if (!profile || !canGenerateScheduleTasks(profile, roleDefinitions)) {
-        return { status: 403, jsonBody: { error: "No tiene permisos para generar tareas." } };
-      }
-      const body = (await req.json().catch(() => ({}))) as any;
-      const date = typeof body.date === "string" ? body.date : todayInBogotaIso();
-      const windowStart = typeof body.windowStart === "string" ? body.windowStart : undefined;
-      const windowEnd = typeof body.windowEnd === "string" ? body.windowEnd : undefined;
-      const r = await runTaskGeneration(date, (m) => ctx.log(m), { windowStart, windowEnd });
-      await writeAuditLog({
-        entityType: "task",
-        entityId: "manual_refresh",
-        action: "tasks_refreshed_manually",
-        performedBy: profile.id,
-        performedByEmail: profile.email,
-        metadata: { date, windowStart: r.windowStart, windowEnd: r.windowEnd, created: r.created, updated: r.updated, obsoleted: r.obsoleted, skipped: r.skipped },
-      });
-      return { status: 200, jsonBody: r };
-    } catch (e: any) {
-      ctx.error("Error en generación manual", e);
-      return { status: e?.status ?? 500, jsonBody: { error: e?.status === 503 ? e.message : "Error al generar tareas." } };
-    }
-  },
+  handler: (req, ctx) => handleManualGeneration("generate", req, ctx),
 });
 
 app.http("refreshUpdateTasksManual", {
   route: "tasks/refresh",
   methods: ["POST"],
   authLevel: "anonymous",
-  handler: async (req, ctx) => {
-    try {
-      const { requireUser, loadUserProfile } = await import("../lib/auth");
-      const { canGenerateScheduleTasks } = await import("../lib/managementAccess");
-      const { loadRoleDefinitions } = await import("../lib/roleDefinitionStore");
-      const auth = await requireUser(req);
-      const profile = await loadUserProfile(auth);
-      const roleDefinitions = profile ? await loadRoleDefinitions() : [];
-      if (!profile || !canGenerateScheduleTasks(profile, roleDefinitions)) {
-        return { status: 403, jsonBody: { error: "No tiene permisos para generar tareas." } };
-      }
-      await sweepCatalogCutoffs(message => ctx.log(message));
-      const body = (await req.json().catch(() => ({}))) as any;
-      const date = typeof body.date === "string" ? body.date : todayInBogotaIso();
-      const windowStart = typeof body.windowStart === "string" ? body.windowStart : undefined;
-      const windowEnd = typeof body.windowEnd === "string" ? body.windowEnd : undefined;
-      const r = await runTaskGeneration(date, (m) => ctx.log(m), { windowStart, windowEnd });
-      await writeAuditLog({
-        entityType: "task",
-        entityId: "manual_refresh",
-        action: "tasks_refreshed_manually",
-        performedBy: profile.id,
-        performedByEmail: profile.email,
-        metadata: { date, windowStart: r.windowStart, windowEnd: r.windowEnd, created: r.created, updated: r.updated, obsoleted: r.obsoleted, skipped: r.skipped },
-      });
-      return { status: 200, jsonBody: { ...r, message: "Tareas actualizadas correctamente." } };
-    } catch (e: any) {
-      ctx.error("Error en refresco manual", e);
-      return { status: e?.status ?? 500, jsonBody: { error: e?.status === 503 ? e.message : "No se pudieron actualizar las tareas." } };
-    }
-  },
+  handler: (req, ctx) => handleManualGeneration("refresh", req, ctx),
 });

@@ -26,6 +26,7 @@ import {
 import { readSqlClients } from "../lib/clientsSqlRepository";
 import { readSqlDomains, readSqlPublicDatabases } from "../lib/coreMastersSqlRepository";
 import { readSqlLicenseModules } from "../lib/licensingSqlRepository";
+import { getTaskGenerationMode, runCatalogGeneration } from "../lib/catalogGenerationRuntime";
 import { runTaskGeneration } from "./generateDailyUpdateTasks";
 import type { ClientRecord, DatabaseRecord, LicensingScope, UpdateSchedule } from "../types/models";
 
@@ -44,6 +45,10 @@ export async function loadScheduleClient(clientId: string): Promise<ClientRecord
 // Una falla aquí NO debe romper el guardado de la programación.
 async function regenerarTareasTrasGuardar(): Promise<void> {
   try {
+    if (getTaskGenerationMode() === "catalog") {
+      await runCatalogGeneration({ trigger: "schedule-change" });
+      return;
+    }
     await runTaskGeneration(bogotaTodayIso(), () => {});
   } catch {/* la generación no debe interrumpir el guardado */}
 }

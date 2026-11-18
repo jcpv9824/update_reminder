@@ -33,7 +33,7 @@ export type CatalogScheduleDay = {
 };
 
 type DayResult = { status: "cutoff" | "unverified" } | { status: "evaluated";
-  registered: number; existing: number; held: number; conflicts: number };
+  registered: number; existing: number; held: number; conflicts: number; accountedOrigins?: number };
 const dependencies = { resolve: readSqlCatalogPhysicalTargets, register: registerSqlCatalogTaskExecution };
 const ruleKey = (scheduleId: string, kind: CatalogTaskKind) => JSON.stringify([scheduleId, kind]);
 const validDay = (date: string) => /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(Date.parse(date))
@@ -128,8 +128,12 @@ export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io?:
         return evidence ? [[row.linkId, evidence] as const] : [];
       })), scheduleVersions: new Map(group.sources.map(source =>
         [source.scheduleId, versions.get(source.scheduleId)!])) });
-    if (write.status === "conflict") result.conflicts++;
-    else result[write.status]++;
+    if (write.status === "conflict") {
+      result.conflicts++;
+    } else {
+      if (write.accountedOrigins) result.accountedOrigins = (result.accountedOrigins ?? 0) + write.accountedOrigins;
+      if (!write.receiptOnly) result[write.status]++;
+    }
   }
   return result;
 }

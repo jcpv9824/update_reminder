@@ -44,7 +44,12 @@ export type CatalogExecutionRegistration = Readonly<{
 type Conflict = "invalid-plan" | "cutoff-passed" | "legacy-task-collision" | "execution-conflict"
   | "source-set-changed" | "retired" | "catalog-reference-changed" | "workflow-assignment-required" | "coexistence-lock-unavailable";
 
-export type CatalogExecutionRegistrationResult = { status: "registered" | "existing"; taskId: string }
+export type CatalogExecutionRegistrationResult = { status: "registered" | "existing"; taskId: string;
+  /** Verified receipt pairs, including idempotent replays; never a count of new or operative tasks. */
+  accountedOrigins?: number;
+  /** All requested pairs were accounting receipts, with no operative pair in the request. */
+  receiptOnly?: true;
+}
   | { status: "conflict"; reason: Conflict };
 
 export type CatalogExecutionRegistrationTransactionResult = {
@@ -614,5 +619,13 @@ async function registerParsedExecutionInTransaction(
       const result = event.recordset[0]?.result;
       if (result === "cutoff-passed") return conflict("cutoff-passed");
       if (result !== "registered") return conflict("catalog-reference-changed");
-      return { outcome: { status: existing ? "existing" : "registered", taskId: existing?.taskId ?? task.id }, validUntil: evidenceValidUntil };
+      return {
+        outcome: {
+          status: existing ? "existing" : "registered",
+          taskId: existing?.taskId ?? task.id,
+          ...(receipts.length ? { accountedOrigins: receipts.length } : {}),
+          ...(receipts.length && receipts.length === planned.attachments.size ? { receiptOnly: true as const } : {}),
+        },
+        validUntil: evidenceValidUntil,
+      };
 }

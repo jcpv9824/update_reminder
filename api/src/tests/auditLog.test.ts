@@ -2,6 +2,19 @@ import { describe, it, expect } from "vitest";
 import { AUDIT_DATA_CLASSIFICATION, buildAuditLogEntry, sanitizeStoredAuditLogEntry } from "../lib/audit";
 
 describe("buildAuditLogEntry", () => {
+  it("limits manual catalog generation audit to date, outcome and counters", () => {
+    const metadata = {
+      date: "2026-11-18", status: "unverified", created: 0, existing: 0, held: 1, conflicts: 0,
+      accountedOrigins: 0, manualIntentsSaved: 1,
+    };
+    const entry = buildAuditLogEntry({
+      entityType: "task", entityId: "catalog_manual_generate", action: "catalog_tasks_evaluated_manually",
+      performedBy: "u1", performedByEmail: "operator@example.invalid",
+      metadata: { ...metadata, manualScheduleIds: ["restricted"], diagnostics: "restricted" },
+    });
+    expect(entry.metadata).toEqual(metadata);
+  });
+
   it("genera id y performedAt automáticamente", () => {
     const entry = buildAuditLogEntry({
       entityType: "client",

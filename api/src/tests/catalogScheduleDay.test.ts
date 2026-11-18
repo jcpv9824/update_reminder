@@ -49,7 +49,7 @@ describe("catalog schedule day", () => {
   it("registers one task with both aliases and a stable ID across revisions and input order", async () => {
     const deps = io();
     const result = await generateCatalogScheduleDay(data, deps);
-    expect(result).toMatchObject({ status: "evaluated", registered: 1, existing: 0, held: 0, conflicts: 0 });
+    expect(result).toEqual({ status: "evaluated", registered: 1, existing: 0, held: 0, conflicts: 0 });
     expect(deps.register).toHaveBeenCalledOnce();
     const first = deps.register.mock.calls[0][0];
     expect(first.task).toMatchObject({ taskDate: date, scheduleId: "schedule1", clientId: "client1", targetId: "db1" });
@@ -61,6 +61,25 @@ describe("catalog schedule day", () => {
       rules: [...data.rules].reverse() }, deps)).toMatchObject({ existing: 1 });
     expect(deps.register.mock.calls[1][0].task.id).toBe(first.task.id);
     expect(deps.register.mock.calls[1][0].group.executionKey).toBe(first.group.executionKey);
+  });
+
+  it("does not include a receipt-only disposition in the operative task counts", async () => {
+    const deps = io();
+    deps.register.mockResolvedValue({ status: "existing", taskId: "task", accountedOrigins: 2, receiptOnly: true });
+    expect(await generateCatalogScheduleDay(data, deps)).toEqual({
+      status: "evaluated", registered: 0, existing: 0, held: 0, conflicts: 0, accountedOrigins: 2,
+    });
+  });
+
+  it("sums accounting-only and mixed dispositions but counts only the mixed task as operative", async () => {
+    const deps = io();
+    deps.resolve.mockResolvedValue([{ status: "verified", id: physicalId },
+      { status: "verified", id: "31140f4d-81c3-4938-9ab2-a275473feb18" }]);
+    deps.register.mockResolvedValueOnce({ status: "existing", taskId: "one", accountedOrigins: 2, receiptOnly: true })
+      .mockResolvedValueOnce({ status: "existing", taskId: "two", accountedOrigins: 1 });
+    expect(await generateCatalogScheduleDay(data, deps)).toEqual({
+      status: "evaluated", registered: 0, existing: 1, held: 0, conflicts: 0, accountedOrigins: 3,
+    });
   });
 
   it("ignores explicit-only schedules during the timer run and checks manual work against all due schedules", async () => {
