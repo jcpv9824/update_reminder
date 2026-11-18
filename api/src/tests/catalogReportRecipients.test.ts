@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mayReceiveCatalogActiveUsersReport } from "../lib/catalogReportRecipients";
+import { mayReceiveCatalogActiveUsersReport, mayDeliverCatalogMastersReport, resolveCatalogMastersReportScope } from "../lib/catalogReportRecipients";
 
-const fake = vi.hoisted(() => ({ useEmail: vi.fn(), roles: vi.fn() }));
-vi.mock("../lib/securityManagementSqlWriteRepository", () => ({ findSqlUserByEmail: fake.useEmail }));
+const fake = vi.hoisted(() => ({ useEmail: vi.fn(), useId: vi.fn(), roles: vi.fn(), scope: vi.fn() }));
+vi.mock("../lib/securityManagementSqlWriteRepository", () => ({ findSqlUserByEmail: fake.useEmail, findSqlUserById: fake.useId }));
 vi.mock("../lib/roleDefinitionStore", () => ({ loadRoleDefinitions: fake.roles }));
+vi.mock("../lib/catalogSourceAccessSqlRepository", () => ({ readAuthorizedCatalogSourceIds: fake.scope }));
 
 describe("configured report recipients", () => {
   beforeEach(async () => {
@@ -37,5 +38,23 @@ describe("configured report recipients", () => {
     expect(await mayReceiveCatalogActiveUsersReport([user.email])).toBe(false);
     fake.roles.mockResolvedValue([{ ...reportRole, active: true }]);
     expect(await mayReceiveCatalogActiveUsersReport([user.email])).toBe(true);
+  });
+
+  it("pins only the common source scope of sender and all recipients and refuses later revocation or identity reuse", async () => {
+    const a = "11111111-1111-4111-8111-111111111111", b = "22222222-2222-4222-8222-222222222222";
+    const profiles = ["sender", "one", "two"].map(id => ({ id, active: true, roles: ["super_admin"], email: id + "@example.test" }));
+    const recipients = profiles.slice(1).map(user => user.email);
+    fake.useId.mockResolvedValue(profiles[0]);
+    fake.useEmail.mockImplementation(async email => profiles.find(user => user.email === email));
+    fake.scope.mockImplementation(async ({ actorId }) => new Set(actorId === "two" ? [b] : [a, b]));
+    const pinned = await resolveCatalogMastersReportScope("sender", recipients, "qa");
+    expect(pinned).toEqual({ senderId: "sender", environment: "qa", sourceIds: [b], recipientIds: ["one", "two"] });
+    expect(await mayDeliverCatalogMastersReport(pinned, recipients, "qa")).toBe(true);
+    expect(await mayDeliverCatalogMastersReport(pinned, recipients, "production")).toBe(false);
+    fake.scope.mockImplementation(async ({ actorId }) => new Set(actorId === "two" ? [a] : [a, b]));
+    expect(await mayDeliverCatalogMastersReport(pinned, recipients, "qa")).toBe(false);
+    fake.scope.mockResolvedValue(new Set([b]));
+    fake.useEmail.mockResolvedValue({ ...profiles[1], id: "new-owner" });
+    expect(await mayDeliverCatalogMastersReport(pinned, recipients, "qa")).toBe(false);
   });
 });

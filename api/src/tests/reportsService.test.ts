@@ -155,6 +155,24 @@ describe("buildMastersReportEmail", () => {
     expect(report.text).not.toContain("Usuarios activos");
   });
 
+  it("advierte la cobertura parcial sin convertir licencias o frecuencias no certificadas en ceros", () => {
+    const report = buildMastersReportEmail({
+      clients: [{ ...client, licenseModuleIds: [mobileModule.id] }], domains: [domain], databases: [database],
+      schedules: [schedule], licenseModules: [mobileModule], catalogCoverage: { partial: true },
+      activeUsersReport: {
+        rows: [{ clientId: client.id, clientName: client.name, databaseLinkId: database.id, databaseAlias: "interno",
+          status: "available", activeUsers: 0, checkedAt: "2030-06-22T05:00:00Z" }],
+        summary: { activeUsers: 0, physicalDatabases: 1, verifiedCounts: 1, unverifiedLinks: 0, partial: false },
+      },
+    });
+    for (const body of [report.html, report.text]) {
+      expect(body).toContain("Cobertura parcial del catálogo");
+      expect(body).toContain("Resultado parcial");
+      expect(body).toContain("Usuarios activos: 0");
+      expect(body).not.toMatch(/Licencias|Mobile App|Frecuencia|Semanal|interno/);
+    }
+  });
+
   it("muestra conteos por vínculo, suma las bases físicas una vez y no expone metadatos del conteo", async () => {
     const physical = { physicalDatabaseId: "física-interna", serverGroupId: "host-sensible.invalid",
       reportingProfileId: "referencia-sensible" };

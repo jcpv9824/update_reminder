@@ -593,6 +593,7 @@ export function buildMastersReportEmail(input: {
   frontendBaseUrl?: string;
   timezone?: string;
   activeUsersSummary?: Readonly<{ activeUsers: number | null; partial: boolean }>;
+  catalogCoverage?: Readonly<{ partial: boolean }>;
 }): EmailBuildResult {
   const timezone = input.timezone || "America/Bogota";
   const baseUrl = normalizeBaseUrl(input.frontendBaseUrl);
@@ -601,6 +602,11 @@ export function buildMastersReportEmail(input: {
   const licensesCount = input.clients.reduce((acc, c) => acc + (c.licenses?.length ?? 0), 0);
   const intro = `Hola${input.recipientName ? ` ${input.recipientName}` : ""}, este es el reporte maestro ERP de clientes, dominios y empresas.`;
   const note = "Este reporte omite usuarios SQL, contraseñas, cadenas de conexión, tokens y secretos.";
+  const showLegacyDetails = input.catalogCoverage === undefined;
+  const coverageNote = input.catalogCoverage?.partial
+    ? "Cobertura parcial del catálogo: no se pudo verificar toda la información autorizada."
+    : "";
+  const emptyDatabases = showLegacyDetails ? "Sin empresas o bases activas asociadas." : "No hay asociaciones verificadas para mostrar.";
   const countText = (count: number | null | undefined) => (
     count !== null && count !== undefined && Number.isSafeInteger(count) && count >= 0 ? String(count) : null
   );
@@ -622,16 +628,16 @@ export function buildMastersReportEmail(input: {
       <tr><td style="padding:14px;">
         <div style="font-size:16px; font-weight:700; color:${COLORS.primary};">Cliente: ${escapeHtml(client.name)}</div>
         <div style="font-size:12px; color:${COLORS.muted}; margin:3px 0 10px;">Estado: ${escapeHtml(client.status || "-")} · Creación: ${escapeHtml(formatDate(client.createdAt, "es-CO", timezone))}</div>
-        <div style="font-size:13px; color:${COLORS.text}; margin-top:8px; font-weight:700;">Licencias / módulos:</div>
-        ${licenseListHtml(client.licenses)}
+        ${showLegacyDetails ? `<div style="font-size:13px; color:${COLORS.text}; margin-top:8px; font-weight:700;">Licencias / módulos:</div>
+        ${licenseListHtml(client.licenses)}` : ""}
         ${(client.domains ?? []).map((domain) => `
           <div style="border-top:1px solid ${COLORS.neutral}; padding-top:10px; margin-top:10px;">
             <div style="font-size:14px; font-weight:700; color:${COLORS.text};">Dominio: ${escapeHtml(domain.name)}</div>
-            <div style="font-size:12px; color:${COLORS.muted};">Dominio para publicar: ${escapeHtml(formatDomainForPublishing(domain.publishableDomain || domain.url || domain.name))} · Ambiente: ${escapeHtml(domain.environment || "-")} · Estado: ${escapeHtml(domain.status || "-")} · Frecuencia: ${escapeHtml(domain.frequencyName || "Sin frecuencia activa")}</div>
+            <div style="font-size:12px; color:${COLORS.muted};">Dominio para publicar: ${escapeHtml(formatDomainForPublishing(domain.publishableDomain || domain.url || domain.name))} · Ambiente: ${escapeHtml(domain.environment || "-")} · Estado: ${escapeHtml(domain.status || "-")}${showLegacyDetails ? ` · Frecuencia: ${escapeHtml(domain.frequencyName || "Sin frecuencia activa")}` : ""}</div>
             <div style="font-size:13px; color:${COLORS.text}; margin-top:8px; font-weight:700;">Empresas / bases:</div>
             ${(domain.databases ?? []).length > 0
               ? `<ul style="margin:6px 0 0 18px; padding:0;">${(domain.databases ?? []).map((db) => `<li style="margin:0 0 4px;">Empresa: ${escapeHtml(db.companyName || "-")} · Base de datos: ${escapeHtml(db.name || "-")} · Ambiente: ${escapeHtml(db.environment || "-")} · Estado: ${escapeHtml(db.status || "-")} · Creación: ${escapeHtml(formatDate(db.createdAt, "es-CO", timezone))}${escapeHtml(databaseCountLabel(db))}</li>`).join("")}</ul>`
-              : `<div style="font-size:12px; color:${COLORS.muted}; margin-top:5px;">Sin empresas o bases activas asociadas.</div>`}
+              : `<div style="font-size:12px; color:${COLORS.muted}; margin-top:5px;">${escapeHtml(emptyDatabases)}</div>`}
           </div>`).join("")}
       </td></tr>
     </table>`).join("");
@@ -640,10 +646,10 @@ export function buildMastersReportEmail(input: {
       ${metric("Clientes", input.clients.length)}
       ${metric("Dominios", domainsCount, COLORS.secondary)}
       ${metric("Empresas / bases", databasesCount, COLORS.accent)}
-      ${metric("Licencias", licensesCount, COLORS.success)}
+      ${showLegacyDetails ? metric("Licencias", licensesCount, COLORS.success) : ""}
     </tr></table>
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc; border:1px solid ${COLORS.neutral}; border-radius:8px; margin:0 0 14px;">
-      <tr><td style="padding:12px 14px; font-size:13px; color:${COLORS.text};">${escapeHtml(note)}${activeUsersSummary.map((line) => `<div>${escapeHtml(line)}</div>`).join("")}</td></tr>
+      <tr><td style="padding:12px 14px; font-size:13px; color:${COLORS.text};">${escapeHtml(note)}${[coverageNote, ...activeUsersSummary].filter(Boolean).map((line) => `<div>${escapeHtml(line)}</div>`).join("")}</td></tr>
     </table>
     ${clientBlocks}`;
   const textClients = input.clients.map((client) => [
@@ -651,24 +657,24 @@ export function buildMastersReportEmail(input: {
     `Estado: ${client.status || "-"}`,
     `Creación: ${formatDate(client.createdAt, "es-CO", timezone)}`,
     ``,
-    `Licencias / módulos:`,
-    ...((client.licenses ?? []).length > 0 ? (client.licenses ?? []).map((license) => `- ${license.name}${license.code ? ` (${license.code})` : ""}`) : ["- Sin licencias registradas"]),
-    ``,
+    ...(showLegacyDetails ? [`Licencias / módulos:`, ...((client.licenses ?? []).length > 0
+      ? (client.licenses ?? []).map((license) => `- ${license.name}${license.code ? ` (${license.code})` : ""}`)
+      : ["- Sin licencias registradas"]), ``] : []),
     `Dominios:`,
     ...(client.domains ?? []).flatMap((domain) => [
       `  Dominio: ${domain.name}`,
       `  Dominio para publicar: ${formatDomainForPublishing(domain.publishableDomain || domain.url || domain.name)}`,
       `  Ambiente: ${domain.environment || "-"}`,
       `  Estado: ${domain.status || "-"}`,
-      `  Frecuencia: ${domain.frequencyName || "Sin frecuencia activa"}`,
+      ...(showLegacyDetails ? [`  Frecuencia: ${domain.frequencyName || "Sin frecuencia activa"}`] : []),
       `    Empresas / bases:`,
-      ...((domain.databases ?? []).length > 0 ? (domain.databases ?? []).map((db) => `    - Empresa: ${db.companyName || "-"} · Base de datos: ${db.name || "-"} · Ambiente: ${db.environment || "-"} · Estado: ${db.status || "-"} · Creación: ${formatDate(db.createdAt, "es-CO", timezone)}${databaseCountLabel(db)}`) : ["    - Sin empresas o bases activas asociadas."]),
+      ...((domain.databases ?? []).length > 0 ? (domain.databases ?? []).map((db) => `    - Empresa: ${db.companyName || "-"} · Base de datos: ${db.name || "-"} · Ambiente: ${db.environment || "-"} · Estado: ${db.status || "-"} · Creación: ${formatDate(db.createdAt, "es-CO", timezone)}${databaseCountLabel(db)}`) : [`    - ${emptyDatabases}`]),
     ]),
   ].join("\n")).join("\n\n");
   return {
     subject: "Reporte maestro ERP — clientes, dominios y empresas",
     html: layout({ title: "Reporte maestro ERP", intro, preheader: intro, body, cta: "Abrir aplicación", ctaHref: baseUrl, footerNote: note }),
-    text: `${intro}\nClientes: ${input.clients.length}\nDominios: ${domainsCount}\nEmpresas / bases: ${databasesCount}\nLicencias: ${licensesCount}\n${note}${activeUsersSummary.map((line) => `\n${line}`).join("")}\n\n${textClients}\n\nAbrir aplicación: ${baseUrl}`,
+    text: `${intro}\nClientes: ${input.clients.length}\nDominios: ${domainsCount}\nEmpresas / bases: ${databasesCount}${showLegacyDetails ? `\nLicencias: ${licensesCount}` : ""}\n${note}${[coverageNote, ...activeUsersSummary].filter(Boolean).map((line) => `\n${line}`).join("")}\n\n${textClients}\n\nAbrir aplicación: ${baseUrl}`,
   };
 }
 

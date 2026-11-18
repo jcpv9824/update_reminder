@@ -6,7 +6,22 @@ import { loadEmailAlertsSettings } from "../lib/settingsService";
 import { renderResetPasswordEmail } from "../lib/emailService";
 import { generateResetToken, resetExpirationIso } from "../lib/resetTokens";
 import { setSqlPasswordResetToken } from "../lib/securityManagementSqlWriteRepository";
-import { mayReceiveCatalogActiveUsersReport } from "../lib/catalogReportRecipients";
+import { catalogMastersReportEnvironment, catalogMastersReportsEnabled, mayDeliverCatalogMastersReport,
+  mayReceiveCatalogActiveUsersReport } from "../lib/catalogReportRecipients";
+
+async function authorizedMastersReport(metadata: Record<string, unknown>, recipients: readonly string[]): Promise<boolean> {
+  const counts = metadata.catalogActiveUsers === true;
+  if (counts && process.env.PORTAL_CATALOG_ACTIVE_USERS_REPORT_ENABLED?.trim() !== "true") return false;
+  const scoped = Object.prototype.hasOwnProperty.call(metadata, "catalogReportScope");
+  if (scoped || catalogMastersReportsEnabled()) {
+    // Pending legacy emails must not bypass the catalog cutover; scoped emails
+    // remain sensitive even if the feature is subsequently disabled.
+    const environment = catalogMastersReportEnvironment();
+    return scoped && catalogMastersReportsEnabled() && environment !== null &&
+      await mayDeliverCatalogMastersReport(metadata.catalogReportScope, recipients, environment);
+  }
+  return !counts || await mayReceiveCatalogActiveUsersReport(recipients);
+}
 
 export async function processSqlEmailOutbox(log: (message: string) => void): Promise<{ claimed: number; sent: number; failed: number }> {
   const workerId = `email-worker-${randomUUID()}`;
@@ -40,10 +55,8 @@ export async function processSqlEmailOutbox(log: (message: string) => void): Pro
       }
     }
     let result: Awaited<ReturnType<typeof sendEmail>>;
-    if (message.type === "masters_report" && message.metadata.catalogActiveUsers === true
-      && (process.env.PORTAL_CATALOG_ACTIVE_USERS_REPORT_ENABLED?.trim() !== "true"
-        || !await mayReceiveCatalogActiveUsersReport(recipients))) {
-      result = { ok: false, provider: "outbox", error: "El reporte de usuarios activos no está habilitado o autorizado para los destinatarios." };
+    if (message.type === "masters_report" && !await authorizedMastersReport(message.metadata, recipients)) {
+      result = { ok: false, provider: "outbox", error: "El reporte no está habilitado o autorizado para sus destinatarios." };
     } else if (!html || !plainText || recipients.length === 0) {
       result = { ok: false, provider: "outbox", error: "La notificación no tiene contenido o destinatarios válidos." };
     } else {

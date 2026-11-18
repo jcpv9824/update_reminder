@@ -3,15 +3,16 @@ import { z } from "zod";
 import { requireUser, loadUserProfile } from "../lib/auth";
 import { canSendConfiguredReport } from "../lib/managementAccess";
 import { writeAuditLog } from "../lib/audit";
-import { badRequest, forbidden, ok, serverError } from "../lib/http";
+import { badRequest, forbidden, ok, serverError, unauthorized } from "../lib/http";
 import { buildMastersReportEmail, parseSemicolonEmails } from "../lib/reportsService";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
-import { loadSqlMastersReportData } from "../lib/mastersReportSqlData";
+import { loadSqlCatalogMastersReportData, loadSqlMastersReportData } from "../lib/mastersReportSqlData";
 import { enqueueSqlEmail } from "../lib/emailOutboxSqlRepository";
 import { randomUUID } from "node:crypto";
 import { catalogActiveUserReportEnvironment, loadCatalogMastersActiveUsers } from "../lib/catalogMastersActiveUsers";
-import { mayReceiveCatalogActiveUsersReport } from "../lib/catalogReportRecipients";
+import { catalogMastersReportEnvironment, catalogMastersReportsEnabled, mayDeliverCatalogMastersReport,
+  mayReceiveCatalogActiveUsersReport, resolveCatalogMastersReportScope } from "../lib/catalogReportRecipients";
 
 async function getAllowedUser(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -35,6 +36,7 @@ app.http("mastersReportSendEmail", {
   handler: async (req): Promise<HttpResponseInit> => {
     let user: Awaited<ReturnType<typeof getAllowedUser>> | null = null;
     let recipients: string[] = [];
+    const catalogOn = catalogMastersReportsEnabled();
     try {
       user = await getAllowedUser(req);
       const body = await req.json();
@@ -51,10 +53,17 @@ app.http("mastersReportSendEmail", {
       if (limited) return limited;
 
       const activeUsersEnv = catalogActiveUserReportEnvironment();
-      if (activeUsersEnv && !await mayReceiveCatalogActiveUsersReport(recipients)) {
+      const catalogEnvironment = catalogOn ? catalogMastersReportEnvironment() : null;
+      if (catalogOn && (!catalogEnvironment || (activeUsersEnv && catalogEnvironment !== activeUsersEnv))) {
+        return serverError({ status: 503, message: "El reporte del catálogo no está disponible." });
+      }
+      const scope = catalogEnvironment ? await resolveCatalogMastersReportScope(user.id, recipients, catalogEnvironment) : null;
+      if (catalogOn && !scope) return forbidden("El reporte requiere un alcance de catálogo común y autorizado.");
+      if (!catalogOn && activeUsersEnv && !await mayReceiveCatalogActiveUsersReport(recipients)) {
         return forbidden("El reporte de usuarios activos requiere destinatarios autorizados del Portal.");
       }
-      const data = await loadSqlMastersReportData(new Date().toISOString().slice(0, 10));
+      const data = scope ? await loadSqlCatalogMastersReportData({ portalEnvironment: scope.environment,
+        allowedSourceIds: new Set(scope.sourceIds) }) : await loadSqlMastersReportData(new Date().toISOString().slice(0, 10));
       const activeUsersReport = activeUsersEnv ? await loadCatalogMastersActiveUsers(data, activeUsersEnv) : undefined;
 
       const settings = await (await import("../lib/settingsService")).loadEmailAlertsSettings();
@@ -65,7 +74,12 @@ app.http("mastersReportSendEmail", {
         frontendBaseUrl: settings.frontendBaseUrl || process.env.FRONTEND_BASE_URL,
         timezone: process.env.APP_TIMEZONE || "America/Bogota",
       });
-      if (activeUsersEnv) {
+      if (scope) {
+        if ((await getAllowedUser(req)).id !== user.id || !catalogMastersReportsEnabled() ||
+            !await mayDeliverCatalogMastersReport(scope, recipients, catalogMastersReportEnvironment())) {
+          return forbidden("El reporte requiere un alcance de catálogo común y autorizado.");
+        }
+      } else if (activeUsersEnv) {
         if ((await getAllowedUser(req)).id !== user.id || !await mayReceiveCatalogActiveUsersReport(recipients)) {
           return forbidden("El reporte de usuarios activos requiere destinatarios autorizados del Portal.");
         }
@@ -79,7 +93,8 @@ app.http("mastersReportSendEmail", {
         html: email.html,
         text: email.text,
         recipients: recipients.map((emailAddress) => ({ email: emailAddress })),
-        metadata: { recipientsCount: recipients.length, ...(activeUsersEnv ? { catalogActiveUsers: true } : {}) },
+        metadata: { recipientsCount: recipients.length, ...(activeUsersEnv ? { catalogActiveUsers: true } : {}),
+          ...(scope ? { catalogReportScope: scope } : {}) },
         createdBy: user.id,
       });
       return ok({
@@ -97,8 +112,13 @@ app.http("mastersReportSendEmail", {
           action: "masters_report_email_failed",
           performedBy: user.id,
           performedByEmail: user.email,
-          metadata: { recipientsCount: recipients.length, error: e?.message ?? "Error desconocido" },
+          metadata: { recipientsCount: recipients.length, error: catalogOn ? "catalog_report_unavailable" : e?.message ?? "Error desconocido" },
         }).catch(() => undefined);
+      }
+      if (catalogOn) {
+        if (e?.status === 401) return unauthorized();
+        if (e?.status === 403) return forbidden();
+        return serverError({ status: 503, message: "El reporte del catálogo no está disponible." });
       }
       if (e?.status === 403) return forbidden(e.message);
       return serverError(e);

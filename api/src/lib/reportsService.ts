@@ -71,6 +71,7 @@ export function buildMastersReportEmail(args: {
   licenseModules?: LicenseModuleRecord[];
   licenseAssignments?: LicenseAssignmentRecord[];
   activeUsersReport?: CatalogActiveUserReport;
+  catalogCoverage?: Readonly<{ partial: boolean }>;
   generatedAt?: string | Date;
   frontendBaseUrl?: string;
   timezone?: string;
@@ -190,9 +191,11 @@ export function buildMastersReportEmail(args: {
     generatedAt: args.generatedAt,
     frontendBaseUrl: args.frontendBaseUrl,
     timezone: args.timezone,
+    catalogCoverage: args.catalogCoverage,
     activeUsersSummary: args.activeUsersReport && {
       activeUsers: summaryScopeMismatch ? null : args.activeUsersReport.summary.activeUsers,
-      partial: !!summaryScopeMismatch || args.activeUsersReport.summary.partial || hasUnverifiedDisplayedDatabase,
+      partial: !!summaryScopeMismatch || args.activeUsersReport.summary.partial || hasUnverifiedDisplayedDatabase ||
+        args.catalogCoverage?.partial === true,
     },
   });
 }
