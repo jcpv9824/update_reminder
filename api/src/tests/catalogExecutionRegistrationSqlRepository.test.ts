@@ -132,6 +132,18 @@ describe("atomic catalog execution registration", () => {
     expect(mock.insert).not.toHaveBeenCalled();
   });
 
+  it("compares explicit assignees as an exact set on replay, never falling back to the role", async () => {
+    const valid = input();
+    const assignment = { kind: "users" as const, ids: ["b", "a", "a"] };
+    const request = { ...valid, task: { ...valid.task, assignedUserIds: ["a", "b"] },
+      group: { ...valid.group, assignment, sources: valid.group.sources.map(source => ({ ...source, assignment })) } };
+    rows([{ ...existing, usersJson: '[{"id":"b"},{"id":"a"}]' }], existingLinks);
+    await expect(registerSqlCatalogTaskExecution(request)).resolves.toEqual({ status: "existing", taskId: task.id });
+    rows([{ ...existing, usersJson: '[{"id":"a"}]' }]);
+    await expect(registerSqlCatalogTaskExecution(request)).resolves.toEqual({ status: "conflict", reason: "execution-conflict" });
+    expect(mock.insert).not.toHaveBeenCalled();
+  });
+
   it("does not attach changed origins, reuse a different operation, or reopen retired work", async () => {
     rows([existing], [{ ...existingLinks[0], detachedAt: now }, existingLinks[1]], [{ ...existing, operationId: "other" }],
       [{ ...existing, retiredAt: now }]);

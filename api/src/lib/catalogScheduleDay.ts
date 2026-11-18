@@ -2,7 +2,7 @@ import type { UpdateTask } from "../types/models";
 import { registerSqlCatalogTaskExecution } from "./catalogExecutionRegistrationSqlRepository";
 import { readSqlCatalogPhysicalTargets, planCatalogTasksWithVerifiedTargets } from "./catalogPhysicalTargetSqlRepository";
 import type { CatalogEnvironment } from "./catalogSourceConfiguration";
-import type { CatalogTaskLink, CatalogTaskRequest } from "./catalogTaskTargetPlanning";
+import { catalogAssignedUsers, type CatalogTaskKind, type CatalogTaskLink, type CatalogTaskRequest } from "./catalogTaskTargetPlanning";
 import { getTaskDateBucket, isScheduleDueOnDate, type CalendarSchedule } from "./scheduleEngine";
 
 export type CatalogScheduleRule = Omit<CatalogTaskRequest, "scheduleId"> & {
@@ -28,6 +28,7 @@ export type CatalogScheduleDay = {
 type DayResult = { status: "cutoff" | "unverified" } | { status: "evaluated";
   registered: number; existing: number; held: number; conflicts: number };
 const dependencies = { resolve: readSqlCatalogPhysicalTargets, register: registerSqlCatalogTaskExecution };
+const ruleKey = (scheduleId: string, kind: CatalogTaskKind) => JSON.stringify([scheduleId, kind]);
 const validDay = (date: string) => /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(Date.parse(date))
   && new Date(date).toISOString().slice(0, 10) === date;
 
@@ -44,6 +45,7 @@ export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io =
   const foundManual = new Set<string>();
   const activeRules: CatalogScheduleRule[] = [];
   const bySchedule = new Map<string, CatalogScheduleRule>();
+  const versions = new Map<string, string>();
   for (const rule of input.rules) {
     const { calendar } = rule;
     if (!calendar.active) continue;
@@ -55,11 +57,14 @@ export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io =
         (calendar.endDate && input.date > calendar.endDate)) continue;
       foundManual.add(calendar.id);
     } else if (!isScheduleDueOnDate(calendar, input.date)) continue;
-    const previous = bySchedule.get(calendar.id);
-    if (previous && (previous.calendar.version !== calendar.version || previous.workflowRole !== rule.workflowRole)) {
+    const key = ruleKey(calendar.id, rule.scope.kind);
+    const previous = bySchedule.get(key);
+    if ((versions.has(calendar.id) && versions.get(calendar.id) !== calendar.version)
+        || (previous && previous.workflowRole !== rule.workflowRole)) {
       throw new Error("inconsistent_catalog_schedule_roster");
     }
-    bySchedule.set(calendar.id, rule);
+    versions.set(calendar.id, calendar.version);
+    bySchedule.set(key, rule);
     activeRules.push(rule);
   }
   if (foundManual.size !== selectedManual.size) throw new Error("invalid_catalog_manual_schedule");
@@ -76,7 +81,7 @@ export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io =
   result.held = plan.held.length;
   const now = input.checkedAt.toISOString();
   for (const group of plan.tasks) {
-    const workflowRoles = new Set(group.sources.map(source => bySchedule.get(source.scheduleId)!.workflowRole));
+    const workflowRoles = new Set(group.sources.map(source => bySchedule.get(ruleKey(source.scheduleId, group.kind))!.workflowRole));
     const { assignment } = group;
     const workflowRole = [...workflowRoles][0];
     if (workflowRoles.size !== 1 || !workflowRole || assignment.kind === "unassigned" ||
@@ -88,14 +93,14 @@ export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io =
       clientId: link.customerId, clientName, domainId: link.domainId, domainName,
       targetType: group.kind, targetId: link.databaseId ?? link.domainId, targetName,
       scheduleId: representative.scheduleId, rootScheduleId: representative.scheduleId,
-      assignedRole: workflowRole, assignedUserIds: assignment.kind === "user" ? [assignment.id] : [],
+      assignedRole: workflowRole, assignedUserIds: catalogAssignedUsers(assignment),
       status: "pending", result: null, notes: "", createdAt: now, createdBy: "system", updatedAt: now, updatedBy: "system",
       completedAt: null, completedBy: null,
     };
     const write = await io.register({ group, task, portalEnvironment: input.portalEnvironment,
       cutoffAt: input.cutoffAt, catalogSourceIdsByLink: new Map(group.sources.map(({ link: row }) =>
         [row.linkId, inventory.get(row.linkId)!.sourceId])), scheduleVersions: new Map(group.sources.map(source =>
-        [source.scheduleId, bySchedule.get(source.scheduleId)!.calendar.version])) });
+        [source.scheduleId, versions.get(source.scheduleId)!])) });
     if (write.status === "conflict") result.conflicts++;
     else result[write.status]++;
   }

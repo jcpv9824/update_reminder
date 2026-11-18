@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import sql from "mssql";
 import type { UpdateTask } from "../types/models";
 import type { CatalogEnvironment } from "./catalogSourceConfiguration";
-import { catalogTaskExecutionKey, type CatalogTaskAssignment, type CatalogTaskPlan } from "./catalogTaskTargetPlanning";
+import { catalogAssignedUsers, catalogAssignmentIdentity, catalogTaskExecutionKey, type CatalogTaskAssignment, type CatalogTaskPlan } from "./catalogTaskTargetPlanning";
 import { runSqlTransaction } from "./sqlTransaction";
 import { rootScheduleId } from "./taskGenerator";
 import { insertSqlGeneratedTaskInTransaction } from "./workflowTaskGenerationSqlRepository";
@@ -45,11 +45,15 @@ const day = /^\d{4}-\d{2}-\d{2}$/;
 const identity = (link: Link) => JSON.stringify([link.linkId, link.clientId, link.domainId, link.databaseId,
   link.recordId, link.environment, link.catalogSourceId?.toLowerCase() ?? null]);
 const pair = (linkId: string, scheduleId: string) => JSON.stringify([linkId, scheduleId]);
-const sameAssignment = (left: CatalogTaskAssignment, right: CatalogTaskAssignment) => left.kind === right.kind
-  && (left.kind === "unassigned" || (right.kind !== "unassigned" && left.id === right.id));
+const sameAssignment = (left: CatalogTaskAssignment, right: CatalogTaskAssignment) =>
+  catalogAssignmentIdentity(left) === catalogAssignmentIdentity(right);
 
 function assignmentMatches(assignment: CatalogTaskAssignment, role: string | null, users: readonly string[]): boolean {
-  if (assignment.kind === "user") return users.length === 1 && users[0] === assignment.id;
+  if (assignment.kind === "user" || assignment.kind === "users") {
+    const expected = catalogAssignedUsers(assignment);
+    return expected.length > 0 && expected.length === users.length && new Set(users).size === users.length
+      && expected.every(user => users.includes(user));
+  }
   if (assignment.kind === "role") return users.length === 0 && role === assignment.id;
   return assignment.kind === "unassigned" && users.length === 0 && !role;
 }
@@ -68,7 +72,8 @@ function parseInput(input: CatalogExecutionRegistration) {
       !day.test(task.taskDate) || !Number.isFinite(Date.parse(task.taskDate)) || new Date(task.taskDate).toISOString().slice(0, 10) !== task.taskDate ||
       group.occurrenceId !== task.taskDate ||
       task.targetType !== group.kind || task.status !== "pending" || task.result != null || !!task.notes || task.completedAt != null ||
-      !safeText(task.assignedRole, 80) || !safeText(group.assignment.id, group.assignment.kind === "role" ? 80 : 150) ||
+      !safeText(task.assignedRole, 80) || (group.assignment.kind === "role" ? !safeText(group.assignment.id, 80)
+        : task.assignedUserIds.length > 100 || catalogAssignedUsers(group.assignment).some(user => !safeText(user, 150))) ||
       !assignmentMatches(group.assignment, task.assignedRole, task.assignedUserIds ?? [])) return conflict("invalid-plan");
 
   const root = rootScheduleId(task.rootScheduleId || task.scheduleId);
@@ -132,7 +137,8 @@ async function verifyReplay(transaction: sql.Transaction, input: CatalogExecutio
   if (row.taskId !== task.id || row.occurrenceId !== group.occurrenceId || row.operationId !== group.operationId ||
       row.targetId !== group.targetId || row.kind !== group.kind || row.taskDate !== task.taskDate || row.cutoffAt.valueOf() !== cutoffAt.valueOf() ||
       row.representativeTarget !== task.targetId || row.representativeClient !== task.clientId || row.representativeDomain !== task.domainId ||
-      row.primaryScheduleId !== planned.root || !assignmentMatches(group.assignment, row.assignedRole, users.map(user => user.id))) {
+      row.primaryScheduleId !== planned.root || row.assignedRole !== task.assignedRole ||
+      !assignmentMatches(group.assignment, row.assignedRole, users.map(user => user.id))) {
     return conflict("execution-conflict");
   }
   const result = await new sql.Request(transaction).input("executionId", sql.BigInt, row.executionId)
@@ -199,7 +205,7 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
 
       const schedules = await new sql.Request(transaction)
         .input("workflowRole", sql.NVarChar(80), task.assignedRole)
-        .input("assignmentKind", sql.VarChar(10), group.assignment.kind)
+        .input("assignmentKind", sql.VarChar(10), group.assignment.kind === "role" ? "role" : "user")
         .input("targetKind", sql.VarChar(20), group.kind)
         .input("schedules", sql.NVarChar(sql.MAX), JSON.stringify(planned.schedules.map(id =>
           ({ id, version: input.scheduleVersions.get(id) }))))

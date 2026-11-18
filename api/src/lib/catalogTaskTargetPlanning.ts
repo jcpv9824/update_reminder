@@ -22,6 +22,7 @@ export type CatalogTaskLink = {
 
 export type CatalogTaskAssignment =
   | { kind: "unassigned" }
+  | { kind: "users"; ids: readonly string[] }
   | { kind: "user" | "role"; id: string };
 
 export type CatalogTaskRequest = {
@@ -72,8 +73,15 @@ export type CatalogTaskPlan = {
 
 const id = (...parts: unknown[]) => JSON.stringify(parts);
 const compareText = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
-const assignmentId = (assignment: CatalogTaskAssignment) =>
-  id(assignment.kind, assignment.kind === "unassigned" ? null : assignment.id);
+export function catalogAssignedUsers(assignment: CatalogTaskAssignment): string[] {
+  return assignment.kind === "users" ? [...new Set(assignment.ids)].sort(compareText)
+    : assignment.kind === "user" ? [assignment.id] : [];
+}
+
+export function catalogAssignmentIdentity(assignment: CatalogTaskAssignment): string {
+  if (assignment.kind === "user" || assignment.kind === "users") return id("users", catalogAssignedUsers(assignment));
+  return id(assignment.kind, assignment.kind === "unassigned" ? null : assignment.id);
+}
 
 /** Does not vary by catalogue revision, schedule, owner, assignment, or display label. */
 export function catalogTaskExecutionKey(occurrenceId: string, kind: CatalogTaskKind, targetId: string): string {
@@ -124,7 +132,9 @@ export function planCatalogTaskTargets(input: {
   const holds = new Map<string, CatalogTaskPlan["held"][number]>();
   for (const request of requests) {
     const { scheduleId, operationId, assignment, scope } = request;
-    if (!scheduleId.trim() || !operationId.trim() || (assignment.kind !== "unassigned" && !assignment.id.trim())) {
+    const assignmentValues = assignment.kind === "role" ? [assignment.id] : catalogAssignedUsers(assignment);
+    if (!scheduleId.trim() || !operationId.trim() ||
+      (assignment.kind !== "unassigned" && (!assignmentValues.length || assignmentValues.some(value => !value.trim())))) {
       throw new Error("Programación, operación o asignación sin identidad.");
     }
     if (scope.domainId !== undefined && !scope.customerId?.trim()) {
@@ -181,7 +191,7 @@ export function planCatalogTaskTargets(input: {
         group = { executionKey, occurrenceId, revisionId: revision.id, kind: link.kind, targetId, sourceMap: new Map() };
         groups.set(executionKey, group);
       }
-      group.sourceMap.set(id(scheduleId, link.linkId, operationId, assignmentId(assignment)),
+      group.sourceMap.set(id(scheduleId, link.linkId, operationId, catalogAssignmentIdentity(assignment)),
         { scheduleId, operationId, assignment, link });
     }
   }
@@ -191,7 +201,7 @@ export function planCatalogTaskTargets(input: {
     const sources = [...sourceMap.entries()].sort(([a], [b]) => compareText(a, b)).map(([, source]) => source);
     const reasons: CatalogTaskPlan["conflicts"][number]["reasons"] = [];
     if (new Set(sources.map(source => source.operationId)).size > 1) reasons.push("incompatible_operation");
-    if (new Set(sources.map(source => assignmentId(source.assignment))).size > 1) reasons.push("incompatible_assignment");
+    if (new Set(sources.map(source => catalogAssignmentIdentity(source.assignment))).size > 1) reasons.push("incompatible_assignment");
     if (reasons.length) result.conflicts.push({ ...identity, sources, reasons });
     else result.tasks.push({ ...identity, sources, operationId: sources[0].operationId, assignment: sources[0].assignment });
   }
