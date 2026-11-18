@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { generateCatalogScheduleDay, type CatalogScheduleDay, type CatalogScheduleRule } from "../lib/catalogScheduleDay";
+import { recordSqlCatalogOnceObservationsInTransaction } from "../lib/catalogOnceObservationSqlRepository";
 import type { CatalogTaskLink } from "../lib/catalogTaskTargetPlanning";
 import type { UpdateSchedule } from "../types/models";
 
@@ -48,7 +49,7 @@ describe("catalog schedule day", () => {
       .resolves.toMatchObject({ status: "evaluated", registered: 1 });
     expect(runAtomic).toHaveBeenCalledExactlyOnceWith({
       scope, roster, manualIntents, date, cutoffAt: data.cutoffAt, revisionId: revision.id,
-    }, expect.any(Function));
+    }, expect.any(Function), recordSqlCatalogOnceObservationsInTransaction);
     expect(scoped.register).toHaveBeenCalledOnce();
   });
 

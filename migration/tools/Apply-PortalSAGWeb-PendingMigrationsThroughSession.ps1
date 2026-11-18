@@ -91,7 +91,8 @@ if($IncludeCatalog){
     @{version='045';name='045_catalog_schedule_operation_token_check.sql'},
     @{version='046';name='046_catalog_schedule_population_approvals.sql'},
     @{version='047';name='047_catalog_manual_day_intents.sql'},
-    @{version='048';name='048_catalog_task_origin_receipts.sql'}
+    @{version='048';name='048_catalog_task_origin_receipts.sql'},
+    @{version='049';name='049_catalog_once_observations.sql'}
   )
   # Check the entire selected package before submitting its first write.
   foreach($entry in $migrations){
@@ -233,7 +234,7 @@ if($IncludeCatalog){
   $catalogVerificationSql=@'
 SELECT
   (SELECT COUNT(*) FROM migration.schema_migrations
-    WHERE migration_version IN ('031','032','033','034','035','036','037','038','039','040','041','042','043','044','045','046','047','048') AND succeeded=1) AS catalog_migration_count,
+    WHERE migration_version IN ('031','032','033','034','035','036','037','038','039','040','041','042','043','044','045','046','047','048','049') AND succeeded=1) AS catalog_migration_count,
   (SELECT COUNT(*) FROM (VALUES
     (N'settings.catalog_source_bindings'), (N'workflow.catalog_task_executions'),
     (N'workflow.catalog_task_execution_links'), (N'workflow.catalog_task_execution_sources'),
@@ -245,7 +246,8 @@ SELECT
     (N'settings.catalog_sag_license_module_approvals'),(N'core.catalog_operational_owners'),
     (N'core.catalog_operational_links'),(N'core.catalog_operational_link_approvals'),
     (N'scheduling.catalog_schedule_operation_approvals'), (N'scheduling.catalog_schedule_population_approvals'),
-    (N'scheduling.catalog_manual_day_intents'), (N'workflow.catalog_task_origin_receipts')) AS expected(name)
+    (N'scheduling.catalog_manual_day_intents'), (N'workflow.catalog_task_origin_receipts'),
+    (N'scheduling.catalog_once_observations'), (N'scheduling.catalog_once_observation_pairs')) AS expected(name)
     WHERE OBJECT_ID(expected.name,N'U') IS NOT NULL) AS catalog_tables_ready,
   (SELECT COUNT(*) FROM sys.triggers WHERE is_disabled=0 AND object_id IN (
     OBJECT_ID(N'core.TR_catalog_sag_revision_evidence_sealed',N'TR'),
@@ -277,7 +279,9 @@ SELECT
     OBJECT_ID(N'scheduling.TR_catalog_manual_day_intents_register',N'TR'),
     OBJECT_ID(N'scheduling.TR_catalog_manual_day_intents_immutable',N'TR'),
     OBJECT_ID(N'workflow.TR_catalog_task_origin_receipts_register',N'TR'),
-    OBJECT_ID(N'workflow.TR_catalog_task_origin_receipts_immutable',N'TR'))) AS catalog_triggers_ready,
+    OBJECT_ID(N'workflow.TR_catalog_task_origin_receipts_immutable',N'TR'),
+    OBJECT_ID(N'scheduling.TR_catalog_once_observations_append_only',N'TR'),
+    OBJECT_ID(N'scheduling.TR_catalog_once_observation_pairs_append_only',N'TR'))) AS catalog_triggers_ready,
   CASE WHEN OBJECT_ID(N'core.catalog_operational_link_evidence',N'V') IS NOT NULL
     THEN 1 ELSE 0 END AS catalog_operational_evidence_ready,
   (SELECT COUNT(*) FROM sys.indexes WHERE is_disabled=0 AND is_unique=1 AND has_filter=1
@@ -358,6 +362,31 @@ SELECT
       WHERE class=1 AND major_id=OBJECT_ID(N'workflow.catalog_task_origin_receipts',N'U') AND minor_id=0
         AND grantee_principal_id=DATABASE_PRINCIPAL_ID(N'portal_runtime') AND state='D' AND permission_name IN ('UPDATE','DELETE'))=2
     THEN 1 ELSE 0 END AS catalog_origin_receipt_immutability_ready,
+  CASE WHEN OBJECT_ID(N'scheduling.record_catalog_once_observations',N'P') IS NOT NULL
+    AND OBJECT_ID(N'scheduling.catalog_once_source_fence',N'IF') IS NOT NULL
+    AND EXISTS (SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID(N'scheduling.catalog_once_observations',N'U')
+      AND name=N'IX_catalog_once_observations_lookup' AND is_disabled=0)
+    THEN 1 ELSE 0 END AS catalog_once_observation_writer_ready,
+  (SELECT COUNT(*) FROM sys.foreign_keys WHERE is_disabled=0 AND is_not_trusted=0
+    AND ((parent_object_id=OBJECT_ID(N'scheduling.catalog_once_observations',N'U')
+      AND name IN (N'FK_catalog_once_observations_approval',N'FK_catalog_once_observations_population'))
+      OR (parent_object_id=OBJECT_ID(N'scheduling.catalog_once_observation_pairs',N'U')
+      AND name IN (N'FK_catalog_once_pairs_observation',N'FK_catalog_once_pairs_link',N'FK_catalog_once_pairs_execution_link',
+        N'FK_catalog_once_pairs_execution_source')))) AS catalog_once_observation_foreign_keys_ready,
+  (SELECT COUNT(*) FROM sys.check_constraints WHERE is_disabled=0 AND is_not_trusted=0
+    AND parent_object_id=OBJECT_ID(N'scheduling.catalog_once_observations',N'U')
+    AND name IN (N'CK_catalog_once_observations_environment',N'CK_catalog_once_observations_expected',
+      N'CK_catalog_once_observations_deadline')) AS catalog_once_observation_checks_ready,
+  CASE WHEN DATABASE_PRINCIPAL_ID(N'portal_runtime') IS NULL OR (
+    (SELECT COUNT(*) FROM sys.database_permissions
+      WHERE class=1 AND major_id IN (OBJECT_ID(N'scheduling.catalog_once_observations',N'U'),
+        OBJECT_ID(N'scheduling.catalog_once_observation_pairs',N'U')) AND minor_id=0
+        AND grantee_principal_id=DATABASE_PRINCIPAL_ID(N'portal_runtime') AND state='D'
+        AND permission_name IN ('INSERT','UPDATE','DELETE'))=6
+    AND EXISTS (SELECT 1 FROM sys.database_permissions
+      WHERE class=1 AND major_id=OBJECT_ID(N'scheduling.record_catalog_once_observations',N'P') AND minor_id=0
+        AND grantee_principal_id=DATABASE_PRINCIPAL_ID(N'portal_runtime') AND state='G' AND permission_name='EXECUTE'))
+    THEN 1 ELSE 0 END AS catalog_once_observation_permissions_ready,
   CASE WHEN COL_LENGTH(N'core.catalog_physical_target_links',N'registered_at') IS NOT NULL
     THEN 1 ELSE 0 END AS physical_registration_time_ready,
   CASE WHEN COL_LENGTH(N'core.catalog_customer_source_revisions',N'has_sag_inventory_evidence')=1
@@ -365,8 +394,8 @@ SELECT
 '@
   $catalogVerification=Invoke-SessionSql -Sql $catalogVerificationSql -Mode read -TimeoutSeconds 120 -MaxRows 5
   $catalogRow=$catalogVerification.resultSets[0].rows[0]
-  if($catalogRow.catalog_migration_count -ne 18 -or $catalogRow.catalog_tables_ready -ne 22 -or
-     $catalogRow.catalog_triggers_ready -ne 30 -or $catalogRow.sag_evidence_flag_ready -ne 1 -or
+  if($catalogRow.catalog_migration_count -ne 19 -or $catalogRow.catalog_tables_ready -ne 24 -or
+     $catalogRow.catalog_triggers_ready -ne 32 -or $catalogRow.sag_evidence_flag_ready -ne 1 -or
      $catalogRow.catalog_operational_evidence_ready -ne 1 -or
      $catalogRow.catalog_operational_uniqueness_ready -ne 3 -or
      $catalogRow.catalog_domain_scope_ready -ne 1 -or $catalogRow.legacy_global_domain_index_count -ne 0 -or
@@ -375,8 +404,10 @@ SELECT
      $catalogRow.catalog_manual_intent_key_ready -ne 1 -or $catalogRow.catalog_manual_intent_immutability_ready -ne 1 -or
      $catalogRow.catalog_origin_receipt_key_ready -ne 1 -or $catalogRow.catalog_origin_receipt_immutability_ready -ne 1 -or
      $catalogRow.catalog_origin_receipt_foreign_keys_ready -ne 3 -or $catalogRow.catalog_origin_receipt_checks_ready -ne 2 -or
+     $catalogRow.catalog_once_observation_writer_ready -ne 1 -or $catalogRow.catalog_once_observation_permissions_ready -ne 1 -or
+     $catalogRow.catalog_once_observation_foreign_keys_ready -ne 6 -or $catalogRow.catalog_once_observation_checks_ready -ne 3 -or
      $catalogRow.physical_registration_time_ready -ne 1){
     throw 'Catalog migration post-verification failed.'
   }
-  Write-Host "$expectedDatabase migrations 031-048 are applied and verified." -ForegroundColor Green
+  Write-Host "$expectedDatabase migrations 031-049 are applied and verified." -ForegroundColor Green
 }

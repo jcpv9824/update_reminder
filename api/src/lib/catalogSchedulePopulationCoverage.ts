@@ -114,7 +114,8 @@ SELECT TOP (2) LOWER(CONVERT(char(36),a.population_id)) AS populationId,a.portal
 ${currentApproval};
 
 SELECT TOP (51) LOWER(CONVERT(char(36),b.source_id)) AS sourceId,b.source_role AS role,
-  LOWER(CONVERT(char(16),b.row_version,2)) AS bindingVersion, LOWER(CONVERT(char(16),p.row_version,2)) AS profileVersion,
+  LOWER(CONVERT(char(16),CONVERT(binary(8),b.row_version),2)) AS bindingVersion,
+  LOWER(CONVERT(char(16),CONVERT(binary(8),p.row_version),2)) AS profileVersion,
   CONVERT(bit,CASE WHEN p.active=1 AND p.status='active' AND p.encrypt_connection=1 AND p.password_configured=1
     AND b.validated_at<=@now AND b.validated_profile_version=p.row_version
     AND ((b.source_role='erp-customers' AND b.contract_version='erp_v1') OR
@@ -129,8 +130,8 @@ SELECT TOP (5001) LOWER(CONVERT(char(36),l.link_id)) AS linkId,
   LOWER(CONVERT(char(36),b.source_id)) AS sourceId,
   e.evidence_state AS state,
   CASE WHEN e.evidence_state='verified' THEN CONVERT(varchar(20),e.revision_key) END AS revisionId,
-  CASE WHEN e.evidence_state='verified' THEN LOWER(CONVERT(char(16),e.binding_version,2)) END AS bindingVersion,
-  CASE WHEN e.evidence_state='verified' THEN LOWER(CONVERT(char(16),e.profile_version,2)) END AS profileVersion,
+  CASE WHEN e.evidence_state='verified' THEN LOWER(CONVERT(char(16),CONVERT(binary(8),e.binding_version),2)) END AS bindingVersion,
+  CASE WHEN e.evidence_state='verified' THEN LOWER(CONVERT(char(16),CONVERT(binary(8),e.profile_version),2)) END AS profileVersion,
   CASE WHEN e.evidence_state='verified' THEN e.verified_until END AS verifiedUntil
 FROM core.catalog_operational_links l WITH (HOLDLOCK)
 JOIN core.catalog_operational_owners o WITH (HOLDLOCK) ON o.owner_key=l.owner_key

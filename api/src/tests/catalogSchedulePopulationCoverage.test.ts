@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assessCatalogSchedulePopulation, catalogSchedulePopulationDigest } from "../lib/catalogSchedulePopulationCoverage";
+import { assessCatalogSchedulePopulation, catalogSchedulePopulationDigest, readCatalogSchedulePopulationSql } from "../lib/catalogSchedulePopulationCoverage";
 
 const sourceId = "00000000-0000-0000-0000-000000000001";
 const sagId = "00000000-0000-0000-0000-000000000002";
@@ -27,6 +27,11 @@ const valid = {
 };
 
 describe("schedule inventory coverage independent of the operational reader", () => {
+  it("converts SQL rowversion to binary bytes before rendering canonical hexadecimal text", () => {
+    for (const source of ["b.row_version", "p.row_version", "e.binding_version", "e.profile_version"]) {
+      expect(readCatalogSchedulePopulationSql).toContain(`CONVERT(char(16),CONVERT(binary(8),${source}),2)`);
+    }
+  });
   it("certifies a reviewed, exact population while keeping a known unverified edge explicit", () => {
     expect(assessCatalogSchedulePopulation(valid)).toEqual({
       id: `catalog-population-v1:${populationId}`, complete: true, validUntil: until,

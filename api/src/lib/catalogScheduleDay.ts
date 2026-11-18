@@ -6,6 +6,7 @@ import { catalogAssignedUsers, type CatalogTaskKind, type CatalogTaskLink, type 
 import { getTaskDateBucket, isScheduleDueOnDate, type CalendarSchedule } from "./scheduleEngine";
 import { catalogPopulationRevisionPrefix } from "./catalogSchedulePopulationCoverage";
 import { runSqlCatalogScheduleDayTransaction, type CatalogScheduleDayTransactionContext } from "./catalogScheduleDayTransaction";
+import { recordSqlCatalogOnceObservationsInTransaction } from "./catalogOnceObservationSqlRepository";
 
 export type CatalogScheduleRule = Omit<CatalogTaskRequest, "scheduleId"> & {
   calendar: CalendarSchedule & { id: string; timezone: string; version: string };
@@ -115,7 +116,7 @@ export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io?:
     }
     const result = await runSqlCatalogScheduleDayTransaction({
       ...input.populationFence, date: input.date, cutoffAt: input.cutoffAt, revisionId: input.revision.id,
-    }, scoped => generateCatalogScheduleDay(input, scoped));
+    }, scoped => generateCatalogScheduleDay(input, scoped), recordSqlCatalogOnceObservationsInTransaction);
     return result.status === "committed" ? result.value : { status: result.status };
   }
   const { resolve, register } = io ?? dependencies;
