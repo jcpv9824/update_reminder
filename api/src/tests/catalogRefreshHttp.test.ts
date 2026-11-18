@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createCatalogRefreshHttp } from "../lib/catalogRefreshHttp";
 
 const source = "ab51a754-337c-46c4-b131-85e1a79443db";
-const config = { environment: "qa" as const, matchKeyVersion: 2, includeSag: true };
+const config = { environment: "qa" as const, matchKeyVersion: 2, includeSag: true, includeSagV2: true };
 function setup() {
   const io = { enabled: vi.fn(() => true), configuration: vi.fn(() => config),
     authorize: vi.fn(() => Promise.resolve<{ actorId: string } | { status: 401 | 403 }>({ actorId: "real-actor" })),
@@ -31,12 +31,13 @@ describe("catalog refresh HTTP boundary", () => {
 
   it("passes authorized status scope for revalidation, never enqueues on GET, and hides unauthorized requests", async () => {
     const { io, handle } = setup();
-    io.status.mockResolvedValueOnce({ pending: true, items: [{ sourceId: source, status: "succeeded", updatedAt: "2026-11-18T00:00:00Z",
+    const updatedAt = "2026-11-18T00:00:00Z";
+    io.status.mockResolvedValueOnce({ pending: true, items: [{ sourceId: source, status: "succeeded", updatedAt,
       leaseToken: "internal", actorId: "internal" }], hiddenSagSourceId: "internal" });
     const response = await handle(get(`?sourceIds=${source.toUpperCase()}`), "status");
-    expect(response).toMatchObject({ status: 200, jsonBody: { pending: true, items: [{ sourceId: source, status: "succeeded" }] } });
-    expect(JSON.stringify(response)).not.toContain("internal");
-    expect(io.status).toHaveBeenLastCalledWith({ environment: "qa", includeSag: true, actorId: "real-actor", sourceIds: [source] });
+    expect(response).toMatchObject({ status: 200, headers: { "Cache-Control": "private, no-store" } });
+    expect(response.jsonBody).toEqual({ pending: true, items: [{ sourceId: source, status: "succeeded", updatedAt }] });
+    expect(io.status).toHaveBeenLastCalledWith({ ...config, actorId: "real-actor", sourceIds: [source] });
     expect(io.enqueue).not.toHaveBeenCalled();
     io.status.mockResolvedValueOnce(null);
     expect((await handle(get(`?sourceIds=${source}`), "status")).status).toBe(403);
