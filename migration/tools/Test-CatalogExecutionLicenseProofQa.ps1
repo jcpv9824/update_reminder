@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$SessionDirectory)
+param([Parameter(Mandatory=$true)][string]$SessionDirectory,
+  [ValidateSet('normal','wrong-environment','wrong-target','wrong-operation','wrong-version','attached-alias')]
+  [string]$Case='normal')
 
 $ErrorActionPreference='Stop'
 $session=(Resolve-Path -LiteralPath $SessionDirectory).Path
@@ -15,6 +17,14 @@ if(!$proof -or $proof -match '(?im)^\s*(UPDATE|DELETE|MERGE|ALTER|DROP|CREATE|EX
   throw 'Expected the actual licensing proof with no persistent writes.'
 }
 $literal="DECLARE @proof nvarchar(max)=N'"+$proof.Replace("'","''")+"';"
+$receipt=(Get-Content -Raw -LiteralPath (Join-Path $root 'api/src/lib/catalogExecutionRegistrationSqlRepository.ts')).Split([char]96) |
+  Where-Object { $_ -match '^\s*DECLARE @receiptPairs TABLE' } | Select-Object -First 1
+$routeHash=(Get-Content -Raw -LiteralPath (Join-Path $root 'api/src/lib/catalogPhysicalTargetIdentity.ts')).Split([char]96)[1]
+if(!$receipt -or $receipt -notmatch 'INSERT workflow\.catalog_task_origin_receipts' -or $receipt.Contains('${') -or
+   $routeHash -notmatch 'portal-sag:web-route:v1'){throw 'Expected the exact accounting-only receipt and physical route queries.'}
+$literal+="DECLARE @receiptProbe nvarchar(max)=N'"+$receipt.Replace("'","''")+"';"
+$caseNumber=@('normal','wrong-environment','wrong-target','wrong-operation','wrong-version','attached-alias').IndexOf($Case)
+$literal+="DECLARE @negative int=$caseNumber;"
 $fixture=@'
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
@@ -31,6 +41,7 @@ DECLARE @erp bigint,@sag bigint,@erpBinding binary(8),@erpProfile binary(8),@sag
 DECLARE @erpRevision bigint,@sagRevision bigint,@schedule bigint,@task bigint,@execution bigint,@module bigint,@otherModule bigint;
 DECLARE @accessProfile bigint,@database bigint,@dbLink uniqueidentifier=NEWID(),@dbAlias nvarchar(36),@dbOperational bigint;
 DECLARE @dbTask bigint,@dbExecution bigint,@dbAttachments nvarchar(max);
+DECLARE @receiptTarget bigint,@receiptUser bigint,@scheduleVersion binary(8);
 DECLARE @link uniqueidentifier=NEWID(),@alias nvarchar(36),@attempt bigint=9223372036854775780;
 DECLARE @attachments nvarchar(max),@unknown nvarchar(max),@passed int=0,@scenario int=0,@licenseModuleId nvarchar(150)=@tag+N'-a';
 DECLARE @params nvarchar(200)=N'@executionId bigint,@portalEnvironment varchar(10),@matchKeyVersion smallint,@attachments nvarchar(max)';
@@ -143,6 +154,81 @@ BEGIN TRY
   IF (SELECT COUNT(*) FROM @result WHERE validUntil=@sagEnd)<>1 THROW 54502,N'Exact proof or earliest deadline missing.',1;
   SET @passed+=1;
   DELETE FROM @result;
+  DECLARE @only nvarchar(max)=JSON_MODIFY(@attachments,'$[0].proofOnly',CONVERT(bit,1));
+  INSERT @result EXEC sys.sp_executesql @proof,@params,@execution,'qa',@version,@only;
+  IF EXISTS(SELECT 1 FROM @result) THROW 54512,N'Provenance mode bypassed the existing execution link.',1;
+  SET @passed+=1;
+  SAVE TRANSACTION proof_only_fixture;
+  DELETE FROM workflow.catalog_task_execution_links WHERE catalog_execution_key=@execution AND link_id=@alias;
+  INSERT @result EXEC sys.sp_executesql @proof,@params,@execution,'qa',@version,@attachments;
+  IF EXISTS(SELECT 1 FROM @result) THROW 54513,N'Normal licensing proof accepted an unbound link.',1;
+  SET @passed+=1;
+  INSERT @result EXEC sys.sp_executesql @proof,@params,@execution,'qa',@version,@only;
+  IF (SELECT COUNT(*) FROM @result WHERE validUntil=@sagEnd)<>1
+    OR EXISTS(SELECT 1 FROM workflow.catalog_task_execution_links WHERE catalog_execution_key=@execution)
+    THROW 54514,N'Unbound provenance was not proven without enrolling a credential-capable link.',1;
+  SET @passed+=1;
+  SET @scenario=31;
+  INSERT security.users(source_id,display_name,email,email_normalized,active,created_at,created_by,updated_at,updated_by)
+    VALUES(@tag+N'-receipt-admin',@tag,@tag+N'@invalid.example',@tag+N'@invalid.example',1,@stamp,'fixture',@stamp,'fixture');
+  SELECT @receiptUser=user_key FROM security.users WHERE source_id=@tag+N'-receipt-admin';
+  INSERT security.user_roles(user_key,role_id,assigned_by) VALUES(@receiptUser,N'super_admin',N'fixture');
+  SELECT @scheduleVersion=row_version FROM scheduling.update_schedules WHERE schedule_key=@schedule;
+  INSERT scheduling.catalog_schedule_operation_approvals(portal_environment,schedule_key,schedule_version,operation_id,approved_by)
+    VALUES('qa',@schedule,@scheduleVersion,N'fixture',@receiptUser);
+  INSERT core.catalog_physical_targets(portal_environment,target_kind,identity_fingerprint)
+    VALUES('qa','domain',HASHBYTES('SHA2_256',CONVERT(varbinary(max),@tag+N'-receipt')));
+  SET @receiptTarget=SCOPE_IDENTITY();
+  UPDATE e SET verified_target_id=LOWER(CONVERT(nvarchar(36),p.target_id))
+    FROM workflow.catalog_task_executions e CROSS JOIN core.catalog_physical_targets p
+    WHERE e.catalog_execution_key=@execution AND p.physical_target_key=@receiptTarget;
+  INSERT core.catalog_physical_target_links(physical_target_key,portal_environment,target_kind,client_key,domain_key,
+    domain_route_fingerprint,proof_id,verified_by,verified_at,valid_until)
+    SELECT @receiptTarget,'qa','domain',d.client_key,d.domain_key,/* ROUTE_HASH */,NEWID(),N'fixture',@stamp,@erpEnd
+    FROM core.domains d WHERE d.domain_key=@domain;
+  IF @negative<>0
+  BEGIN
+    IF @negative=2 UPDATE workflow.catalog_task_executions SET verified_target_id=LOWER(CONVERT(nvarchar(36),NEWID()))
+      WHERE catalog_execution_key=@execution;
+    IF @negative=3 UPDATE workflow.catalog_task_executions SET operation_id=N'fixture-other'
+      WHERE catalog_execution_key=@execution;
+    IF @negative=5 INSERT workflow.catalog_task_execution_links(catalog_execution_key,execution_kind,link_id,
+      catalog_source_key,catalog_record_id,client_key,domain_key,link_environment)
+      VALUES(@execution,'domain',@alias,@erp,N'1',@client,@domain,'test');
+    -- Deliberately exercise the trigger even when the app would reject earlier.
+    INSERT workflow.catalog_task_origin_receipts(portal_environment,catalog_execution_key,link_key,
+      schedule_key,schedule_version,valid_until)
+      VALUES(CASE WHEN @negative=1 THEN 'production' ELSE 'qa' END,@execution,@operational,@schedule,
+        CASE WHEN @negative=4 THEN 0x0000000000000000 ELSE @scheduleVersion END,@sagEnd);
+    THROW 54518,N'Invalid late receipt was accepted.',1;
+  END;
+  DECLARE @receiptArgs nvarchar(max),@receiptParams nvarchar(180)=
+    N'@executionId bigint,@portalEnvironment varchar(10),@validUntil datetime2(3),@receipts nvarchar(max)';
+  SELECT @receiptArgs=(SELECT @alias AS linkId,@tag AS scheduleId,
+    LOWER(CONVERT(char(16),@scheduleVersion,2)) AS scheduleVersion FOR JSON PATH);
+  DECLARE @ack TABLE([count] int);
+  INSERT @ack EXEC sys.sp_executesql @receiptProbe,@receiptParams,@execution,'qa',@sagEnd,@receiptArgs;
+  IF (SELECT COUNT(*) FROM @ack WHERE [count]=1)<>1 OR NOT EXISTS(
+    SELECT 1 FROM workflow.catalog_task_origin_receipts WHERE catalog_execution_key=@execution
+      AND link_key=@operational AND schedule_key=@schedule AND schedule_version=@scheduleVersion AND valid_until=@sagEnd)
+    THROW 54515,N'Expected one exact receipt for a later alias.',1;
+  SET @passed+=1;
+  DELETE FROM @ack;
+  INSERT @ack EXEC sys.sp_executesql @receiptProbe,@receiptParams,@execution,'qa',@sagEnd,@receiptArgs;
+  IF (SELECT COUNT(*) FROM @ack WHERE [count]=1)<>1 OR
+    (SELECT COUNT(*) FROM workflow.catalog_task_origin_receipts WHERE catalog_execution_key=@execution)<>1
+    THROW 54516,N'Receipt replay was not idempotent.',1;
+  SET @passed+=1;
+  IF EXISTS(SELECT 1 FROM workflow.catalog_task_execution_links WHERE catalog_execution_key=@execution)
+    OR EXISTS(SELECT 1 FROM workflow.catalog_task_execution_events WHERE catalog_execution_key=@execution)
+    OR EXISTS(SELECT 1 FROM workflow.task_sources WHERE task_key=@task)
+    OR NOT EXISTS(SELECT 1 FROM workflow.update_tasks WHERE task_key=@task AND status='pending'
+      AND assigned_role=N'super_admin' AND domain_key=@domain)
+    THROW 54517,N'Provenance changed task state, scope or credentials.',1;
+  SET @passed+=1;
+  ROLLBACK TRANSACTION proof_only_fixture;
+  DELETE FROM @result;
+  SET @scenario=3;
   INSERT @result EXEC sys.sp_executesql @proof,@params,@execution,'qa',@wrongVersion,@attachments;
   INSERT @result EXEC sys.sp_executesql @proof,@params,@execution,'qa',@version,@unknown;
   IF EXISTS(SELECT 1 FROM @result) THROW 54503,N'Wrong key version or module set passed.',1;
@@ -217,6 +303,7 @@ BEGIN TRY
   IF EXISTS(SELECT 1 FROM workflow.update_tasks WHERE source_id IN (@tag,@tag+N'-db-task'))
     OR EXISTS(SELECT 1 FROM workflow.catalog_task_executions WHERE catalog_execution_key IN (@execution,@dbExecution))
     OR EXISTS(SELECT 1 FROM scheduling.update_schedules WHERE source_id=@tag)
+    OR EXISTS(SELECT 1 FROM workflow.catalog_task_origin_receipts WHERE catalog_execution_key=@execution)
     OR EXISTS(SELECT 1 FROM core.clients WHERE source_id=@tag)
     OR EXISTS(SELECT 1 FROM core.databases WHERE source_id=@tag+N'-db')
     OR EXISTS(SELECT 1 FROM core.database_access_profiles WHERE source_id=@tag+N'-profile')
@@ -227,20 +314,27 @@ BEGIN TRY
   SELECT @passed AS passed,0 AS remaining_fixtures;
 END TRY
 BEGIN CATCH
+  DECLARE @error int=ERROR_NUMBER();
   IF XACT_STATE()<>0 ROLLBACK TRANSACTION;
-  SELECT ERROR_NUMBER() AS error_number, ERROR_LINE() AS error_line,@scenario AS error_scenario;
+  IF @negative<>0 AND @scenario=31 AND @error=54802
+    AND NOT EXISTS (SELECT 1 FROM workflow.catalog_task_origin_receipts WHERE catalog_execution_key=@execution)
+    AND NOT EXISTS (SELECT 1 FROM workflow.update_tasks WHERE source_id=@tag)
+    AND NOT EXISTS (SELECT 1 FROM core.catalog_physical_targets WHERE physical_target_key=@receiptTarget)
+    SELECT 1 AS passed,0 AS remaining_fixtures;
+  ELSE SELECT @error AS error_number, ERROR_LINE() AS error_line,@scenario AS error_scenario;
 END CATCH;
 '@
 
 $invoke=Join-Path $PSScriptRoot '../connect-sql-server/Invoke-PortalSAGWeb-EphemeralRequest.ps1'
 try {
-  $response=(& $invoke -SessionDirectory $session -Sql ($literal+[Environment]::NewLine+$fixture) -Mode write -TimeoutSeconds 35 -MaxRows 1) |
+  $response=(& $invoke -SessionDirectory $session -Sql ($literal+[Environment]::NewLine+$fixture.Replace('/* ROUTE_HASH */',$routeHash)) -Mode write -TimeoutSeconds 35 -MaxRows 1) |
     ConvertFrom-Json -Depth 16
 } catch {
   throw 'QA licensing proof rehearsal did not return a valid sanitized result.'
 }
 $row=$response.resultSets[0].rows[0]
-if(!$response.success -or $row.passed -ne 10 -or $row.remaining_fixtures -ne 0){
+$expected=if($Case -eq 'normal'){16}else{1}
+if(!$response.success -or $row.passed -ne $expected -or $row.remaining_fixtures -ne 0){
   throw "QA licensing proof rehearsal failed (SQL number: $([int]$row.error_number); batch line: $([int]$row.error_line); scenario: $([int]$row.error_scenario))."
 }
 $row | Select-Object passed,remaining_fixtures | ConvertTo-Json -Compress

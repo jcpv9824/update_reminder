@@ -15,3 +15,6 @@ migration/sql/042_catalog_operational_links.sql text eol=lf
 migration/sql/043_catalog_domain_scope.sql text eol=lf
 migration/sql/044_catalog_schedule_operation_approvals.sql text eol=lf
 migration/sql/045_catalog_schedule_operation_token_check.sql text eol=lf
+migration/sql/046_catalog_schedule_population_approvals.sql text eol=lf
+migration/sql/047_catalog_manual_day_intents.sql text eol=lf
+migration/sql/048_catalog_task_origin_receipts.sql text eol=lf

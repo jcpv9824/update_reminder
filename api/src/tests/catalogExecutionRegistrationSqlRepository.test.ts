@@ -88,6 +88,15 @@ describe("certified-day additive schedule provenance", () => {
   const successfulAppend = (finalResult = "registered") => rows([existing], existingLinks, [addedSchedule], [{ now }],
     [{ linkId: externalLinkId, validUntil: proofExpiry }], [{ count: 1 }], [{ count: 1 }], [{ result: finalResult }]);
   const append = () => registerSqlCatalogTaskExecutionInTransaction(transaction, addition(), mode);
+  const lateId = "10000000-0000-0000-0000-000000000050";
+  const lateAlias = (): CatalogExecutionRegistration => {
+    const value = addition();
+    const source = value.group.sources[0];
+    return { ...value, task: { ...value.task, clientId: "late-client", domainId: "late-domain", targetId: "late-database" },
+      group: { ...value.group, sources: [{ ...source, link: { ...source.link, linkId: lateId, customerId: "late-client",
+        domainId: "late-domain", databaseId: "late-database", catalogRecordId: "500" } }] },
+      catalogSourceIdsByLink: new Map([[lateId, sourceId]]), catalogEvidenceByLink: new Map([[lateId, value.catalogEvidenceByLink!.get(externalLinkId)!]]) };
+  };
 
   it("appends only the missing pair and nonprimary source, without changing task/link/lifecycle or emitting registered", async () => {
     mock.license.mockResolvedValue(licenseExpiry);
@@ -160,16 +169,92 @@ describe("certified-day additive schedule provenance", () => {
     expect(mock.query).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects a distinct new logical alias before any proof or write despite the same physical target", async () => {
-    const value = addition();
-    const newId = "00000000-0000-0000-0000-000000000099";
-    const source = value.group.sources[0];
+  it.each(["pending", "completed"])("records a distinct late alias as receipt only while preserving the %s task", async status => {
+    mock.license.mockResolvedValue(licenseExpiry);
+    const request = lateAlias();
+    rows([{ ...existing, status }], existingLinks, [addedSchedule], [{ now }], [{ linkId: lateId, validUntil: proofExpiry }],
+      [{ count: 1 }], [{ result: "registered" }]);
+    expect(await registerSqlCatalogTaskExecutionInTransaction(transaction, request, mode))
+      .toEqual({ outcome: { status: "existing", taskId: task.id }, validUntil: licenseExpiry });
+    expect(mock.insert).not.toHaveBeenCalled();
+    expect(mock.query.mock.calls[4][1]).toMatchObject({ executionId: "2", insertLinks: false, physicalId });
+    expect(mock.license).toHaveBeenCalledExactlyOnceWith(transaction, { executionId: "2", portalEnvironment: "qa", matchKeyVersion: 3,
+      attachments: [{ linkId: lateId, scheduleId: "schedule_3", moduleIds: ["module1"] }], proofOnlyLinks: [lateId] });
+    const [receiptSql, params] = mock.query.mock.calls[5];
+    expect(receiptSql).toContain("INSERT workflow.catalog_task_origin_receipts");
+    expect(receiptSql).toContain("prior.schedule_version");
+    expect(params).toMatchObject({ portalEnvironment: "qa", executionId: "2", validUntil: licenseExpiry });
+    expect(JSON.parse(params.receipts)).toEqual([{ linkId: lateId, scheduleId: "schedule_3", scheduleVersion: "0000000000000003" }]);
+    expect(mock.query.mock.calls[6][1]).toMatchObject({ insertRegistrationEvent: false, validUntil: licenseExpiry });
+    expect(mock.query.mock.calls.some(([sql]) => /INSERT workflow\.(catalog_task_execution_sources|task_sources)/.test(sql))).toBe(false);
+  });
+
+  it("revalidates a late receipt and keeps its SQL insert idempotent on replay", async () => {
+    mock.license.mockResolvedValue(licenseExpiry);
+    for (let retry = 0; retry < 2; retry++) {
+      rows([existing], existingLinks, [addedSchedule], [{ now }], [{ linkId: lateId, validUntil: proofExpiry }],
+        [{ count: 1 }], [{ result: "registered" }]);
+      expect(await registerSqlCatalogTaskExecutionInTransaction(transaction, lateAlias(), mode))
+        .toEqual({ outcome: { status: "existing", taskId: task.id }, validUntil: licenseExpiry });
+    }
+    const queries = mock.query.mock.calls.filter(([sql]) => sql.includes("INSERT workflow.catalog_task_origin_receipts"));
+    expect(queries).toHaveLength(2);
+    expect(queries[0]).toEqual(queries[1]);
+    expect(queries[0][0]).toContain("WHERE NOT EXISTS");
+  });
+
+  it("appends a regular missing source but does not make a receipt-only schedule operative", async () => {
+    const known = addition();
+    const late = lateAlias();
+    const combined = { ...known, group: { ...known.group, sources: [...known.group.sources,
+      { ...late.group.sources[0], scheduleId: "schedule_4" }] },
+      catalogSourceIdsByLink: new Map([...known.catalogSourceIdsByLink, ...late.catalogSourceIdsByLink]),
+      catalogEvidenceByLink: new Map([...known.catalogEvidenceByLink!, ...late.catalogEvidenceByLink!]),
+      scheduleVersions: new Map([...known.scheduleVersions, ["schedule_4", "0000000000000004"]]) };
+    mock.license.mockResolvedValue(licenseExpiry);
+    rows([existing], existingLinks, [addedSchedule, { ...addedSchedule, scheduleId: "schedule_4", scheduleKey: "4", selectionMode: "manual" }], [{ now }],
+      [{ linkId: externalLinkId, validUntil: proofExpiry }, { linkId: lateId, validUntil: proofExpiry }],
+      [{ count: 1 }], [{ count: 1 }], [{ count: 1 }], [{ result: "registered" }]);
+    expect((await registerSqlCatalogTaskExecutionInTransaction(transaction, combined, mode)).outcome.status).toBe("existing");
+    const receipt = mock.query.mock.calls.find(([sql]) => sql.includes("INSERT workflow.catalog_task_origin_receipts"))!;
+    const schedule = mock.query.mock.calls.find(([sql]) => sql.includes("INSERT workflow.task_sources"))!;
+    const regular = mock.query.mock.calls.find(([sql]) => sql.includes("INSERT workflow.catalog_task_execution_sources"))!;
+    expect(JSON.parse(receipt[1].receipts)).toEqual([{ linkId: lateId, scheduleId: "schedule_4", scheduleVersion: "0000000000000004" }]);
+    expect(JSON.parse(regular[1].attachments)).toEqual([{ linkId: externalLinkId, scheduleId: "schedule_3" }]);
+    expect(JSON.parse(schedule[1].origins)).toEqual([{ key: "3", origin: "licensing" }]);
+    expect(mock.license).toHaveBeenCalledExactlyOnceWith(transaction, { executionId: "2", portalEnvironment: "qa", matchKeyVersion: 3,
+      attachments: [{ linkId: externalLinkId, scheduleId: "schedule_3", moduleIds: ["module1"] }] });
+  });
+
+  it("does not accept a local-only late alias without the distinct 042 proof", async () => {
+    const value = lateAlias();
     rows([existing], existingLinks);
     await expect(registerSqlCatalogTaskExecutionInTransaction(transaction, { ...value,
-      group: { ...value.group, sources: [{ ...source, link: { ...source.link, linkId: newId } }] },
-      catalogSourceIdsByLink: new Map([[newId, sourceId]]), catalogEvidenceByLink: new Map([[newId, value.catalogEvidenceByLink!.get(externalLinkId)!]]),
+      catalogSourceIdsByLink: new Map([[lateId, null]]), catalogEvidenceByLink: undefined,
     }, mode)).rejects.toThrow("source-set-changed");
     expect(mock.query).toHaveBeenCalledTimes(2);
+  });
+
+  it("rolls back a late receipt when the proof expires before the final SQL clock", async () => {
+    mock.license.mockResolvedValue(licenseExpiry);
+    rows([existing], existingLinks, [addedSchedule], [{ now }], [{ linkId: lateId, validUntil: proofExpiry }],
+      [{ count: 1 }], [{ result: "catalog-reference-changed" }]);
+    await expect(runSqlTransaction(tx => registerSqlCatalogTaskExecutionInTransaction(tx, lateAlias(), mode)))
+      .rejects.toThrow("catalog-reference-changed");
+    expect(mock.rollback).toHaveBeenCalledOnce();
+    expect(mock.commit).not.toHaveBeenCalled();
+  });
+
+  it.each(["proof missing", "proof mismatch", "missing receipt row"] as const)("denies receipt-only reconciliation when %s", async issue => {
+    mock.license.mockResolvedValue(licenseExpiry);
+    rows([existing], existingLinks, [addedSchedule], [{ now }],
+      issue === "proof missing" ? [] : [{ linkId: issue === "proof mismatch" ? externalLinkId : lateId, validUntil: proofExpiry }],
+      [{ count: 0 }]);
+    await expect(runSqlTransaction(tx => registerSqlCatalogTaskExecutionInTransaction(tx, lateAlias(), mode)))
+      .rejects.toThrow("catalog-reference-changed");
+    expect(mock.query.mock.calls.some(([sql]) => sql.includes("INSERT workflow.catalog_task_origin_receipts"))).toBe(issue === "missing receipt row");
+    expect(mock.rollback).toHaveBeenCalledOnce();
+    expect(mock.commit).not.toHaveBeenCalled();
   });
 
   it.each(["schedule guard", "physical/ERP proof", "licensing proof"])("denies append when current %s is unavailable", async stage => {

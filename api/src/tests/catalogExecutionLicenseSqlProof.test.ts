@@ -77,6 +77,21 @@ describe("transactional catalog execution licensing proof", () => {
     expect(fake.query).not.toHaveBeenCalled();
   });
 
+  it("allows only an explicit subset of exact UUIDs as non-grant provenance candidates", async () => {
+    const attachment = input.attachments[0];
+    for (const proofOnlyLinks of [["not-a-uuid"], [attachment.linkId.toUpperCase()], [attachment.linkId, attachment.linkId],
+      ["447fdc31-5137-49db-8109-e881442554d5"]]) {
+      expect(await revalidateSqlCatalogExecutionLicenses(transaction, { ...input, proofOnlyLinks })).toBeNull();
+    }
+    expect(fake.query).not.toHaveBeenCalled();
+    expect(await revalidateSqlCatalogExecutionLicenses(transaction, { ...input, proofOnlyLinks: [attachment.linkId] })).toEqual(deadline);
+    expect(fake.input).toHaveBeenCalledWith("attachments", expect.anything(), JSON.stringify([{ ...attachment, proofOnly: true }]));
+    expect(statement()).toContain("q.proof_only=1");
+    expect(statement()).toContain("external_link.evidence_state='verified'");
+    expect(statement()).toContain("NOT EXISTS(SELECT 1 FROM workflow.catalog_task_execution_links prior");
+    expect(statement()).not.toMatch(/\b(?:INSERT|UPDATE|DELETE)\s+(?:core|settings|scheduling|workflow)\./i);
+  });
+
   it("permits the exact maximum of 25 distinct planned module IDs and 512 unique attachments", async () => {
     const attachments = Array.from({ length: 512 }, (_, n) => ({ ...input.attachments[0], scheduleId: `schedule-${n}`,
       moduleIds: Array.from({ length: 25 }, (_, m) => `module-${m}`) }));
@@ -87,7 +102,7 @@ describe("transactional catalog execution licensing proof", () => {
   it("binds exact current 042 ERP record, source, scope and enrolled match-key identity", async () => {
     await revalidateSqlCatalogExecutionLicenses(transaction, input);
     for (const text of ["settings.catalog_match_key_registry WITH (HOLDLOCK)", "match_key_version=@matchKeyVersion AND enrolled_at<=@now",
-      "l.catalog_execution_key=e.catalog_execution_key", "l.catalog_source_key IS NOT NULL",
+      "stored.catalog_execution_key=e.catalog_execution_key", "stored.catalog_source_key IS NOT NULL",
       "bridge.link_id=TRY_CONVERT(uniqueidentifier,l.link_id) AND DATALENGTH(l.link_id)=72",
       "bridge.client_key=l.client_key AND bridge.domain_key=l.domain_key", "bridge.database_key=l.database_key",
       "bridge.target_kind=l.execution_kind COLLATE Latin1_General_100_BIN2",

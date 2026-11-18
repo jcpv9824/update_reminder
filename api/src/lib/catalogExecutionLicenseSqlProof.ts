@@ -5,6 +5,8 @@ export type CatalogExecutionLicenseProofInput = Readonly<{
   portalEnvironment: "qa" | "production";
   matchKeyVersion: number;
   attachments: readonly { linkId: string; scheduleId: string; moduleIds: readonly string[] }[];
+  /** Only separately certified, previously unbound 042 aliases used for provenance. */
+  proofOnlyLinks?: readonly string[];
 }>;
 
 // Internal values only. This batch returns one deadline or no row; document
@@ -18,10 +20,10 @@ IF NOT EXISTS (SELECT 1 FROM settings.catalog_match_key_registry WITH (HOLDLOCK)
     AND match_key_version=@matchKeyVersion AND enrolled_at<=@now) RETURN;
 
 DECLARE @requested TABLE (ordinal int PRIMARY KEY,link_id nvarchar(260) COLLATE Latin1_General_100_BIN2,
-  schedule_id nvarchar(150) COLLATE Latin1_General_100_BIN2,modules nvarchar(max));
-INSERT @requested SELECT CONVERT(int,j.[key]),p.linkId,p.scheduleId,p.moduleIds
+  schedule_id nvarchar(150) COLLATE Latin1_General_100_BIN2,modules nvarchar(max),proof_only bit NOT NULL);
+INSERT @requested SELECT CONVERT(int,j.[key]),p.linkId,p.scheduleId,p.moduleIds,COALESCE(p.proofOnly,0)
 FROM OPENJSON(@attachments) j CROSS APPLY OPENJSON(j.[value]) WITH
-  (linkId nvarchar(260),scheduleId nvarchar(150),moduleIds nvarchar(max) AS JSON) p;
+  (linkId nvarchar(260),scheduleId nvarchar(150),moduleIds nvarchar(max) AS JSON,proofOnly bit) p;
 
 DECLARE @sag TABLE (source_key bigint PRIMARY KEY,revision_key bigint,binding_version binary(8),
   profile_version binary(8),valid_until datetime2(3));
@@ -58,10 +60,31 @@ SELECT q.ordinal,s.schedule_key,ls.license_match_mode,host.hostname,l.link_envir
 FROM @requested q
 JOIN workflow.catalog_task_executions e WITH (HOLDLOCK)
   ON e.catalog_execution_key=@executionId AND e.retired_at IS NULL AND e.cutoff_at>@now
-JOIN workflow.catalog_task_execution_links l WITH (HOLDLOCK)
-  ON l.catalog_execution_key=e.catalog_execution_key AND l.execution_kind=e.execution_kind
-  AND l.link_id=q.link_id AND DATALENGTH(l.link_id)=DATALENGTH(q.link_id)
-  AND l.link_state='active' AND l.retired_at IS NULL AND l.catalog_source_key IS NOT NULL
+CROSS APPLY (
+  SELECT stored.link_id COLLATE Latin1_General_100_BIN2 AS link_id,
+    stored.execution_kind COLLATE Latin1_General_100_BIN2 AS execution_kind,stored.client_key,stored.domain_key,stored.database_key,
+    stored.catalog_source_key,stored.catalog_record_id COLLATE Latin1_General_100_BIN2 AS catalog_record_id,
+    stored.link_environment COLLATE Latin1_General_100_BIN2 AS link_environment
+  FROM workflow.catalog_task_execution_links stored WITH (HOLDLOCK)
+  WHERE q.proof_only=0 AND stored.catalog_execution_key=e.catalog_execution_key AND stored.execution_kind=e.execution_kind
+    AND stored.link_id=q.link_id AND DATALENGTH(stored.link_id)=DATALENGTH(q.link_id)
+    AND stored.link_state='active' AND stored.retired_at IS NULL AND stored.catalog_source_key IS NOT NULL
+  UNION ALL
+  SELECT q.link_id COLLATE Latin1_General_100_BIN2,e.execution_kind COLLATE Latin1_General_100_BIN2,
+    external_link.client_key,external_link.domain_key,external_link.database_key,
+    external_link.catalog_source_key,CONVERT(nvarchar(11),external_link.source_record_id) COLLATE Latin1_General_100_BIN2,
+    external_link.link_environment COLLATE Latin1_General_100_BIN2
+  FROM core.catalog_operational_link_evidence external_link WITH (HOLDLOCK)
+  WHERE q.proof_only=1 AND DATALENGTH(q.link_id)=72
+    AND q.link_id=LOWER(CONVERT(nvarchar(36),external_link.link_id)) COLLATE Latin1_General_100_BIN2
+    AND external_link.portal_environment=@portalEnvironment COLLATE Latin1_General_100_BIN2
+    AND DATALENGTH(external_link.portal_environment)=DATALENGTH(@portalEnvironment)
+    AND external_link.target_kind=e.execution_kind COLLATE Latin1_General_100_BIN2
+    AND external_link.retired_at IS NULL AND external_link.owner_retired_at IS NULL AND external_link.evidence_state='verified'
+    -- Never let receipt mode stand in for a hidden/retired execution link.
+    AND NOT EXISTS(SELECT 1 FROM workflow.catalog_task_execution_links prior WITH (HOLDLOCK)
+      WHERE prior.catalog_execution_key=e.catalog_execution_key AND prior.link_id=q.link_id)
+) l
 JOIN core.clients c WITH (HOLDLOCK) ON c.client_key=l.client_key AND c.status='active'
 JOIN core.domains d WITH (HOLDLOCK) ON d.domain_key=l.domain_key AND d.client_key=l.client_key AND d.status='active'
 LEFT JOIN core.databases db WITH (HOLDLOCK) ON db.database_key=l.database_key
@@ -244,8 +267,10 @@ function validExecutionId(value: unknown): value is string | number {
 }
 
 /**
- * Revalidate licensing-only attachments after their execution links are inserted,
- * before source attachments. No SQL mutation or transaction ownership here.
+ * Revalidate licensing-only attachments before source attachments. Existing
+ * execution links must either be active or be explicitly certified 042 aliases
+ * for proof-only accounting; the caller separately checks identical physical
+ * destination and current operation before opening that path. No mutation here.
  * null denies the whole registration. Driver failures throw a sanitized error;
  * the caller must roll back, never replace a denial with an empty module set.
  * The returned deadline MUST join the caller's physical-proof/cutoff deadline
@@ -259,6 +284,12 @@ export async function revalidateSqlCatalogExecutionLicenses(
     || !Number.isInteger(input.matchKeyVersion) || input.matchKeyVersion < 1 || input.matchKeyVersion > 32767
     || !Array.isArray(input.attachments) || input.attachments.length === 0 || input.attachments.length > 512) return null;
   const pairs = new Set<string>();
+  const proofOnlyLinks = input.proofOnlyLinks ?? [];
+  if (!Array.isArray(proofOnlyLinks) || proofOnlyLinks.length > input.attachments.length ||
+    proofOnlyLinks.some((id: unknown) => typeof id !== "string" ||
+      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id)) ||
+    new Set(proofOnlyLinks).size !== proofOnlyLinks.length) return null;
+  const proofOnly = new Set(proofOnlyLinks);
   for (const attachment of input.attachments) {
     if (!attachment || !safeText(attachment.linkId, 260) || !safeText(attachment.scheduleId, 150)
       || !Array.isArray(attachment.moduleIds) || attachment.moduleIds.length === 0 || attachment.moduleIds.length > 25
@@ -268,13 +299,14 @@ export async function revalidateSqlCatalogExecutionLicenses(
     if (pairs.has(key)) return null;
     pairs.add(key);
   }
+  if (proofOnlyLinks.some((id: string) => !input.attachments.some(attachment => attachment.linkId === id))) return null;
   try {
     const result = await new sql.Request(transaction)
       .input("executionId", sql.BigInt, input.executionId)
       .input("portalEnvironment", sql.VarChar(10), input.portalEnvironment)
       .input("matchKeyVersion", sql.SmallInt, input.matchKeyVersion)
       .input("attachments", sql.NVarChar(sql.MAX), JSON.stringify(input.attachments.map(({ linkId, scheduleId, moduleIds }) =>
-        ({ linkId, scheduleId, moduleIds: [...moduleIds] }))))
+        ({ linkId, scheduleId, moduleIds: [...moduleIds], ...(proofOnly.has(linkId) ? { proofOnly: true } : {}) }))))
       .query<{ validUntil: Date }>(licenseProofSql);
     const deadline = result.recordset?.length === 1 ? result.recordset[0].validUntil : null;
     return deadline instanceof Date && Number.isFinite(deadline.valueOf()) ? deadline : null;
