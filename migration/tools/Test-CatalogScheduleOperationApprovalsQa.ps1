@@ -41,7 +41,7 @@ DECLARE @readParams nvarchar(100)=N'@expectedSchedules nvarchar(max),@portalEnvi
 DECLARE @guardParams nvarchar(max)=N'@schedules nvarchar(max),@portalEnvironment varchar(10),@operationId nvarchar(200),@workflowRole nvarchar(80),@assignmentKind varchar(10),@targetKind varchar(20)';
 DECLARE @roster nvarchar(max),@oldVersionText char(16),@newVersionText char(16);
 DECLARE @readRows TABLE(scheduleId nvarchar(150),scheduleVersion char(16),operationId nvarchar(200));
-DECLARE @guardRows TABLE(scheduleId nvarchar(150),scheduleKey bigint,origin varchar(20));
+DECLARE @guardRows TABLE(scheduleId nvarchar(150),scheduleKey bigint,selectionMode varchar(20),origin varchar(20));
 DECLARE @wrongCaseOperation nvarchar(200)=LOWER(@operation);
 
 -- Each expected SQL error may doom its transaction. Each case uses a
@@ -62,10 +62,10 @@ BEGIN TRY
   SELECT @ordinary=user_key FROM security.users WHERE source_id=@tag+N'-ordinary';
   INSERT security.user_roles(user_key,role_id,assigned_by)
     VALUES(@activeAdmin,N'super_admin',@actor),(@inactiveAdmin,N'super_admin',@actor);
-  INSERT scheduling.update_schedules(source_id,client_key,name,target_type,frequency_type,start_date,timezone,assigned_role,
+  INSERT scheduling.update_schedules(source_id,client_key,name,target_type,frequency_type,start_date,timezone,assigned_role,selection_mode,
     created_at,created_by,updated_at,updated_by)
     VALUES(@tag,@client,N'Fixture display label, not an operation ID','domain','manual',CONVERT(date,@stamp),
-      N'America/Bogota',N'super_admin',@stamp,@actor,@stamp,@actor);
+      N'America/Bogota',N'super_admin','licensing',@stamp,@actor,@stamp,@actor);
   SET @schedule=SCOPE_IDENTITY();
   SELECT @originalVersion=row_version FROM scheduling.update_schedules WHERE schedule_key=@schedule;
 
@@ -125,7 +125,8 @@ BEGIN TRY
     THROW 54483,N'The exact approval was not accepted with its SQL-owned UTC timestamp.',1;
   SET @passed+=1;
   INSERT @guardRows EXEC sys.sp_executesql @registrationGuard,@guardParams,@roster,'qa',@operation,N'super_admin','role','domain';
-  IF (SELECT COUNT(*) FROM @guardRows WHERE scheduleId=@tag AND scheduleKey=@schedule)<>1 OR (SELECT COUNT(*) FROM @guardRows)<>1
+  IF (SELECT COUNT(*) FROM @guardRows WHERE scheduleId=@tag AND scheduleKey=@schedule AND selectionMode='licensing')<>1
+    OR (SELECT COUNT(*) FROM @guardRows)<>1
     THROW 54491,N'The registration transaction did not recognize the exact approved operation.',1;
   SET @passed+=1;
   DELETE FROM @guardRows;

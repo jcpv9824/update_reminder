@@ -5,6 +5,9 @@ import type { CatalogOperationalLink } from "../lib/catalogOperationalLinksSqlRe
 import { generateCatalogScheduleDay, type CatalogScheduleDay } from "../lib/catalogScheduleDay";
 import type { UpdateSchedule } from "../types/models";
 
+const { readSagEvidence } = vi.hoisted(() => ({ readSagEvidence: vi.fn() }));
+vi.mock("../lib/catalogSagCustomerEvidenceSqlRepository", () => ({ readSqlCatalogSagCustomerEvidence: readSagEvidence }));
+
 const date = "2030-06-22";
 const checkedAt = new Date("2030-06-22T05:00:00.000Z");
 const version = "0000000000000001";
@@ -186,6 +189,37 @@ describe("integration with the existing persisted schedule generator", () => {
     expect(await generateCatalogOperationalScheduleDay(input, deps.io)).toMatchObject({ status: "evaluated", registered: 0, held: 2 });
     expect(deps.register).not.toHaveBeenCalled();
     expect(deps.generate.mock.calls[0][0].inventory.every(row => row.link.moduleIds === null)).toBe(true);
+  });
+
+  it("uses exact ERP sources for default license planning and binds the same enrollment to registration", async () => {
+    const deps = dependencies();
+    deps.readRoster.mockResolvedValue([{ version, schedule: { ...schedule, scopeGroups: undefined,
+      selectionMode: "licensing", licensingScope: { targetTypes: "domains_only", environment: "all",
+        licenseModuleIds: ["sales"], licenseMatchMode: "all", activeOnly: true } } }]);
+    readSagEvidence.mockReset();
+    readSagEvidence.mockImplementation(async ({ customerId }) => ({
+      state: "verified", verifiedAt: "2020-01-01T00:00:00.000Z",
+      items: [{ domainCandidate: "shared.example.test", environment: customerId === linkA ? "production" : "test",
+        licenseCodes: ["A"], productionStartedOn: null, testStartedOn: null, demoStartedOn: null }],
+      licenseModules: [{ code: "A", moduleId: "sales", name: "Sales", description: null }],
+    }));
+    expect(await generateCatalogOperationalScheduleDay({ ...input, matchKeyVersion: 7 }, { ...deps.io, readLicenseProof: undefined }))
+      .toMatchObject({ status: "evaluated", registered: 1 });
+    expect(readSagEvidence.mock.calls.map(([scope]) => ({ ...scope, allowedSourceIds: [...scope.allowedSourceIds] }))).toEqual([
+      { customerId: linkA, environment: "qa", matchKeyVersion: 7, allowedSourceIds: [sourceA] },
+      { customerId: linkB, environment: "qa", matchKeyVersion: 7, allowedSourceIds: [sourceB] },
+    ]);
+    expect(deps.register).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ matchKeyVersion: 7 }));
+  });
+
+  it("holds licensed work when default proof has no server-trusted enrollment", async () => {
+    const deps = dependencies();
+    deps.readRoster.mockResolvedValue([{ version, schedule: { ...schedule, scopeGroups: undefined,
+      selectionMode: "licensing", licensingScope: { targetTypes: "domains_only", environment: "all",
+        licenseModuleIds: ["sales"], licenseMatchMode: "all", activeOnly: true } } }]);
+    expect(await generateCatalogOperationalScheduleDay(input, { ...deps.io, readLicenseProof: undefined }))
+      .toMatchObject({ status: "evaluated", registered: 0, held: 2 });
+    expect(deps.register).not.toHaveBeenCalled();
   });
 
   it("does not infer coverage when the trusted provider omits certification", async () => {

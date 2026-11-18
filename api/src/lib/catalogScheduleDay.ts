@@ -14,6 +14,8 @@ export type CatalogScheduleRule = Omit<CatalogTaskRequest, "scheduleId"> & {
 export type CatalogScheduleDay = {
   date: string;
   portalEnvironment: CatalogEnvironment;
+  /** Same server-trusted match-key enrollment used to resolve licensed modules. */
+  matchKeyVersion?: number;
   checkedAt: Date;
   /** Original business cutoff from the trusted schedule occurrence, never from HTTP. */
   cutoffAt: Date;
@@ -102,6 +104,7 @@ export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io =
       completedAt: null, completedBy: null,
     };
     const write = await io.register({ group, task, portalEnvironment: input.portalEnvironment,
+      ...(input.matchKeyVersion !== undefined ? { matchKeyVersion: input.matchKeyVersion } : {}),
       cutoffAt: input.cutoffAt, catalogSourceIdsByLink: new Map(group.sources.map(({ link: row }) =>
         [row.linkId, inventory.get(row.linkId)!.sourceId])),
       catalogEvidenceByLink: new Map(group.sources.flatMap(({ link: row }) => {

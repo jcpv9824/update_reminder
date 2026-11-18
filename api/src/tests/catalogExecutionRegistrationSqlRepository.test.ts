@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { UpdateTask } from "../types/models";
 
-const mock = vi.hoisted(() => ({ query: vi.fn(), begin: vi.fn(), commit: vi.fn(), rollback: vi.fn(), insert: vi.fn(), lockDay: vi.fn(), tx: {} }));
+const mock = vi.hoisted(() => ({ query: vi.fn(), begin: vi.fn(), commit: vi.fn(), rollback: vi.fn(), insert: vi.fn(), lockDay: vi.fn(), license: vi.fn(), tx: {} }));
 vi.mock("mssql", () => ({ default: {
   Request: class {
     parameters: Record<string, unknown> = {};
@@ -18,6 +18,7 @@ vi.mock("../lib/sqlTransaction", () => ({ runSqlTransaction: async (fn: (tx: obj
 } }));
 vi.mock("../lib/workflowTaskGenerationSqlRepository", () => ({ insertSqlGeneratedTaskInTransaction: mock.insert }));
 vi.mock("../lib/catalogExecutionCoexistenceSql", () => ({ lockCatalogTaskDay: mock.lockDay }));
+vi.mock("../lib/catalogExecutionLicenseSqlProof", () => ({ revalidateSqlCatalogExecutionLicenses: mock.license }));
 
 import { registerSqlCatalogTaskExecution, type CatalogExecutionRegistration } from "../lib/catalogExecutionRegistrationSqlRepository";
 import { catalogTaskExecutionKey } from "../lib/catalogTaskTargetPlanning";
@@ -49,8 +50,9 @@ const input = (): CatalogExecutionRegistration => {
     scheduleVersions: new Map([["schedule_1", "0000000000000001"], ["schedule_2", "0000000000000002"]]) };
 };
 
-const scheduleRows = [{ scheduleId: "schedule_1", scheduleKey: "1", origin: "licensing" },
-  { scheduleId: "schedule_2", scheduleKey: "2", origin: "special" }];
+const scheduleRows = [{ scheduleId: "schedule_1", scheduleKey: "1", origin: "licensing", selectionMode: "manual" },
+  { scheduleId: "schedule_2", scheduleKey: "2", origin: "special", selectionMode: null }];
+const licensedRows = [{ ...scheduleRows[0], selectionMode: "licensing" }, scheduleRows[1]];
 const existing = { executionId: "2", taskId: task.id, operationId: "release1", occurrenceId, targetId: physicalId, kind: "database",
   status: "completed", taskDate: task.taskDate, cutoffAt, retiredAt: null, representativeTarget: task.targetId, representativeClient: task.clientId,
   representativeDomain: task.domainId, primaryScheduleId: "schedule_1", assignedRole: task.assignedRole, usersJson: "[]" };
@@ -79,6 +81,7 @@ describe("atomic catalog execution registration", () => {
     await expect(registerSqlCatalogTaskExecution(input())).resolves.toEqual({ status: "registered", taskId: task.id });
     expect(mock.begin).toHaveBeenCalledOnce();
     expect(mock.commit).toHaveBeenCalledOnce();
+    expect(mock.license).not.toHaveBeenCalled();
     expect(mock.rollback).not.toHaveBeenCalled();
     expect(mock.lockDay).toHaveBeenCalledExactlyOnceWith(mock.tx, task);
     expect(mock.lockDay.mock.invocationCallOrder[0]).toBeLessThan(mock.query.mock.invocationCallOrder[0]);
@@ -124,6 +127,53 @@ describe("atomic catalog execution registration", () => {
     expect(mock.query.mock.calls[8][0]).toContain("@finalNow>=@validUntil");
     expect(mock.query.mock.calls[8][1].validUntil).toEqual(cutoffAt);
     expect(Buffer.isBuffer(mock.query.mock.calls[8][1].token)).toBe(true);
+  });
+
+  it("revalidates only the SQL-persisted licensing attachments and binds the earliest evidence expiry", async () => {
+    const expiry = new Date(now.valueOf() + 60_000);
+    mock.license.mockResolvedValue(expiry);
+    rows([], [{ collision: false }], licensedRows, [{ now }], [{ key: "2" }],
+      [{ linkId: externalLinkId, validUntil: cutoffAt }, { linkId: "link2", validUntil: cutoffAt }],
+      [{ count: 2 }], [{ count: 1 }], [{ result: "registered" }]);
+    await expect(registerSqlCatalogTaskExecution({ ...input(), matchKeyVersion: 3 }))
+      .resolves.toEqual({ status: "registered", taskId: task.id });
+    expect(mock.license).toHaveBeenCalledExactlyOnceWith(mock.tx, {
+      executionId: "2", portalEnvironment: "qa", matchKeyVersion: 3,
+      attachments: [{ linkId: externalLinkId, scheduleId: "schedule_1", moduleIds: ["module1"] }],
+    });
+    expect(mock.query.mock.invocationCallOrder[5]).toBeLessThan(mock.license.mock.invocationCallOrder[0]);
+    expect(mock.license.mock.invocationCallOrder[0]).toBeLessThan(mock.query.mock.invocationCallOrder[6]);
+    expect(mock.query.mock.calls[8][1].validUntil).toEqual(expiry);
+  });
+
+  it("rolls back all provisional writes when transactional licenses cannot be verified", async () => {
+    mock.license.mockResolvedValue(null);
+    rows([], [{ collision: false }], licensedRows, [{ now }], [{ key: "2" }],
+      [{ linkId: externalLinkId, validUntil: cutoffAt }, { linkId: "link2", validUntil: cutoffAt }]);
+    await expect(registerSqlCatalogTaskExecution({ ...input(), matchKeyVersion: 3 }))
+      .resolves.toEqual({ status: "conflict", reason: "catalog-reference-changed" });
+    expect(mock.query).toHaveBeenCalledTimes(6);
+    expect(mock.rollback).toHaveBeenCalledOnce();
+    expect(mock.commit).not.toHaveBeenCalled();
+  });
+
+  it("cannot register a persisted licensing schedule without explicit match-key enrollment input", async () => {
+    rows([], [{ collision: false }], licensedRows);
+    await expect(registerSqlCatalogTaskExecution(input()))
+      .resolves.toEqual({ status: "conflict", reason: "catalog-reference-changed" });
+    expect(mock.query).toHaveBeenCalledTimes(3);
+    expect(mock.insert).not.toHaveBeenCalled();
+    expect(mock.license).not.toHaveBeenCalled();
+  });
+
+  it("does not let a physical alias borrow another schedule's licensed ERP proof", async () => {
+    const bothLicensed = [licensedRows[0], { ...licensedRows[1], selectionMode: "licensing" }];
+    rows([], [{ collision: false }], bothLicensed);
+    await expect(registerSqlCatalogTaskExecution({ ...input(), matchKeyVersion: 3 }))
+      .resolves.toEqual({ status: "conflict", reason: "catalog-reference-changed" });
+    expect(mock.query).toHaveBeenCalledTimes(3);
+    expect(mock.insert).not.toHaveBeenCalled();
+    expect(mock.license).not.toHaveBeenCalled();
   });
 
   it("does not register after a concurrent scope or assignment edit changes a schedule version", async () => {

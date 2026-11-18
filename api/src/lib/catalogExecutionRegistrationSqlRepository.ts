@@ -9,6 +9,7 @@ import { insertSqlGeneratedTaskInTransaction } from "./workflowTaskGenerationSql
 import { lockCatalogTaskDay } from "./catalogExecutionCoexistenceSql";
 import { catalogDomainRouteFingerprintSql } from "./catalogPhysicalTargetIdentity";
 import { isCatalogScheduleOperationId } from "./catalogScheduleOperationApprovalSqlRepository";
+import { revalidateSqlCatalogExecutionLicenses } from "./catalogExecutionLicenseSqlProof";
 
 type PlannedGroup = CatalogTaskPlan["tasks"][number];
 type SqlKey = number | string;
@@ -34,6 +35,8 @@ export type CatalogExecutionRegistration = Readonly<{
   catalogSourceIdsByLink: ReadonlyMap<string, string | null>;
   /** Required for every external link, forbidden for a local link. */
   catalogEvidenceByLink?: ReadonlyMap<string, CatalogExecutionSourceEvidence>;
+  /** Server-trusted enrollment used by planning; required for persisted licensing scopes. */
+  matchKeyVersion?: number;
 }>;
 
 type Conflict = "invalid-plan" | "cutoff-passed" | "legacy-task-collision" | "execution-conflict"
@@ -89,6 +92,7 @@ function parseInput(input: CatalogExecutionRegistration) {
   if (!safeText(root, 150) || rootScheduleId(task.scheduleId) !== root) return conflict("invalid-plan");
   const links = new Map<string, Link>();
   const attachments = new Map<string, Attachment>();
+  const modulesByLink = new Map<string, readonly string[] | null>();
   let representative = false;
   for (const source of group.sources) {
     const { link, operationId, assignment, scheduleId } = source;
@@ -114,6 +118,13 @@ function parseInput(input: CatalogExecutionRegistration) {
         profileVersion: evidence.profileVersion } : {}) };
     const previous = links.get(link.linkId);
     if (previous && identity(previous) !== identity(record)) return conflict("invalid-plan");
+    if (link.moduleIds !== null && (!Array.isArray(link.moduleIds) || link.moduleIds.length > 128 ||
+        link.moduleIds.some(id => !safeText(id, 150)) || new Set(link.moduleIds).size !== link.moduleIds.length)) {
+      return conflict("invalid-plan");
+    }
+    const modules = link.moduleIds === null ? null : [...link.moduleIds].sort();
+    if (previous && JSON.stringify(modulesByLink.get(link.linkId)) !== JSON.stringify(modules)) return conflict("invalid-plan");
+    modulesByLink.set(link.linkId, modules);
     links.set(link.linkId, record);
     attachments.set(pair(link.linkId, scheduleId), { linkId: link.linkId, scheduleId });
     if (root === scheduleId && task.clientId === link.customerId && task.domainId === link.domainId &&
@@ -124,7 +135,7 @@ function parseInput(input: CatalogExecutionRegistration) {
   const schedules = [...new Set([...attachments.values()].map(item => item.scheduleId))].sort();
   if (input.scheduleVersions.size !== schedules.length || schedules.some(id =>
     !/^[a-f0-9]{16}$/.test(input.scheduleVersions.get(id) ?? ""))) return conflict("invalid-plan");
-  return { root, links, attachments, schedules,
+  return { root, links, attachments, schedules, modulesByLink,
     targetIds: [...new Set([...links.values()].map(item => item.databaseId ?? item.domainId))].sort() };
 }
 
@@ -234,8 +245,9 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
         .input("operationId", sql.NVarChar(200), group.operationId)
         .input("schedules", sql.NVarChar(sql.MAX), JSON.stringify(planned.schedules.map(id =>
           ({ id, version: input.scheduleVersions.get(id) }))))
-        .query<{ scheduleId: string; scheduleKey: SqlKey; origin: OriginKind }>(`
+        .query<{ scheduleId: string; scheduleKey: SqlKey; origin: OriginKind; selectionMode: "manual" | "licensing" | null }>(`
           SELECT s.source_id AS scheduleId, s.schedule_key AS scheduleKey,
+            s.selection_mode AS selectionMode,
             CASE WHEN s.origin='licensing' THEN 'licensing' WHEN s.origin='special' THEN 'special' ELSE 'normal' END AS origin
           FROM OPENJSON(@schedules) WITH (schedule_id nvarchar(150) '$.id', expected_version char(16) '$.version') AS ids
           JOIN scheduling.update_schedules AS s WITH (UPDLOCK,HOLDLOCK) ON s.source_id=ids.schedule_id
@@ -258,6 +270,19 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
           );`);
       const bySchedule = new Map(schedules.recordset.map(row => [row.scheduleId, row]));
       if (bySchedule.size !== planned.schedules.length || planned.schedules.some(id => !bySchedule.has(id))) return conflict("catalog-reference-changed");
+      if (schedules.recordset.some(row => row.selectionMode !== "manual" && row.selectionMode !== "licensing" && row.selectionMode !== null)) {
+        return conflict("catalog-reference-changed");
+      }
+      const licensed = [...planned.attachments.values()].flatMap(attachment => {
+        if (bySchedule.get(attachment.scheduleId)!.selectionMode !== "licensing") return [];
+        const moduleIds = planned.modulesByLink.get(attachment.linkId);
+        if (!moduleIds?.length || moduleIds.length > 25 ||
+            !planned.links.get(attachment.linkId)?.catalogSourceId) return conflict("catalog-reference-changed");
+        return [{ ...attachment, moduleIds }];
+      });
+      const { matchKeyVersion } = input;
+      if (licensed.length && (matchKeyVersion === undefined || !Number.isInteger(matchKeyVersion) ||
+          matchKeyVersion < 1 || matchKeyVersion > 32767)) return conflict("catalog-reference-changed");
 
       const now = await new sql.Request(transaction).input("cutoffAt", sql.DateTime2(3), cutoffAt)
         .query<{ now: Date }>("SELECT SYSUTCDATETIME() AS now WHERE SYSUTCDATETIME()<@cutoffAt;");
@@ -373,6 +398,13 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
       }
       const deadlines = writes.recordset.map(link => link.validUntil instanceof Date ? link.validUntil.valueOf() : NaN);
       if (deadlines.some(value => !Number.isFinite(value))) return conflict("catalog-reference-changed");
+      if (licensed.length && matchKeyVersion !== undefined) {
+        const licenseDeadline = await revalidateSqlCatalogExecutionLicenses(transaction, {
+          executionId, portalEnvironment, matchKeyVersion, attachments: licensed,
+        });
+        if (!(licenseDeadline instanceof Date) || !Number.isFinite(licenseDeadline.valueOf())) return conflict("catalog-reference-changed");
+        deadlines.push(licenseDeadline.valueOf());
+      }
       const evidenceValidUntil = new Date(Math.min(...deadlines));
 
       const attached = await new sql.Request(transaction).input("executionId", sql.BigInt, executionId)

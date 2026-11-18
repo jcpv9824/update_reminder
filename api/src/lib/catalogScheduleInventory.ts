@@ -4,6 +4,7 @@ import { generateCatalogPersistedScheduleDay } from "./catalogScheduleScopes";
 import type { CatalogExecutionSourceEvidence } from "./catalogExecutionRegistrationSqlRepository";
 import { readSqlCatalogScheduleOperationApprovals } from "./catalogScheduleOperationApprovalSqlRepository";
 import { readSqlCatalogScheduleRoster } from "./schedulingSqlRepository";
+import { readCatalogScheduleLicenseProof } from "./catalogScheduleLicenseProof";
 
 type SourceWitness = CatalogExecutionSourceEvidence;
 type InventoryRow = CatalogScheduleDay["inventory"][number];
@@ -30,7 +31,7 @@ export type CatalogScheduleInventoryDependencies = {
    * must check customer/target/environment and current license-mapping provenance.
    * Missing entries/null are unknown; [] means proven absence, never a query failure.
    */
-  readLicenseProof: (scope: CatalogInventoryProofScope) => Promise<ReadonlyMap<string, readonly string[] | null>>;
+  readLicenseProof?: (scope: CatalogInventoryProofScope) => Promise<ReadonlyMap<string, readonly string[] | null>>;
   /** Tests/internal composition only; normal execution uses the existing persisted generator. */
   persisted?: Parameters<typeof generateCatalogPersistedScheduleDay>[1];
 };
@@ -128,7 +129,9 @@ export async function generateCatalogOperationalScheduleDay(
   if (!revision.complete) {
     return generateCatalogPersistedScheduleDay({ ...input, revision, inventory }, io.persisted);
   }
-  const modulesByLink = await io.readLicenseProof(scope);
+  const modulesByLink = io.readLicenseProof ? await io.readLicenseProof(scope)
+    : input.matchKeyVersion === undefined ? new Map<string, readonly string[] | null>()
+      : await readCatalogScheduleLicenseProof({ ...scope, matchKeyVersion: input.matchKeyVersion });
   return generateCatalogPersistedScheduleDay({ ...input, revision,
     inventory: composeCatalogScheduleInventory(links, modulesByLink, input.checkedAt) }, io.persisted);
 }
