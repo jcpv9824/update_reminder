@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildMastersReportEmail, parseSemicolonEmails } from "../lib/reportsService";
+import { CATALOG_ACTIVE_USERS_UNAVAILABLE, collectCatalogActiveUserReport } from "../lib/catalogActiveUserReport";
 import type { ClientRecord, DatabaseRecord, DomainRecord, LicenseAssignmentRecord, LicenseModuleRecord, UpdateSchedule } from "../types/models";
 
 const client: ClientRecord = {
@@ -150,6 +151,60 @@ describe("buildMastersReportEmail", () => {
     expect(report.html).toContain("Empresa Uno");
     expect(report.html).toContain("EMPRESA_UNO");
     expect(report.html).toContain("Semanal");
+    expect(report.html).not.toContain("Usuarios activos");
+    expect(report.text).not.toContain("Usuarios activos");
+  });
+
+  it("muestra conteos por vínculo, suma las bases físicas una vez y no expone metadatos del conteo", async () => {
+    const physical = { physicalDatabaseId: "física-interna", serverGroupId: "host-sensible.invalid",
+      reportingProfileId: "referencia-sensible" };
+    const zero = { ...physical, physicalDatabaseId: "física-cero" };
+    const secondClient = { ...client, id: "client_2", name: "Cliente Dos" };
+    const secondDomain = { ...domain, id: "domain_2", clientId: secondClient.id };
+    const linkedDb = { ...database, id: "db_link_2", clientId: secondClient.id, domainId: secondDomain.id,
+      companyName: "<script>Etiqueta</script>" };
+    const zeroDb = { ...database, id: "db_zero", companyName: "Conteo cero" };
+    const unverifiedDb = { ...database, id: "db_unverified", companyName: "Base sin verificación" };
+    const evidence = await collectCatalogActiveUserReport([
+      { clientId: client.id, databaseLinkId: database.id, target: physical },
+      { clientId: secondClient.id, databaseLinkId: linkedDb.id, target: physical },
+      { clientId: client.id, databaseLinkId: zeroDb.id, target: zero },
+      { clientId: client.id, databaseLinkId: unverifiedDb.id, target: null },
+    ].map(link => ({ ...link, clientName: "cliente-interno", databaseAlias: "alias-interno" })),
+    async target => target.physicalDatabaseId === zero.physicalDatabaseId ? 0 : 7);
+    const report = buildMastersReportEmail({
+      clients: [client, secondClient], domains: [domain, secondDomain],
+      databases: [database, linkedDb, zeroDb, unverifiedDb], schedules: [], activeUsersReport: evidence,
+    });
+    for (const body of [report.html, report.text]) {
+      expect(body).toContain("Usuarios activos en bases físicas verificadas: 7");
+      expect(body).toContain("Resultado parcial");
+      expect(body.match(/Usuarios activos: 7/g)).toHaveLength(2);
+      expect(body).toContain("Usuarios activos: 0");
+      expect(body).toContain(CATALOG_ACTIVE_USERS_UNAVAILABLE);
+      for (const value of [...Object.values(physical), "alias-interno", "cliente-interno", database.id]) {
+        expect(body).not.toContain(value);
+      }
+    }
+    expect(report.html).toContain("&lt;script&gt;Etiqueta&lt;/script&gt;");
+    expect(report.html).not.toContain("<script>Etiqueta</script>");
+  });
+
+  it("no muestra el conteo de otro cliente aunque coincida el ID del vínculo", () => {
+    const report = buildMastersReportEmail({
+      clients: [client], domains: [domain], databases: [database], schedules: [],
+      activeUsersReport: {
+        rows: [{ clientId: "otro", databaseLinkId: database.id, clientName: "No usar", databaseAlias: "No usar",
+          status: "available", activeUsers: 999, checkedAt: "2026-05-04T00:00:00Z" }],
+        summary: { activeUsers: 999, physicalDatabases: 1, verifiedCounts: 1, unverifiedLinks: 0, partial: false },
+      },
+    });
+    for (const body of [report.html, report.text]) {
+      expect(body).toContain(CATALOG_ACTIVE_USERS_UNAVAILABLE);
+      expect(body).toContain("Usuarios activos en bases físicas verificadas: No disponible");
+      expect(body).toContain("Resultado parcial");
+      expect(body).not.toContain("999");
+    }
   });
 
   it("no incluye passwords, usuarios SQL, secretos ni connection strings completas", () => {

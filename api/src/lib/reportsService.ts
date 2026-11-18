@@ -11,6 +11,7 @@ import {
   type MasterReportClient,
 } from "./emailTemplates";
 import { parseSemicolonEmails as parseEmailsDetailed, uniqueEmails } from "./emailRecipients";
+import type { CatalogActiveUserReport } from "./catalogActiveUserReport";
 
 export function parseSemicolonEmails(value: string): string[] {
   const parsed = parseEmailsDetailed(value);
@@ -69,6 +70,7 @@ export function buildMastersReportEmail(args: {
   schedules: UpdateSchedule[];
   licenseModules?: LicenseModuleRecord[];
   licenseAssignments?: LicenseAssignmentRecord[];
+  activeUsersReport?: CatalogActiveUserReport;
   generatedAt?: string | Date;
   frontendBaseUrl?: string;
   timezone?: string;
@@ -77,6 +79,30 @@ export function buildMastersReportEmail(args: {
   const domainsByClient = new Map<string, DomainRecord[]>();
   const dbsByDomain = new Map<string, MastersReportDatabaseRecord[]>();
   const activeDomainSchedule = new Map<string, UpdateSchedule>();
+  const countsByClient = new Map<string, Map<string, number | null>>();
+  const displayedLinksByClient = new Map<string, Set<string>>();
+  for (const row of args.activeUsersReport?.rows ?? []) {
+    const counts = countsByClient.get(row.clientId) ?? new Map<string, number | null>();
+    const count = row.status === "available" && Number.isSafeInteger(row.activeUsers) && row.activeUsers >= 0
+      ? row.activeUsers : null;
+    const existing = counts.get(row.databaseLinkId);
+    counts.set(row.databaseLinkId, existing !== undefined && existing !== count ? null : count);
+    countsByClient.set(row.clientId, counts);
+  }
+  let hasUnverifiedDisplayedDatabase = false;
+
+  function activeUsersFor(clientId: string, db: MastersReportDatabaseRecord): number | null | undefined {
+    if (!args.activeUsersReport) return undefined;
+    const matchesOwner = db.clientId === clientId;
+    if (matchesOwner) {
+      const displayed = displayedLinksByClient.get(clientId) ?? new Set<string>();
+      displayed.add(db.id);
+      displayedLinksByClient.set(clientId, displayed);
+    }
+    const count = (matchesOwner ? countsByClient.get(clientId)?.get(db.id) : null) ?? null;
+    if (count === null) hasUnverifiedDisplayedDatabase = true;
+    return count;
+  }
 
   for (const domain of args.domains) {
     const list = domainsByClient.get(domain.clientId) ?? [];
@@ -148,15 +174,25 @@ export function buildMastersReportEmail(args: {
           environment: String(db.environment ?? ""),
           status: db.status,
           createdAt: db.createdAt,
+          activeUsers: activeUsersFor(client.id, db),
         })),
       })),
     };
   });
 
+  // The collector deduplicates before returning its summary. If its scope is
+  // wider than the rendered report, no safe subtotal can be derived here.
+  const summaryScopeMismatch = args.activeUsersReport?.rows.some(
+    (row) => !displayedLinksByClient.get(row.clientId)?.has(row.databaseLinkId),
+  );
   return buildMastersReportTemplate({
     clients: reportClients,
     generatedAt: args.generatedAt,
     frontendBaseUrl: args.frontendBaseUrl,
     timezone: args.timezone,
+    activeUsersSummary: args.activeUsersReport && {
+      activeUsers: summaryScopeMismatch ? null : args.activeUsersReport.summary.activeUsers,
+      partial: !!summaryScopeMismatch || args.activeUsersReport.summary.partial || hasUnverifiedDisplayedDatabase,
+    },
   });
 }

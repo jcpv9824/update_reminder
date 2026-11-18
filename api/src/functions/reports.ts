@@ -10,6 +10,8 @@ import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import { loadSqlMastersReportData } from "../lib/mastersReportSqlData";
 import { enqueueSqlEmail } from "../lib/emailOutboxSqlRepository";
 import { randomUUID } from "node:crypto";
+import { catalogActiveUserReportEnvironment, loadCatalogMastersActiveUsers } from "../lib/catalogMastersActiveUsers";
+import { mayReceiveCatalogActiveUsersReport } from "../lib/catalogReportRecipients";
 
 async function getAllowedUser(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -48,15 +50,26 @@ app.http("mastersReportSendEmail", {
       const limited = await enforceRequestRateLimit(req, "email_masters_report", user.id, RATE_LIMIT_POLICIES.mastersReport);
       if (limited) return limited;
 
+      const activeUsersEnv = catalogActiveUserReportEnvironment();
+      if (activeUsersEnv && !await mayReceiveCatalogActiveUsersReport(recipients)) {
+        return forbidden("El reporte de usuarios activos requiere destinatarios autorizados del Portal.");
+      }
       const data = await loadSqlMastersReportData(new Date().toISOString().slice(0, 10));
+      const activeUsersReport = activeUsersEnv ? await loadCatalogMastersActiveUsers(data, activeUsersEnv) : undefined;
 
       const settings = await (await import("../lib/settingsService")).loadEmailAlertsSettings();
       const email = buildMastersReportEmail({
         ...data,
+        activeUsersReport,
         generatedAt: new Date(),
         frontendBaseUrl: settings.frontendBaseUrl || process.env.FRONTEND_BASE_URL,
         timezone: process.env.APP_TIMEZONE || "America/Bogota",
       });
+      if (activeUsersEnv) {
+        if ((await getAllowedUser(req)).id !== user.id || !await mayReceiveCatalogActiveUsersReport(recipients)) {
+          return forbidden("El reporte de usuarios activos requiere destinatarios autorizados del Portal.");
+        }
+      }
       const queued = await enqueueSqlEmail({
         type: "masters_report",
         idempotencyKey: `masters-report:${user.id}:${randomUUID()}`,
@@ -66,7 +79,7 @@ app.http("mastersReportSendEmail", {
         html: email.html,
         text: email.text,
         recipients: recipients.map((emailAddress) => ({ email: emailAddress })),
-        metadata: { recipientsCount: recipients.length },
+        metadata: { recipientsCount: recipients.length, ...(activeUsersEnv ? { catalogActiveUsers: true } : {}) },
         createdBy: user.id,
       });
       return ok({

@@ -1,7 +1,9 @@
+import { timingSafeEqual } from "node:crypto";
 import { connect, isIP, type Socket } from "node:net";
 import sql from "mssql";
 import type { CatalogActiveUserCountReader, CatalogActiveUserTarget } from "./catalogActiveUserReport";
 import type { CatalogSqlConnectionTarget } from "./catalogExternalSqlTransport";
+import { CATALOG_SQL_TARGET_IDENTITY_SELECT, fingerprintCatalogSqlTargetRows, isCatalogSqlInstanceId } from "./catalogSqlTargetIdentityReader";
 import { createGuardedSqlConnector, resolveHost, type SocketConnector } from "./outboundGuard";
 
 /** Filled from a reviewed, destination-specific schema certification, never from HTTP. */
@@ -19,6 +21,7 @@ export type CatalogActiveUserContract =
 export type CertifiedCatalogActiveUserSqlTarget = Readonly<{
   target: CatalogActiveUserTarget;
   connection: CatalogSqlConnectionTarget;
+  identity: Readonly<{ instanceId: string; expectedFingerprint: Buffer }>;
   evidence: CatalogActiveUserContract;
 }>;
 
@@ -29,7 +32,7 @@ export type ResolveCertifiedCatalogActiveUserSqlTarget = (
 
 type Binding = Readonly<{ name: string; type: "text" | "bit_code"; value: string | number }>;
 type SelectPlan = { proof: string; proofBindings: readonly Binding[]; count: string; countBindings: readonly Binding[]; tableCount: boolean };
-type Failure = "cancelled" | "timeout" | "uncertified" | "schema_unverified" | "invalid_count" | "connection_failed";
+type Failure = "cancelled" | "timeout" | "uncertified" | "identity_unverified" | "schema_unverified" | "invalid_count" | "connection_failed";
 
 export class CatalogActiveUserSqlUnavailable extends Error {
   constructor(readonly reason: Failure) { super(reason); }
@@ -186,8 +189,13 @@ export function createCatalogActiveUserSqlReader(
     const run = async () => {
       const certified = await resolveCertifiedTarget(reference, lifetime.signal);
       lifetime.signal.throwIfAborted();
-      if (!certified || !sameTarget(reference, certified.target) || !validConnection(certified.connection)) throw failure("uncertified");
+      if (!certified || !sameTarget(reference, certified.target) || !validConnection(certified.connection) ||
+          !isCatalogSqlInstanceId(certified.identity?.instanceId) ||
+          !Buffer.isBuffer(certified.identity.expectedFingerprint) ||
+          certified.identity.expectedFingerprint.length !== 32) throw failure("uncertified");
       const { server, port, database, username, password } = certified.connection;
+      const { instanceId } = certified.identity;
+      const expectedFingerprint = Buffer.from(certified.identity.expectedFingerprint);
       const plan = compile(certified.evidence, database);
       const connectGuard = createGuardedSqlConnector(resolveHost, options => {
         lifetime.signal.throwIfAborted();
@@ -216,7 +224,7 @@ export function createCatalogActiveUserSqlReader(
       pool.on("error", () => stop("connection_failed"));
       await pool.connect();
       lifetime.signal.throwIfAborted();
-      // Pin metadata/permission proof and aggregate to one authenticated SQL session.
+      // Pin identity, metadata, permission proof and aggregate to one authenticated SQL session.
       const transaction = new sql.Transaction(pool);
       await transaction.begin(sql.ISOLATION_LEVEL.READ_COMMITTED);
       lifetime.signal.throwIfAborted();
@@ -231,6 +239,11 @@ export function createCatalogActiveUserSqlReader(
         finally { active = undefined; }
       };
       try {
+        const identityRows = await select(CATALOG_SQL_TARGET_IDENTITY_SELECT, []);
+        const observedFingerprint = fingerprintCatalogSqlTargetRows(identityRows, instanceId, database);
+        if (!observedFingerprint || !timingSafeEqual(observedFingerprint, expectedFingerprint)) {
+          throw failure("identity_unverified");
+        }
         const proof = onlyRow(await select(plan.proof, plan.proofBindings), ["certified"]);
         if (proof?.certified !== true) throw failure("schema_unverified");
         const aggregate = onlyRow(await select(plan.count, plan.countBindings),

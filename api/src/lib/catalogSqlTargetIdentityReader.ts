@@ -10,13 +10,14 @@ export type CertifiedSqlIdentityTarget = Readonly<{
   connection: CatalogSqlConnectionTarget;
 }>;
 
-const SQL = `SELECT DB_NAME() AS databaseName, database_guid AS databaseGuid
+export const CATALOG_SQL_TARGET_IDENTITY_SELECT = `SELECT DB_NAME() AS databaseName, database_guid AS databaseGuid
 FROM sys.database_recovery_status WHERE database_id = DB_ID()`;
 const UUID = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i;
 const DNS_HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i;
 
 const validUuid = (value: unknown): value is string => typeof value === "string" &&
   UUID.test(value) && value !== "00000000-0000-0000-0000-000000000000";
+export const isCatalogSqlInstanceId = validUuid;
 const boundedText = (value: unknown, max: number): value is string => typeof value === "string" &&
   value.length >= 1 && value.length <= max && !/\p{Cc}/u.test(value);
 
@@ -26,6 +27,18 @@ function isApprovedInput(target: CertifiedSqlIdentityTarget): boolean {
   return boundedText(server, 253) && DNS_HOST.test(server) && !isIP(server) &&
     Number.isSafeInteger(port) && port >= 1 && port <= 65535 && boundedText(database, 128) &&
     boundedText(username, 128) && boundedText(password, 512);
+}
+
+/** Internal parser for the fixed metadata SELECT, including calls inside an existing SQL transaction. */
+export function fingerprintCatalogSqlTargetRows(
+  rows: unknown, instanceId: string, expectedDatabase: string,
+): Buffer | null {
+  if (!isCatalogSqlInstanceId(instanceId) || !Array.isArray(rows) || rows.length !== 1) return null;
+  const row = rows[0];
+  if (!row || typeof row !== "object" || Object.keys(row).length !== 2 ||
+      !Object.hasOwn(row, "databaseName") || !Object.hasOwn(row, "databaseGuid") ||
+      row.databaseName !== expectedDatabase || !validUuid(row.databaseGuid)) return null;
+  return fingerprintCatalogSqlTarget({ instanceId, databaseGuid: row.databaseGuid });
 }
 
 /**
@@ -91,14 +104,9 @@ export async function readCatalogSqlTargetIdentity(
     await pool.connect();
     lifetime.signal.throwIfAborted();
     request = pool.request();
-    const rows = (await request.query<Record<string, unknown>>(SQL)).recordset;
+    const rows = (await request.query<Record<string, unknown>>(CATALOG_SQL_TARGET_IDENTITY_SELECT)).recordset;
     request = undefined;
-    if (lifetime.signal.aborted || !Array.isArray(rows) || rows.length !== 1) return null;
-    const row = rows[0];
-    if (!row || typeof row !== "object" || Object.keys(row).length !== 2 ||
-        !Object.hasOwn(row, "databaseName") || !Object.hasOwn(row, "databaseGuid") ||
-        row.databaseName !== database || !validUuid(row.databaseGuid)) return null;
-    return fingerprintCatalogSqlTarget({ instanceId, databaseGuid: row.databaseGuid });
+    return lifetime.signal.aborted ? null : fingerprintCatalogSqlTargetRows(rows, instanceId, database);
   };
 
   try {

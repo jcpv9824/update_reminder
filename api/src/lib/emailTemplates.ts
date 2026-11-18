@@ -1,4 +1,5 @@
 import { formatDomainForPublishing } from "./domainFormat";
+import { CATALOG_ACTIVE_USERS_UNAVAILABLE } from "./catalogActiveUserReport";
 
 export type EmailBuildResult = {
   subject: string;
@@ -48,6 +49,8 @@ export type MasterReportDatabase = {
   environment?: string;
   createdAt?: string | Date;
   lastUpdatedAt?: string | Date;
+  /** Undefined preserves the legacy report; null means the count is unavailable. */
+  activeUsers?: number | null;
 };
 
 export type MasterReportDomain = {
@@ -589,6 +592,7 @@ export function buildMastersReportEmail(input: {
   clients: MasterReportClient[];
   frontendBaseUrl?: string;
   timezone?: string;
+  activeUsersSummary?: Readonly<{ activeUsers: number | null; partial: boolean }>;
 }): EmailBuildResult {
   const timezone = input.timezone || "America/Bogota";
   const baseUrl = normalizeBaseUrl(input.frontendBaseUrl);
@@ -597,6 +601,19 @@ export function buildMastersReportEmail(input: {
   const licensesCount = input.clients.reduce((acc, c) => acc + (c.licenses?.length ?? 0), 0);
   const intro = `Hola${input.recipientName ? ` ${input.recipientName}` : ""}, este es el reporte maestro ERP de clientes, dominios y empresas.`;
   const note = "Este reporte omite usuarios SQL, contraseñas, cadenas de conexión, tokens y secretos.";
+  const countText = (count: number | null | undefined) => (
+    count !== null && count !== undefined && Number.isSafeInteger(count) && count >= 0 ? String(count) : null
+  );
+  const databaseCountLabel = (db: MasterReportDatabase) => {
+    if (db.activeUsers === undefined) return "";
+    const count = countText(db.activeUsers);
+    return count === null ? ` · ${CATALOG_ACTIVE_USERS_UNAVAILABLE}` : ` · Usuarios activos: ${count}`;
+  };
+  const activeUsersSummary = input.activeUsersSummary ? [
+    `Usuarios activos en bases físicas verificadas: ${countText(input.activeUsersSummary.activeUsers) ?? "No disponible"}`,
+    "El total suma conteos por base física, no personas únicas.",
+    ...(input.activeUsersSummary.partial ? ["Resultado parcial: no se pudo confirmar el total completo."] : []),
+  ] : [];
   const licenseListHtml = (licenses?: MasterReportLicense[]) => (licenses ?? []).length > 0
     ? `<ul style="margin:6px 0 12px 18px; padding:0;">${(licenses ?? []).map((license) => `<li style="margin:0 0 4px;">${escapeHtml(license.name)}${license.code ? ` <span style="color:${COLORS.muted};">(${escapeHtml(license.code)})</span>` : ""}</li>`).join("")}</ul>`
     : `<ul style="margin:6px 0 12px 18px; padding:0;"><li style="margin:0 0 4px;">Sin licencias registradas</li></ul>`;
@@ -613,7 +630,7 @@ export function buildMastersReportEmail(input: {
             <div style="font-size:12px; color:${COLORS.muted};">Dominio para publicar: ${escapeHtml(formatDomainForPublishing(domain.publishableDomain || domain.url || domain.name))} · Ambiente: ${escapeHtml(domain.environment || "-")} · Estado: ${escapeHtml(domain.status || "-")} · Frecuencia: ${escapeHtml(domain.frequencyName || "Sin frecuencia activa")}</div>
             <div style="font-size:13px; color:${COLORS.text}; margin-top:8px; font-weight:700;">Empresas / bases:</div>
             ${(domain.databases ?? []).length > 0
-              ? `<ul style="margin:6px 0 0 18px; padding:0;">${(domain.databases ?? []).map((db) => `<li style="margin:0 0 4px;">Empresa: ${escapeHtml(db.companyName || "-")} · Base de datos: ${escapeHtml(db.name || "-")} · Ambiente: ${escapeHtml(db.environment || "-")} · Estado: ${escapeHtml(db.status || "-")} · Creación: ${escapeHtml(formatDate(db.createdAt, "es-CO", timezone))}</li>`).join("")}</ul>`
+              ? `<ul style="margin:6px 0 0 18px; padding:0;">${(domain.databases ?? []).map((db) => `<li style="margin:0 0 4px;">Empresa: ${escapeHtml(db.companyName || "-")} · Base de datos: ${escapeHtml(db.name || "-")} · Ambiente: ${escapeHtml(db.environment || "-")} · Estado: ${escapeHtml(db.status || "-")} · Creación: ${escapeHtml(formatDate(db.createdAt, "es-CO", timezone))}${escapeHtml(databaseCountLabel(db))}</li>`).join("")}</ul>`
               : `<div style="font-size:12px; color:${COLORS.muted}; margin-top:5px;">Sin empresas o bases activas asociadas.</div>`}
           </div>`).join("")}
       </td></tr>
@@ -626,7 +643,7 @@ export function buildMastersReportEmail(input: {
       ${metric("Licencias", licensesCount, COLORS.success)}
     </tr></table>
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc; border:1px solid ${COLORS.neutral}; border-radius:8px; margin:0 0 14px;">
-      <tr><td style="padding:12px 14px; font-size:13px; color:${COLORS.text};">${escapeHtml(note)}</td></tr>
+      <tr><td style="padding:12px 14px; font-size:13px; color:${COLORS.text};">${escapeHtml(note)}${activeUsersSummary.map((line) => `<div>${escapeHtml(line)}</div>`).join("")}</td></tr>
     </table>
     ${clientBlocks}`;
   const textClients = input.clients.map((client) => [
@@ -645,13 +662,13 @@ export function buildMastersReportEmail(input: {
       `  Estado: ${domain.status || "-"}`,
       `  Frecuencia: ${domain.frequencyName || "Sin frecuencia activa"}`,
       `    Empresas / bases:`,
-      ...((domain.databases ?? []).length > 0 ? (domain.databases ?? []).map((db) => `    - Empresa: ${db.companyName || "-"} · Base de datos: ${db.name || "-"} · Ambiente: ${db.environment || "-"} · Estado: ${db.status || "-"} · Creación: ${formatDate(db.createdAt, "es-CO", timezone)}`) : ["    - Sin empresas o bases activas asociadas."]),
+      ...((domain.databases ?? []).length > 0 ? (domain.databases ?? []).map((db) => `    - Empresa: ${db.companyName || "-"} · Base de datos: ${db.name || "-"} · Ambiente: ${db.environment || "-"} · Estado: ${db.status || "-"} · Creación: ${formatDate(db.createdAt, "es-CO", timezone)}${databaseCountLabel(db)}`) : ["    - Sin empresas o bases activas asociadas."]),
     ]),
   ].join("\n")).join("\n\n");
   return {
     subject: "Reporte maestro ERP — clientes, dominios y empresas",
     html: layout({ title: "Reporte maestro ERP", intro, preheader: intro, body, cta: "Abrir aplicación", ctaHref: baseUrl, footerNote: note }),
-    text: `${intro}\nClientes: ${input.clients.length}\nDominios: ${domainsCount}\nEmpresas / bases: ${databasesCount}\nLicencias: ${licensesCount}\n${note}\n\n${textClients}\n\nAbrir aplicación: ${baseUrl}`,
+    text: `${intro}\nClientes: ${input.clients.length}\nDominios: ${domainsCount}\nEmpresas / bases: ${databasesCount}\nLicencias: ${licensesCount}\n${note}${activeUsersSummary.map((line) => `\n${line}`).join("")}\n\n${textClients}\n\nAbrir aplicación: ${baseUrl}`,
   };
 }
 

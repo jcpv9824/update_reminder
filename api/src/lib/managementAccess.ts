@@ -84,7 +84,8 @@ export function canSendAdministrativeReminderTest(user: CurrentUser, roleDefinit
 }
 
 export function canSendConfiguredReport(user: CurrentUser, roleDefinitions: RoleDefinition[]): boolean {
-  return hasPermissionWithRoleDefinitions(user, "configuration.alerts.send_report", roleDefinitions);
+  return hasPermissionWithRoleDefinitions(user, "configuration.alerts.send_report",
+    roleDefinitions.filter(role => role.active !== false));
 }
 
 export function canViewSchedules(user: CurrentUser, roleDefinitions: RoleDefinition[]): boolean {

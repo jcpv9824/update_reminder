@@ -1,0 +1,85 @@
+import type { HttpRequest, HttpResponseInit } from "@azure/functions";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const fake = vi.hoisted(() => ({
+  route: null as ((req: HttpRequest) => Promise<HttpResponseInit>) | null,
+  env: vi.fn(), check: vi.fn(), counts: vi.fn(), masters: vi.fn(), enqueue: vi.fn(),
+  claim: vi.fn(), complete: vi.fn(), send: vi.fn(), render: vi.fn(),
+}));
+vi.mock("@azure/functions", () => ({
+  app: {
+    http: (_name: string, opts: { handler: typeof fake.route }) => { fake.route = opts.handler; },
+    timer: vi.fn(),
+  },
+}));
+vi.mock("../lib/auth", () => ({
+  requireUser: vi.fn(), loadUserProfile: async () => ({ id: "alice", email: "alice@example.test" }),
+}));
+vi.mock("../lib/managementAccess", () => ({ canSendConfiguredReport: () => true }));
+vi.mock("../lib/roleDefinitionStore", () => ({ loadRoleDefinitions: async () => [] }));
+vi.mock("../lib/audit", () => ({ writeAuditLog: vi.fn() }));
+vi.mock("../lib/reportsService", () => ({ parseSemicolonEmails: () => ["alice@example.test"], buildMastersReportEmail: fake.render }));
+vi.mock("../lib/rateLimit", () => ({ enforceRequestRateLimit: async () => null, RATE_LIMIT_POLICIES: { mastersReport: {} } }));
+vi.mock("../lib/mastersReportSqlData", () => ({ loadSqlMastersReportData: fake.masters }));
+vi.mock("../lib/catalogMastersActiveUsers", () => ({
+  catalogActiveUserReportEnvironment: fake.env, loadCatalogMastersActiveUsers: fake.counts,
+}));
+vi.mock("../lib/catalogReportRecipients", () => ({ mayReceiveCatalogActiveUsersReport: fake.check }));
+vi.mock("../lib/emailOutboxSqlRepository", () => ({
+  enqueueSqlEmail: fake.enqueue, claimSqlEmailBatch: fake.claim, completeSqlEmailAttempt: fake.complete,
+}));
+vi.mock("../lib/settingsService", () => ({ loadEmailAlertsSettings: async () => ({}) }));
+vi.mock("../lib/emailService", () => ({ sendEmail: fake.send, renderResetPasswordEmail: vi.fn() }));
+vi.mock("../lib/securityManagementSqlWriteRepository", () => ({ setSqlPasswordResetToken: vi.fn() }));
+import "../functions/reports";
+import { processSqlEmailOutbox } from "../functions/processEmailOutbox";
+
+const req = { json: async () => ({ recipients: "alice@example.test" }) } as unknown as HttpRequest;
+describe("catalog report authorization at generation and delivery", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.stubEnv("PORTAL_CATALOG_ACTIVE_USERS_REPORT_ENABLED", "true");
+    fake.env.mockReturnValue("qa");
+    fake.check.mockResolvedValue(true);
+    fake.counts.mockResolvedValue({ rows: [], summary: { activeUsers: null } });
+    fake.masters.mockResolvedValue({});
+    fake.render.mockReturnValue({ subject: "Reporte", html: "<p>Reporte</p>", text: "Reporte" });
+    fake.enqueue.mockResolvedValue({ created: true });
+    fake.send.mockResolvedValue({ ok: true, provider: "fake" });
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("does not read sources or queue mail for an unauthorized recipient", async () => {
+    fake.check.mockResolvedValue(false);
+    expect((await fake.route!(req)).status).toBe(403);
+    expect(fake.masters).not.toHaveBeenCalled();
+    expect(fake.counts).not.toHaveBeenCalled();
+    expect(fake.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("rechecks before queuing and marks only the detailed report for delivery re-authorization", async () => {
+    fake.check.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    expect((await fake.route!(req)).status).toBe(403);
+    expect(fake.enqueue).not.toHaveBeenCalled();
+    expect((await fake.route!(req)).status).toBe(200);
+    expect(fake.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: { catalogActiveUsers: true, recipientsCount: 1 },
+    }));
+    fake.env.mockReturnValue(null);
+    expect((await fake.route!(req)).status).toBe(200);
+    expect(fake.enqueue.mock.calls.at(-1)?.[0].metadata).toEqual({ recipientsCount: 1 });
+  });
+
+  it("does not send queued count details to recipients whose access is now revoked", async () => {
+    fake.check.mockResolvedValue(false);
+    fake.claim.mockResolvedValue([{
+      type: "masters_report", subject: "Reporte", recipients: [{ type: "to", email: "alice@example.test" }],
+      metadata: { catalogActiveUsers: true, html: "<p>Reporte</p>", text: "Reporte" },
+    }]);
+    expect(await processSqlEmailOutbox(vi.fn())).toMatchObject({ sent: 0, failed: 1 });
+    expect(fake.send).not.toHaveBeenCalled();
+    fake.check.mockResolvedValue(true);
+    expect(await processSqlEmailOutbox(vi.fn())).toMatchObject({ sent: 1, failed: 0 });
+    expect(fake.send).toHaveBeenCalledTimes(1);
+  });
+});
