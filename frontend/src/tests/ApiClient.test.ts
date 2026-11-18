@@ -118,6 +118,44 @@ describe("cliente API con sesión segura", () => {
     }));
   });
 
+  it("negocia y lee solo text/plain o el JSON legado declarado para contraseñas de tareas", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(" contraseña-sintética ", { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } }))
+      .mockResolvedValueOnce(jsonResponse(200, { password: "sintética-reveal" }))
+      .mockResolvedValueOnce(jsonResponse(200, { part: "password", value: "sintética-copy" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { api, setToken } = await import("../api/client");
+    setToken("token-sintético");
+    const controller = new AbortController();
+    const path = "/databases/db_1/reveal-password";
+    const copiar = "/databases/db_1/copy-access-part";
+    await expect(api.postTaskPassword(path, { taskId: "task_1" }, "reveal", { signal: controller.signal }))
+      .resolves.toBe(" contraseña-sintética ");
+    await expect(api.postTaskPassword(path, { taskId: "task_1" }, "reveal")).resolves.toBe("sintética-reveal");
+    await expect(api.postTaskPassword(copiar, { taskId: "task_1", part: "password" }, "copy")).resolves.toBe("sintética-copy");
+    expect(fetchMock).toHaveBeenNthCalledWith(1, `/api${path}`, expect.objectContaining({
+      method: "POST", cache: "no-store", redirect: "error", signal: controller.signal,
+      headers: expect.objectContaining({ Accept: "text/plain, application/json;q=0.9", Authorization: "Bearer token-sintético" }),
+    }));
+  });
+
+  it("rechaza otros tipos y no expone errores de parseo ni datos de un error del endpoint sensible", async () => {
+    const leaked = "fragmento-sintético-no-mostrar";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(leaked, { headers: { "Content-Type": "text/html" } }))
+      .mockResolvedValueOnce(new Response(leaked, { headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(jsonResponse(200, { part: "userId", value: leaked }))
+      .mockResolvedValueOnce(jsonResponse(403, { error: leaked, password: leaked }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { api } = await import("../api/client");
+    for (const action of ["reveal", "reveal", "copy"] as const) {
+      await expect(api.postTaskPassword("/sensitive", {}, action)).rejects.toThrow("Respuesta de contraseña no válida.");
+    }
+    await expect(api.postTaskPassword("/sensitive", {}, "copy")).rejects.toMatchObject({
+      message: "Error 403", status: 403,
+    });
+  });
+
   it("carga a una URL firmada y reporta progreso sin enviar credenciales del portal", async () => {
     const progress = vi.fn();
     const state: {

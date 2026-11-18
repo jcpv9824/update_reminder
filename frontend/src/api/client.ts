@@ -39,8 +39,9 @@ export type ApiRequestOptions = {
   credentials?: RequestCredentials;
   signal?: AbortSignal;
 };
+type InternalRequestOptions = ApiRequestOptions & { sensitive?: boolean };
 
-async function execute(method: string, path: string, body?: unknown, options: ApiRequestOptions = {}): Promise<Response> {
+async function execute(method: string, path: string, body?: unknown, options: InternalRequestOptions = {}): Promise<Response> {
   options.signal?.throwIfAborted();
   const headers: Record<string, string> = {
     ...devHeaders(),
@@ -58,6 +59,7 @@ async function execute(method: string, path: string, body?: unknown, options: Ap
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
     credentials: options.credentials ?? "include",
+    ...(options.sensitive ? { cache: "no-store", redirect: "error" } as const : {}),
     ...(options.signal ? { signal: options.signal } : {}),
   });
 }
@@ -72,10 +74,10 @@ function canRefreshRequest(status: number, path: string): boolean {
 
 export type ApiError = Error & { status?: number; data?: Record<string, unknown> };
 
-async function responseError(response: Response): Promise<ApiError> {
+async function responseError(response: Response, sensitive = false): Promise<ApiError> {
   let message = `Error ${response.status}`;
   let body: Record<string, unknown> | undefined;
-  try {
+  if (!sensitive) try {
     const data = await response.clone().json();
     message = data.error ?? message;
     if (data && typeof data === "object") body = data as Record<string, unknown>;
@@ -114,7 +116,7 @@ export async function restoreSession(force = false): Promise<boolean> {
   return refreshInFlight;
 }
 
-async function authenticatedResponse(method: string, path: string, body?: unknown, options: ApiRequestOptions = {}): Promise<Response> {
+async function authenticatedResponse(method: string, path: string, body?: unknown, options: InternalRequestOptions = {}): Promise<Response> {
   let response = await execute(method, path, body, options);
   options.signal?.throwIfAborted();
   if (canRefreshRequest(response.status, path)) {
@@ -124,7 +126,7 @@ async function authenticatedResponse(method: string, path: string, body?: unknow
   }
   options.signal?.throwIfAborted();
   if (!response.ok) {
-    throw await responseError(response);
+    throw await responseError(response, options.sensitive);
   }
   return response;
 }
@@ -136,9 +138,34 @@ async function request<T>(method: string, path: string, body?: unknown, options:
   return text ? (JSON.parse(text) as T) : (undefined as T);
 }
 
+async function postTaskPassword(
+  path: string, body: unknown, action: "reveal" | "copy", options: ApiRequestOptions = {},
+): Promise<string> {
+  const response = await authenticatedResponse("POST", path, body, {
+    ...options, sensitive: true,
+    headers: { ...options.headers, Accept: "text/plain, application/json;q=0.9" },
+  });
+  const media = response.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase();
+  let value: unknown;
+  if (media === "text/plain") {
+    value = await response.text();
+  } else if (media === "application/json") {
+    try {
+      const legacy = await response.json() as { password?: unknown; part?: unknown; value?: unknown } | null;
+      value = action === "reveal" ? legacy?.password : legacy?.part === "password" ? legacy.value : undefined;
+    } catch {
+      // Never attach a parser error that could include fragments of the body.
+    }
+  }
+  options.signal?.throwIfAborted();
+  if (typeof value !== "string" || value.length === 0) throw new Error("Respuesta de contraseña no válida.");
+  return value;
+}
+
 export const api = {
   get: <T>(path: string, options?: ApiRequestOptions) => request<T>("GET", path, undefined, options),
   post: <T>(path: string, body?: unknown, options?: ApiRequestOptions) => request<T>("POST", path, body, options),
+  postTaskPassword,
   put: <T>(path: string, body?: unknown, options?: ApiRequestOptions) => request<T>("PUT", path, body, options),
   del: <T>(path: string, options?: ApiRequestOptions) => request<T>("DELETE", path, undefined, options),
   getText: async (path: string, options: ApiRequestOptions = {}) => (

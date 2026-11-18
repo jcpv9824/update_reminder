@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { BaseDeDatos, Tarea } from "../types";
 import type { RoleDefinition } from "../permissionModel";
 import { hoyEnBogotaIso, sumarDiasIso } from "../utils/fechas";
 
 const apiMock = vi.hoisted(() => ({
-  get: vi.fn<(path?: string) => Promise<any>>(async (_path?: string) => []),
-  post: vi.fn<(path: string, body?: any) => Promise<any>>(async () => ({})),
+  get: vi.fn<(path?: string, options?: { signal?: AbortSignal }) => Promise<any>>(async (_path?: string) => []),
+  post: vi.fn<(path: string, body?: any, options?: { signal?: AbortSignal }) => Promise<any>>(async () => ({})),
+  postTaskPassword: vi.fn<(path: string, body: unknown, action: "reveal" | "copy", options?: { signal?: AbortSignal }) => Promise<string>>(),
 }));
 vi.mock("../api/client", () => ({ api: apiMock }));
 
@@ -41,6 +42,7 @@ beforeEach(() => {
   apiMock.get.mockResolvedValue([]);
   apiMock.post.mockReset();
   apiMock.post.mockResolvedValue({});
+  apiMock.postTaskPassword.mockReset();
 });
 
 function hoyIso() {
@@ -182,7 +184,8 @@ describe("TareasPage (vista unificada)", () => {
       roles: [{
         id: "custom_database_worker",
         name: "Operador de Bases",
-        permissions: ["updates.tasks.view", "updates.tasks.complete", "updates.tasks.reveal_database_password"],
+        permissions: ["updates.tasks.view", "updates.tasks.complete", "updates.tasks.view_database_connection",
+          "updates.tasks.reveal_database_password"],
         taskVisibility: { domain: "none", database: "assigned" },
         system: false,
         active: true,
@@ -203,6 +206,8 @@ describe("TareasPage (vista unificada)", () => {
     expect(accionesFila.getByRole("button", { name: /^Completar$/i })).toBeInTheDocument();
     expect(accionesFila.queryByRole("button", { name: /^Bloquear$/i })).toBeNull();
     expect(await screen.findByRole("button", { name: /^Ver$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copiar contraseña" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copiar usuario" })).toBeNull();
   });
 
   it("oculta columnas cuando el rol puede abrir tareas pero no tiene visibilidad de registros", () => {
@@ -610,7 +615,9 @@ describe("TareasPage (vista unificada)", () => {
     expect(screen.getByText(/Usuario:/i)).toBeInTheDocument();
     expect(screen.getByText(/Contraseña:/i)).toBeInTheDocument();
     expect(screen.getByText("••••••••••••")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /^Copiar$/i }).length).toBeGreaterThanOrEqual(4);
+    for (const field of ["servidor", "base", "usuario", "contraseña"]) {
+      expect(screen.getByRole("button", { name: `Copiar ${field}` })).toBeInTheDocument();
+    }
     expect(screen.getByRole("button", { name: /^Ver$/i })).toBeInTheDocument();
     const accionesFila = within(screen.getByTestId("acciones-tarea-b1"));
     expect(accionesFila.getByRole("button", { name: /^Completar$/i })).toBeInTheDocument();
@@ -693,7 +700,7 @@ describe("TareasPage (vista unificada)", () => {
     expect(screen.getAllByText("data-ims.imsampedro.cloud,54101").length).toBeGreaterThan(0);
     expect(screen.queryByText(/Cargando conexión/i)).toBeNull();
     await waitFor(() =>
-      expect(apiMock.get).toHaveBeenCalledWith("/databases/db_role/access-info?taskId=b_role")
+      expect(apiMock.get).toHaveBeenCalledWith("/databases/db_role/access-info?taskId=b_role", { signal: expect.any(AbortSignal) })
     );
   });
 
@@ -746,7 +753,7 @@ describe("TareasPage (vista unificada)", () => {
     apiMock.get.mockImplementation((path = "") => {
       if (path.includes("targetType=domain")) return Promise.resolve([]);
       if (path.includes("targetType=database")) {
-        return Promise.resolve([tarea({ id: "b_forbidden", targetType: "database", targetId: "db_forbidden", assignedRole: "database_updater", assignedUserIds: ["otro"] })]);
+        return Promise.resolve([tarea({ id: "b_forbidden", targetType: "database", targetId: "db_forbidden", assignedRole: "database_updater", assignedUserIds: ["u"] })]);
       }
       if (path.includes("/access-info")) return Promise.reject(error);
       return Promise.resolve([]);
@@ -762,18 +769,25 @@ describe("TareasPage (vista unificada)", () => {
     usuarioMock.roles = ["admin"];
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });
-    apiMock.post.mockResolvedValue({ password: "pwd-secreta" });
+    apiMock.postTaskPassword.mockResolvedValue("password-sintetica");
     mockTareas({ bases: [tarea({ id: "b1", targetType: "database", targetId: "db_1", targetName: "SAMPEDRO", assignedRole: "database_updater" })], basesDetalle: [bd("db_1")] });
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
-    expect(screen.queryByText("pwd-secreta")).toBeNull();
+    expect(screen.queryByText("password-sintetica")).toBeNull();
+    expect(apiMock.postTaskPassword).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole("button", { name: /^Ver$/i }));
-    await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith("/databases/db_1/reveal-password", { taskId: "b1", reason: "task_detail" }));
-    expect(await screen.findByText("pwd-secreta")).toBeInTheDocument();
+    await waitFor(() => expect(apiMock.postTaskPassword).toHaveBeenCalledWith(
+      "/databases/db_1/reveal-password", { taskId: "b1", reason: "task_detail" }, "reveal", { signal: expect.any(AbortSignal) },
+    ));
+    expect(await screen.findByText("password-sintetica")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^Ocultar$/i }));
-    expect(screen.queryByText("pwd-secreta")).toBeNull();
-    fireEvent.click(screen.getAllByRole("button", { name: /^Copiar$/i }).at(-1)!);
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith("pwd-secreta"));
+    expect(screen.queryByText("password-sintetica")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Copiar contraseña" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith("password-sintetica"));
+    expect(apiMock.postTaskPassword).toHaveBeenLastCalledWith(
+      "/databases/db_1/copy-access-part", { taskId: "b1", part: "password" }, "copy", { signal: expect.any(AbortSignal) },
+    );
+    expect(screen.queryByText("password-sintetica")).toBeNull();
   });
 
   it("no renderiza contraseña ni botones de reveal para usuario sin permiso", async () => {
@@ -782,9 +796,61 @@ describe("TareasPage (vista unificada)", () => {
     mockTareas({ bases: [tarea({ id: "b1", targetType: "database", targetId: "db_1", assignedRole: "database_updater", assignedUserIds: ["otro"] })], basesDetalle: [bd("db_1")] });
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
-    expect(await screen.findByText("••••••••••••")).toBeInTheDocument();
+    expect(await screen.findByText(/No tienes permiso para ver esta conexión/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Ver$/i })).toBeNull();
-    expect(screen.queryByText("pwd-secreta")).toBeNull();
+    expect(apiMock.get.mock.calls.some(([path]) => path?.includes("access-info"))).toBe(false);
+    expect(apiMock.postTaskPassword).not.toHaveBeenCalled();
+  });
+
+  it("copia los campos no secretos solo desde la respuesta de la acción auditada", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    apiMock.post.mockResolvedValue({ part: "userId", value: "usuario-actualizado-de-prueba" });
+    mockTareas({ bases: [tarea({ id: "b1", targetType: "database", targetId: "db_1" })] });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Copiar usuario" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith("usuario-actualizado-de-prueba"));
+    expect(apiMock.post).toHaveBeenCalledExactlyOnceWith(
+      "/databases/db_1/copy-access-part", { taskId: "b1", part: "userId" }, { signal: expect.any(AbortSignal) },
+    );
+  });
+
+  it("aborta la copia pendiente al cerrar y no usa una respuesta tardía al reabrir", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    let finish!: (value: string) => void;
+    apiMock.postTaskPassword.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    mockTareas({ bases: [tarea({ id: "b1", targetType: "database", targetId: "db_1" })] });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Copiar contraseña" }));
+    const signal = apiMock.postTaskPassword.mock.calls[0][3]?.signal;
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar" }));
+    expect(signal?.aborted).toBe(true);
+    await act(async () => finish("respuesta-tardia-sintetica"));
+    expect(writeText).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /Ver detalle/i }));
+    expect(await screen.findByText("••••••••••••")).toBeInTheDocument();
+    expect(screen.queryByText("respuesta-tardia-sintetica")).toBeNull();
+  });
+
+  it("un fallo del portapapeles no muestra el secreto ni deja un campo auxiliar con su valor", async () => {
+    usuarioMock.id = "u";
+    usuarioMock.roles = ["admin"];
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockRejectedValue(new Error("clipboard no disponible")) } });
+    apiMock.postTaskPassword.mockResolvedValue("solo-sintetica");
+    mockTareas({ bases: [tarea({ id: "b1", targetType: "database", targetId: "db_1" })] });
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Copiar contraseña" }));
+    expect(await screen.findByText(/El navegador no permitió copiar/)).toBeInTheDocument();
+    expect(screen.queryByText("solo-sintetica")).toBeNull();
+    expect(screen.queryByDisplayValue("solo-sintetica")).toBeNull();
   });
 
   it("las tarjetas muestran nombres de responsables cuando hay usuarios cargados", async () => {

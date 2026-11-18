@@ -28,6 +28,7 @@ import { setSqlDatabaseStatus } from "../lib/databasesSqlWriteRepository";
 import { readSqlWorkflowTasks } from "../lib/workflowTasksSqlRepository";
 import { deleteSqlCoreCascade } from "../lib/coreCascadeSqlRepository";
 import type { DatabaseRecord, UpdateTask } from "../types/models";
+import { readAuditedTaskDatabaseConnection } from "../lib/catalogTaskDatabaseConnection";
 
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -129,6 +130,34 @@ async function findTask(id: string): Promise<UpdateTask | null> {
   return (await readSqlWorkflowTasks({ sourceId: id, today, operationalOnly: false, legacyOnly: true }))[0] ?? null;
 }
 
+const catalogTaskAccessOn = (): boolean => process.env.PORTAL_CATALOG_READ_ENABLED?.trim() === "true";
+const confidentialHeaders = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
+const privateResponse = (response: HttpResponseInit): HttpResponseInit => ({ ...response, headers: confidentialHeaders });
+const taskIdSchema = z.string().min(1).max(260).refine(value => value === value.trim() && !/\p{C}/u.test(value));
+const databaseIdSchema = taskIdSchema.refine(value => value.length <= 150);
+const copyPartSchema = z.enum(["serverHostPort", "initialCatalog", "userId", "password"]);
+type TaskConnectionAction = Parameters<typeof readAuditedTaskDatabaseConnection>[0]["action"];
+
+async function catalogTaskConnection(req: HttpRequest, actor: Awaited<ReturnType<typeof getUserOrFail>>, rawTask: unknown,
+  action: TaskConnectionAction): Promise<HttpResponseInit> {
+  const task = taskIdSchema.safeParse(rawTask);
+  const database = databaseIdSchema.safeParse(req.params.id);
+  if (!task.success || !database.success) return privateResponse(forbidden("Se requiere una tarea activa asignada para consultar esta conexión."));
+  const environment = process.env.PORTAL_SAG_ENVIRONMENT?.trim();
+  if (environment !== "qa" && environment !== "production") return catalogTaskConnectionError();
+  const value = await readAuditedTaskDatabaseConnection({ taskId: task.data, databaseId: database.data, actor, environment, action });
+  if (!value) return privateResponse(forbidden("No tienes permiso para consultar esta conexión desde la tarea."));
+  if (value.kind === "password") return { status: 200, body: value.value,
+    headers: { ...confidentialHeaders, "Content-Type": "text/plain; charset=utf-8" } };
+  return privateResponse(ok(value.kind === "info" ? value.info : { part: value.part, value: value.value }));
+}
+
+function catalogTaskConnectionError(error?: unknown): HttpResponseInit {
+  const status = error && typeof error === "object" && "status" in error ? error.status : null;
+  return privateResponse({ status: status === 401 || status === 403 ? status : 503,
+    jsonBody: { error: "No se pudo consultar la conexión de la tarea." } });
+}
+
 function canUseDatabaseTaskAction(
   user: Awaited<ReturnType<typeof getUserOrFail>>,
   db: DatabaseRecord,
@@ -149,6 +178,7 @@ app.http("databasesAccessInfo", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
+      if (catalogTaskAccessOn()) return await catalogTaskConnection(req, user, req.query.get("taskId"), { kind: "view" });
       const roleDefinitions = await loadRoleDefinitions();
       const db = await findDatabase(req.params.id);
       if (!db) return notFound("Base de datos no encontrada.");
@@ -163,7 +193,7 @@ app.http("databasesAccessInfo", {
       }
       return ok(buildDatabaseAccessInfo(db));
     } catch (e) {
-      return serverError(e);
+      return catalogTaskAccessOn() ? catalogTaskConnectionError(e) : serverError(e);
     }
   },
 });
@@ -269,6 +299,11 @@ app.http("databasesCopyAccessPart", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
+      if (catalogTaskAccessOn()) {
+        const parsed = z.object({ taskId: taskIdSchema, part: copyPartSchema }).strict().safeParse(await req.json().catch(() => null));
+        if (!parsed.success) return privateResponse(badRequest("Se requiere una tarea y una parte válida de la conexión."));
+        return await catalogTaskConnection(req, user, parsed.data.taskId, { kind: "copy", part: parsed.data.part });
+      }
       const roleDefinitions = await loadRoleDefinitions();
       const db = await findDatabase(req.params.id);
       if (!db) return notFound("Base de datos no encontrada.");
@@ -319,7 +354,7 @@ app.http("databasesCopyAccessPart", {
       await appendSqlAuditLog(audit);
       return ok({ part, value });
     } catch (e) {
-      return serverError(e);
+      return catalogTaskAccessOn() ? catalogTaskConnectionError(e) : serverError(e);
     }
   },
 });
@@ -331,6 +366,12 @@ app.http("databasesRevealPassword", {
   handler: async (req): Promise<HttpResponseInit> => {
     try {
       const user = await getUserOrFail(req);
+      if (catalogTaskAccessOn()) {
+        const parsed = z.object({ taskId: taskIdSchema, reason: z.enum(["task_detail", "task_detail_copy"]).optional() }).strict()
+          .safeParse(await req.json().catch(() => null));
+        if (!parsed.success) return privateResponse(badRequest("Se requiere una tarea válida."));
+        return await catalogTaskConnection(req, user, parsed.data.taskId, { kind: "reveal" });
+      }
       const roleDefinitions = await loadRoleDefinitions();
       const db = await findDatabase(req.params.id);
       if (!db) return notFound("Base de datos no encontrada.");
@@ -362,7 +403,7 @@ app.http("databasesRevealPassword", {
       await appendSqlAuditLog(audit);
       return ok({ password: value });
     } catch (e) {
-      return serverError(e);
+      return catalogTaskAccessOn() ? catalogTaskConnectionError(e) : serverError(e);
     }
   },
 });

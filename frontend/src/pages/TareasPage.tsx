@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
@@ -45,6 +45,24 @@ type ConexionInfo = {
   user: string;
   hasPassword: boolean;
 };
+type ConexionParaFiltro = Pick<ConexionInfo, "server" | "databaseName"> & { scope: string };
+type ParteConexion = "serverHostPort" | "initialCatalog" | "userId" | "password";
+type PermisosConexion = { ver: boolean; copiar: boolean; revelar: boolean };
+
+function permisosConexion(usuario: Usuario | null, tarea: Tarea, roles: RoleDefinition[]): PermisosConexion {
+  return {
+    ver: puedeCambiarTarea(usuario, tarea, roles, "updates.tasks.view_database_connection"),
+    copiar: puedeCambiarTarea(usuario, tarea, roles, "updates.tasks.copy_database_connection_part"),
+    revelar: puedeCambiarTarea(usuario, tarea, roles, "updates.tasks.reveal_database_password"),
+  };
+}
+
+function alcanceConexion(usuario: Usuario | null, tarea: Tarea, permisos: PermisosConexion): string {
+  return JSON.stringify([
+    usuario?.id, [...(usuario?.roles ?? [])].sort(), tarea.targetId, tarea.id, tarea.status,
+    tarea.updatedAt, tarea.assignedRole, [...tarea.assignedUserIds].sort(), permisos.ver, permisos.copiar, permisos.revelar,
+  ]);
+}
 
 const TASK_ACTION_PERMISSIONS: Record<AccionTarea, string> = {
   complete: "updates.tasks.complete",
@@ -136,16 +154,18 @@ function estadoDespuesDeAccion(accion: AccionTarea): Tarea["status"] {
 // (p. ej. revelar la contraseña), esa activación ya expiró y writeText falla.
 // Por eso intentamos primero el API moderno y, si falla, usamos el método
 // clásico textarea + execCommand, que es más tolerante en ese escenario.
-async function copiarTexto(texto: string): Promise<boolean> {
-  if (!texto) return false;
+async function copiarTexto(texto: string, signal?: AbortSignal): Promise<boolean> {
+  if (!texto || signal?.aborted) return false;
   try {
     if (navigator.clipboard) {
       await navigator.clipboard.writeText(texto);
       return true;
     }
   } catch {/* intentar el método de respaldo */}
+  if (signal?.aborted) return false;
+  const ta = document.createElement("textarea");
+  const foco = document.activeElement;
   try {
-    const ta = document.createElement("textarea");
     ta.value = texto;
     ta.setAttribute("readonly", "");
     ta.style.position = "fixed";
@@ -154,11 +174,13 @@ async function copiarTexto(texto: string): Promise<boolean> {
     document.body.appendChild(ta);
     ta.focus();
     ta.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(ta);
-    return ok;
+    return document.execCommand("copy");
   } catch {
     return false;
+  } finally {
+    ta.value = "";
+    ta.remove();
+    if (foco instanceof HTMLElement && foco.isConnected) foco.focus();
   }
 }
 
@@ -277,6 +299,10 @@ function ColumnaTareas({ titulo, targetType, usuario, usuariosMap, definicionesR
 
   const tareasVisibles = useMemo(() => tareas.filter((t) => t.status !== "cancelled"), [tareas]);
   const grupos = useMemo(() => agruparTareas(tareasVisibles, targetType, usuario, usuariosMap, nombresProgramacion, definicionesRoles), [tareasVisibles, targetType, usuario, usuariosMap, nombresProgramacion, definicionesRoles]);
+  const detalleActivo = grupoActivo && grupos.find((grupo) => grupo.id === grupoActivo.id);
+  useEffect(() => {
+    if (grupoActivo && !detalleActivo) setGrupoActivo(null);
+  }, [grupoActivo, detalleActivo]);
 
   // Clasificación por zona Bogotá: hoy / próximas / vencidas / completadas.
   const seccionado = useMemo(() => {
@@ -310,14 +336,15 @@ function ColumnaTareas({ titulo, targetType, usuario, usuariosMap, definicionesR
       )}
 
       <Modal
-        titulo={grupoActivo ? `${grupoActivo.responsableEtiqueta} — ${etiquetaTipo(grupoActivo.targetType, true)} por actualizar` : ""}
-        abierto={!!grupoActivo}
+        titulo={detalleActivo ? `${detalleActivo.responsableEtiqueta} — ${etiquetaTipo(detalleActivo.targetType, true)} por actualizar` : ""}
+        abierto={!!detalleActivo}
         onCerrar={() => setGrupoActivo(null)}
         className="modal-detalle-tareas"
       >
-        {grupoActivo && (
+        {detalleActivo && (
           <DetalleGrupo
-            grupo={grupos.find((g) => g.id === grupoActivo.id) ?? grupoActivo}
+            key={JSON.stringify([detalleActivo.id, usuario?.id, [...(usuario?.roles ?? [])].sort()])}
+            grupo={detalleActivo}
             usuario={usuario}
             definicionesRoles={definicionesRoles}
             guardado={guardado}
@@ -457,16 +484,21 @@ function DetalleGrupo({ grupo, usuario, definicionesRoles, guardado, onSolicitar
   const [reabrir, setReabrir] = useState<Tarea | null>(null);
   const [busquedaDetalle, setBusquedaDetalle] = useState("");
   const [servidorSeleccionado, setServidorSeleccionado] = useState("all");
-  const [conexionesPorTarea, setConexionesPorTarea] = useState<Record<string, ConexionInfo>>({});
+  const [conexionesPorTarea, setConexionesPorTarea] = useState<Record<string, ConexionParaFiltro>>({});
 
-  const registrarConexion = useCallback((taskId: string, info: ConexionInfo) => {
+  const registrarConexion = useCallback((taskId: string, info: ConexionParaFiltro | null) => {
     setConexionesPorTarea((actual) => {
       const existente = actual[taskId];
+      if (!info) {
+        if (!existente) return actual;
+        const siguiente = { ...actual };
+        delete siguiente[taskId];
+        return siguiente;
+      }
       if (
         existente?.server === info.server &&
         existente?.databaseName === info.databaseName &&
-        existente?.user === info.user &&
-        existente?.hasPassword === info.hasPassword
+        existente?.scope === info.scope
       ) {
         return actual;
       }
@@ -480,15 +512,27 @@ function DetalleGrupo({ grupo, usuario, definicionesRoles, guardado, onSolicitar
     setConexionesPorTarea({});
   }, [grupo.id]);
 
+  const conexionesVigentes = useMemo(() => {
+    return Object.fromEntries(grupo.tareas.flatMap((tarea) => {
+      const info = conexionesPorTarea[tarea.id];
+      const permisos = permisosConexion(usuario, tarea, definicionesRoles);
+      return info && permisos.ver && info.scope === alcanceConexion(usuario, tarea, permisos) ? [[tarea.id, info]] : [];
+    }));
+  }, [grupo.tareas, conexionesPorTarea, usuario, definicionesRoles]);
   const servidoresDisponibles = useMemo(() => {
-    return Array.from(new Set(Object.values(conexionesPorTarea).map((c) => c.server).filter(Boolean)))
+    return Array.from(new Set(Object.values(conexionesVigentes).map((c) => c.server).filter(Boolean)))
       .sort((a, b) => a.localeCompare(b, "es"));
-  }, [conexionesPorTarea]);
+  }, [conexionesVigentes]);
+  useEffect(() => {
+    if (servidorSeleccionado !== "all" && !servidoresDisponibles.includes(servidorSeleccionado)) {
+      setServidorSeleccionado("all");
+    }
+  }, [servidorSeleccionado, servidoresDisponibles]);
 
   const tareasFiltradas = useMemo(() => {
     const termino = normalizarBusqueda(busquedaDetalle);
     return grupo.tareas.filter((tarea) => {
-      const conexion = conexionesPorTarea[tarea.id];
+      const conexion = conexionesVigentes[tarea.id];
       const valoresBusqueda = [
         tarea.clientName,
         tarea.domainName,
@@ -501,7 +545,7 @@ function DetalleGrupo({ grupo, usuario, definicionesRoles, guardado, onSolicitar
       const coincideServidor = grupo.targetType !== "database" || servidorSeleccionado === "all" || conexion?.server === servidorSeleccionado;
       return coincideTexto && coincideServidor;
     });
-  }, [busquedaDetalle, conexionesPorTarea, grupo.tareas, grupo.targetType, servidorSeleccionado]);
+  }, [busquedaDetalle, conexionesVigentes, grupo.tareas, grupo.targetType, servidorSeleccionado]);
 
   const pendientes = tareasFiltradas.filter((t) => t.status !== "completed" && t.status !== "cancelled");
   return (
@@ -768,75 +812,29 @@ function ConexionBaseCelda({ tarea, usuario, definicionesRoles, onConexionCargad
   tarea: Tarea;
   usuario: Usuario | null;
   definicionesRoles: RoleDefinition[];
-  onConexionCargada?: (taskId: string, info: ConexionInfo) => void;
+  onConexionCargada?: (taskId: string, info: ConexionParaFiltro | null) => void;
 }) {
-  const [passwordVisible, setPasswordVisible] = useState<string | null>(null);
-  const [cargandoPwd, setCargandoPwd] = useState(false);
-  const [errorPwd, setErrorPwd] = useState<string | null>(null);
-  const [mensajePwd, setMensajePwd] = useState<string | null>(null);
-  const ocultarTimer = useRef<number | null>(null);
-  const puedeVerPassword = puedeCambiarTarea(usuario, tarea, definicionesRoles, "updates.tasks.reveal_database_password");
+  const permisos = permisosConexion(usuario, tarea, definicionesRoles);
+  const scope = alcanceConexion(usuario, tarea, permisos);
+  const ruta = `/databases/${encodeURIComponent(tarea.targetId)}`;
   const conexion = useQuery({
-    queryKey: ["conexion-db-tarea", tarea.targetId, tarea.id],
-    queryFn: () => api.get<ConexionInfo>(`/databases/${tarea.targetId}/access-info?taskId=${encodeURIComponent(tarea.id)}`),
-    enabled: tarea.targetType === "database" && !!tarea.targetId && !!tarea.id,
-    retry: false,
+    queryKey: ["conexion-db-tarea", scope],
+    queryFn: async ({ signal }) => {
+      const { server, databaseName, user, hasPassword } = await api.get<ConexionInfo>(
+        `${ruta}/access-info?taskId=${encodeURIComponent(tarea.id)}`, { signal },
+      );
+      return { server, databaseName, user, hasPassword };
+    },
+    enabled: permisos.ver && tarea.targetType === "database" && !!tarea.targetId && !!tarea.id,
+    retry: false, gcTime: 0,
   });
-  const info = conexion.data;
+  const info = permisos.ver && !conexion.isError ? conexion.data : undefined;
 
   useEffect(() => {
-    if (info) onConexionCargada?.(tarea.id, info);
-  }, [info, onConexionCargada, tarea.id]);
+    onConexionCargada?.(tarea.id, info ? { server: info.server, databaseName: info.databaseName, scope } : null);
+  }, [info, onConexionCargada, scope, tarea.id]);
 
-  function ocultarPassword() {
-    if (ocultarTimer.current) { window.clearTimeout(ocultarTimer.current); ocultarTimer.current = null; }
-    setPasswordVisible(null);
-  }
-
-  // "Ver" alterna: si ya está visible, la oculta; si no, la revela (con
-  // auto-ocultado a los 30s). Limpia el temporizador previo para no reocultar
-  // antes de tiempo al re-revelar.
-  async function alternarVer() {
-    if (passwordVisible) { ocultarPassword(); return; }
-    if (!conexion.data || !puedeVerPassword) return;
-    setCargandoPwd(true);
-    setErrorPwd(null);
-    setMensajePwd(null);
-    try {
-      const r = await api.post<{ password: string }>(`/databases/${tarea.targetId}/reveal-password`, { taskId: tarea.id, reason: "task_detail" });
-      setPasswordVisible(r.password);
-      if (ocultarTimer.current) window.clearTimeout(ocultarTimer.current);
-      ocultarTimer.current = window.setTimeout(() => { setPasswordVisible(null); ocultarTimer.current = null; }, 30000);
-    } catch (e: any) {
-      setErrorPwd(e?.message ?? "No se pudo revelar la contraseña.");
-    } finally {
-      setCargandoPwd(false);
-    }
-  }
-
-  async function copiarPassword() {
-    if (!conexion.data || !puedeVerPassword) return;
-    setCargandoPwd(true);
-    setErrorPwd(null);
-    setMensajePwd(null);
-    try {
-      const r = await api.post<{ password: string }>(`/databases/${tarea.targetId}/reveal-password`, { taskId: tarea.id, reason: "task_detail_copy" });
-      const ok = await copiarTexto(r.password);
-      if (ok) {
-        setMensajePwd("Contraseña copiada al portapapeles.");
-      } else {
-        // Si el navegador bloqueó el portapapeles, mostramos la contraseña
-        // para que el usuario pueda copiarla manualmente.
-        setPasswordVisible(r.password);
-        setErrorPwd("No se pudo copiar automáticamente. La contraseña se muestra para copiarla manualmente.");
-      }
-    } catch (e: any) {
-      setErrorPwd(e?.message ?? "No se pudo copiar la contraseña.");
-    } finally {
-      setCargandoPwd(false);
-    }
-  }
-
+  if (!permisos.ver) return <span className="texto-ayuda">No tienes permiso para ver esta conexión.</span>;
   if (conexion.isLoading || conexion.isFetching) return <span className="texto-ayuda">Cargando conexión...</span>;
   if (conexion.isError) {
     const error = conexion.error as Error & { status?: number };
@@ -851,37 +849,119 @@ function ConexionBaseCelda({ tarea, usuario, definicionesRoles, onConexionCargad
     );
   }
   if (!info) return <span className="texto-ayuda">No se pudo cargar la conexión.</span>;
+  return <ConexionBaseAcciones key={scope} info={info} permisos={permisos} ruta={ruta} taskId={tarea.id} />;
+}
+
+function ConexionBaseAcciones({ info, permisos, ruta, taskId }: {
+  info: ConexionInfo;
+  permisos: PermisosConexion;
+  ruta: string;
+  taskId: string;
+}) {
+  const [passwordVisible, setPasswordVisible] = useState<string | null>(null);
+  const [ocupado, setOcupado] = useState(false);
+  const [aviso, setAviso] = useState<{ error: boolean; texto: string } | null>(null);
+  const solicitud = useRef<AbortController | null>(null);
+  const ocultarTimer = useRef<number | null>(null);
+
+  function limpiar() {
+    solicitud.current?.abort();
+    solicitud.current = null;
+    if (ocultarTimer.current !== null) window.clearTimeout(ocultarTimer.current);
+    ocultarTimer.current = null;
+  }
+  function ocultar() {
+    limpiar();
+    setPasswordVisible(null);
+    setOcupado(false);
+    setAviso(null);
+  }
+  useLayoutEffect(() => {
+    const alOcultarPestana = () => { if (document.hidden) ocultar(); };
+    document.addEventListener("visibilitychange", alOcultarPestana);
+    return () => { limpiar(); document.removeEventListener("visibilitychange", alOcultarPestana); };
+  }, []);
+
+  async function ejecutar(accion: "revelar" | "copiar", parte: ParteConexion) {
+    if (solicitud.current || !permisos.ver ||
+        (parte === "password" ? !permisos.revelar || !info.hasPassword : !permisos.copiar)) return;
+    const controller = new AbortController();
+    const { signal } = controller;
+    solicitud.current = controller;
+    setAviso(null);
+    setOcupado(true);
+    try {
+      if (accion === "revelar") {
+        const valor = await api.postTaskPassword(`${ruta}/reveal-password`, { taskId, reason: "task_detail" }, "reveal", { signal });
+        signal.throwIfAborted();
+        setPasswordVisible(valor);
+        ocultarTimer.current = window.setTimeout(() => {
+          setPasswordVisible(null);
+          ocultarTimer.current = null;
+        }, 30000);
+      } else {
+        let valor: string;
+        if (parte === "password") {
+          valor = await api.postTaskPassword(`${ruta}/copy-access-part`, { taskId, part: parte }, "copy", { signal });
+        } else {
+          const resultado = await api.post<{ part: string; value: string }>(`${ruta}/copy-access-part`, { taskId, part: parte }, { signal });
+          if (resultado?.part !== parte || typeof resultado.value !== "string") throw new Error("Respuesta de copia no válida.");
+          valor = resultado.value;
+        }
+        signal.throwIfAborted();
+        const ok = await copiarTexto(valor, signal);
+        signal.throwIfAborted();
+        setAviso(ok ? { error: false, texto: "Dato copiado al portapapeles." } : {
+          error: true, texto: "El navegador no permitió copiar el dato. Intenta de nuevo.",
+        });
+      }
+    } catch {
+      if (!signal.aborted) setAviso({ error: true, texto: accion === "revelar"
+        ? "No se pudo revelar la contraseña." : "No se pudo copiar el dato de conexión." });
+    } finally {
+      if (solicitud.current === controller) {
+        solicitud.current = null;
+        setOcupado(false);
+      }
+    }
+  }
+
   return (
     <div className="conexion-celda">
-      <ConexionLinea etiqueta="Servidor" valor={info.server} />
-      <ConexionLinea etiqueta="Base" valor={info.databaseName} />
-      <ConexionLinea etiqueta="Usuario" valor={info.user} />
+      <ConexionLinea etiqueta="Servidor" valor={info.server} ocupado={ocupado}
+        onCopiar={permisos.copiar ? () => void ejecutar("copiar", "serverHostPort") : undefined} />
+      <ConexionLinea etiqueta="Base" valor={info.databaseName} ocupado={ocupado}
+        onCopiar={permisos.copiar ? () => void ejecutar("copiar", "initialCatalog") : undefined} />
+      <ConexionLinea etiqueta="Usuario" valor={info.user} ocupado={ocupado}
+        onCopiar={permisos.copiar ? () => void ejecutar("copiar", "userId") : undefined} />
       <div className="conexion-linea">
         <strong>Contraseña:</strong>
         <span className="conexion-valor">{info.hasPassword ? (passwordVisible ?? "••••••••••••") : "No configurada"}</span>
         <span className="acciones-tabla">
-          {puedeVerPassword && info.hasPassword ? (
+          {permisos.revelar && info.hasPassword ? (
             <>
-              <button type="button" disabled={cargandoPwd} onClick={alternarVer}>{passwordVisible ? "Ocultar" : "Ver"}</button>
-              <button type="button" disabled={cargandoPwd} onClick={copiarPassword}>Copiar</button>
+              <button type="button" disabled={!passwordVisible && ocupado}
+                onClick={passwordVisible ? ocultar : () => void ejecutar("revelar", "password")}>{passwordVisible ? "Ocultar" : "Ver"}</button>
+              <button type="button" aria-label="Copiar contraseña" disabled={ocupado}
+                onClick={() => void ejecutar("copiar", "password")}>Copiar</button>
             </>
           ) : (
             <button type="button" disabled title="No tienes permiso para ver esta contraseña.">Sin permiso</button>
           )}
         </span>
       </div>
-      {mensajePwd && <span className="texto-ayuda" style={{ color: "#047857" }}>{mensajePwd}</span>}
-      {errorPwd && <span className="texto-ayuda" style={{ color: "#991b1b" }}>{errorPwd}</span>}
+      {aviso && <span className="texto-ayuda" role={aviso.error ? "alert" : "status"}
+        style={{ color: aviso.error ? "#991b1b" : "#047857" }}>{aviso.texto}</span>}
     </div>
   );
 }
 
-function ConexionLinea({ etiqueta, valor }: { etiqueta: string; valor: string }) {
+function ConexionLinea({ etiqueta, valor, ocupado, onCopiar }: { etiqueta: string; valor: string; ocupado: boolean; onCopiar?: () => void }) {
   return (
     <div className="conexion-linea">
       <strong>{etiqueta}:</strong>
       <span className="conexion-valor">{valor}</span>
-      <button type="button" onClick={() => copiarTexto(valor)}>Copiar</button>
+      {onCopiar && <button type="button" aria-label={`Copiar ${etiqueta.toLowerCase()}`} disabled={ocupado || !valor} onClick={onCopiar}>Copiar</button>}
     </div>
   );
 }
