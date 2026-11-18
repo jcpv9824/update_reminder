@@ -66,8 +66,11 @@ describe("DominiosPage", () => {
     expect(apiMock.post).toHaveBeenCalledWith("/domains", expect.not.objectContaining({ frequency: expect.anything() }));
   });
 
-  it("muestra error claro cuando el backend rechaza dominio duplicado", async () => {
-    apiMock.post.mockRejectedValue(new Error("Ya existe un dominio con esta URL."));
+  it.each([
+    "Ya existe un dominio con esta URL para este cliente y ambiente.",
+    "La URL está bloqueada por una restricción anterior del sistema. Solicite al administrador actualizar el esquema para compartirla entre clientes o ambientes.",
+  ])("muestra el conflicto de ámbito o legado sin cerrar el formulario: %s", async message => {
+    apiMock.post.mockRejectedValue(new Error(message));
     renderPagina();
     fireEvent.click(await screen.findByRole("button", { name: /Nuevo dominio/i }));
     fireEvent.focus(screen.getAllByPlaceholderText("Buscar cliente...").at(-1)!);
@@ -75,7 +78,7 @@ describe("DominiosPage", () => {
     fireEvent.change(screen.getAllByPlaceholderText("https://ejemplo.sagerp.co").at(-1)!, { target: { value: "https://cliente.sagerp.co" } });
     fireEvent.click(screen.getByRole("button", { name: /^Guardar$/i }));
 
-    expect(await screen.findByText("Ya existe un dominio con esta URL.")).toBeInTheDocument();
+    expect(await screen.findByText(message)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Guardar$/i })).toBeInTheDocument();
   });
 
@@ -92,6 +95,25 @@ describe("DominiosPage", () => {
     expect(screen.queryByText("Recurrente")).toBeNull();
     expect(screen.queryByText("Próxima actualización")).toBeNull();
     expect(screen.getByRole("button", { name: "Agregar base de datos" })).toBeInTheDocument();
+  });
+
+  it("conserva filas e identidad de edición cuando dos ambientes comparten la misma URL", async () => {
+    const common = { clientId: "client_1", clientName: "Cliente Uno", domainName: "https://compartido.sagerp.co",
+      assignedUpdaterIds: [], status: "active", createdAt: "", updatedAt: "" };
+    const domains = [{ ...common, id: "domain_prod", environment: "production" },
+      { ...common, id: "domain_test", environment: "test" }];
+    apiMock.get.mockImplementation((path: string) => {
+      if (path === "/clients") return Promise.resolve(clientes);
+      if (path.startsWith("/domains?")) return Promise.resolve({ items: domains, page: 1, pageSize: 10, total: 2 });
+      return Promise.resolve([]);
+    });
+    apiMock.put.mockResolvedValue(domains[1]);
+    renderPagina();
+    expect(await screen.findAllByText(common.domainName)).toHaveLength(2);
+    fireEvent.click(screen.getAllByRole("button", { name: "Editar" })[1]);
+    fireEvent.click(await screen.findByRole("button", { name: /^Guardar$/i }));
+    await waitFor(() => expect(apiMock.put).toHaveBeenCalledWith("/domains/domain_test",
+      expect.objectContaining({ environment: "test", domainName: common.domainName })));
   });
 
   it("modal de bases asociadas carga acceso explícito antes de copiar contraseña", async () => {

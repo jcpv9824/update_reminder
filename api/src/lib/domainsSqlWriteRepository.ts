@@ -1,7 +1,6 @@
 import sql from "mssql";
 import type { DomainRecord, EntityStatus } from "../types/models";
 import { writeSqlAuditLog } from "./auditSqlWriter";
-import { isSqlUniqueConstraintError } from "./clientsSqlWriteRepository";
 import { normalizeDomainUrl } from "./duplicateValidation";
 import { runSqlTransaction } from "./sqlTransaction";
 import { cancelOpenSqlTasksForTarget } from "./workflowTaskCleanupSqlRepository";
@@ -40,6 +39,40 @@ type DomainRow = {
 
 type ClientRow = { client_key: number; source_id: string; name: string; status: EntityStatus };
 type AssigneeRow = { user_key: number; source_id: string; active: boolean };
+
+/** Only URL-identity constraints are a domain URL conflict; source IDs and assignments are not. */
+export function domainSqlConflictMessage(error: unknown): string | null {
+  const candidate = error as { number?: number; message?: string;
+    originalError?: { info?: { number?: number; message?: string } } } | null;
+  for (const detail of [candidate, candidate?.originalError?.info]) {
+    if (detail?.number !== 2601 && detail?.number !== 2627) continue;
+    if (typeof detail.message !== "string") continue;
+    // Match the named index/constraint position, not a supplied duplicate key value.
+    const prefix = detail.message.split(/The duplicate key value is|El valor de la clave duplicada es/i, 1)[0];
+    const name = /(?:unique index|(?:UNIQUE KEY )?constraint|[ií]ndice [uú]nico|restricci[oó]n(?: UNIQUE KEY)?) ['"]([^'"]+)['"]/i
+      .exec(prefix)?.[1].toLowerCase();
+    if (name === "ux_domains_client_environment_name_active") {
+      return "Ya existe un dominio con esta URL para este cliente y ambiente.";
+    }
+    if (name === "ux_domains_name_active") {
+      return "La URL está bloqueada por una restricción anterior del sistema. Solicite al administrador actualizar el esquema para compartirla entre clientes o ambientes.";
+    }
+  }
+  return null;
+}
+
+function rethrowDomainMutationError(error: unknown): never {
+  const message = domainSqlConflictMessage(error);
+  if (message) throw Object.assign(new Error(message), { status: 409 });
+  const detail = error as { code?: string; name?: string; number?: number;
+    originalError?: { info?: { number?: number } } } | null;
+  // Keep unknown SQL failures internal without changing the HTTP contract of other modules.
+  if (detail?.code === "EREQUEST" || detail?.name === "RequestError" || detail?.name === "ConnectionError"
+    || typeof detail?.number === "number" || typeof detail?.originalError?.info?.number === "number") {
+    throw Object.assign(new Error("Error interno del servidor."), { status: 500 });
+  }
+  throw error;
+}
 
 export function buildDomainMutationValues(
   input: Omit<DomainMutationInput, "assignedUpdaterIds"> & {
@@ -220,6 +253,7 @@ export async function createSqlDomain(
       const values = buildDomainMutationValues({ ...input, status: "active" }, actor.id, now);
       const request = new sql.Request(transaction);
       request.input("sourceId", sql.NVarChar(150), sourceId);
+      request.input("clientSourceId", sql.NVarChar(150), clientSourceId);
       request.input("clientKey", sql.BigInt, client.client_key);
       request.input("clientName", sql.NVarChar(200), client.name);
       request.input("domainName", sql.NVarChar(500), values.domainName);
@@ -255,10 +289,7 @@ export async function createSqlDomain(
       return record;
     });
   } catch (error) {
-    if (isSqlUniqueConstraintError(error)) {
-      throw Object.assign(new Error("Ya existe un dominio con esta URL."), { status: 409 });
-    }
-    throw error;
+    return rethrowDomainMutationError(error);
   }
 }
 
@@ -320,10 +351,7 @@ export async function updateSqlDomain(
       return updated;
     });
   } catch (error) {
-    if (isSqlUniqueConstraintError(error)) {
-      throw Object.assign(new Error("Ya existe un dominio con esta URL."), { status: 409 });
-    }
-    throw error;
+    return rethrowDomainMutationError(error);
   }
 }
 
@@ -364,5 +392,5 @@ export async function setSqlDomainStatus(
       metadata: { obsoletedTasks }, before, after: domain,
     });
     return { domain, obsoletedTasks };
-  });
+  }).catch(rethrowDomainMutationError);
 }

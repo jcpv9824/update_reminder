@@ -12,3 +12,4 @@ migration/sql/039_catalog_physical_registration_time.sql text eol=lf
 migration/sql/040_catalog_sag_license_module_map.sql text eol=lf
 migration/sql/041_catalog_sag_license_approval_versions.sql text eol=lf
 migration/sql/042_catalog_operational_links.sql text eol=lf
+migration/sql/043_catalog_domain_scope.sql text eol=lf

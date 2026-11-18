@@ -85,7 +85,8 @@ if($IncludeCatalog){
     @{version='039';name='039_catalog_physical_registration_time.sql'},
     @{version='040';name='040_catalog_sag_license_module_map.sql'},
     @{version='041';name='041_catalog_sag_license_approval_versions.sql'},
-    @{version='042';name='042_catalog_operational_links.sql'}
+    @{version='042';name='042_catalog_operational_links.sql'},
+    @{version='043';name='043_catalog_domain_scope.sql'}
   )
   # Check the entire selected package before submitting its first write.
   foreach($entry in $migrations){
@@ -227,7 +228,7 @@ if($IncludeCatalog){
   $catalogVerificationSql=@'
 SELECT
   (SELECT COUNT(*) FROM migration.schema_migrations
-    WHERE migration_version IN ('031','032','033','034','035','036','037','038','039','040','041','042') AND succeeded=1) AS catalog_migration_count,
+    WHERE migration_version IN ('031','032','033','034','035','036','037','038','039','040','041','042','043') AND succeeded=1) AS catalog_migration_count,
   (SELECT COUNT(*) FROM (VALUES
     (N'settings.catalog_source_bindings'), (N'workflow.catalog_task_executions'),
     (N'workflow.catalog_task_execution_links'), (N'workflow.catalog_task_execution_sources'),
@@ -269,6 +270,20 @@ SELECT
       AND name IN (N'UX_catalog_operational_owner_customer',N'UX_catalog_operational_owner_client'))
       OR (object_id=OBJECT_ID(N'core.catalog_operational_links',N'U') AND name=N'UX_catalog_operational_link_edge'))
   ) AS catalog_operational_uniqueness_ready,
+  (SELECT COUNT(*) FROM sys.indexes i
+    WHERE i.object_id=OBJECT_ID(N'core.domains',N'U')
+      AND i.name=N'UX_domains_client_environment_name_active' AND i.is_unique=1 AND i.is_disabled=0 AND i.has_filter=1
+      AND LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(i.filter_definition,N'[',N''),N']',N''),N'(',N''),N')',N''),N' ',N''))=N'status<>''deleted'''
+      AND (SELECT COUNT(*) FROM sys.index_columns ic
+        WHERE ic.object_id=i.object_id AND ic.index_id=i.index_id AND ic.key_ordinal>0)=3
+      AND (SELECT COUNT(*) FROM sys.index_columns ic JOIN sys.columns c
+        ON c.object_id=ic.object_id AND c.column_id=ic.column_id
+        WHERE ic.object_id=i.object_id AND ic.index_id=i.index_id
+          AND ((ic.key_ordinal=1 AND c.name=N'client_key') OR (ic.key_ordinal=2 AND c.name=N'environment_id')
+            OR (ic.key_ordinal=3 AND c.name=N'domain_name_normalized')))=3
+  ) AS catalog_domain_scope_ready,
+  (SELECT COUNT(*) FROM sys.indexes WHERE object_id=OBJECT_ID(N'core.domains',N'U')
+    AND name=N'UX_domains_name_active') AS legacy_global_domain_index_count,
   CASE WHEN COL_LENGTH(N'core.catalog_physical_target_links',N'registered_at') IS NOT NULL
     THEN 1 ELSE 0 END AS physical_registration_time_ready,
   CASE WHEN COL_LENGTH(N'core.catalog_customer_source_revisions',N'has_sag_inventory_evidence')=1
@@ -276,12 +291,13 @@ SELECT
 '@
   $catalogVerification=Invoke-SessionSql -Sql $catalogVerificationSql -Mode read -TimeoutSeconds 120 -MaxRows 5
   $catalogRow=$catalogVerification.resultSets[0].rows[0]
-  if($catalogRow.catalog_migration_count -ne 12 -or $catalogRow.catalog_tables_ready -ne 18 -or
+  if($catalogRow.catalog_migration_count -ne 13 -or $catalogRow.catalog_tables_ready -ne 18 -or
      $catalogRow.catalog_triggers_ready -ne 22 -or $catalogRow.sag_evidence_flag_ready -ne 1 -or
      $catalogRow.catalog_operational_evidence_ready -ne 1 -or
      $catalogRow.catalog_operational_uniqueness_ready -ne 3 -or
+     $catalogRow.catalog_domain_scope_ready -ne 1 -or $catalogRow.legacy_global_domain_index_count -ne 0 -or
      $catalogRow.physical_registration_time_ready -ne 1){
     throw 'Catalog migration post-verification failed.'
   }
-  Write-Host "$expectedDatabase migrations 031-042 are applied and verified." -ForegroundColor Green
+  Write-Host "$expectedDatabase migrations 031-043 are applied and verified." -ForegroundColor Green
 }

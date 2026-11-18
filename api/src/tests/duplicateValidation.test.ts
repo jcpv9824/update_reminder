@@ -43,10 +43,16 @@ describe("duplicateValidation", () => {
   });
 
   it("detecta dominio duplicado con y sin slash final", () => {
-    const domains = [{ id: "domain_1", domainName: "https://demo.sagerp.cloud/", status: "active" }] as DomainRecord[];
+    const domains = [{ id: "domain_1", clientId: "client_1", environment: "production",
+      domainName: "https://demo.sagerp.cloud/", status: "active" }] as DomainRecord[];
+    const scope = { clientId: "client_1", environment: "production" };
 
-    expect(hasDuplicateDomainUrl(domains, "https://demo.sagerp.cloud")).toBe(true);
-    expect(hasDuplicateDomainUrl(domains, "https://demo.sagerp.cloud", "domain_1")).toBe(false);
+    expect(hasDuplicateDomainUrl(domains, "https://demo.sagerp.cloud", scope)).toBe(true);
+    expect(hasDuplicateDomainUrl(domains, "https://demo.sagerp.cloud", scope, "domain_1")).toBe(false);
+    expect(hasDuplicateDomainUrl(domains, "https://demo.sagerp.cloud", { ...scope, clientId: "client_2" })).toBe(false);
+    expect(hasDuplicateDomainUrl(domains, "https://demo.sagerp.cloud", { ...scope, environment: "test" })).toBe(false);
+    expect(hasDuplicateDomainUrl([{ ...domains[0], status: "inactive" }], "https://demo.sagerp.cloud", scope)).toBe(true);
+    expect(hasDuplicateDomainUrl([{ ...domains[0], status: "deleted" }], "https://demo.sagerp.cloud", scope)).toBe(false);
   });
 
   it("detecta base duplicada por cadena de conexión normalizada", () => {

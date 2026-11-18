@@ -53,6 +53,30 @@ describe("catalog schedule day", () => {
     expect(deps.register).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { shareProof: true, registered: 1 },
+    { shareProof: false, registered: 2 },
+  ])("uses physical web proof, not equal domain labels (shared proof: $shareProof)", async ({ shareProof, registered }) => {
+    const sharedUrl = "https://shared.example.test";
+    const deps = io();
+    deps.resolve.mockResolvedValue([
+      { status: "verified", id: physicalId },
+      { status: "verified", id: shareProof ? physicalId : "31140f4d-81c3-4938-9ab2-a275473feb18" },
+    ]);
+    const inventory = data.inventory.map(({ link: { databaseId: _unused, ...item }, ...record }, i) => ({
+      ...record, link: { ...item, kind: "domain" as const, environment: i === 0 ? "production" as const : "test" as const },
+      domainName: sharedUrl, targetName: sharedUrl,
+    }));
+    const rules = data.rules.map(item => ({
+      ...item, workflowRole: "domain_updater", assignment: { kind: "role" as const, id: "domain_updater" },
+      scope: { ...item.scope, kind: "domain" as const },
+    }));
+    expect(await generateCatalogScheduleDay({ ...data, inventory, rules }, deps)).toMatchObject({ registered });
+    const origins = deps.register.mock.calls.flatMap(([entry]) => entry.group.sources)
+      .map(source => [source.link.customerId, source.link.domainId, source.link.environment].join(":")).sort();
+    expect(origins).toEqual(["client1:domain1:production", "client2:domain2:test"]);
+  });
+
   it("has no writes when coverage is incomplete, the cutoff passed, or the manual request is out of scope", async () => {
     const deps = io();
     await expect(generateCatalogScheduleDay({ ...data, revision: { id: "revision1", complete: false } }, deps))

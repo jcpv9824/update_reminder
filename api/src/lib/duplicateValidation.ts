@@ -46,11 +46,16 @@ export function hasDuplicateClientExternalId(clients: ClientRecord[], externalId
   );
 }
 
-export function hasDuplicateDomainUrl(domains: DomainRecord[], domainName: string, currentId?: string): boolean {
+export function hasDuplicateDomainUrl(
+  domains: DomainRecord[], domainName: string,
+  scope: { clientId: string; environment: string }, currentId?: string,
+): boolean {
   const normalized = normalizeDomainUrl(domainName);
   return domains.some((domain) =>
     domain.id !== currentId &&
     domain.status !== "deleted" &&
+    domain.clientId === scope.clientId &&
+    domain.environment === scope.environment &&
     normalizeDomainUrl(domain.domainName) === normalized
   );
 }
