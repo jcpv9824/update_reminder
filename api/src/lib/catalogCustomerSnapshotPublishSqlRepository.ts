@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
 import sql from "mssql";
+import { writeSqlAuditLog } from "./auditSqlWriter";
 import type { CatalogRefreshPublication, CatalogRefreshSink } from "./catalogCustomerRefresh";
 import { normalizeCatalogSagInventoryEvidence } from "./catalogSagInventoryEvidence";
 
 type Stamp = Parameters<CatalogRefreshSink["recordFailure"]>[0];
+export type CatalogPublicationOperator = Pick<Stamp, "environment" | "sourceId" | "bindingRevision" |
+  "profileRevision" | "matchKeyVersion"> & { id: string };
 const maxRows = 100_000;
 const maxScopes = 512;
 const maxPayloadBytes = 16 * 1024 * 1024;
@@ -283,17 +286,48 @@ function bindStamp(request: sql.Request, stamp: Stamp): sql.Request {
 /** Supply a separately authorized Portal SQL loader pool; never use the HTTP runtime or a source connection. */
 export function createSqlCatalogCustomerSnapshotPublisher(
   pool: Pick<sql.ConnectionPool, "transaction">,
-  { freshnessMinutes = 30 }: { freshnessMinutes?: number } = {},
+  { freshnessMinutes = 30, operator }: { freshnessMinutes?: number; operator?: CatalogPublicationOperator } = {},
 ): CatalogRefreshSink {
   if (!Number.isInteger(freshnessMinutes) || freshnessMinutes < 1 || freshnessMinutes > 1440) {
     throw new Error("invalid_catalog_publication");
   }
-  async function transaction<T>(work: (request: sql.Request) => Promise<T>): Promise<T> {
+  if (operator && (!operator.id?.trim() || operator.id.length > 150 || !validStamp({ ...operator,
+    observedAt: new Date(), attemptOrdinal: "1" }))) throw new Error("invalid_catalog_publication");
+  function assertOperatorScope(stamp: Stamp) {
+    if (operator && (operator.sourceId !== stamp.sourceId || operator.environment !== stamp.environment ||
+      operator.bindingRevision !== stamp.bindingRevision || operator.profileRevision !== stamp.profileRevision ||
+      operator.matchKeyVersion !== stamp.matchKeyVersion)) throw new Error("invalid_catalog_publication");
+  }
+  async function transaction<T>(work: (request: sql.Request, current: sql.Transaction) => Promise<T>): Promise<T> {
     let current: sql.Transaction | undefined;
     try {
       current = pool.transaction();
       await current.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
-      const result = await work(current.request());
+      if (operator) {
+        const allowed = await current.request().input("actorId", sql.NVarChar(150), operator.id)
+          .input("source", sql.UniqueIdentifier, operator.sourceId).input("environment", sql.VarChar(10), operator.environment)
+          .input("binding", sql.VarBinary(8), Buffer.from(operator.bindingRevision, "hex"))
+          .input("profile", sql.VarBinary(8), Buffer.from(operator.profileRevision, "hex")).query<{ allowed: number }>(`
+          SET NOCOUNT ON;
+          DECLARE @lockCode int;
+          DECLARE @resource nvarchar(255)=N'portal-sag:catalog-customer-publication:'+@environment;
+          EXEC @lockCode=sys.sp_getapplock @Resource=@resource,@LockMode='Exclusive',@LockOwner='Transaction',@LockTimeout=5000;
+          IF @lockCode<0 THROW 53320, N'Catalog publication lock unavailable.', 1;
+          SELECT 1 AS allowed FROM security.users AS u
+          JOIN security.user_roles AS ur ON ur.user_key=u.user_key
+          JOIN security.roles AS r ON r.role_id=ur.role_id AND r.active=1
+          WHERE u.active=1 AND u.source_id=@actorId
+            AND u.source_id COLLATE Latin1_General_100_BIN2=@actorId COLLATE Latin1_General_100_BIN2
+            AND r.role_id=N'super_admin' AND EXISTS (
+              SELECT 1 FROM settings.catalog_source_bindings AS b
+              JOIN settings.external_database_connections AS p ON p.external_database_connection_key=b.external_database_connection_key
+              WHERE b.source_id=@source AND b.portal_environment=@environment AND b.source_state='active'
+                AND b.row_version=@binding AND b.validated_profile_version=@profile AND b.validated_at IS NOT NULL
+                AND p.row_version=@profile AND p.active=1 AND p.status='active' AND p.encrypt_connection=1 AND p.password_configured=1
+            );`);
+        if (allowed.recordset.length !== 1) throw new Error("catalog_publication_forbidden");
+      }
+      const result = await work(current.request(), current);
       await current.commit();
       return result;
     } catch {
@@ -312,8 +346,9 @@ export function createSqlCatalogCustomerSnapshotPublisher(
       });
     },
     async publish(revision) {
+      assertOperatorScope(revision);
       const payload = validateAndSerialize(revision);
-      return transaction(async request => {
+      return transaction(async (request, current) => {
         const bound = bindStamp(request, revision)
           .input("sourceRole", sql.VarChar(15), revision.role)
           .input("rows", sql.NVarChar(sql.MAX), payload.rows)
@@ -329,10 +364,18 @@ export function createSqlCatalogCustomerSnapshotPublisher(
         if (result.recordset.length !== 1 || (status !== "published" && status !== "superseded")) {
           throw new Error("invalid_catalog_sql_result");
         }
+        if (operator && status === "published") {
+          await writeSqlAuditLog(current, {
+            entityType: "catalog_source_binding", entityId: revision.sourceId, action: "catalog_source_refreshed",
+            performedBy: operator.id, performedByEmail: "system",
+            metadata: { environment: revision.environment, sourceRole: revision.role, status },
+          });
+        }
         return status;
       });
     },
     async recordFailure(attempt) {
+      assertOperatorScope(attempt);
       if (!validStamp(attempt)) throw new Error("invalid_catalog_publication");
       await transaction(async request => { await bindStamp(request, attempt).query(failureBatch); });
     },

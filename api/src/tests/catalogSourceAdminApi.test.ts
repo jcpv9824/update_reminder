@@ -11,6 +11,7 @@ const stubs = vi.hoisted(() => ({
   read: vi.fn(),
   save: vi.fn(),
   certify: vi.fn(),
+  publish: vi.fn(),
   limit: vi.fn(),
 }));
 vi.mock("@azure/functions", () => ({
@@ -22,6 +23,7 @@ vi.mock("../lib/auth", () => ({ requireUser: stubs.requireUser, loadUserProfile:
 vi.mock("../lib/managementAccess", () => ({ canManageIntegration: stubs.canManageIntegration }));
 vi.mock("../lib/roleDefinitionStore", () => ({ loadRoleDefinitions: stubs.loadRoleDefinitions }));
 vi.mock("../lib/catalogSourceCertification", () => ({ certifySavedCatalogSource: stubs.certify }));
+vi.mock("../lib/catalogSourcePublication", () => ({ publishSavedCatalogSource: stubs.publish }));
 vi.mock("../lib/rateLimit", () => ({ enforceRequestRateLimit: stubs.limit, RATE_LIMIT_POLICIES: { integrationTest: {} } }));
 vi.mock("../lib/catalogSourceBindingsSqlRepository", () => ({
   CATALOG_ERP_ISSUER_SCOPE: /^[A-Z]{2}:[A-Z][A-Z0-9_-]{0,31}$/,
@@ -35,6 +37,7 @@ const listRoute = "settings/integrations/catalog-sources";
 const saveRoute = listRoute + "/profile/{profileId}";
 const verifyRoute = listRoute + "/{sourceId}/verify";
 const activateRoute = listRoute + "/{sourceId}/activate";
+const refreshRoute = listRoute + "/{sourceId}/refresh";
 const sourceId = "ac51a754-337c-46c4-b131-85e1a79443db";
 const actor = { id: "actor-test", email: "actor@example.invalid", displayName: "Actor", roles: ["test-role"] };
 const binding: SqlCatalogSourceBinding = {
@@ -152,5 +155,23 @@ describe("catalog source draft management routes", () => {
     vi.stubEnv("PORTAL_SAG_ENVIRONMENT", undefined);
     expect((await stubs.routes.get(activateRoute)!(request({}))).status).toBe(500);
     expect(stubs.certify).not.toHaveBeenCalled();
+  });
+
+  it("publishes only the exact source in the trusted environment, restricted to an enabled administrator", async () => {
+    vi.stubEnv("PORTAL_CATALOG_SOURCE_REFRESH_ENABLED", undefined);
+    expect((await stubs.routes.get(refreshRoute)!(request({}))).status).toBe(404);
+    expect(stubs.requireUser).not.toHaveBeenCalled();
+    vi.stubEnv("PORTAL_CATALOG_SOURCE_REFRESH_ENABLED", "true");
+    expect((await stubs.routes.get(refreshRoute)!(request({}))).status).toBe(403);
+    stubs.loadUserProfile.mockResolvedValue({ ...actor, roles: ["super_admin"] });
+    expect((await stubs.routes.get(refreshRoute)!(request({ country: "CO", password: "synthetic" }))).status).toBe(400);
+    stubs.limit.mockResolvedValueOnce({ status: 429 });
+    expect((await stubs.routes.get(refreshRoute)!(request({}))).status).toBe(429);
+    expect(stubs.publish).not.toHaveBeenCalled();
+    stubs.publish.mockResolvedValueOnce("published");
+    expect((await stubs.routes.get(refreshRoute)!(request({}))).jsonBody).toEqual({ status: "published" });
+    expect(stubs.publish).toHaveBeenCalledExactlyOnceWith({ environment: "qa", sourceId, actorId: actor.id });
+    stubs.publish.mockRejectedValueOnce(new Error("synthetic private details"));
+    expect(JSON.stringify(await stubs.routes.get(refreshRoute)!(request({})))).not.toContain("synthetic private details");
   });
 });

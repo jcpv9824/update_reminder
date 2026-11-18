@@ -13,6 +13,7 @@ import {
 import type { CatalogEnvironment } from "../lib/catalogSourceConfiguration";
 import { certifySavedCatalogSource } from "../lib/catalogSourceCertification";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
+import { publishSavedCatalogSource } from "../lib/catalogSourcePublication";
 
 const PROFILE_ID = z.string().min(1).max(150).refine(value => value.trim() === value && !/\p{Cc}/u.test(value));
 const DRAFT = z.discriminatedUnion("role", [
@@ -114,6 +115,31 @@ app.http("catalogSourceVerify", {
 app.http("catalogSourceActivate", {
   route: "settings/integrations/catalog-sources/{sourceId}/activate", methods: ["POST"], authLevel: "anonymous",
   handler: sourceCertification("activate"),
+});
+
+app.http("catalogSourceRefresh", {
+  route: "settings/integrations/catalog-sources/{sourceId}/refresh", methods: ["POST"], authLevel: "anonymous",
+  handler: async (req): Promise<HttpResponseInit> => {
+    if (!catalogAdminEnabled() || process.env.PORTAL_CATALOG_SOURCE_REFRESH_ENABLED?.trim() !== "true") return notFound();
+    try {
+      const actor = await loadUserProfile(await requireUser(req));
+      if (!actor || !actor.roles.includes("super_admin")) return forbidden();
+      const roles = (await loadRoleDefinitions()).filter(role => role.active !== false);
+      if (!(["view", "test_database", "edit_database"] as const).every(action => canManageIntegration(actor, action, roles))) return forbidden();
+      const sourceId = z.uuid().safeParse(req.params.sourceId);
+      if (!sourceId.success) return badRequest("La fuente de catálogo no es válida.");
+      if (!z.object({}).strict().safeParse(await req.json().catch(() => null)).success) return badRequest("La solicitud no admite parámetros.");
+      const environment = configuredCatalogEnvironment();
+      const limited = await enforceRequestRateLimit(req, "catalog_source_refresh", actor.id,
+        { maxAttempts: 2, windowSeconds: 120, blockSeconds: 120 });
+      if (limited) return limited;
+      const status = await publishSavedCatalogSource({ environment, sourceId: sourceId.data, actorId: actor.id });
+      if (status === "published") return ok({ status });
+      if (status === "missing") return notFound("No se encontró la fuente del catálogo.");
+      if (status === "superseded" || status === "ineligible") return conflict("La fuente no admite la actualización con su versión actual.");
+      return { status: 503, jsonBody: { error: "No se pudo actualizar la fuente. Se conserva la última revisión disponible." } };
+    } catch (error) { return responseForError(error); }
+  },
 });
 
 app.http("catalogSourceDraftSave", {

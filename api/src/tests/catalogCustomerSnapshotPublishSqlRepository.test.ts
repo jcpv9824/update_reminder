@@ -8,6 +8,8 @@ vi.mock("mssql", () => ({
     NVarChar: vi.fn(), MAX: -1, Int: {}, ISOLATION_LEVEL: { SERIALIZABLE: 99 },
   },
 }));
+const audit = vi.hoisted(() => vi.fn());
+vi.mock("../lib/auditSqlWriter", () => ({ writeSqlAuditLog: audit }));
 
 const observation = new Date("2026-11-17T10:01:00.000Z");
 const revision: CatalogRefreshPublication = {
@@ -30,6 +32,30 @@ function setup() {
 }
 
 describe("catalog customer snapshot SQL publisher", () => {
+  it("binds operator work to the exact active source and rechecks authorization inside each transaction", async () => {
+    const fake = setup();
+    const sink = createSqlCatalogCustomerSnapshotPublisher(fake.pool as unknown as Parameters<typeof createSqlCatalogCustomerSnapshotPublisher>[0],
+      { operator: { ...revision, id: "operator" } });
+    await expect(sink.publish({ ...revision, environment: "production" })).rejects.toThrow("invalid_catalog_publication");
+    expect(fake.begin).not.toHaveBeenCalled();
+    fake.query.mockResolvedValueOnce({ recordset: [{ allowed: 1 }] }).mockResolvedValueOnce({ recordset: [{ attemptOrdinal: "1" }] });
+    await expect(sink.reserveAttempt()).resolves.toBe("1");
+    expect(fake.query.mock.calls[0][0]).toContain("r.role_id=N'super_admin'");
+    expect(fake.query.mock.calls[0][0]).toContain("b.validated_profile_version=@profile");
+    expect(fake.value("source")).toBe(revision.sourceId);
+    fake.query.mockResolvedValueOnce({ recordset: [] });
+    await expect(sink.publish(revision)).rejects.toThrow("catalog_publication_failed");
+    expect(fake.rollback).toHaveBeenCalledOnce();
+    expect(fake.query).toHaveBeenCalledTimes(3);
+    expect(audit).not.toHaveBeenCalled();
+    fake.query.mockResolvedValueOnce({ recordset: [{ allowed: 1 }] });
+    await expect(sink.publish(revision)).resolves.toBe("published");
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ performedBy: "operator",
+      metadata: { environment: "qa", sourceRole: "erp-customers", status: "published" } }));
+    fake.query.mockResolvedValueOnce({ recordset: [] });
+    await expect(sink.recordFailure(revision)).rejects.toThrow("catalog_publication_failed");
+    expect(fake.rollback).toHaveBeenCalledTimes(2);
+  });
   it("commits only a sealed revision and sends protected ERP rows in fixed SQL parameters", async () => {
     const fake = setup();
     await expect(fake.sink.publish(revision)).resolves.toBe("published");
