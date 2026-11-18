@@ -16,6 +16,8 @@ export type CatalogSourceBinding = Readonly<{
 
 // Evidence produced by the source validator, not accepted from request bodies.
 export type CatalogSourceVerification = Readonly<{
+  bindingId?: string;
+  bindingVersion?: string;
   profileId: string;
   profileRevision: string;
   contractVersion: string;

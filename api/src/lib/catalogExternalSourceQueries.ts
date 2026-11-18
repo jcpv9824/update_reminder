@@ -105,11 +105,21 @@ function schemaStatement(contract: CatalogExternalContract): string {
   return `SELECT
     CONVERT(bit, CASE WHEN ${[...matches, ...keys].join(" AND ")} THEN 1 ELSE 0 END) AS compatible,
     CONVERT(bit, CASE WHEN IS_SRVROLEMEMBER(N'sysadmin') = 0
+      AND HAS_PERMS_BY_NAME(NULL, NULL, 'CONTROL SERVER') = 0
+      AND HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER ANY LOGIN') = 0
+      AND HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER ANY SERVER ROLE') = 0
       AND IS_ROLEMEMBER(N'db_owner') = 0 AND IS_ROLEMEMBER(N'db_datawriter') = 0
       AND HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'CONTROL') = 0
       AND NOT EXISTS (SELECT 1 FROM sys.fn_my_permissions(DB_NAME(), 'DATABASE')
         WHERE permission_name LIKE 'CREATE %' OR permission_name LIKE 'ALTER %'
           OR permission_name IN ('INSERT', 'UPDATE', 'DELETE', 'EXECUTE', 'TAKE OWNERSHIP'))
+      AND NOT EXISTS (
+        SELECT 1 FROM sys.objects AS userObject
+        JOIN sys.schemas AS ownerSchema ON ownerSchema.schema_id=userObject.schema_id
+        CROSS APPLY sys.fn_my_permissions(QUOTENAME(ownerSchema.name)+N'.'+QUOTENAME(userObject.name), 'OBJECT') AS effective
+        WHERE userObject.is_ms_shipped=0 AND userObject.[type] IN ('U','V','SN','P','PC','FN','FS','FT','IF','TF')
+          AND effective.permission_name IN ('INSERT','UPDATE','DELETE','ALTER','CONTROL','EXECUTE','TAKE OWNERSHIP')
+      )
       AND ${tables.map(table => `HAS_PERMS_BY_NAME(N'${table}', 'OBJECT', 'SELECT') = 1`).join(" AND ")}
       AND ${writable.join(" AND ")} THEN 1 ELSE 0 END) AS readOnly`;
 }
@@ -269,6 +279,37 @@ async function bounded<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs: 
   } finally {
     if (timer) clearTimeout(timer);
     if (cancel) parent?.removeEventListener("abort", cancel);
+  }
+}
+
+/** Prove the fixed projection can be read without storing or returning any source rows. */
+export async function verifyCatalogExternalSource(
+  transport: CatalogExternalSourceTransport, contract: CatalogExternalContract, signal?: AbortSignal,
+): Promise<"verified" | "not_read_only" | "unavailable"> {
+  if (contract !== "erp_v1" && contract !== "sag_admin_v1") return "unavailable";
+  try {
+    return await bounded(parent => transport.withConsistentRead({
+      contract, timeoutMs: 10_000, signal: parent,
+    }, async session => {
+      if (session.consistency !== "verified") throw new Unavailable("consistency_unverified");
+      const select = (tag: CatalogExternalReadStatement["tag"], parameters: CatalogExternalReadStatement["parameters"]) =>
+        bounded(signal => session.select({ tag, sql: catalogExternalSelectSql(contract, tag), parameters, timeoutMs: 4000, signal }),
+          4000, parent);
+      const schema = await select("schema", {});
+      if (!Array.isArray(schema) || schema.length !== 1) throw new Unavailable("schema_unverified");
+      const proof = rowWithKeys(schema[0], ["compatible", "readOnly"]);
+      if (proof.compatible !== true) throw new Unavailable("schema_unverified");
+      if (proof.readOnly !== true) throw new Unavailable("write_access");
+      const rows = await select("page", { afterId: null, pageSize: 1 });
+      if (!Array.isArray(rows) || rows.length > 1) throw new Unavailable("invalid_rows");
+      for (const row of rows) {
+        if (contract === "erp_v1") parseErp(row);
+        else parseSag(row);
+      }
+      return "verified" as const;
+    }), 10_000, signal);
+  } catch (error) {
+    return error instanceof Unavailable && error.reason === "write_access" ? "not_read_only" : "unavailable";
   }
 }
 

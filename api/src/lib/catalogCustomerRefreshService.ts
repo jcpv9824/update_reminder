@@ -51,7 +51,7 @@ export async function runCatalogCustomerRefresh(options: {
       try {
         const outcome = await refreshCatalogCustomerSource({
           ...options, binding, bindingRevision: binding.bindingVersion,
-          transport: () => loadTransport(binding, io, signal), now: () => observedAt,
+          transport: () => loadCatalogSourceTransport(binding, io, signal), now: () => observedAt,
         });
         results.push({ sourceId: binding.id, outcome });
       } catch {
@@ -64,7 +64,9 @@ export async function runCatalogCustomerRefresh(options: {
   return results;
 }
 
-async function loadTransport(binding: SqlCatalogSourceBinding, io: typeof deps, signal?: AbortSignal): Promise<CatalogExternalSourceTransport> {
+export async function loadCatalogSourceTransport(
+  binding: SqlCatalogSourceBinding, io: typeof deps = deps, signal?: AbortSignal,
+): Promise<CatalogExternalSourceTransport> {
   if (signal?.aborted) return unavailableTransport;
   const timeout = AbortSignal.timeout(8_000);
   const deadline = signal ? AbortSignal.any([signal, timeout]) : timeout;
@@ -79,7 +81,8 @@ async function loadTransport(binding: SqlCatalogSourceBinding, io: typeof deps, 
       if (deadline.aborted) return unavailableTransport;
       const profile = await io.readProfile(binding.profileId);
       if (deadline.aborted || !profile || profile.id !== binding.profileId || profile.etag !== binding.profileRevision
-        || !profile.active || profile.status !== "active" || !profile.passwordConfigured || !profile.passwordSecretName) {
+        || !profile.active || profile.status !== "active" || !profile.encrypt
+        || !profile.passwordConfigured || !profile.passwordSecretName) {
         return unavailableTransport;
       }
       const password = await io.readSecret(profile.passwordSecretName, deadline);

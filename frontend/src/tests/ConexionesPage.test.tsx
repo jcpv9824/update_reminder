@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ConexionesPage from "../pages/ConexionesPage";
@@ -61,6 +61,7 @@ describe("ConexionesPage", () => {
       path === "/roles" ? [] : connectionData
     ));
   });
+  afterEach(() => { vi.unstubAllEnvs(); });
 
   it("shows safe metadata but never renders stored secret names or values", async () => {
     renderPage();
@@ -140,5 +141,42 @@ describe("ConexionesPage", () => {
     expect(screen.getByRole("heading", { name: "Nueva conexión SQL Server" })).toBeInTheDocument();
     expect(screen.getByText("Cifrado TLS obligatorio")).toBeInTheDocument();
     expect(screen.getByLabelText(/Contraseña/)).toHaveAttribute("type", "password");
+  });
+
+  it("does not request catalog sources when the admin feature is disabled", async () => {
+    vi.stubEnv("VITE_PORTAL_CATALOG_ADMIN_ENABLED", "false");
+    renderPage();
+    await screen.findByDisplayValue("https://s3.example.com");
+    expect(apiMock.get.mock.calls.some(([path]) => path === "/settings/integrations/catalog-sources")).toBe(false);
+    expect(screen.queryByText("Base de datos de SAG Admin")).toBeNull();
+  });
+
+  it("sends only the source ID and an empty body when verifying or confirming activation", async () => {
+    vi.stubEnv("VITE_PORTAL_CATALOG_ADMIN_ENABLED", "true");
+    apiMock.get.mockImplementation(async (path: string) => {
+      if (path === "/roles") return [];
+      if (path === "/settings/integrations/catalog-sources") return { items: [{
+        id: "source with space", profileId: "profile-id", label: "Administración central",
+        role: "sag-admin", state: "draft", canReadCurrentProfile: false,
+      }] };
+      return connectionData;
+    });
+    apiMock.post.mockImplementation(async (path: string) => path.endsWith("/verify")
+      ? { status: "verified" } : { status: "activated" });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Verificar" }));
+    await screen.findByText("Verificación completada. La fuente sigue en borrador.");
+    expect(apiMock.post).toHaveBeenCalledExactlyOnceWith(
+      "/settings/integrations/catalog-sources/source%20with%20space/verify", {},
+    );
+    const activate = screen.getByRole("button", { name: "Activar" });
+    await waitFor(() => expect(activate).toBeEnabled());
+    fireEvent.click(activate);
+    expect(apiMock.post).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar activación" }));
+    await screen.findByText("Fuente activada.");
+    expect(apiMock.post).toHaveBeenNthCalledWith(
+      2, "/settings/integrations/catalog-sources/source%20with%20space/activate", {},
+    );
   });
 });

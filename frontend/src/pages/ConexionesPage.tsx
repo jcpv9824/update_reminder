@@ -386,7 +386,10 @@ export default function ConexionesPage() {
           profiles={data.externalDatabases.map(({ id, displayName }) => ({ id, displayName }))}
           load={(signal) => api.get<{ items: CatalogSourceItem[] }>(`${BASE}/catalog-sources`, { signal })}
           canEdit={can("edit_database")}
+          canTest={can("test_database")}
           bindDraft={(profileId, input) => api.put(`${BASE}/catalog-sources/profile/${encodeURIComponent(profileId)}`, input)}
+          verifyDraft={(sourceId) => api.post<{ status: "verified" }>(`${BASE}/catalog-sources/${encodeURIComponent(sourceId)}/verify`, {})}
+          activateDraft={(sourceId) => api.post<{ status: "activated" }>(`${BASE}/catalog-sources/${encodeURIComponent(sourceId)}/activate`, {})}
         />
       ) : null}
 

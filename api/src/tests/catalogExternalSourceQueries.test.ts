@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { catalogDocumentKey } from "../lib/catalogCustomerDirectory";
 import {
-  readCatalogExternalSource,
+  readCatalogExternalSource, verifyCatalogExternalSource,
   type CatalogExternalContract,
   type CatalogExternalReadSession,
   type CatalogExternalReadStatement,
@@ -28,6 +28,14 @@ function fake(pages: (statement: CatalogExternalReadStatement) => readonly unkno
 }
 
 describe("catalog verified external contracts", () => {
+  it("probes schema and at most one row without returning data or reading an elevated source", async () => {
+    const valid = fake(() => [erpRow(1)]);
+    expect(await verifyCatalogExternalSource(valid.transport, "erp_v1")).toBe("verified");
+    expect(valid.select.mock.calls.map(([query]) => query.parameters)).toEqual([{}, { afterId: null, pageSize: 1 }]);
+    const writable = fake(() => [erpRow(1)], { schema: [{ compatible: true, readOnly: false }] });
+    expect(await verifyCatalogExternalSource(writable.transport, "erp_v1")).toBe("not_read_only");
+    expect(writable.select).toHaveBeenCalledTimes(1);
+  });
   it("checks table shapes and read-only permissions before a parameterized ERP keyset scan", async () => {
     const { transport, select, withConsistentRead } = fake(request => request.parameters.afterId === null
       ? [erpRow(5), erpRow(10, " n ")] : [erpRow(17, "?", "12.34")]);
@@ -37,6 +45,8 @@ describe("catalog verified external contracts", () => {
     const requests = select.mock.calls.map(call => call[0]);
     expect(requests[0].sql).toMatch(/sys\.indexes/);
     expect(requests[0].sql).toMatch(/IS_ROLEMEMBER\(N'db_owner'\) = 0/);
+    expect(requests[0].sql).toMatch(/sys\.fn_my_permissions\(QUOTENAME\(ownerSchema\.name\)/);
+    expect(requests[0].sql).toMatch(/effective\.permission_name IN \('INSERT','UPDATE','DELETE','ALTER','CONTROL','EXECUTE'/);
     expect(requests[1].sql).toMatch(/FROM dbo\.clientes AS c\s+LEFT JOIN dbo\.terceros AS t ON t\.ka_nl_tercero = c\.ka_nl_tercero/);
     expect(requests[1].sql).toMatch(/TOP \(@pageSize\)[\s\S]*> @afterId[\s\S]*ORDER BY c\.ka_nl_tercero ASC/);
     expect(requests.map(request => request.parameters)).toEqual([{}, { afterId: null, pageSize: 2 }, { afterId: 10, pageSize: 2 }]);

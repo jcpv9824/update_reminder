@@ -10,6 +10,8 @@ const stubs = vi.hoisted(() => ({
   loadRoleDefinitions: vi.fn(),
   read: vi.fn(),
   save: vi.fn(),
+  certify: vi.fn(),
+  limit: vi.fn(),
 }));
 vi.mock("@azure/functions", () => ({
   app: { http(_name: string, registration: { route: string; handler: (req: HttpRequest) => Promise<HttpResponseInit> }) {
@@ -19,6 +21,8 @@ vi.mock("@azure/functions", () => ({
 vi.mock("../lib/auth", () => ({ requireUser: stubs.requireUser, loadUserProfile: stubs.loadUserProfile }));
 vi.mock("../lib/managementAccess", () => ({ canManageIntegration: stubs.canManageIntegration }));
 vi.mock("../lib/roleDefinitionStore", () => ({ loadRoleDefinitions: stubs.loadRoleDefinitions }));
+vi.mock("../lib/catalogSourceCertification", () => ({ certifySavedCatalogSource: stubs.certify }));
+vi.mock("../lib/rateLimit", () => ({ enforceRequestRateLimit: stubs.limit, RATE_LIMIT_POLICIES: { integrationTest: {} } }));
 vi.mock("../lib/catalogSourceBindingsSqlRepository", () => ({
   CATALOG_ERP_ISSUER_SCOPE: /^[A-Z]{2}:[A-Z][A-Z0-9_-]{0,31}$/,
   readSqlCatalogSourceBindings: stubs.read,
@@ -29,6 +33,9 @@ import "../functions/catalogSources";
 
 const listRoute = "settings/integrations/catalog-sources";
 const saveRoute = listRoute + "/profile/{profileId}";
+const verifyRoute = listRoute + "/{sourceId}/verify";
+const activateRoute = listRoute + "/{sourceId}/activate";
+const sourceId = "ac51a754-337c-46c4-b131-85e1a79443db";
 const actor = { id: "actor-test", email: "actor@example.invalid", displayName: "Actor", roles: ["test-role"] };
 const binding: SqlCatalogSourceBinding = {
   id: "source-test", profileId: "profile-test", label: "Empresa QA",
@@ -38,7 +45,7 @@ const binding: SqlCatalogSourceBinding = {
 };
 
 const request = (body: unknown = null, profileId = "profile-test") => ({
-  params: { profileId },
+  params: { profileId, sourceId },
   // The route must ignore any environment offered by the caller.
   query: new URLSearchParams({ environment: "production" }),
   json: vi.fn(async () => body),
@@ -55,6 +62,8 @@ describe("catalog source draft management routes", () => {
     stubs.loadRoleDefinitions.mockResolvedValue([]);
     stubs.read.mockResolvedValue([binding]);
     stubs.save.mockResolvedValue({ status: "saved", binding });
+    stubs.limit.mockResolvedValue(null);
+    stubs.certify.mockResolvedValue("verified");
   });
   afterEach(() => { vi.unstubAllEnvs(); });
 
@@ -121,5 +130,27 @@ describe("catalog source draft management routes", () => {
     const failed = await stubs.routes.get(listRoute)!(request());
     expect(failed.status).toBe(500);
     expect(JSON.stringify(failed)).not.toContain("server_host");
+  });
+
+  it("requires test and edit permissions for activation and never trusts browser evidence", async () => {
+    stubs.canManageIntegration.mockImplementation((_actor, action) => action === "test_database");
+    const verify = await stubs.routes.get(verifyRoute)!(request({}));
+    expect(verify.jsonBody).toEqual({ status: "verified" });
+    expect(stubs.certify).toHaveBeenCalledWith({ environment: "qa", sourceId, action: "verify", actor });
+    expect((await stubs.routes.get(activateRoute)!(request({}))).status).toBe(403);
+    stubs.canManageIntegration.mockReturnValue(true);
+    stubs.certify.mockClear();
+    expect((await stubs.routes.get(activateRoute)!(request({ tlsValidated: true }))).status).toBe(400);
+    expect(stubs.certify).not.toHaveBeenCalled();
+    stubs.certify.mockResolvedValueOnce("activated");
+    expect((await stubs.routes.get(activateRoute)!(request({}))).jsonBody).toEqual({ status: "activated" });
+  });
+
+  it("rate limits probes and does not infer production when the environment is missing", async () => {
+    stubs.limit.mockResolvedValueOnce({ status: 429 });
+    expect((await stubs.routes.get(verifyRoute)!(request({}))).status).toBe(429);
+    vi.stubEnv("PORTAL_SAG_ENVIRONMENT", undefined);
+    expect((await stubs.routes.get(activateRoute)!(request({}))).status).toBe(500);
+    expect(stubs.certify).not.toHaveBeenCalled();
   });
 });
