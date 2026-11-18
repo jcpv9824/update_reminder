@@ -6,6 +6,7 @@ import type { CatalogEnvironment } from "./catalogSourceConfiguration";
 import { getSecret } from "./keyVault";
 import { getSqlPool } from "./sql";
 import { readStoredExternalDatabaseConnection } from "./integrationConnectionsSqlRepository";
+import { resolveCatalogSqlInstanceRoute } from "./catalogSqlInstanceRegistry";
 
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 
@@ -29,6 +30,7 @@ async function readDestination(portalEnvironment: CatalogEnvironment, id: string
 const defaults = {
   readDestination, readConnection: readStoredExternalDatabaseConnection, readSecret: getSecret,
   createReader: createCatalogActiveUserSqlReader, register: registerSqlCatalogReportingProfile,
+  readInstanceRoutes: () => process.env.PORTAL_CATALOG_SQL_INSTANCE_ROUTES,
 };
 
 /** Internal operation. Authorize the actor and choose the schema contract before calling this. */
@@ -36,13 +38,13 @@ export async function certifyCatalogReportingProfile(input: {
   portalEnvironment: CatalogEnvironment;
   targetId: string;
   connectionId: string;
-  trustedInstanceId: string;
   evidence: CatalogActiveUserContract;
   actor: { id: string };
   signal?: AbortSignal;
 }, io: typeof defaults = defaults): Promise<Awaited<ReturnType<typeof registerSqlCatalogReportingProfile>> | { status: "unavailable" }> {
-  const { portalEnvironment, connectionId, targetId, trustedInstanceId, actor } = input;
-  if (!["qa", "production"].includes(portalEnvironment) || !uuid.test(targetId) || !uuid.test(trustedInstanceId)
+  const { portalEnvironment, connectionId, targetId, actor } = input;
+  if (!["qa", "production"].includes(portalEnvironment) || typeof targetId !== "string" || targetId.length !== 36 || !uuid.test(targetId)
+    || targetId === "00000000-0000-0000-0000-000000000000"
     || typeof connectionId !== "string" || !connectionId || connectionId.length > 150
     || connectionId !== connectionId.trim() || /\p{C}/u.test(connectionId)) return { status: "unavailable" };
   const signal = input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000);
@@ -53,19 +55,23 @@ export async function certifyCatalogReportingProfile(input: {
     if (!fingerprint || signal.aborted || !profile || profile.id !== connectionId || !profile.active ||
       profile.status !== "active" || !profile.encrypt || !profile.passwordConfigured || !profile.passwordSecretName
       || !/^[a-f0-9]{16}$/i.test(profile.etag)) return { status: "unavailable" };
+    const resolveInstance = () => resolveCatalogSqlInstanceRoute(io.readInstanceRoutes(), portalEnvironment,
+      profile.serverHost, profile.serverPort);
+    const trustedInstanceId = resolveInstance();
+    if (!trustedInstanceId) return { status: "unavailable" };
     const proofId = randomUUID();
     const target = { physicalDatabaseId: targetId, serverGroupId: trustedInstanceId, reportingProfileId: proofId };
     const run = io.createReader(async (_ref, readerSignal) => {
-      if (readerSignal.aborted) return null;
+      if (readerSignal.aborted || resolveInstance() !== trustedInstanceId) return null;
       const password = await io.readSecret(profile.passwordSecretName!, readerSignal);
-      if (!password || readerSignal.aborted) return null;
+      if (!password || readerSignal.aborted || resolveInstance() !== trustedInstanceId) return null;
       return { target, evidence, identity: { instanceId: trustedInstanceId, expectedFingerprint: fingerprint },
         connection: { server: profile.serverHost, port: profile.serverPort, database: profile.databaseName,
           username: profile.username, password } };
     });
     // The result is not used or persisted. This dry count certifies the exact SELECT contract.
     await run(target, signal);
-    if (signal.aborted) return { status: "unavailable" };
+    if (signal.aborted || resolveInstance() !== trustedInstanceId) return { status: "unavailable" };
     const verifiedAt = new Date();
     return await io.register({ portalEnvironment, targetId, connectionId, profileVersion: Buffer.from(profile.etag, "hex"),
       trustedInstanceId, identityFingerprint: fingerprint, evidence, actor, proofId, verifiedAt,

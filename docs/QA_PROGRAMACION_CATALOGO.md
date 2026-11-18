@@ -132,6 +132,24 @@ fingerprint de la base debe coincidir con el destino aprobado. Falta guardar
 la asociación del namespace y conectar el flujo de certificación. No se
 creó configuración ni se habilitó ruta pública.
 
+La certificación interna usa ahora esa configuración mediante
+`PORTAL_CATALOG_SQL_INSTANCE_ROUTES`, no un UUID de instancia ingresado por
+el llamador. Una ruta no aprobada detiene el flujo antes de acceder a Key
+Vault. Si cambia durante el conteo, no se registra el perfil. El lector aún
+contrasta el fingerprint de la base con el destino ya verificado. Pasaron
+45 pruebas enfocadas, incluida la inyección de un UUID por el llamador y el
+retiro de una ruta después del conteo. Falta persistir la identidad aprobada
+del destino y exponer un alta administrativa autorizada.
+
+La 054 prepara una relación inmutable de destino SQL → instancia, con clave
+de prueba única y fecha asignada por SQL. El ensayo directo en
+`PortalSAGWeb-TEST` pasó siete casos con rollback, sin instalar la migración:
+aplicar/reaplicar sin backfill, estampar la fecha, permitir dos destinos de la
+misma instancia, rechazar UPDATE y DELETE, rechazar ambiente incorrecto,
+UUID cero y reutilización de prueba. Se conserva el DENY de escritura directa
+para el rol general. Falta implementar y verificar el escritor autorizado;
+la tabla, por sí sola, no acredita ningún destino.
+
 La consulta de recursos de Azure no encontró slots en la Function App de
 producción y encontró una sola Static Web App en el grupo productivo. No se
 crearon recursos, slots ni se usó producción como ambiente de prueba.
