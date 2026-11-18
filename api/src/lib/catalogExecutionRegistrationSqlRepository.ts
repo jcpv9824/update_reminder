@@ -8,6 +8,7 @@ import { rootScheduleId } from "./taskGenerator";
 import { insertSqlGeneratedTaskInTransaction } from "./workflowTaskGenerationSqlRepository";
 import { lockCatalogTaskDay } from "./catalogExecutionCoexistenceSql";
 import { catalogDomainRouteFingerprintSql } from "./catalogPhysicalTargetIdentity";
+import { isCatalogScheduleOperationId } from "./catalogScheduleOperationApprovalSqlRepository";
 
 type PlannedGroup = CatalogTaskPlan["tasks"][number];
 type SqlKey = number | string;
@@ -201,6 +202,9 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
         await verifyReplay(transaction, input, existing, planned);
         return { status: "existing", taskId: existing.taskId };
       }
+      // Older immutable executions may have used display text. They can be
+      // replayed exactly, but only an opaque approved ID can create new work.
+      if (!isCatalogScheduleOperationId(group.operationId)) return conflict("invalid-plan");
 
       const collision = await new sql.Request(transaction)
         .input("taskId", sql.NVarChar(260), task.id).input("kind", sql.VarChar(20), group.kind)
@@ -226,6 +230,8 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
         .input("workflowRole", sql.NVarChar(80), task.assignedRole)
         .input("assignmentKind", sql.VarChar(10), group.assignment.kind === "role" ? "role" : "user")
         .input("targetKind", sql.VarChar(20), group.kind)
+        .input("portalEnvironment", sql.VarChar(10), portalEnvironment)
+        .input("operationId", sql.NVarChar(200), group.operationId)
         .input("schedules", sql.NVarChar(sql.MAX), JSON.stringify(planned.schedules.map(id =>
           ({ id, version: input.scheduleVersions.get(id) }))))
         .query<{ scheduleId: string; scheduleKey: SqlKey; origin: OriginKind }>(`
@@ -234,6 +240,12 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
           FROM OPENJSON(@schedules) WITH (schedule_id nvarchar(150) '$.id', expected_version char(16) '$.version') AS ids
           JOIN scheduling.update_schedules AS s WITH (UPDLOCK,HOLDLOCK) ON s.source_id=ids.schedule_id
             AND s.row_version=TRY_CONVERT(binary(8),ids.expected_version,2)
+          JOIN scheduling.catalog_schedule_operation_approvals AS approved_operation WITH (HOLDLOCK)
+            ON approved_operation.schedule_key=s.schedule_key AND approved_operation.schedule_version=s.row_version
+            AND approved_operation.portal_environment=@portalEnvironment AND approved_operation.retired_at IS NULL
+            AND approved_operation.operation_id COLLATE Latin1_General_100_BIN2=@operationId COLLATE Latin1_General_100_BIN2
+            AND DATALENGTH(approved_operation.operation_id)=DATALENGTH(@operationId)
+            AND approved_operation.approved_at<=SYSUTCDATETIME()
           WHERE s.active=1 AND s.deleted_at IS NULL AND EXISTS (
             SELECT 1 FROM security.roles AS task_role WHERE task_role.role_id=@workflowRole
               AND task_role.role_id COLLATE Latin1_General_100_BIN2=@workflowRole COLLATE Latin1_General_100_BIN2 AND task_role.active=1

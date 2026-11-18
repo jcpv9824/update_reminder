@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeCatalogScheduleInventory, generateCatalogOperationalScheduleDay } from "../lib/catalogScheduleInventory";
+import { composeCatalogScheduleInventory, generateApprovedCatalogOperationalScheduleDay,
+  generateCatalogOperationalScheduleDay } from "../lib/catalogScheduleInventory";
 import type { CatalogOperationalLink } from "../lib/catalogOperationalLinksSqlRepository";
 import { generateCatalogScheduleDay, type CatalogScheduleDay } from "../lib/catalogScheduleDay";
 import type { UpdateSchedule } from "../types/models";
@@ -96,6 +97,28 @@ describe("operational schedule inventory composition", () => {
 });
 
 describe("integration with the existing persisted schedule generator", () => {
+  it("loads one exact SQL roster and uses its approved operation instead of a caller-supplied map", async () => {
+    const deps = dependencies();
+    const readOperations = vi.fn().mockResolvedValue(new Map([["schedule", { operationId: "sql-approved", scheduleVersion: version }]]));
+    expect(await generateApprovedCatalogOperationalScheduleDay(input, { ...deps.io, readOperations }))
+      .toMatchObject({ registered: 1 });
+    expect(deps.readRoster).toHaveBeenCalledExactlyOnceWith(date);
+    expect(readOperations).toHaveBeenCalledExactlyOnceWith("qa", [{ scheduleId: "schedule", scheduleVersion: version }]);
+    expect(deps.register.mock.calls[0][0].group.operationId).toBe("sql-approved");
+  });
+
+  it("performs no generation without approval and no SQL operation read after cutoff", async () => {
+    const deps = dependencies();
+    const readOperations = vi.fn().mockResolvedValue(new Map());
+    expect(await generateApprovedCatalogOperationalScheduleDay(input, { ...deps.io, readOperations })).toEqual({ status: "unverified" });
+    expect(deps.register).not.toHaveBeenCalled();
+    readOperations.mockClear();
+    deps.readRoster.mockClear();
+    expect(await generateApprovedCatalogOperationalScheduleDay({ ...input, checkedAt: input.cutoffAt }, { ...deps.io, readOperations }))
+      .toEqual({ status: "cutoff" });
+    expect(readOperations).not.toHaveBeenCalled();
+    expect(deps.readRoster).not.toHaveBeenCalled();
+  });
   it("uses the existing cutoff policy without any inventory, coverage, licensing or roster I/O", async () => {
     const deps = dependencies();
     expect(await generateCatalogOperationalScheduleDay({ ...input, checkedAt: input.cutoffAt }, deps.io))

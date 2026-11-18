@@ -51,7 +51,9 @@ $expected = @(
   '040_catalog_sag_license_module_map.sql',
   '041_catalog_sag_license_approval_versions.sql',
   '042_catalog_operational_links.sql',
-  '043_catalog_domain_scope.sql'
+  '043_catalog_domain_scope.sql',
+  '044_catalog_schedule_operation_approvals.sql',
+  '045_catalog_schedule_operation_token_check.sql'
 )
 
 $resolvedSqlDirectory = (Resolve-Path -LiteralPath $SqlDirectory).Path

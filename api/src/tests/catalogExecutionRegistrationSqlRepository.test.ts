@@ -88,6 +88,10 @@ describe("atomic catalog execution registration", () => {
     expect(mock.query.mock.calls[1][1].targetIds).toBe('["database1","database2"]');
     expect(mock.query.mock.calls[1][0]).toContain("e.verified_target_id=@physicalId");
     expect(mock.query.mock.calls[2][0]).toContain("s.row_version=TRY_CONVERT(binary(8),ids.expected_version,2)");
+    expect(mock.query.mock.calls[2][0]).toContain("scheduling.catalog_schedule_operation_approvals AS approved_operation WITH (HOLDLOCK)");
+    expect(mock.query.mock.calls[2][0]).toContain("approved_operation.schedule_version=s.row_version");
+    expect(mock.query.mock.calls[2][0]).toContain("approved_operation.retired_at IS NULL");
+    expect(mock.query.mock.calls[2][1]).toMatchObject({ portalEnvironment: "qa", operationId: "release1" });
     expect(mock.query.mock.calls[2][0]).toContain("grant_row.permission_key=N'updates.tasks.view'");
     expect(mock.query.mock.calls[2][0]).toContain("task_role.database_task_visibility");
     expect(mock.query.mock.calls[2][1]).toMatchObject({ assignmentKind: "role", targetKind: "database" });
@@ -144,6 +148,17 @@ describe("atomic catalog execution registration", () => {
     rows([existing], existingLinks);
     await expect(registerSqlCatalogTaskExecution(input())).resolves.toEqual({ status: "existing", taskId: task.id });
     expect(mock.query).toHaveBeenCalledTimes(2);
+    expect(mock.insert).not.toHaveBeenCalled();
+  });
+
+  it("replays a historical operation label exactly but does not use it to create new work", async () => {
+    const valid = input();
+    const operationId = "Actualización histórica 2026";
+    const historical = { ...valid, group: { ...valid.group, operationId,
+      sources: valid.group.sources.map(source => ({ ...source, operationId })) } };
+    rows([{ ...existing, operationId }], existingLinks, []);
+    await expect(registerSqlCatalogTaskExecution(historical)).resolves.toEqual({ status: "existing", taskId: task.id });
+    await expect(registerSqlCatalogTaskExecution(historical)).resolves.toEqual({ status: "conflict", reason: "invalid-plan" });
     expect(mock.insert).not.toHaveBeenCalled();
   });
 

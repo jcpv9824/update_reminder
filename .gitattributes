@@ -13,3 +13,5 @@ migration/sql/040_catalog_sag_license_module_map.sql text eol=lf
 migration/sql/041_catalog_sag_license_approval_versions.sql text eol=lf
 migration/sql/042_catalog_operational_links.sql text eol=lf
 migration/sql/043_catalog_domain_scope.sql text eol=lf
+migration/sql/044_catalog_schedule_operation_approvals.sql text eol=lf
+migration/sql/045_catalog_schedule_operation_token_check.sql text eol=lf

@@ -1,7 +1,9 @@
 import { readSqlCatalogOperationalLinks, type CatalogOperationalLink } from "./catalogOperationalLinksSqlRepository";
-import type { CatalogScheduleDay } from "./catalogScheduleDay";
+import { generateCatalogScheduleDay, type CatalogScheduleDay } from "./catalogScheduleDay";
 import { generateCatalogPersistedScheduleDay } from "./catalogScheduleScopes";
 import type { CatalogExecutionSourceEvidence } from "./catalogExecutionRegistrationSqlRepository";
+import { readSqlCatalogScheduleOperationApprovals } from "./catalogScheduleOperationApprovalSqlRepository";
+import { readSqlCatalogScheduleRoster } from "./schedulingSqlRepository";
 
 type SourceWitness = CatalogExecutionSourceEvidence;
 type InventoryRow = CatalogScheduleDay["inventory"][number];
@@ -129,4 +131,28 @@ export async function generateCatalogOperationalScheduleDay(
   const modulesByLink = await io.readLicenseProof(scope);
   return generateCatalogPersistedScheduleDay({ ...input, revision,
     inventory: composeCatalogScheduleInventory(links, modulesByLink, input.checkedAt) }, io.persisted);
+}
+
+/**
+ * Use only SQL-approved operations for the same roster that the planner will compile.
+ * Neither callers nor an HTTP request can supply an operation map in this entry point.
+ * The real runtime still needs certified coverage and versioned licensing authorization.
+ */
+export async function generateApprovedCatalogOperationalScheduleDay(
+  input: Omit<OperationalDay, "operationsBySchedule">,
+  io: CatalogScheduleInventoryDependencies & { readOperations?: typeof readSqlCatalogScheduleOperationApprovals },
+): ReturnType<typeof generateCatalogPersistedScheduleDay> {
+  if (!(input.checkedAt instanceof Date) || !Number.isFinite(input.checkedAt.valueOf())
+    || !(input.cutoffAt instanceof Date) || !Number.isFinite(input.cutoffAt.valueOf())) return fail();
+  if (input.checkedAt >= input.cutoffAt) {
+    return generateCatalogOperationalScheduleDay({ ...input, operationsBySchedule: new Map() }, io);
+  }
+  const roster = await (io.persisted?.readRoster ?? readSqlCatalogScheduleRoster)(input.date);
+  const operationsBySchedule = await (io.readOperations ?? readSqlCatalogScheduleOperationApprovals)(
+    input.portalEnvironment, roster.map(({ schedule, version }) => ({ scheduleId: schedule.id, scheduleVersion: version })),
+  );
+  return generateCatalogOperationalScheduleDay({ ...input, operationsBySchedule }, { ...io, persisted: {
+    readRoster: async () => roster,
+    generate: io.persisted?.generate ?? generateCatalogScheduleDay,
+  } });
 }
