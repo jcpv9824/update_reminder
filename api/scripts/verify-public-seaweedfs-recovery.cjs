@@ -11,16 +11,17 @@ const logos = {
 };
 const makeOptions = (extra = {}) => ({ signal: AbortSignal.timeout(45000), redirect: "manual", ...extra });
 
-async function verifyBytes(response, expectedSize, expectedHash) {
+async function verifyBytes(response, expectedSize, expectedHash, maximumBytes = expectedSize) {
   if (!response.body) return false;
   let seen = 0;
   const digest = createHash("sha256");
   for await (const chunk of response.body) {
     seen += chunk.length;
-    if (seen > expectedSize) return false;
+    if (seen > maximumBytes) return false;
     digest.update(chunk);
   }
-  return seen === expectedSize && digest.digest("hex") === expectedHash;
+  return seen > 0 && (expectedSize === undefined || seen === expectedSize) &&
+    digest.digest("hex") === expectedHash;
 }
 
 async function checkFile(route, expectedBytes, expectedHash) {
@@ -55,15 +56,18 @@ async function checkFile(route, expectedBytes, expectedHash) {
   return { endpoint: response.status, object: read.status, range: ranged.status, result: "range" };
 }
 
-async function checkLogo(name, expectedHash) {
-  const r = await fetch(api + "/public/brand/" + name, makeOptions());
-  const length = Number(r.headers.get("Content-Length"));
+async function checkLogo(name, expectedHash, read = fetch) {
+  const r = await read(api + "/public/brand/" + name, makeOptions());
+  const lengthHeader = r.headers.get("Content-Length");
+  const length = lengthHeader === null ? undefined : Number(lengthHeader);
+  const logoLimit = 524288;
   if (r.status !== 200 || r.headers.get("Content-Type")?.split(";")[0] !== "image/png" ||
-      r.headers.has("Location") || !Number.isSafeInteger(length) || length < 1 || length > 524288) {
+      r.headers.has("Location") || (length !== undefined &&
+        (!/^[0-9]+$/.test(lengthHeader) || !Number.isSafeInteger(length) || length < 1 || length > logoLimit))) {
     await r.body?.cancel();
     return { endpoint: r.status, result: "image_response" };
   }
-  return { endpoint: r.status, result: await verifyBytes(r, length, expectedHash) ? "pass" : "checksum" };
+  return { endpoint: r.status, result: await verifyBytes(r, length, expectedHash, logoLimit) ? "pass" : "checksum" };
 }
 
 async function main() {
@@ -100,4 +104,7 @@ async function main() {
   process.exitCode = passed === total ? 0 : 1;
 }
 
-main().catch(() => { console.error("Recovery smoke input or setup failed; details withheld."); process.exitCode = 1; });
+module.exports = { checkLogo };
+if (require.main === module) {
+  main().catch(() => { console.error("Recovery smoke input or setup failed; details withheld."); process.exitCode = 1; });
+}
