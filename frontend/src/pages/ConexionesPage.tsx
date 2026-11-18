@@ -27,6 +27,26 @@ type SeaweedForm = {
   active: boolean;
 };
 
+type SeaweedTestSnapshot = { savedEtag: string } | {
+  target: Pick<SeaweedForm, "endpoint" | "region" | "bucket" | "databaseName" | "forcePathStyle" | "accessKey" | "secretKey">;
+};
+
+type SeaweedSaveSnapshot = ReturnType<typeof seaweedBody> & { etag?: string };
+
+function seaweedBody(form: SeaweedForm) {
+  return {
+    displayName: form.displayName.trim(),
+    endpoint: form.endpoint.trim(),
+    region: form.region.trim(),
+    bucket: form.bucket.trim(),
+    databaseName: form.databaseName.trim(),
+    forcePathStyle: form.forcePathStyle,
+    ...(form.accessKey ? { accessKey: form.accessKey } : {}),
+    ...(form.secretKey ? { secretKey: form.secretKey } : {}),
+    active: form.active,
+  };
+}
+
 type DatabaseForm = {
   id?: string;
   etag?: string;
@@ -160,38 +180,19 @@ export default function ConexionesPage() {
   const canSaveTarget = isDraft ? databaseNameValid && Boolean(seaweed.bucket.trim()) :
     completeTarget && (hasNewKey ? hasKeyPair : storedSeaweed?.credentialsConfigured);
 
-  function seaweedBody() {
-    return {
-      displayName: seaweed.displayName.trim(),
-      endpoint: seaweed.endpoint.trim(),
-      region: seaweed.region.trim(),
-      bucket: seaweed.bucket.trim(),
-      databaseName: seaweed.databaseName.trim(),
-      forcePathStyle: seaweed.forcePathStyle,
-      ...(seaweed.accessKey ? { accessKey: seaweed.accessKey } : {}),
-      ...(seaweed.secretKey ? { secretKey: seaweed.secretKey } : {}),
-      active: seaweed.active,
-    };
-  }
-
   const testSeaweed = useMutation({
-    mutationFn: () => savedTargetMatches && storedSeaweed?.credentialsConfigured && !hasNewKey
+    // Snapshot at the click, not in observer options synchronized by a later
+    // passive effect. Never retain submitted keys after the operation settles.
+    gcTime: 0,
+    mutationFn: (snapshot: SeaweedTestSnapshot) => "savedEtag" in snapshot
       ? api.post<{ connection: SeaweedFSConnection; result: ConnectionTestStatus }>(
         `${BASE}/object-storage/seaweedfs/test-saved`,
         undefined,
-        { headers: { "If-Match": `"${storedSeaweed.etag}"` } },
+        { headers: { "If-Match": `"${snapshot.savedEtag}"` } },
       )
       : api.post<{ result: ConnectionTestStatus }>(
         `${BASE}/object-storage/seaweedfs/test`,
-        {
-          endpoint: seaweed.endpoint.trim(),
-          region: seaweed.region.trim(),
-          bucket: seaweed.bucket.trim(),
-          databaseName: seaweed.databaseName.trim(),
-          forcePathStyle: seaweed.forcePathStyle,
-          accessKey: seaweed.accessKey,
-          secretKey: seaweed.secretKey,
-        },
+        snapshot.target,
       ),
     onSuccess: (response) => {
       setSeaweedResult(response.result);
@@ -199,13 +200,12 @@ export default function ConexionesPage() {
       if ("connection" in response) queryClient.invalidateQueries({ queryKey: ["integration-connections"] });
     },
     onError: (error) => setNotice({ type: "error", text: messageOf(error) }),
+    onSettled: (): void => testSeaweed.reset(),
   });
 
   const saveSeaweed = useMutation({
-    mutationFn: () => api.put<SeaweedFSConnection>(`${BASE}/object-storage/seaweedfs`, {
-      ...seaweedBody(),
-      ...(data?.objectStorage?.etag ? { etag: data.objectStorage.etag } : {}),
-    }),
+    gcTime: 0,
+    mutationFn: (snapshot: SeaweedSaveSnapshot) => api.put<SeaweedFSConnection>(`${BASE}/object-storage/seaweedfs`, snapshot),
     onSuccess: (saved) => {
       queryClient.setQueryData<IntegrationConnections>(["integration-connections"], (current) => ({
         objectStorage: saved,
@@ -218,6 +218,7 @@ export default function ConexionesPage() {
         : "Perfil guardado. El proveedor activo no cambió." });
     },
     onError: (error) => setNotice({ type: "error", text: messageOf(error) }),
+    onSettled: (): void => saveSeaweed.reset(),
   });
 
   const saveDatabase = useMutation({
@@ -344,8 +345,14 @@ export default function ConexionesPage() {
         {storedSeaweed?.credentialsConfigured && !savedTargetMatches && !hasNewKey
           ? <p className="texto-ayuda">Guarde los cambios o vuelva a ingresar las dos llaves para probar este destino. La prueba no usa los datos guardados si editó el destino.</p> : null}
         <div className="acciones-formulario">
-          {can("test_object_storage") ? <button onClick={() => testSeaweed.mutate()} disabled={testSeaweed.isPending || saveSeaweed.isPending || !canTestTarget}>{testSeaweed.isPending ? "Validando..." : "Probar conexión"}</button> : null}
-          {can("edit_object_storage") ? <button className="primario" onClick={() => saveSeaweed.mutate()} disabled={saveSeaweed.isPending || testSeaweed.isPending || !canSaveTarget}>{saveSeaweed.isPending ? "Guardando..." : isDraft ? "Guardar borrador" : "Guardar y validar"}</button> : null}
+          {can("test_object_storage") ? <button onClick={() => testSeaweed.mutate(
+            savedTargetMatches && storedSeaweed?.credentialsConfigured && !hasNewKey
+              ? { savedEtag: storedSeaweed.etag }
+              : { target: { endpoint: seaweed.endpoint.trim(), region: seaweed.region.trim(), bucket: seaweed.bucket.trim(), databaseName: seaweed.databaseName.trim(), forcePathStyle: seaweed.forcePathStyle, accessKey: seaweed.accessKey, secretKey: seaweed.secretKey } },
+          )} disabled={testSeaweed.isPending || saveSeaweed.isPending || !canTestTarget}>{testSeaweed.isPending ? "Validando..." : "Probar conexión"}</button> : null}
+          {can("edit_object_storage") ? <button className="primario" onClick={() => saveSeaweed.mutate({
+            ...seaweedBody(seaweed), ...(storedSeaweed?.etag ? { etag: storedSeaweed.etag } : {}),
+          })} disabled={saveSeaweed.isPending || testSeaweed.isPending || !canSaveTarget}>{saveSeaweed.isPending ? "Guardando..." : isDraft ? "Guardar borrador" : "Guardar y validar"}</button> : null}
         </div>
         </fieldset>
       </section>

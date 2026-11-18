@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MutationObserver, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ConexionesPage from "../pages/ConexionesPage";
 
 const apiMock = vi.hoisted(() => ({
@@ -47,11 +47,12 @@ const connectionData = {
 
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <ConexionesPage />
     </QueryClientProvider>,
   );
+  return { ...view, queryClient };
 }
 
 describe("ConexionesPage", () => {
@@ -61,7 +62,7 @@ describe("ConexionesPage", () => {
       path === "/roles" ? [] : connectionData
     ));
   });
-  afterEach(() => { vi.unstubAllEnvs(); });
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
   it("shows safe metadata but never renders stored secret names or values", async () => {
     renderPage();
@@ -178,5 +179,82 @@ describe("ConexionesPage", () => {
     expect(apiMock.post).toHaveBeenNthCalledWith(
       2, "/settings/integrations/catalog-sources/source%20with%20space/activate", {},
     );
+  });
+
+  describe("click-time connection snapshots", () => {
+    beforeEach(() => {
+      const setOptions = MutationObserver.prototype.setOptions;
+      // Model delayed passive-effect synchronization, not a browser timing
+      // assertion: keep the initial mutation function while allowing the page
+      // and observer callbacks to render the current form normally.
+      vi.spyOn(MutationObserver.prototype, "setOptions").mockImplementation(function (
+        this: MutationObserver, options: Parameters<typeof setOptions>[0],
+      ) {
+        setOptions.call(this, this.options
+          ? { ...options, mutationFn: this.options.mutationFn }
+          : options);
+      });
+      apiMock.post.mockResolvedValue({ result: { succeeded: true, testedAt: "2026-11-18T18:00:00Z", message: "Prueba completada" } });
+      apiMock.put.mockResolvedValue(connectionData.objectStorage);
+    });
+
+    it("tests the loaded saved target even when the observer retains its initial function", async () => {
+      renderPage();
+      await screen.findByDisplayValue("portal-files");
+      const test = screen.getByRole("button", { name: "Probar conexión" });
+      expect(test).toBeEnabled();
+      fireEvent.click(test);
+      await waitFor(() => expect(apiMock.post).toHaveBeenCalledExactlyOnceWith(
+        "/settings/integrations/object-storage/seaweedfs/test-saved", undefined,
+        { headers: { "If-Match": '"0102030405060708"' } },
+      ));
+    });
+
+    it("saves the current edited form and version rather than the initial empty form", async () => {
+      renderPage();
+      fireEvent.change(await screen.findByDisplayValue("portal-files"), { target: { value: "edited-fixture" } });
+      fireEvent.change(screen.getByLabelText("Nombre del perfil"), { target: { value: "Perfil revisado" } });
+      fireEvent.click(screen.getByRole("button", { name: "Guardar borrador" }));
+      await waitFor(() => expect(apiMock.put).toHaveBeenCalledExactlyOnceWith(
+        "/settings/integrations/object-storage/seaweedfs",
+        expect.objectContaining({ bucket: "edited-fixture", displayName: "Perfil revisado", databaseName: "PortalSAGWeb-TEST", etag: "0102030405060708" }),
+      ));
+    });
+
+    it("never tests an edited target with saved credentials and submits only the new fake-key snapshot", async () => {
+      const { queryClient } = renderPage();
+      fireEvent.change(await screen.findByDisplayValue("portal-files"), { target: { value: "edited-fixture" } });
+      const test = screen.getByRole("button", { name: "Probar conexión" });
+      expect(test).toBeDisabled();
+      fireEvent.click(test);
+      expect(apiMock.post).not.toHaveBeenCalled();
+      fireEvent.change(screen.getByLabelText("Access key"), { target: { value: "fake-access-fixture" } });
+      fireEvent.change(screen.getByLabelText("Secret key"), { target: { value: "fake-secret-fixture" } });
+      expect(test).toBeEnabled();
+      fireEvent.click(test);
+      await waitFor(() => expect(apiMock.post).toHaveBeenCalledExactlyOnceWith(
+        "/settings/integrations/object-storage/seaweedfs/test",
+        { endpoint: "https://s3.example.com", region: "us-east-1", bucket: "edited-fixture", databaseName: "PortalSAGWeb-TEST", forcePathStyle: true, accessKey: "fake-access-fixture", secretKey: "fake-secret-fixture" },
+      ));
+      await screen.findAllByText("Prueba completada");
+      await waitFor(() => expect(queryClient.getMutationCache().getAll()).toHaveLength(0));
+      expect(JSON.stringify(queryClient.getQueryCache().getAll().map(query => query.state.data))).not.toContain("fake-secret-fixture");
+    });
+
+    it("removes a failed save snapshot from the mutation cache without caching its new keys", async () => {
+      apiMock.put.mockRejectedValueOnce(new Error("No se pudo guardar el perfil."));
+      const { queryClient } = renderPage();
+      await screen.findByDisplayValue("portal-files");
+      fireEvent.change(screen.getByLabelText("Access key"), { target: { value: "fake-save-access" } });
+      fireEvent.change(screen.getByLabelText("Secret key"), { target: { value: "fake-save-secret" } });
+      fireEvent.click(screen.getByRole("button", { name: "Guardar y validar" }));
+      await screen.findByText("No se pudo guardar el perfil.");
+      expect(apiMock.put).toHaveBeenCalledExactlyOnceWith(
+        "/settings/integrations/object-storage/seaweedfs",
+        expect.objectContaining({ bucket: "portal-files", etag: "0102030405060708", accessKey: "fake-save-access", secretKey: "fake-save-secret" }),
+      );
+      await waitFor(() => expect(queryClient.getMutationCache().getAll()).toHaveLength(0));
+      expect(JSON.stringify(queryClient.getQueryCache().getAll().map(query => query.state.data))).not.toContain("fake-save-secret");
+    });
   });
 });
