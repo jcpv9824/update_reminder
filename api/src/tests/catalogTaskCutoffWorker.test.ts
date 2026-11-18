@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { readCatalogTaskCutoffEvidence, runCatalogTaskCutoffSweep } from "../lib/catalogTaskCutoffWorker";
 import type { CatalogExecutionSnapshot } from "../lib/catalogExecutionSqlRepository";
 import { reconcileCatalogTaskOccurrence } from "../lib/catalogTaskTargetPlanning";
+import { catalogTaskCutoffEvidenceSql } from "../lib/catalogTaskCutoffEvidenceSql";
 
 const key = "ab".repeat(32);
 const checkedAt = new Date("2030-06-22T05:01:00.000Z");
@@ -22,6 +23,25 @@ function setup() {
 }
 
 describe("catalog cutoff sweep", () => {
+  it("selects the latest event of every status at the original cutoff, without replacing it by a later current head", async () => {
+    const query = vi.fn().mockResolvedValue({ recordset: [] });
+    const input = vi.fn().mockReturnThis();
+    const transaction = { request: () => ({ input, query }) } as unknown as Parameters<typeof readCatalogTaskCutoffEvidence>[0];
+    await readCatalogTaskCutoffEvidence(transaction, snapshot, "qa");
+    const statement = query.mock.calls[0][0] as string;
+    expect(statement).toBe(catalogTaskCutoffEvidenceSql);
+    expect(statement).toContain("settings.catalog_source_head_events event");
+    expect(statement).toContain("e.cutoff_at>@checkedAt");
+    expect(statement).toContain("e.cutoff_at<=@checkedAt");
+    expect(statement).toContain("event.recorded_at<=boundary.as_of");
+    expect(statement).toContain("ORDER BY event.head_event_key DESC");
+    expect(statement).toContain("UNION ALL");
+    expect(statement).toContain("r.attempt_ordinal=h.attempt_ordinal");
+    const historicalChoice = statement.slice(statement.indexOf("SELECT TOP (1) event."), statement.indexOf(") history"));
+    expect(historicalChoice).not.toContain("attempt_status='succeeded'");
+    expect(historicalChoice).not.toContain("revision_key IS NOT NULL");
+  });
+
   it("requires original-boundary bridge and approval proof and never falls back to local for that UUID", async () => {
     const query = vi.fn().mockResolvedValue({ recordset: [] });
     const input = vi.fn().mockReturnThis();
@@ -84,6 +104,32 @@ describe("catalog cutoff sweep", () => {
         { linkId: "second", checkedAt, effectiveAt: checkedAt, validUntil: null }]);
     await expect(runCatalogTaskCutoffSweep(io, env)).resolves.toEqual({ updated: 1, skipped: 0, failed: 3 });
     expect(io.persist).toHaveBeenCalledOnce();
+  });
+
+  it("preserves one valid alias when another alias has no cutoff proof, then retires only when every alias lacks proof", async () => {
+    const io = setup();
+    await runCatalogTaskCutoffSweep(io, env);
+    const first = io.persist.mock.calls[0][0];
+    expect(reconcileCatalogTaskOccurrence({ task: first.snapshot.occurrence, checkedAt: first.checkedAt, observations: first.observations }))
+      .toMatchObject({ visibleLinkIds: ["second"], task: { state: "open" } });
+    io.evidence.mockResolvedValue([{ linkId: "first", checkedAt, effectiveAt: cutoff, validUntil: null },
+      { linkId: "second", checkedAt, effectiveAt: cutoff, validUntil: null }]);
+    await runCatalogTaskCutoffSweep(io, env);
+    const second = io.persist.mock.calls[1][0];
+    expect(reconcileCatalogTaskOccurrence({ task: second.snapshot.occurrence, checkedAt: second.checkedAt, observations: second.observations }))
+      .toMatchObject({ visibleLinkIds: [], task: { state: "retired" } });
+  });
+
+  it("skips finalized, completed, cancelled and replayed occurrences without reading evidence or writing history again", async () => {
+    const io = setup();
+    io.snapshot.mockResolvedValueOnce({ ...snapshot, occurrence: { ...snapshot.occurrence, state: "retired" } })
+      .mockResolvedValueOnce({ ...snapshot, occurrence: { ...snapshot.occurrence, cutoffEvaluatedAt: cutoff.valueOf() } })
+      .mockResolvedValueOnce({ ...snapshot, workflowStatus: "completed" })
+      .mockResolvedValueOnce({ ...snapshot, workflowStatus: "cancelled" });
+    io.queue.mockResolvedValue([key, key, key, key]);
+    expect(await runCatalogTaskCutoffSweep(io, env)).toEqual({ updated: 0, skipped: 4, failed: 0 });
+    expect(io.evidence).not.toHaveBeenCalled();
+    expect(io.persist).not.toHaveBeenCalled();
   });
 
   it("treats proof expiry exactly at the cutoff as expired", () => {

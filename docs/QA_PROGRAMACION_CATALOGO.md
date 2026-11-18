@@ -118,8 +118,9 @@ Contrato y matriz previos a implementar ese ciclo:
   intenciones manuales. Probar medianoche de Bogotá, vencimiento antes del
   commit y funcionamiento con interruptores desactivados, sin ampliar la
   frescura artificialmente.
-- El barrido de tareas aún consulta la cabecera actual: antes de activar la
-  actualización automática debe usar el historial 050 para el instante del
-  corte pasado. Probar que un refresco posterior no retire tareas válidas y que
-  un fallo previo al corte sí impida acreditar presencia. Antes del corte sigue
-  evaluando la evidencia actual. No fabricar historia anterior a la instalación.
+- El barrido de tareas ya se adaptó al historial 050 para el corte pasado,
+  conservando la cabecera actual antes de ese instante. El ensayo SQL pasó
+  16 casos, incluidos refrescos posteriores que conservan tareas y fallos
+  anteriores que impiden acreditar presencia. Al conectar el trabajador
+  automático se debe mantener y volver a probar ese comportamiento, sin
+  fabricar historia anterior a la instalación.
