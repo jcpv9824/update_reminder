@@ -35,12 +35,13 @@ describe("catalog schedule day", () => {
     expect(runAtomic).not.toHaveBeenCalled();
     const scope = { date, portalEnvironment: data.portalEnvironment, checkedAt: data.checkedAt, links: [] };
     const roster = new Map(data.rules.map(({ calendar }) => [calendar.id, calendar.version]));
+    const manualIntents = new Map<string, string>();
     const scoped = io();
     runAtomic.mockImplementationOnce(async (_context, work) => ({ status: "committed", value: await work(scoped) }));
-    await expect(generateCatalogScheduleDay({ ...data, revision, populationFence: { scope, roster } }))
+    await expect(generateCatalogScheduleDay({ ...data, revision, populationFence: { scope, roster, manualIntents } }))
       .resolves.toMatchObject({ status: "evaluated", registered: 1 });
     expect(runAtomic).toHaveBeenCalledExactlyOnceWith({
-      scope, roster, date, cutoffAt: data.cutoffAt, revisionId: revision.id,
+      scope, roster, manualIntents, date, cutoffAt: data.cutoffAt, revisionId: revision.id,
     }, expect.any(Function));
     expect(scoped.register).toHaveBeenCalledOnce();
   });

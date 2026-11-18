@@ -9,7 +9,7 @@ vi.mock("mssql", () => ({ default: {
     input(name: string, _type: unknown, value: unknown) { this.parameters[name] = value; return this; }
     query(query: string) { return mock.query(query, this.parameters, this.tx); }
   },
-  NVarChar: vi.fn(), VarChar: vi.fn(), VarBinary: vi.fn(), DateTime2: vi.fn(), Date: Symbol(), BigInt: Symbol(), MAX: Symbol(),
+  NVarChar: vi.fn(), VarChar: vi.fn(), VarBinary: vi.fn(), DateTime2: vi.fn(), Date: Symbol(), BigInt: Symbol(), Bit: Symbol(), MAX: Symbol(),
 } }));
 vi.mock("../lib/sqlTransaction", () => ({ runSqlTransaction: async (fn: (tx: object) => Promise<unknown>) => {
   mock.begin();
@@ -59,17 +59,249 @@ const input = (): CatalogExecutionRegistration => {
 const scheduleRows = [{ scheduleId: "schedule_1", scheduleKey: "1", origin: "licensing", selectionMode: "manual" },
   { scheduleId: "schedule_2", scheduleKey: "2", origin: "special", selectionMode: null }];
 const licensedRows = [{ ...scheduleRows[0], selectionMode: "licensing" }, scheduleRows[1]];
-const existing = { executionId: "2", taskId: task.id, operationId: "release1", occurrenceId, targetId: physicalId, kind: "database",
+const existing = { executionId: "2", taskKey: "17", taskId: task.id, operationId: "release1", occurrenceId, targetId: physicalId, kind: "database",
   status: "completed", taskDate: task.taskDate, cutoffAt, retiredAt: null, representativeTarget: task.targetId, representativeClient: task.clientId,
   representativeDomain: task.domainId, primaryScheduleId: "schedule_1", assignedRole: task.assignedRole, usersJson: "[]" };
 const existingLinks = [1, 2].map(n => ({ linkId: linkId(n), clientId: `customer${n}`, domainId: `domain${n}`, databaseId: `database${n}`,
   catalogSourceId: n === 1 ? sourceId : null, recordId: `record${n}`, environment: "production", scheduleId: `schedule_${n}`,
-  detachedAt: null, state: "active" }));
+  detachedAt: null, state: "active", linkRetiredAt: null }));
 const rows = (...response: object[][]) => {
   for (const recordset of response) mock.query.mockResolvedValueOnce({ recordset });
 };
 
-beforeEach(() => { vi.resetAllMocks(); mock.insert.mockResolvedValue(17); mock.lockDay.mockResolvedValue(true); });
+beforeEach(() => { vi.resetAllMocks(); mock.insert.mockResolvedValue(17); mock.lockDay.mockResolvedValue(true); mock.population.mockResolvedValue(cutoffAt); });
+
+describe("certified-day additive schedule provenance", () => {
+  const transaction = mock.tx as Parameters<typeof registerSqlCatalogTaskExecutionInTransaction>[0];
+  const mode = { replayMode: "certified-day" as const };
+  const addedSchedule = { scheduleId: "schedule_3", scheduleKey: "3", origin: "licensing", selectionMode: "licensing" };
+  const addition = (): CatalogExecutionRegistration => {
+    const value = input();
+    return { ...value, matchKeyVersion: 3, task: { ...value.task, scheduleId: "schedule_3" },
+      group: { ...value.group, revisionId: "catalog-population-v1:00000000-0000-0000-0000-000000000099",
+        sources: [{ ...value.group.sources[0], scheduleId: "schedule_3" }] },
+      catalogSourceIdsByLink: new Map([[externalLinkId, sourceId]]),
+      scheduleVersions: new Map([["schedule_3", "0000000000000003"]]) };
+  };
+  const proofExpiry = new Date(now.valueOf() + 90_000);
+  const licenseExpiry = new Date(now.valueOf() + 30_000);
+  const successfulAppend = (finalResult = "registered") => rows([existing], existingLinks, [addedSchedule], [{ now }],
+    [{ linkId: externalLinkId, validUntil: proofExpiry }], [{ count: 1 }], [{ count: 1 }], [{ result: finalResult }]);
+  const append = () => registerSqlCatalogTaskExecutionInTransaction(transaction, addition(), mode);
+
+  it("appends only the missing pair and nonprimary source, without changing task/link/lifecycle or emitting registered", async () => {
+    mock.license.mockResolvedValue(licenseExpiry);
+    successfulAppend();
+    const result = await append();
+    expect(result).toEqual({ outcome: { status: "existing", taskId: task.id }, validUntil: licenseExpiry });
+    expect(mock.query).toHaveBeenCalledTimes(8);
+    expect(mock.insert).not.toHaveBeenCalled();
+    expect(mock.begin).not.toHaveBeenCalled();
+    expect(mock.commit).not.toHaveBeenCalled();
+    expect(mock.rollback).not.toHaveBeenCalled();
+    expect(mock.query.mock.calls[2][0]).toContain("s.row_version=TRY_CONVERT(binary(8),ids.expected_version,2)");
+    expect(mock.query.mock.calls[2][0]).toContain("approved_operation.schedule_version=s.row_version");
+    expect(mock.query.mock.calls[2][1]).toMatchObject({ operationId: "release1", portalEnvironment: "qa" });
+    expect(mock.query.mock.calls[4][1]).toMatchObject({ executionId: "2", insertLinks: false });
+    expect(mock.query.mock.calls[4][0]).toContain("IF @insertLinks=1\n          INSERT workflow.catalog_task_execution_links");
+    expect(mock.query.mock.calls[4][0]).toContain("bridge.revision_key=TRY_CONVERT(bigint,r.revisionId)");
+    expect(mock.query.mock.calls[4][0]).toContain("pt.access_profile_version=ap.row_version");
+    expect(mock.license).toHaveBeenCalledExactlyOnceWith(transaction, { executionId: "2", portalEnvironment: "qa", matchKeyVersion: 3,
+      attachments: [{ linkId: externalLinkId, scheduleId: "schedule_3", moduleIds: ["module1"] }] });
+    expect(mock.query.mock.calls[5][1].attachments).toBe(JSON.stringify([{ linkId: externalLinkId, scheduleId: "schedule_3" }]));
+    expect(mock.query.mock.calls[5][0]).toContain("WHERE NOT EXISTS (SELECT 1 FROM workflow.catalog_task_execution_sources prior WITH (HOLDLOCK)");
+    expect(mock.query.mock.calls[6][1]).toMatchObject({ taskKey: "17", origins: '[{"key":"3","origin":"licensing"}]' });
+    expect(mock.query.mock.calls[6][0]).toContain("WHERE NOT EXISTS (SELECT 1 FROM workflow.task_sources prior WITH (HOLDLOCK)");
+    expect(mock.query.mock.calls[6][0]).toContain("present.is_primary=0");
+    expect(mock.query.mock.calls[7][1]).toMatchObject({ insertRegistrationEvent: false, validUntil: licenseExpiry });
+    expect(mock.query.mock.calls[7][0]).toContain("IF @insertRegistrationEvent=1\n          INSERT workflow.catalog_task_execution_events");
+    expect(mock.query.mock.calls.every(([text]) => !/\b(?:UPDATE|DELETE|MERGE)\s+(?:workflow|core)\./.test(text))).toBe(true);
+    expect(mock.query.mock.calls.some(([text]) => /INSERT workflow\.catalog_task_executions\s/.test(text))).toBe(false);
+    expect(existing.primaryScheduleId).toBe("schedule_1");
+    expect(existing.status).toBe("completed");
+  });
+
+  it("becomes a read-only subset replay after the new pair was attached", async () => {
+    rows([existing], [...existingLinks, { ...existingLinks[0], scheduleId: "schedule_3" }]);
+    expect(await append()).toEqual({ outcome: { status: "existing", taskId: task.id }, validUntil: null });
+    expect(mock.query).toHaveBeenCalledTimes(2);
+    expect(mock.license).not.toHaveBeenCalled();
+    expect(mock.population).not.toHaveBeenCalled();
+    expect(mock.insert).not.toHaveBeenCalled();
+  });
+
+  it("passes only missing pairs when the request includes already attached pairs too", async () => {
+    const value = addition();
+    const combined = { ...value, group: { ...value.group, sources: [input().group.sources[0], value.group.sources[0]] },
+      scheduleVersions: new Map([["schedule_1", "0000000000000001"], ["schedule_3", "0000000000000003"]]) };
+    mock.license.mockResolvedValue(licenseExpiry);
+    rows([existing], existingLinks, [scheduleRows[0], addedSchedule], [{ now }], [{ linkId: externalLinkId, validUntil: proofExpiry }],
+      [{ count: 1 }], [{ count: 1 }], [{ result: "registered" }]);
+    await registerSqlCatalogTaskExecutionInTransaction(transaction, combined, mode);
+    expect(JSON.parse(mock.query.mock.calls[5][1].attachments)).toEqual([{ linkId: externalLinkId, scheduleId: "schedule_3" }]);
+    expect(mock.query.mock.calls[6][1].origins).toBe('[{"key":"3","origin":"licensing"}]');
+  });
+
+  it.each([
+    ["hidden", { state: "hidden" }], ["retired", { state: "retired", linkRetiredAt: now }],
+    ["detached only origin", { detachedAt: now }], ["orphaned", { scheduleId: null }],
+    ["identity changed", { domainId: "different-domain" }],
+  ])("denies additive writes when a requested link is %s", async (_name, change) => {
+    rows([existing], [{ ...existingLinks[0], ...change }, existingLinks[1]]);
+    await expect(append()).rejects.toThrow("source-set-changed");
+    expect(mock.query).toHaveBeenCalledTimes(2);
+    expect(mock.insert).not.toHaveBeenCalled();
+    expect(mock.license).not.toHaveBeenCalled();
+  });
+
+  it("does not reattach a previously detached pair even when the link has another active origin", async () => {
+    rows([existing], [...existingLinks, { ...existingLinks[0], scheduleId: "schedule_3", detachedAt: now }]);
+    await expect(append()).rejects.toThrow("source-set-changed");
+    expect(mock.query).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a distinct new logical alias before any proof or write despite the same physical target", async () => {
+    const value = addition();
+    const newId = "00000000-0000-0000-0000-000000000099";
+    const source = value.group.sources[0];
+    rows([existing], existingLinks);
+    await expect(registerSqlCatalogTaskExecutionInTransaction(transaction, { ...value,
+      group: { ...value.group, sources: [{ ...source, link: { ...source.link, linkId: newId } }] },
+      catalogSourceIdsByLink: new Map([[newId, sourceId]]), catalogEvidenceByLink: new Map([[newId, value.catalogEvidenceByLink!.get(externalLinkId)!]]),
+    }, mode)).rejects.toThrow("source-set-changed");
+    expect(mock.query).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["schedule guard", "physical/ERP proof", "licensing proof"])("denies append when current %s is unavailable", async stage => {
+    mock.license.mockResolvedValue(null);
+    if (stage === "schedule guard") rows([existing], existingLinks, []);
+    else rows([existing], existingLinks, [addedSchedule], [{ now }], stage === "physical/ERP proof" ? [] : [{ linkId: externalLinkId, validUntil: proofExpiry }]);
+    await expect(append()).rejects.toThrow("catalog-reference-changed");
+    expect(mock.query.mock.calls.some(([text]) => text.includes("INSERT workflow.catalog_task_execution_sources"))).toBe(false);
+    expect(mock.insert).not.toHaveBeenCalled();
+  });
+
+  it.each(["cutoff-passed", "catalog-reference-changed"])("throws on final %s so outer owner rolls back provenance additions", async result => {
+    mock.license.mockResolvedValue(licenseExpiry);
+    successfulAppend(result);
+    await expect(runSqlTransaction(tx => registerSqlCatalogTaskExecutionInTransaction(tx, addition(), mode))).rejects.toThrow(result);
+    expect(mock.rollback).toHaveBeenCalledOnce();
+    expect(mock.commit).not.toHaveBeenCalled();
+    expect(mock.insert).not.toHaveBeenCalled();
+  });
+});
+
+describe("certified-day read-only subset replay", () => {
+  const transaction = mock.tx as Parameters<typeof registerSqlCatalogTaskExecutionInTransaction>[0];
+  const mode = { replayMode: "certified-day" as const };
+  const timerInput = (): CatalogExecutionRegistration => {
+    const value = input();
+    return { ...value, group: { ...value.group,
+      revisionId: "catalog-population-v1:00000000-0000-0000-0000-000000000099",
+      sources: value.group.sources.slice(1) },
+      task: { ...value.task, clientId: "customer2", domainId: "domain2", targetId: "database2", scheduleId: "schedule_2" },
+      catalogSourceIdsByLink: new Map([["link2", null]]), catalogEvidenceByLink: undefined,
+      scheduleVersions: new Map([["schedule_2", "0000000000000002"]]) };
+  };
+  const deny = async (request = timerInput(), reason = "source-set-changed") => {
+    let failure: unknown;
+    try { await registerSqlCatalogTaskExecutionInTransaction(transaction, request, mode); }
+    catch (error) { failure = error; }
+    expect(catalogRegistrationConflictReason(failure)).toBe(reason);
+    expect(mock.insert).not.toHaveBeenCalled();
+    expect(mock.commit).not.toHaveBeenCalled();
+    expect(mock.license).not.toHaveBeenCalled();
+  };
+
+  it("accepts timer-after-manual subset without replacing the stored manual representative/root or writing anything", async () => {
+    rows([existing], existingLinks);
+    const result = await registerSqlCatalogTaskExecutionInTransaction(transaction, timerInput(), mode);
+    expect(result).toEqual({ outcome: { status: "existing", taskId: task.id }, validUntil: null });
+    expect(mock.query).toHaveBeenCalledTimes(2);
+    expect(mock.query.mock.calls.every(([statement]) => !/\b(?:INSERT|UPDATE|DELETE|MERGE)\s/i.test(statement))).toBe(true);
+    expect(mock.insert).not.toHaveBeenCalled();
+    expect(mock.license).not.toHaveBeenCalled();
+    expect(mock.population).not.toHaveBeenCalled();
+    expect(mock.begin).not.toHaveBeenCalled();
+    expect(mock.commit).not.toHaveBeenCalled();
+    expect(mock.rollback).not.toHaveBeenCalled();
+    expect(existing.representativeTarget).toBe("database1");
+    expect(existing.primaryScheduleId).toBe("schedule_1");
+  });
+
+  it("retains extra historical detached/retired pairs without using them to satisfy requested membership", async () => {
+    rows([existing], [{ ...existingLinks[0], state: "retired", detachedAt: now, linkRetiredAt: now }, existingLinks[1],
+      { ...existingLinks[1], scheduleId: "historical-extra", detachedAt: now }]);
+    expect(await registerSqlCatalogTaskExecutionInTransaction(transaction, timerInput(), mode)).toEqual({
+      outcome: { status: "existing", taskId: task.id }, validUntil: null,
+    });
+    expect(mock.insert).not.toHaveBeenCalled();
+    expect(mock.query).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the default in-transaction and standalone replay exact even if an input has a replayMode-like field", async () => {
+    const value = { ...timerInput(), replayMode: "certified-day" };
+    rows([existing], [existing]);
+    let failure: unknown;
+    try { await registerSqlCatalogTaskExecutionInTransaction(transaction, value); }
+    catch (error) { failure = error; }
+    expect(catalogRegistrationConflictReason(failure)).toBe("execution-conflict");
+    expect(await registerSqlCatalogTaskExecution(value)).toEqual({ status: "conflict", reason: "execution-conflict" });
+    expect(mock.insert).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["task ID", { taskId: "different-task" }], ["physical target", { targetId: "different-target" }],
+    ["business date", { taskDate: "2030-06-23" }], ["occurrence", { occurrenceId: "2030-06-23" }],
+    ["operation", { operationId: "other-operation" }], ["kind", { kind: "domain" }],
+    ["cutoff", { cutoffAt: new Date(cutoffAt.valueOf() + 1) }], ["assigned role", { assignedRole: "other-role" }],
+    ["explicit users", { usersJson: '[{"id":"unrequested-user"}]' }],
+  ])("does not relax exact %s identity", async (_label, mismatch) => {
+    rows([{ ...existing, ...mismatch }]);
+    await deny(timerInput(), "execution-conflict");
+    expect(mock.query).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["client", { clientId: "other-client" }], ["domain", { domainId: "other-domain" }],
+    ["database", { databaseId: "other-database" }], ["environment", { environment: "test" }],
+    ["ERP record", { recordId: "other-record" }], ["ERP source", { catalogSourceId: sourceId }],
+    ["detached attachment", { detachedAt: now }], ["retired state", { state: "retired" }],
+    ["retired timestamp", { linkRetiredAt: now }], ["missing schedule", { scheduleId: null }],
+    ["unknown link", { linkId: "link_unknown" }],
+  ])("rejects requested pair with mismatched %s", async (_label, mismatch) => {
+    rows([existing], [existingLinks[0], { ...existingLinks[1], ...mismatch }]);
+    await deny();
+    expect(mock.query).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects an unknown requested pair even when another alias has the same physical target", async () => {
+    const value = timerInput();
+    const sources = value.group.sources.map(source => ({ ...source, scheduleId: "schedule_unknown" }));
+    rows([existing], existingLinks, []);
+    await deny({ ...value, group: { ...value.group, sources }, task: { ...value.task, scheduleId: "schedule_unknown" },
+      scheduleVersions: new Map([["schedule_unknown", "0000000000000003"]]) }, "catalog-reference-changed");
+  });
+
+  it("rejects missing or duplicate requested rows instead of borrowing an extra historical pair", async () => {
+    rows([existing], [existingLinks[0]], [existing], [existingLinks[0], existingLinks[1], existingLinks[1]]);
+    await deny();
+    await deny();
+  });
+
+  it.each([{ retiredAt: now }, { status: "cancelled" }])("cannot revive a retired/cancelled execution %j", async state => {
+    rows([{ ...existing, ...state }]);
+    await deny(timerInput(), "retired");
+  });
+
+  it("rejects an unknown internal replay mode before locks or SQL", async () => {
+    await expect(registerSqlCatalogTaskExecutionInTransaction(transaction, input(), {
+      replayMode: "unsupported" as "certified-day",
+    })).rejects.toThrow("invalid-plan");
+    expect(mock.lockDay).not.toHaveBeenCalled();
+    expect(mock.query).not.toHaveBeenCalled();
+  });
+});
 
 describe("caller-owned catalog registration transaction", () => {
   const ownedTransaction = { callerOwned: true } as unknown as Parameters<typeof registerSqlCatalogTaskExecutionInTransaction>[0];

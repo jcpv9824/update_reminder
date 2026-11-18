@@ -47,6 +47,7 @@ function dependencies(rows = links, complete = true, licensed = true) {
       readLinks: vi.fn().mockResolvedValue(rows),
       certifyCoverage: vi.fn().mockResolvedValue({ id: "certified-population", complete }),
       readLicenseProof: vi.fn().mockResolvedValue(new Map(rows.map(row => [row.linkId, licensed ? ["sales"] : null]))),
+      readManualIntents: vi.fn().mockResolvedValue(new Map()),
       persisted: { readRoster, generate },
     },
   };
@@ -100,6 +101,27 @@ describe("operational schedule inventory composition", () => {
 });
 
 describe("integration with the existing persisted schedule generator", () => {
+  it("keeps a manual schedule in the timer roster from its exact persisted intent, not from caller input", async () => {
+    const deps = dependencies();
+    deps.readRoster.mockResolvedValue([{ version, schedule: { ...schedule, frequencyType: "manual" } }]);
+    const readOperations = vi.fn().mockResolvedValue(input.operationsBySchedule);
+    expect(await generateApprovedCatalogOperationalScheduleDay({ ...input, manualScheduleIds: ["schedule"] },
+      { ...deps.io, readOperations })).toEqual({ status: "unverified" });
+    expect(deps.register).not.toHaveBeenCalled();
+    deps.io.readManualIntents.mockResolvedValue(new Map([["schedule", version]]));
+    expect(await generateApprovedCatalogOperationalScheduleDay(input, { ...deps.io, readOperations }))
+      .toMatchObject({ registered: 1 });
+    expect(deps.generate.mock.calls[0][0].manualScheduleIds).toEqual(["schedule"]);
+  });
+  it("does not trust a stale manual intent from another schedule version", async () => {
+    const deps = dependencies();
+    deps.readRoster.mockResolvedValue([{ version, schedule: { ...schedule, frequencyType: "manual" } }]);
+    deps.io.readManualIntents.mockResolvedValue(new Map([["schedule", "0000000000000002"]]));
+    expect(await generateApprovedCatalogOperationalScheduleDay(input, { ...deps.io,
+      readOperations: vi.fn().mockResolvedValue(input.operationsBySchedule) })).toEqual({ status: "unverified" });
+    expect(deps.register).not.toHaveBeenCalled();
+  });
+
   it("loads one exact SQL roster and uses its approved operation instead of a caller-supplied map", async () => {
     const deps = dependencies();
     const readOperations = vi.fn().mockResolvedValue(new Map([["schedule", { operationId: "sql-approved", scheduleVersion: version }]]));

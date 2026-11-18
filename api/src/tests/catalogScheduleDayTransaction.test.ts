@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogExecutionRegistration } from "../lib/catalogExecutionRegistrationSqlRepository";
 
 const m = vi.hoisted(() => ({ tx: {}, order: [] as string[], lock: vi.fn(), coverage: vi.fn(), roster: vi.fn(),
-  physical: vi.fn(), register: vi.fn(), clock: vi.fn(), commit: vi.fn(), rollback: vi.fn(),
+  physical: vi.fn(), register: vi.fn(), clock: vi.fn(), commit: vi.fn(), rollback: vi.fn(), intents: vi.fn(),
   reason: vi.fn() }));
 vi.mock("../lib/sqlTransaction", () => ({ runSqlTransaction: async (work: (tx: object) => Promise<unknown>) => {
   try { const result = await work(m.tx); m.commit(); return result; }
@@ -20,6 +20,7 @@ vi.mock("mssql", () => ({ default: {
 vi.mock("../lib/catalogExecutionCoexistenceSql", () => ({ lockCatalogTaskDay: m.lock }));
 vi.mock("../lib/catalogSchedulePopulationCoverage", () => ({ readSqlCatalogSchedulePopulationCoverageInTransaction: m.coverage }));
 vi.mock("../lib/schedulingSqlRepository", () => ({ readSqlCatalogScheduleRosterInTransaction: m.roster }));
+vi.mock("../lib/catalogManualDayIntentSqlRepository", () => ({ readSqlCatalogManualDayIntentsInTransaction: m.intents }));
 vi.mock("../lib/catalogPhysicalTargetSqlRepository", () => ({ readSqlCatalogPhysicalTargetsInTransaction: m.physical }));
 vi.mock("../lib/catalogExecutionRegistrationSqlRepository", () => ({
   registerSqlCatalogTaskExecutionInTransaction: m.register, catalogRegistrationConflictReason: m.reason,
@@ -33,7 +34,8 @@ const earliest = new Date("2030-01-02T02:00:00Z");
 const revisionId = "catalog-population-v1:00000000-0000-0000-0000-000000000012";
 const roster = [{ schedule: { id: "a" }, version: "0000000000000001" }];
 const context = { date, cutoffAt, revisionId, scope: { date, portalEnvironment: "qa" as const,
-  checkedAt: new Date("2030-01-01T06:00:00Z"), links: [] }, roster: new Map([["a", roster[0].version]]) };
+  checkedAt: new Date("2030-01-01T06:00:00Z"), links: [] }, roster: new Map([["a", roster[0].version]]),
+  manualIntents: new Map<string, string>() };
 const write = { cutoffAt, portalEnvironment: "qa", task: { taskDate: date }, group: { occurrenceId: date,
   revisionId, kind: "domain" }, scheduleVersions: context.roster } as unknown as CatalogExecutionRegistration;
 const outcome = { status: "registered", taskId: "t1" };
@@ -48,6 +50,7 @@ beforeEach(() => {
   m.register.mockResolvedValue({ outcome, validUntil: earliest });
   m.clock.mockResolvedValue({ recordset: [{ status: "valid" }] });
   m.reason.mockReturnValue(null);
+  m.intents.mockResolvedValue(new Map());
 });
 
 describe("atomic certified catalog business day", () => {
@@ -61,14 +64,15 @@ describe("atomic certified catalog business day", () => {
     expect(m.coverage).toHaveBeenCalledExactlyOnceWith(m.tx, context.scope);
     expect(m.roster).toHaveBeenCalledExactlyOnceWith(m.tx, date);
     expect(m.physical).toHaveBeenCalledExactlyOnceWith(m.tx, { portalEnvironment: "qa", links: [] });
-    expect(m.register).toHaveBeenCalledExactlyOnceWith(m.tx, write);
+    expect(m.register).toHaveBeenCalledExactlyOnceWith(m.tx, write, { replayMode: "certified-day" });
     expect(m.clock).toHaveBeenLastCalledWith(m.tx, { cutoffAt, validUntil: earliest });
     expect(m.commit).toHaveBeenCalledOnce();
   });
-  it.each(["lock busy", "population replaced", "same-count roster changed"])("does not begin work when %s", async kind => {
+  it.each(["lock busy", "population replaced", "same-count roster changed", "manual intent arrived"])("does not begin work when %s", async kind => {
     if (kind === "lock busy") m.lock.mockResolvedValueOnce(false);
     if (kind === "population replaced") m.coverage.mockResolvedValueOnce({ id: "another", complete: true, validUntil: approval });
     if (kind === "same-count roster changed") m.roster.mockResolvedValueOnce([{ ...roster[0], version: "0000000000000002" }]);
+    if (kind === "manual intent arrived") m.intents.mockResolvedValueOnce(new Map([["a", roster[0].version]]));
     const work = vi.fn();
     expect(await runSqlCatalogScheduleDayTransaction(context, work)).toEqual({ status: "unverified" });
     expect(work).not.toHaveBeenCalled();

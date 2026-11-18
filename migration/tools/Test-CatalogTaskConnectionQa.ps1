@@ -38,6 +38,10 @@ $registerQuery=(Get-Content -Raw -LiteralPath (Join-Path $root 'api/src/lib/cata
 if(!$registerQuery -or $registerQuery -notmatch 'INSERT workflow\.catalog_task_execution_links'){ throw 'Expected the guarded link registration batch.' }
 $registerQuery=$registerQuery.Replace('${catalogDomainRouteFingerprintSql}',$routeHash)
 $literal+="DECLARE @registerProbe nvarchar(max)=N'"+$registerQuery.Replace("'","''")+"';"
+$attachQuery=(Get-Content -Raw -LiteralPath (Join-Path $root 'api/src/lib/catalogExecutionRegistrationSqlRepository.ts')).Split([char]96) |
+  Where-Object { $_ -match '^\s*INSERT workflow\.catalog_task_execution_sources\(' } | Select-Object -First 1
+if(!$attachQuery){throw 'Expected the exact provenance attachment batch.'}
+$literal+="DECLARE @attachProbe nvarchar(max)=N'"+$attachQuery.Replace("'","''")+"';"
 $fixture=@'
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
@@ -49,6 +53,7 @@ DECLARE @a nvarchar(150)=@tag+N'-a-db', @b nvarchar(150)=@tag+N'-b-db';
 DECLARE @sourceKey bigint,@origin uniqueidentifier,@customerKey bigint,@version smallint,@revision bigint,@lock int;
 DECLARE @bindingVersion binary(8),@profileVersion binary(8);
 DECLARE @operationalOwner bigint,@operationalLink bigint,@logicalLinkId uniqueidentifier=NEWID(),@wrongLinkId uniqueidentifier=NEWID();
+DECLARE @lateSchedule bigint;
 DECLARE @canonicalLinkId varchar(36)=LOWER(CONVERT(char(36),@logicalLinkId));
 DECLARE @params nvarchar(max)=N'@actor nvarchar(150), @db nvarchar(150), @task nvarchar(260), @environment varchar(10), @permission nvarchar(160)';
 DECLARE @opsParams nvarchar(max)=N'@taskKey bigint, @portalEnvironment varchar(10), @clientId nvarchar(150), @domainId nvarchar(150)';
@@ -277,7 +282,7 @@ BEGIN TRY
 
   DECLARE @planned nvarchar(max),@record nvarchar(260)=N'1 ';
   DECLARE @currentRevision varchar(20)=CONVERT(varchar(20),@revision);
-  DECLARE @registrationParams nvarchar(180)=N'@executionId bigint,@kind varchar(20),@portalEnvironment varchar(10),@physicalId uniqueidentifier,@links nvarchar(max)';
+  DECLARE @registrationParams nvarchar(180)=N'@executionId bigint,@kind varchar(20),@portalEnvironment varchar(10),@physicalId uniqueidentifier,@links nvarchar(max),@insertLinks bit';
   DECLARE @accepted TABLE(linkId nvarchar(260),validUntil datetime2(3));
   SELECT @planned=(SELECT @canonicalLinkId AS linkId,@record AS recordId,db.source_id AS databaseId,
       c.source_id AS clientId,d.source_id AS domainId,LOWER(CONVERT(char(36),@origin)) AS catalogSourceId,'test' AS environment,
@@ -285,23 +290,46 @@ BEGIN TRY
       LOWER(CONVERT(char(16),@profileVersion,2)) AS profileVersion
     FROM core.databases db JOIN core.domains d ON d.domain_key=db.domain_key JOIN core.clients c ON c.client_key=db.client_key
     WHERE db.source_id=@b FOR JSON PATH);
-  INSERT @accepted EXEC sys.sp_executesql @registerProbe,@registrationParams,@execution,'database','qa',@physical,@planned;
+  INSERT @accepted EXEC sys.sp_executesql @registerProbe,@registrationParams,@execution,'database','qa',@physical,@planned,1;
   IF EXISTS(SELECT 1 FROM @accepted) THROW 53892,N'An inexact record was registered.',1;
   SET @planned=JSON_MODIFY(@planned,'$[0].recordId',N'1');
   SET @planned=JSON_MODIFY(@planned,'$[0].linkId',LOWER(CONVERT(char(36),@wrongLinkId)));
-  INSERT @accepted EXEC sys.sp_executesql @registerProbe,@registrationParams,@execution,'database','qa',@physical,@planned;
+  INSERT @accepted EXEC sys.sp_executesql @registerProbe,@registrationParams,@execution,'database','qa',@physical,@planned,1;
   IF EXISTS(SELECT 1 FROM @accepted) THROW 53895,N'A different logical link ID was registered.',1;
   SET @planned=JSON_MODIFY(@planned,'$[0].linkId',@canonicalLinkId);
   SET @planned=JSON_MODIFY(@planned,'$[0].revisionId',CONVERT(varchar(20),@staleRevision));
-  INSERT @accepted EXEC sys.sp_executesql @registerProbe,@registrationParams,@execution,'database','qa',@physical,@planned;
+  INSERT @accepted EXEC sys.sp_executesql @registerProbe,@registrationParams,@execution,'database','qa',@physical,@planned,1;
   IF EXISTS(SELECT 1 FROM @accepted) THROW 53896,N'A historical revision was accepted during registration.',1;
   SET @planned=JSON_MODIFY(@planned,'$[0].revisionId',@currentRevision);
   DECLARE @misclassified nvarchar(max)=JSON_MODIFY(@planned,'$[0].catalogSourceId',NULL);
-  INSERT @accepted EXEC sys.sp_executesql @registerProbe,@registrationParams,@execution,'database','qa',@physical,@misclassified;
+  INSERT @accepted EXEC sys.sp_executesql @registerProbe,@registrationParams,@execution,'database','qa',@physical,@misclassified,1;
   IF EXISTS(SELECT 1 FROM @accepted) THROW 53897,N'An external logical link was accepted as local.',1;
-  INSERT @accepted EXEC sys.sp_executesql @registerProbe,@registrationParams,@execution,'database','qa',@physical,@planned;
+  INSERT @accepted EXEC sys.sp_executesql @registerProbe,@registrationParams,@execution,'database','qa',@physical,@planned,1;
   IF (SELECT COUNT(*) FROM @accepted WHERE linkId=@canonicalLinkId AND validUntil=@validUntil)<>1
     THROW 53893,N'The registered link was not exact or did not inherit the earlier evidence expiry.',1;
+  DELETE FROM @accepted;
+  INSERT @accepted EXEC sys.sp_executesql @registerProbe,@registrationParams,@execution,'database','qa',@physical,@planned,0;
+  IF (SELECT COUNT(*) FROM @accepted WHERE linkId=@canonicalLinkId AND validUntil=@validUntil)<>1 OR
+    (SELECT COUNT(*) FROM workflow.catalog_task_execution_links WHERE catalog_execution_key=@execution AND link_id=@canonicalLinkId)<>1
+    THROW 53929,N'Provenance-only verification changed the existing task connection links.',1;
+
+  INSERT scheduling.update_schedules(source_id,client_key,name,target_type,frequency_type,start_date,timezone,assigned_role,
+    created_at,created_by,updated_at,updated_by)
+    SELECT @tag+N'-schedule',client_key,N'Synthetic late origin','database','manual',CONVERT(date,@stamp),
+      N'America/Bogota',N'super_admin',@stamp,'fixture',@stamp,'fixture' FROM core.databases WHERE source_id=@b;
+  SET @lateSchedule=SCOPE_IDENTITY();
+  DECLARE @provenance nvarchar(max)=(SELECT @canonicalLinkId AS linkId,@tag+N'-schedule' AS scheduleId FOR JSON PATH);
+  DECLARE @added TABLE([count] int);
+  INSERT @added EXEC sys.sp_executesql @attachProbe,N'@executionId bigint,@attachments nvarchar(max)',@execution,@provenance;
+  IF (SELECT COUNT(*) FROM @added WHERE [count]=1)<>1 OR NOT EXISTS (
+    SELECT 1 FROM workflow.catalog_task_execution_sources s JOIN workflow.catalog_task_execution_links l
+      ON l.catalog_execution_link_key=s.catalog_execution_link_key
+    WHERE l.catalog_execution_key=@execution AND l.link_id=@canonicalLinkId AND s.schedule_key=@lateSchedule)
+    THROW 53930,N'The late schedule was not linked to the existing eligible origin.',1;
+  DELETE FROM @added;
+  INSERT @added EXEC sys.sp_executesql @attachProbe,N'@executionId bigint,@attachments nvarchar(max)',@execution,@provenance;
+  IF (SELECT COUNT(*) FROM @added WHERE [count]=0)<>1
+    THROW 53931,N'The same provenance was added twice.',1;
 
   SAVE TRANSACTION fixtureProfile;
   UPDATE core.database_access_profiles SET sql_user_id=N'changed-fixture' WHERE source_id=@tag+N'-b-profile';
@@ -333,7 +361,7 @@ BEGIN CATCH
   IF XACT_STATE()<>0 ROLLBACK TRANSACTION;
   THROW;
 END CATCH;
-SELECT 34 AS passed,
+SELECT 37 AS passed,
   (SELECT COUNT(*) FROM workflow.update_tasks WHERE source_id=@task)
   +(SELECT COUNT(*) FROM security.users WHERE source_id IN (@assigned,@other))
   +(SELECT COUNT(*) FROM core.catalog_physical_targets WHERE target_id=@physical)
@@ -344,12 +372,14 @@ SELECT 34 AS passed,
   +(SELECT COUNT(*) FROM core.catalog_operational_owners WHERE owner_key=@operationalOwner)
   +(SELECT COUNT(*) FROM core.catalog_operational_links WHERE link_id IN (@logicalLinkId,@wrongLinkId))
   +(SELECT COUNT(*) FROM core.catalog_operational_link_approvals WHERE link_key=@operationalLink)
+  +(SELECT COUNT(*) FROM scheduling.update_schedules WHERE schedule_key=@lateSchedule)
+  +(SELECT COUNT(*) FROM workflow.catalog_task_execution_sources WHERE schedule_key=@lateSchedule)
   +(SELECT COUNT(*) FROM workflow.catalog_task_execution_links WHERE catalog_execution_key=@execution) AS remaining_fixtures;
 '@
 $invoke=Join-Path $PSScriptRoot '../connect-sql-server/Invoke-PortalSAGWeb-EphemeralRequest.ps1'
 $response=(& $invoke -SessionDirectory $session -Sql ($literal + [Environment]::NewLine + $fixture) -Mode write -TimeoutSeconds 35 -MaxRows 1) | ConvertFrom-Json -Depth 16
 $row=$response.resultSets[0].rows[0]
-if(!$response.success -or $row.passed -ne 34 -or $row.remaining_fixtures -ne 0){
+if(!$response.success -or $row.passed -ne 37 -or $row.remaining_fixtures -ne 0){
   $number=$response.error.number
   throw "QA connection, cutoff and registration rehearsal did not pass or left residual data (SQL error number: $number)."
 }

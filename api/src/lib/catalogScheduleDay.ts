@@ -23,7 +23,7 @@ export type CatalogScheduleDay = {
   cutoffAt: Date;
   revision: { id: string; complete: boolean };
   /** Original complete input, retained for the atomic SQL re-read after external planning. */
-  populationFence?: Pick<CatalogScheduleDayTransactionContext, "scope" | "roster">;
+  populationFence?: Pick<CatalogScheduleDayTransactionContext, "scope" | "roster" | "manualIntents">;
   rules: readonly CatalogScheduleRule[];
   inventory: readonly { link: CatalogTaskLink; sourceId: string | null;
     sourceEvidence?: CatalogExecutionSourceEvidence;
@@ -51,7 +51,9 @@ export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io?:
   if (input.checkedAt >= input.cutoffAt) return { status: "cutoff" };
   if (!input.revision.complete) return { status: "unverified" };
   if (!io && input.revision.id.startsWith(catalogPopulationRevisionPrefix)) {
-    if (!input.populationFence || input.populationFence.scope.portalEnvironment !== input.portalEnvironment) {
+    if (!input.populationFence || input.populationFence.scope.portalEnvironment !== input.portalEnvironment ||
+      new Set(input.manualScheduleIds).size !== input.populationFence.manualIntents.size ||
+      input.manualScheduleIds?.some(id => !input.populationFence!.manualIntents.has(id))) {
       return { status: "unverified" };
     }
     const result = await runSqlCatalogScheduleDayTransaction({

@@ -52,6 +52,11 @@ export type CatalogExecutionRegistrationTransactionResult = {
   validUntil: Date | null;
 };
 
+export type CatalogExecutionReplayOptions = Readonly<{
+  /** Approved day callers may replay subsets or append schedules to existing active logical links. */
+  replayMode?: "exact" | "certified-day";
+}>;
+
 class RegistrationConflict extends Error {
   constructor(readonly reason: Conflict) { super(reason); }
 }
@@ -151,14 +156,14 @@ function parseInput(input: CatalogExecutionRegistration) {
     targetIds: [...new Set([...links.values()].map(item => item.databaseId ?? item.domainId))].sort() };
 }
 
-type ExecutionRow = { executionId: SqlKey; taskId: string; operationId: string; occurrenceId: string;
+type ExecutionRow = { executionId: SqlKey; taskKey: SqlKey; taskId: string; operationId: string; occurrenceId: string;
   targetId: string; kind: string; status: string; taskDate: string; cutoffAt: Date; retiredAt: Date | null;
   representativeTarget: string; representativeClient: string; representativeDomain: string; primaryScheduleId: string;
   assignedRole: string | null; usersJson: string };
 
 async function lockExecution(transaction: sql.Transaction, executionKey: Buffer): Promise<ExecutionRow | undefined> {
   const rows = await new sql.Request(transaction).input("executionKey", sql.VarBinary(32), executionKey).query<ExecutionRow>(`
-    SELECT e.catalog_execution_key AS executionId, t.source_id AS taskId, e.operation_id AS operationId,
+    SELECT e.catalog_execution_key AS executionId, t.task_key AS taskKey, t.source_id AS taskId, e.operation_id AS operationId,
       e.occurrence_id AS occurrenceId, e.verified_target_id AS targetId, e.execution_kind AS kind,
       CONVERT(char(10),t.task_date,23) AS taskDate, e.cutoff_at AS cutoffAt, e.retired_at AS retiredAt, t.status,
       t.target_source_id AS representativeTarget, t.client_source_id AS representativeClient,
@@ -173,22 +178,22 @@ async function lockExecution(transaction: sql.Transaction, executionKey: Buffer)
 }
 
 async function verifyReplay(transaction: sql.Transaction, input: CatalogExecutionRegistration, row: ExecutionRow,
-  planned: ReturnType<typeof parseInput>): Promise<void> {
+  planned: ReturnType<typeof parseInput>, replayMode: "exact" | "certified-day"): Promise<Attachment[]> {
   const { group, task, cutoffAt } = input;
   if (row.retiredAt !== null || row.status === "cancelled") return conflict("retired");
   const users = JSON.parse(row.usersJson || "[]") as { id: string }[];
   if (row.taskId !== task.id || row.occurrenceId !== group.occurrenceId || row.operationId !== group.operationId ||
       row.targetId !== group.targetId || row.kind !== group.kind || row.taskDate !== task.taskDate || row.cutoffAt.valueOf() !== cutoffAt.valueOf() ||
-      row.representativeTarget !== task.targetId || row.representativeClient !== task.clientId || row.representativeDomain !== task.domainId ||
-      row.primaryScheduleId !== planned.root || row.assignedRole !== task.assignedRole ||
+      (replayMode === "exact" && (row.representativeTarget !== task.targetId || row.representativeClient !== task.clientId ||
+        row.representativeDomain !== task.domainId || row.primaryScheduleId !== planned.root)) || row.assignedRole !== task.assignedRole ||
       !assignmentMatches(group.assignment, row.assignedRole, users.map(user => user.id))) {
     return conflict("execution-conflict");
   }
   const result = await new sql.Request(transaction).input("executionId", sql.BigInt, row.executionId)
-    .query<Link & { scheduleId: string | null; detachedAt: Date | null; state: string }>(`
+    .query<Link & { scheduleId: string | null; detachedAt: Date | null; state: string; linkRetiredAt: Date | null }>(`
       SELECT l.link_id AS linkId, c.source_id AS clientId, d.source_id AS domainId, db.source_id AS databaseId,
         CONVERT(char(36),b.source_id) AS catalogSourceId, l.catalog_record_id AS recordId, l.link_environment AS environment,
-        s.source_id AS scheduleId, ls.detached_at AS detachedAt, l.link_state AS state
+        s.source_id AS scheduleId, ls.detached_at AS detachedAt, l.link_state AS state, l.retired_at AS linkRetiredAt
       FROM workflow.catalog_task_execution_links AS l WITH (HOLDLOCK)
       JOIN core.clients AS c ON c.client_key=l.client_key
       JOIN core.domains AS d ON d.domain_key=l.domain_key
@@ -199,17 +204,40 @@ async function verifyReplay(transaction: sql.Transaction, input: CatalogExecutio
       WHERE l.catalog_execution_key=@executionId;`);
   const seenLinks = new Set<string>();
   const seenAttachments = new Set<string>();
+  const activeAttachedLinks = new Set<string>();
   for (const record of result.recordset) {
+    const key = record.scheduleId ? pair(record.linkId, record.scheduleId) : null;
     const expected = planned.links.get(record.linkId);
+    if (replayMode === "certified-day" && expected) {
+      if (identity(record) !== identity(expected)) return conflict("source-set-changed");
+      if (record.state === "active" && record.linkRetiredAt === null && key !== null && record.detachedAt === null) {
+        activeAttachedLinks.add(record.linkId);
+      }
+    }
+    // Extra existing pairs are retained history, not sources that this request
+    // may attach, rewrite or use for a different representative/credential grant.
+    if (replayMode === "certified-day" && (key === null || !planned.attachments.has(key))) continue;
     if (!expected || identity(record) !== identity(expected) || !record.scheduleId || record.detachedAt !== null || record.state === "retired") {
       return conflict("source-set-changed");
     }
-    const key = pair(record.linkId, record.scheduleId);
-    if (!planned.attachments.has(key)) return conflict("source-set-changed");
+    if (key === null || !planned.attachments.has(key)) return conflict("source-set-changed");
+    if (replayMode === "certified-day" && (record.linkRetiredAt !== null || seenAttachments.has(key))) {
+      return conflict("source-set-changed");
+    }
     seenLinks.add(record.linkId);
     seenAttachments.add(key);
   }
-  if (seenLinks.size !== planned.links.size || seenAttachments.size !== planned.attachments.size) return conflict("source-set-changed");
+  if (replayMode === "exact") {
+    if (seenLinks.size !== planned.links.size || seenAttachments.size !== planned.attachments.size) return conflict("source-set-changed");
+    return [];
+  }
+  const missing = [...planned.attachments].filter(([key]) => !seenAttachments.has(key)).map(([, attachment]) => attachment);
+  // Appending provenance is not permission to enroll another physical alias or
+  // revive hidden/orphaned/retired links. Every requested logical link must have
+  // an exact active, nondetached existing origin before any additional write.
+  if (missing.length && (activeAttachedLinks.size !== planned.links.size
+    || [...planned.links.keys()].some(id => !activeAttachedLinks.has(id)))) return conflict("source-set-changed");
+  return missing;
 }
 
 /** One atomic registration; this never adopts legacy work, edits existing assignments or revives an occurrence. */
@@ -234,26 +262,35 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
  * each non-null validUntil into its final SQL-clock check before committing the
  * batch (and independently check the batch date cutoff). Exact replays produce
  * no new writes and therefore return no new evidence deadline.
+ * certified-day is a server-only opt-in after the caller approved and locked its
+ * complete day scope. Existing subsets are read-only; missing schedule pairs may
+ * be appended only to exact already-active logical links after fresh proof. This
+ * never changes the representative, assignment, lifecycle, or credential scope.
  */
 export async function registerSqlCatalogTaskExecutionInTransaction(
   transaction: sql.Transaction,
   input: CatalogExecutionRegistration,
+  options: CatalogExecutionReplayOptions = {},
 ): Promise<CatalogExecutionRegistrationTransactionResult> {
-  return registerParsedExecutionInTransaction(transaction, input, parseInput(input));
+  const replayMode = options.replayMode ?? "exact";
+  if (replayMode !== "exact" && replayMode !== "certified-day") return conflict("invalid-plan");
+  return registerParsedExecutionInTransaction(transaction, input, parseInput(input), replayMode);
 }
 
 async function registerParsedExecutionInTransaction(
   transaction: sql.Transaction,
   input: CatalogExecutionRegistration,
   planned: ReturnType<typeof parseInput>,
+  replayMode: "exact" | "certified-day" = "exact",
 ): Promise<CatalogExecutionRegistrationTransactionResult> {
     const { group, task, cutoffAt, portalEnvironment } = input;
     const executionKey = Buffer.from(group.executionKey, "hex");
       if (!await lockCatalogTaskDay(transaction, task)) return conflict("coexistence-lock-unavailable");
       const existing = await lockExecution(transaction, executionKey);
+      let attachmentsToInsert = [...planned.attachments.values()];
       if (existing) {
-        await verifyReplay(transaction, input, existing, planned);
-        return { outcome: { status: "existing", taskId: existing.taskId }, validUntil: null };
+        attachmentsToInsert = await verifyReplay(transaction, input, existing, planned, replayMode);
+        if (!attachmentsToInsert.length) return { outcome: { status: "existing", taskId: existing.taskId }, validUntil: null };
       }
       // Older immutable executions may have used display text. They can be
       // replayed exactly, but only an opaque approved ID can create new work.
@@ -262,6 +299,7 @@ async function registerParsedExecutionInTransaction(
         await lockSqlCatalogSchedulePopulationApproval(transaction, portalEnvironment, group.revisionId) : undefined;
       if (approvalDeadline === null) return conflict("catalog-reference-changed");
 
+      if (!existing) {
       const collision = await new sql.Request(transaction)
         .input("taskId", sql.NVarChar(260), task.id).input("kind", sql.VarChar(20), group.kind)
         .input("physicalId", sql.NVarChar(150), group.targetId)
@@ -281,6 +319,7 @@ async function registerParsedExecutionInTransaction(
               ON t.target_type=@kind AND t.target_source_id=ids.target_id AND t.task_date=@taskDate
           ) THEN 1 ELSE 0 END) AS collision;`);
       if (collision.recordset[0]?.collision !== false) return conflict("legacy-task-collision");
+      }
 
       const schedules = await new sql.Request(transaction)
         .input("workflowRole", sql.NVarChar(80), task.assignedRole)
@@ -343,7 +382,9 @@ async function registerParsedExecutionInTransaction(
         assignedRole: task.assignedRole, assignedUserIds: task.assignedUserIds, status: "pending", result: null, notes: "",
         createdAt, updatedAt: createdAt, createdBy: "system", updatedBy: "system", completedAt: null, completedBy: null,
       };
-      const taskKey = await insertSqlGeneratedTaskInTransaction(transaction, representative);
+      const taskKey = existing ? existing.taskKey : await insertSqlGeneratedTaskInTransaction(transaction, representative);
+      let executionId = existing?.executionId;
+      if (!existing) {
       const inserted = await new sql.Request(transaction).input("taskKey", sql.BigInt, taskKey)
         .input("executionKey", sql.VarBinary(32), executionKey).input("occurrence", sql.NVarChar(200), group.occurrenceId)
         .input("kind", sql.VarChar(20), group.kind).input("target", sql.NVarChar(260), group.targetId)
@@ -354,10 +395,12 @@ async function registerParsedExecutionInTransaction(
           OUTPUT inserted.catalog_execution_key AS [key]
           SELECT @taskKey,CONVERT(binary(32),@executionKey),@occurrence,@kind,@target,@operation,@revision,@cutoff
           WHERE SYSUTCDATETIME()<@cutoff;`);
-      const executionId = inserted.recordset[0]?.key;
+      executionId = inserted.recordset[0]?.key;
+      }
       if (executionId === undefined) return conflict("cutoff-passed");
 
       const writes = await new sql.Request(transaction).input("executionId", sql.BigInt, executionId)
+        .input("insertLinks", sql.Bit, !existing)
         .input("kind", sql.VarChar(20), group.kind).input("portalEnvironment", sql.VarChar(10), portalEnvironment)
         .input("physicalId", sql.UniqueIdentifier, group.targetId)
         .input("links", sql.NVarChar(sql.MAX), JSON.stringify([...planned.links.values()]))
@@ -433,6 +476,7 @@ async function registerParsedExecutionInTransaction(
             SELECT linkId,validUntil FROM @accepted WHERE 1=0;
             RETURN;
           END;
+          IF @insertLinks=1
           INSERT workflow.catalog_task_execution_links
             (catalog_execution_key,execution_kind,link_id,catalog_source_key,catalog_record_id,client_key,domain_key,database_key,link_environment)
           SELECT @executionId,@kind,linkId,catalogSourceKey,recordId,clientKey,domainKey,databaseKey,environment
@@ -454,18 +498,23 @@ async function registerParsedExecutionInTransaction(
       const evidenceValidUntil = new Date(Math.min(...deadlines));
 
       const attached = await new sql.Request(transaction).input("executionId", sql.BigInt, executionId)
-        .input("attachments", sql.NVarChar(sql.MAX), JSON.stringify([...planned.attachments.values()]))
+        .input("attachments", sql.NVarChar(sql.MAX), JSON.stringify(attachmentsToInsert))
         .query<{ count: number }>(`
           INSERT workflow.catalog_task_execution_sources(catalog_execution_link_key,schedule_key)
           SELECT l.catalog_execution_link_key,s.schedule_key
           FROM OPENJSON(@attachments) WITH (linkId nvarchar(260), scheduleId nvarchar(150)) AS r
           JOIN workflow.catalog_task_execution_links AS l ON l.catalog_execution_key=@executionId
-            AND l.link_id=r.linkId COLLATE Latin1_General_100_BIN2
-          JOIN scheduling.update_schedules AS s ON s.source_id=r.scheduleId AND s.active=1 AND s.deleted_at IS NULL;
+            AND l.link_id=r.linkId COLLATE Latin1_General_100_BIN2 AND DATALENGTH(l.link_id)=DATALENGTH(r.linkId)
+            AND l.link_state='active' AND l.retired_at IS NULL
+          JOIN scheduling.update_schedules AS s ON s.source_id=r.scheduleId
+            AND s.source_id COLLATE Latin1_General_100_BIN2=r.scheduleId COLLATE Latin1_General_100_BIN2
+            AND DATALENGTH(s.source_id)=DATALENGTH(r.scheduleId) AND s.active=1 AND s.deleted_at IS NULL
+          WHERE NOT EXISTS (SELECT 1 FROM workflow.catalog_task_execution_sources prior WITH (HOLDLOCK)
+            WHERE prior.catalog_execution_link_key=l.catalog_execution_link_key AND prior.schedule_key=s.schedule_key);
           SELECT @@ROWCOUNT AS [count];`);
-      if (attached.recordset[0]?.count !== planned.attachments.size) return conflict("catalog-reference-changed");
+      if (attached.recordset[0]?.count !== attachmentsToInsert.length) return conflict("catalog-reference-changed");
 
-      const origins = schedules.recordset.filter(row => row.scheduleId !== planned.root)
+      const origins = schedules.recordset.filter(row => row.scheduleId !== (existing?.primaryScheduleId ?? planned.root))
         .map(row => ({ key: String(row.scheduleKey), origin: row.origin }));
       if (origins.length) {
         const recorded = await new sql.Request(transaction).input("taskKey", sql.BigInt, taskKey)
@@ -474,15 +523,25 @@ async function registerParsedExecutionInTransaction(
             INSERT workflow.task_sources(task_key,schedule_source_id,schedule_key,schedule_type,reason,created_at,is_primary)
             SELECT @taskKey,s.source_id,s.schedule_key,r.origin,N'generated',@createdAt,0
             FROM OPENJSON(@origins) WITH ([key] bigint, origin nvarchar(80)) AS r
-            JOIN scheduling.update_schedules AS s ON s.schedule_key=r.[key] AND s.active=1 AND s.deleted_at IS NULL;
-            SELECT @@ROWCOUNT AS [count];`);
+            JOIN scheduling.update_schedules AS s ON s.schedule_key=r.[key] AND s.active=1 AND s.deleted_at IS NULL
+            WHERE NOT EXISTS (SELECT 1 FROM workflow.task_sources prior WITH (HOLDLOCK)
+              WHERE prior.task_key=@taskKey AND (prior.schedule_key=s.schedule_key OR prior.schedule_source_id=s.source_id));
+            SELECT COUNT(*) AS [count]
+            FROM OPENJSON(@origins) WITH ([key] bigint, origin nvarchar(80)) AS r
+            JOIN scheduling.update_schedules AS s ON s.schedule_key=r.[key] AND s.active=1 AND s.deleted_at IS NULL
+            JOIN workflow.task_sources present WITH (HOLDLOCK) ON present.task_key=@taskKey
+              AND present.schedule_key=s.schedule_key AND present.schedule_source_id=s.source_id
+              AND present.schedule_source_id COLLATE Latin1_General_100_BIN2=s.source_id COLLATE Latin1_General_100_BIN2
+              AND DATALENGTH(present.schedule_source_id)=DATALENGTH(s.source_id) AND present.is_primary=0;`);
         if (recorded.recordset[0]?.count !== origins.length) return conflict("catalog-reference-changed");
       }
 
       const eventToken = createHash("sha256").update(`catalog-task-registered-v1:${group.executionKey}`, "utf8").digest();
       const event = await new sql.Request(transaction).input("executionId", sql.BigInt, executionId)
+        .input("insertRegistrationEvent", sql.Bit, !existing)
         .input("cutoffAt", sql.DateTime2(3), cutoffAt).input("validUntil", sql.DateTime2(3), evidenceValidUntil)
         .input("token", sql.VarBinary(32), eventToken).query<{ result: string }>(`
+          IF @insertRegistrationEvent=1
           INSERT workflow.catalog_task_execution_events(catalog_execution_key,event_token,event_kind)
           VALUES(@executionId,CONVERT(binary(32),@token),'registered');
           DECLARE @finalNow datetime2(3)=SYSUTCDATETIME();
@@ -491,5 +550,5 @@ async function registerParsedExecutionInTransaction(
       const result = event.recordset[0]?.result;
       if (result === "cutoff-passed") return conflict("cutoff-passed");
       if (result !== "registered") return conflict("catalog-reference-changed");
-      return { outcome: { status: "registered", taskId: task.id }, validUntil: evidenceValidUntil };
+      return { outcome: { status: existing ? "existing" : "registered", taskId: existing?.taskId ?? task.id }, validUntil: evidenceValidUntil };
 }

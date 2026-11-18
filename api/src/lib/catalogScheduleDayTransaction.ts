@@ -1,5 +1,6 @@
 import sql from "mssql";
 import { lockCatalogTaskDay } from "./catalogExecutionCoexistenceSql";
+import { readSqlCatalogManualDayIntentsInTransaction } from "./catalogManualDayIntentSqlRepository";
 import { catalogRegistrationConflictReason, registerSqlCatalogTaskExecutionInTransaction,
   type CatalogExecutionRegistration, type CatalogExecutionRegistrationResult } from "./catalogExecutionRegistrationSqlRepository";
 import { readSqlCatalogPhysicalTargets, readSqlCatalogPhysicalTargetsInTransaction } from "./catalogPhysicalTargetSqlRepository";
@@ -10,7 +11,7 @@ import { runSqlTransaction } from "./sqlTransaction";
 
 export type CatalogScheduleDayTransactionContext = Readonly<{
   date: string; cutoffAt: Date; revisionId: string; scope: CatalogInventoryProofScope;
-  roster: ReadonlyMap<string, string>;
+  roster: ReadonlyMap<string, string>; manualIntents: ReadonlyMap<string, string>;
 }>;
 type TransactionIo = {
   resolve: typeof readSqlCatalogPhysicalTargets;
@@ -39,7 +40,7 @@ async function checkClock(transaction: sql.Transaction, cutoffAt: Date, validUnt
  */
 export async function runSqlCatalogScheduleDayTransaction<T>(context: CatalogScheduleDayTransactionContext,
   work: (io: TransactionIo) => Promise<T>): Promise<Result<T>> {
-  const { cutoffAt, date, revisionId, roster, scope } = context;
+  const { cutoffAt, date, revisionId, roster, scope, manualIntents } = context;
   if (date !== scope.date || !(cutoffAt instanceof Date) || !Number.isFinite(cutoffAt.valueOf()) || roster.size > 5000) {
     return { status: "unverified" };
   }
@@ -56,6 +57,9 @@ export async function runSqlCatalogScheduleDayTransaction<T>(context: CatalogSch
       const actual = await readSqlCatalogScheduleRosterInTransaction(transaction, date);
       if (actual.length !== roster.size || new Set(actual.map(row => row.schedule.id)).size !== roster.size ||
           actual.some(row => roster.get(row.schedule.id) !== row.version)) return stop("unverified");
+      const currentIntents = await readSqlCatalogManualDayIntentsInTransaction(transaction, { date, portalEnvironment: scope.portalEnvironment });
+      if (currentIntents.size !== manualIntents.size ||
+        [...currentIntents].some(([id, version]) => manualIntents.get(id) !== version)) return stop("unverified");
       await checkClock(transaction, cutoffAt, deadline);
       const value = await work({
         resolve: input => input.portalEnvironment === scope.portalEnvironment
@@ -65,7 +69,7 @@ export async function runSqlCatalogScheduleDayTransaction<T>(context: CatalogSch
               registration.group.occurrenceId !== date || registration.group.revisionId !== revisionId ||
               registration.cutoffAt.valueOf() !== cutoffAt.valueOf() ||
               [...registration.scheduleVersions].some(([id, version]) => roster.get(id) !== version)) return stop("unverified");
-          const { outcome, validUntil } = await registerSqlCatalogTaskExecutionInTransaction(transaction, registration);
+          const { outcome, validUntil } = await registerSqlCatalogTaskExecutionInTransaction(transaction, registration, { replayMode: "certified-day" });
           if (outcome.status === "registered" && (!(validUntil instanceof Date) || !Number.isFinite(validUntil.valueOf()))) {
             return stop("unverified");
           }

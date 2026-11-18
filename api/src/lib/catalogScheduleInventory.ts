@@ -6,6 +6,7 @@ import { readSqlCatalogScheduleOperationApprovals } from "./catalogScheduleOpera
 import { readSqlCatalogScheduleRoster } from "./schedulingSqlRepository";
 import { readCatalogScheduleLicenseProof } from "./catalogScheduleLicenseProof";
 import { readSqlCatalogSchedulePopulationCoverage } from "./catalogSchedulePopulationCoverage";
+import { readSqlCatalogManualDayIntents } from "./catalogManualDayIntentSqlRepository";
 
 type SourceWitness = CatalogExecutionSourceEvidence;
 type InventoryRow = CatalogScheduleDay["inventory"][number];
@@ -37,6 +38,7 @@ export type CatalogScheduleInventoryDependencies = {
   persisted?: Parameters<typeof generateCatalogPersistedScheduleDay>[1];
   /** Only the approved reader sets this from the original normalized SQL roster. */
   populationRoster?: ReadonlyMap<string, string>;
+  manualIntents?: ReadonlyMap<string, string>;
 };
 
 const fail = (): never => { throw new Error("catalog_schedule_inventory_unverified"); };
@@ -136,7 +138,9 @@ export async function generateCatalogOperationalScheduleDay(
     : input.matchKeyVersion === undefined ? new Map<string, readonly string[] | null>()
       : await readCatalogScheduleLicenseProof({ ...scope, matchKeyVersion: input.matchKeyVersion });
   return generateCatalogPersistedScheduleDay({ ...input, revision,
-    ...(io.populationRoster ? { populationFence: { scope, roster: io.populationRoster } } : {}),
+    ...(io.populationRoster && io.manualIntents ? { populationFence: {
+      scope, roster: io.populationRoster, manualIntents: io.manualIntents,
+    } } : {}),
     inventory: composeCatalogScheduleInventory(links, modulesByLink, input.checkedAt) }, io.persisted);
 }
 
@@ -147,9 +151,10 @@ export async function generateCatalogOperationalScheduleDay(
  */
 export async function generateApprovedCatalogOperationalScheduleDay(
   input: Omit<OperationalDay, "operationsBySchedule">,
-  io: Omit<CatalogScheduleInventoryDependencies, "certifyCoverage" | "populationRoster"> &
+  io: Omit<CatalogScheduleInventoryDependencies, "certifyCoverage" | "populationRoster" | "manualIntents"> &
     Partial<Pick<CatalogScheduleInventoryDependencies, "certifyCoverage">> &
-    { readOperations?: typeof readSqlCatalogScheduleOperationApprovals } = {},
+    { readOperations?: typeof readSqlCatalogScheduleOperationApprovals;
+      readManualIntents?: typeof readSqlCatalogManualDayIntents } = {},
 ): ReturnType<typeof generateCatalogPersistedScheduleDay> {
   if (!(input.checkedAt instanceof Date) || !Number.isFinite(input.checkedAt.valueOf())
     || !(input.cutoffAt instanceof Date) || !Number.isFinite(input.cutoffAt.valueOf())) return fail();
@@ -160,12 +165,20 @@ export async function generateApprovedCatalogOperationalScheduleDay(
     return generateCatalogOperationalScheduleDay({ ...input, operationsBySchedule: new Map() }, dependencies);
   }
   const roster = await (io.persisted?.readRoster ?? readSqlCatalogScheduleRoster)(input.date);
+  const manualIntents = await (io.readManualIntents ?? readSqlCatalogManualDayIntents)({
+    date: input.date, portalEnvironment: input.portalEnvironment,
+  });
+  const populationRoster = new Map(roster.map(({ schedule, version }) => [schedule.id, version]));
+  const activeManuals = new Set(roster.filter(({ schedule }) => schedule.active && schedule.frequencyType === "manual")
+    .map(({ schedule }) => schedule.id));
+  if (populationRoster.size !== roster.length ||
+    [...manualIntents].some(([id, version]) => !activeManuals.has(id) || populationRoster.get(id) !== version) ||
+    input.manualScheduleIds?.some(id => !manualIntents.has(id))) return { status: "unverified" };
   const operationsBySchedule = await (io.readOperations ?? readSqlCatalogScheduleOperationApprovals)(
     input.portalEnvironment, roster.map(({ schedule, version }) => ({ scheduleId: schedule.id, scheduleVersion: version })),
   );
-  const populationRoster = new Map(roster.map(({ schedule, version }) => [schedule.id, version]));
-  if (populationRoster.size !== roster.length) return fail();
-  return generateCatalogOperationalScheduleDay({ ...input, operationsBySchedule }, { ...dependencies, populationRoster, persisted: {
+  return generateCatalogOperationalScheduleDay({ ...input, operationsBySchedule, manualScheduleIds: [...manualIntents.keys()] },
+    { ...dependencies, populationRoster, manualIntents, persisted: {
     readRoster: async () => roster,
     generate: io.persisted?.generate ?? generateCatalogScheduleDay,
   } });
