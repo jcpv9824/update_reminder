@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { catalogDocumentNumberToken } from "../lib/catalogCustomerRefresh";
 import { buildCatalogMatchKeyEvidence, type CatalogMatchKeyEvidence } from "../lib/catalogMatchKeyEvidence";
-import type { CatalogExternalReadStatement, CatalogExternalSourceTransport } from "../lib/catalogExternalSourceQueries";
+import type { CatalogExternalReadStatement, CatalogExternalSourceTransport, CatalogSagCompanyTargetObservation } from "../lib/catalogExternalSourceQueries";
 import type { SqlCatalogSourceBinding } from "../lib/catalogSourceBindingsSqlRepository";
 import type { CatalogRefreshClaim } from "../lib/catalogRefreshQueueSqlRepository";
 import type { CatalogSagV2FailureResult, CatalogSagV2PublishResult, CatalogSagV2Reservation,
@@ -36,7 +36,7 @@ function harness(observedAt = new Date("2026-11-18T05:00:00.000Z")) {
   const raw: Partial<Record<CatalogExternalReadStatement["tag"], readonly unknown[]>> = {
     schema: [{ compatible: true, readOnly: true }], counts: [{ customerCount: "3", companyCount: "2" }],
     customerPage: [row(1, 1, " 123-4 "), row(2, 999, "ABC"), row(3, 1, "malformed\u0000document")],
-    companyPage: companies,
+    companyPage: companies.map(row => ({ ...row, targetState: "unverified", targetHost: null, targetPort: null, targetDatabaseName: null })),
   };
   const events: string[] = [];
   const claim = { ...baseClaim };
@@ -58,7 +58,7 @@ function harness(observedAt = new Date("2026-11-18T05:00:00.000Z")) {
   const transport: CatalogExternalSourceTransport = {
     withConsistentRead(options, work) {
       events.push("snapshot");
-      expect(options.contract).toBe("sag_admin_v2");
+      expect(options.contract).toBe("sag_admin_v2_targets");
       return work({ consistency: "verified", select });
     },
   };
@@ -68,14 +68,15 @@ function harness(observedAt = new Date("2026-11-18T05:00:00.000Z")) {
   const reserveAttempt = vi.fn(async (): Promise<CatalogSagV2Reservation> => {
     events.push("reserve"); return { attemptOrdinal: "908", observedAt };
   });
-  const publish = vi.fn(async (_ordinal: string, _body: CatalogSagV2WorkerPublication): Promise<CatalogSagV2PublishResult> => {
+  const publish = vi.fn(async (_ordinal: string, _body: CatalogSagV2WorkerPublication,
+    _targets: readonly CatalogSagCompanyTargetObservation[]): Promise<CatalogSagV2PublishResult> => {
     events.push("publish"); return { result: "published", jobStatus: "succeeded" };
   });
   const recordFailure = vi.fn(async (_ordinal: string): Promise<CatalogSagV2FailureResult> => {
     events.push("fail"); return { result: "failed", jobStatus: "retry" };
   });
   const publisherFor = vi.fn((_claim: CatalogRefreshClaim, _keyProof: CatalogMatchKeyEvidence) =>
-    ({ reserveAttempt, publish, recordFailure }));
+    ({ reserveAttempt, publishWithTargets: publish, recordFailure }));
   const io = { readPinnedSource, loadTransport, publisherFor };
   return { input, io, raw, claim, matchKey, scope, scopesByCountry, controller, events, select, reserveAttempt, publish, recordFailure };
 }
@@ -86,10 +87,11 @@ describe("SAG v2 dedicated refresh worker", () => {
     expect(await runCatalogSagV2Refresh(h.input, h.io)).toEqual({ outcome: "published", queue: "settled", jobStatus: "succeeded" });
     expect(h.events).toEqual(["recheck", "reserve", "recheck", "transport", "recheck", "snapshot",
       "recheck", "schema", "recheck", "counts", "recheck", "customerPage", "recheck", "companyPage", "recheck", "recheck", "publish"]);
-    const [[ordinal, body]] = h.publish.mock.calls;
+    const [[ordinal, body, targets]] = h.publish.mock.calls;
     expect(ordinal).toBe("908");
     expect(Object.keys(body).sort()).toEqual(["companies", "companyCount", "customerCount", "customers"].sort());
     expect(body.companies).toEqual(companies);
+    expect(targets).toEqual(companies.map(row => ({ companyRecordId: row.companyRecordId, state: "unverified", locationToken: null })));
     expect([body.customerCount, body.companyCount]).toEqual([3, 2]);
     const [known, unknown, malformed] = body.customers;
     expect(known).toEqual({ sourceRecordId: 1, issuer: "CO", documentType: "NIT",
@@ -143,7 +145,7 @@ describe("SAG v2 dedicated refresh worker", () => {
     expect(h.io.readPinnedSource).not.toHaveBeenCalled();
     h.io.publisherFor.mockImplementationOnce((_claim, proof) => {
       if (!otherProof.keyVerifier.equals(proof?.keyVerifier ?? Buffer.alloc(32))) throw sensitiveError();
-      return { reserveAttempt: h.reserveAttempt, publish: h.publish, recordFailure: h.recordFailure };
+      return { reserveAttempt: h.reserveAttempt, publishWithTargets: h.publish, recordFailure: h.recordFailure };
     });
     expect(await runCatalogSagV2Refresh(h.input, h.io)).toEqual(unconfirmed);
     expect(h.io.loadTransport).not.toHaveBeenCalled();

@@ -1,13 +1,13 @@
 import { catalogDocumentNumberToken } from "./catalogCustomerRefresh";
 import { buildCatalogMatchKeyEvidence, type CatalogMatchKeyEvidence } from "./catalogMatchKeyEvidence";
-import { readCatalogSagDiscoveryV2, type CatalogExternalSourceTransport, type CatalogSagDiscoveryV2Result } from "./catalogExternalSourceQueries";
+import { readCatalogSagDiscoveryV2WithTargets, type CatalogExternalSourceTransport, type CatalogSagDiscoveryV2Result } from "./catalogExternalSourceQueries";
 import type { CatalogRefreshClaim } from "./catalogRefreshQueueSqlRepository";
 import { normalizeCatalogSagInventoryEvidence } from "./catalogSagInventoryEvidence";
 import type { CatalogSagV2WorkerPublication, createCatalogSagV2WorkerPublisher } from "./catalogSagV2WorkerPublisher";
 import type { SqlCatalogSourceBinding } from "./catalogSourceBindingsSqlRepository";
 
 type Scope = Readonly<{ issuer: string; documentType: string }>;
-type Publisher = Pick<ReturnType<typeof createCatalogSagV2WorkerPublisher>, "reserveAttempt" | "publish" | "recordFailure">;
+type Publisher = Pick<ReturnType<typeof createCatalogSagV2WorkerPublisher>, "reserveAttempt" | "publishWithTargets" | "recordFailure">;
 export type CatalogSagV2RefreshInput = Readonly<{
   claim: CatalogRefreshClaim;
   matchKey: Buffer;
@@ -203,7 +203,7 @@ export async function runCatalogSagV2Refresh(args: CatalogSagV2RefreshInput, io:
     const guarded: CatalogExternalSourceTransport = {
       async withConsistentRead(request, read) {
         await checkRead(request.signal);
-        if (request.contract !== "sag_admin_v2" || request.signal.aborted || signal?.aborted) throw unavailable();
+        if (request.contract !== "sag_admin_v2_targets" || request.signal.aborted || signal?.aborted) throw unavailable();
         return transport.withConsistentRead(request, session => read({
           consistency: session.consistency,
           async select(statement) {
@@ -214,7 +214,8 @@ export async function runCatalogSagV2Refresh(args: CatalogSagV2RefreshInput, io:
         }));
       },
     };
-    const discovery = await readCatalogSagDiscoveryV2(guarded, { signal });
+    const discovery = await readCatalogSagDiscoveryV2WithTargets(guarded, { environment: claim.environment,
+      sourceId: claim.sourceId, matchKey: input.privateKey, matchKeyVersion: claim.matchKeyVersion }, { signal });
     if (readState.denied) return readState.denied === "stale" ? stale : unconfirmed;
     if (discovery.status !== "complete" || signal?.aborted) return await fencedFailure();
 
@@ -228,7 +229,7 @@ export async function runCatalogSagV2Refresh(args: CatalogSagV2RefreshInput, io:
     if (signal?.aborted) return await fencedFailure();
 
     // This RPC can commit even if its response is lost or the caller cancels. Nothing may compensate or retry here.
-    const response: unknown = await publisher.publish(attemptOrdinal, body);
+    const response: unknown = await publisher.publishWithTargets(attemptOrdinal, body, discovery.targetObservations);
     if (!exact(response, ["result", "jobStatus"])) return unconfirmed;
     if (response.result === "published" && response.jobStatus === "succeeded")
       return { outcome: "published", queue: "settled", jobStatus: "succeeded" };

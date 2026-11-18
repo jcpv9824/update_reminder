@@ -1,6 +1,6 @@
 import type { CurrentUser } from "../types/models";
 import { loadCatalogSourceTransport } from "./catalogCustomerRefreshService";
-import { readCatalogSagDiscoveryV2, verifyCatalogExternalSource } from "./catalogExternalSourceQueries";
+import { verifyCatalogSagDiscoveryV2Targets, verifyCatalogExternalSource } from "./catalogExternalSourceQueries";
 import { readSqlCatalogSourceBindings } from "./catalogSourceBindingsSqlRepository";
 import { activateSqlCatalogSource } from "./catalogSourceActivationSqlRepository";
 import type { CatalogEnvironment, CatalogSourceVerification } from "./catalogSourceConfiguration";
@@ -11,7 +11,7 @@ const dependencies = {
   readBindings: readSqlCatalogSourceBindings,
   loadTransport: loadCatalogSourceTransport,
   verify: verifyCatalogExternalSource,
-  discover: readCatalogSagDiscoveryV2,
+  discover: verifyCatalogSagDiscoveryV2Targets,
   async publisherReady(values: NodeJS.ProcessEnv) { return !!await prepareCatalogSagV2Publication(values); },
   activate: activateSqlCatalogSource,
 };
@@ -45,9 +45,7 @@ export async function certifySavedCatalogSource(input: {
   if (signal?.aborted) return "unavailable";
   let result: "verified" | "not_read_only" | "unavailable";
   if (isV2) {
-    const discovery = await io.discover(transport, { signal });
-    result = discovery.status === "complete" ? "verified" :
-      discovery.reason === "write_access" ? "not_read_only" : "unavailable";
+    result = await io.discover(transport, { signal });
   } else {
     if (contract !== "erp_v1" && contract !== "sag_admin_v1") return "ineligible";
     result = await io.verify(transport, contract, signal);

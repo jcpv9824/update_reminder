@@ -227,5 +227,11 @@ describe("SAG v2 separate SQL publisher connection", () => {
       "fn_my_permissions", "HAS_PERMS_BY_NAME", "reserve_catalog_sag_v2_attempt", "publish_catalog_sag_v2_revision",
       "fail_catalog_sag_v2_attempt", "catalog_sag_v2_transition_internal", "catalog_customer_attempt_sequence"])
       expect(text).toContain(token);
+    expect(text).toContain("HAS_PERMS_BY_NAME(N'settings.publish_catalog_sag_v2_with_targets', N'OBJECT', N'EXECUTE') = 1");
+    for (const table of ["catalog_sag_company_location_observations", "catalog_sag_company_location_seals"]) {
+      for (const command of ["SELECT", "INSERT", "UPDATE", "DELETE"]) {
+        expect(text).toContain(`COALESCE(HAS_PERMS_BY_NAME(N'core.${table}',N'OBJECT',N'${command}'),0) = 0`);
+      }
+    }
   });
 });

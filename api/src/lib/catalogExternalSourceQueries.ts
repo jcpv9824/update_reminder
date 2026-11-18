@@ -515,6 +515,25 @@ export function readCatalogSagDiscoveryV2(transport: CatalogExternalSourceTransp
   return readSagDiscovery(transport, options, "sag_admin_v2", parseSagCompany, row => row.companyRecordId);
 }
 
+function parseSagCompanyWithTarget(raw: unknown) {
+  const row = rowWithKeys(raw, ["companyRecordId", "customerRecordId", "displayName", "isAvailable",
+    "targetState", "targetHost", "targetPort", "targetDatabaseName"]);
+  const company = parseSagCompany({ companyRecordId: row.companyRecordId, customerRecordId: row.customerRecordId,
+    displayName: row.displayName, isAvailable: row.isAvailable });
+  const evidence = parseCatalogSagLegacySqlTargetEvidence({ status: row.targetState, host: row.targetHost,
+    port: row.targetPort, databaseName: row.targetDatabaseName });
+  if (!evidence) throw new Unavailable("invalid_rows");
+  return { company, evidence };
+}
+
+/** Proves the same target-capable source without needing a matching key or a publisher. */
+export async function verifyCatalogSagDiscoveryV2Targets(transport: CatalogExternalSourceTransport,
+  options: CatalogExternalReadOptions = {}): Promise<"verified" | "not_read_only" | "unavailable"> {
+  const result = await readSagDiscovery(transport, options, "sag_admin_v2_targets", raw =>
+    parseSagCompanyWithTarget(raw).company, row => row.companyRecordId);
+  return result.status === "complete" ? "verified" : result.reason === "write_access" ? "not_read_only" : "unavailable";
+}
+
 /** One SNAPSHOT; the private location never leaves the observation parser. */
 export async function readCatalogSagDiscoveryV2WithTargets(transport: CatalogExternalSourceTransport,
   scope: TargetScope, options: CatalogExternalReadOptions = {}): Promise<CatalogSagDiscoveryV2WithTargetsResult> {
@@ -528,13 +547,7 @@ export async function readCatalogSagDiscoveryV2WithTargets(transport: CatalogExt
   const key = Buffer.from(scope.matchKey);
   try {
     const result = await readSagDiscovery(transport, options, "sag_admin_v2_targets", raw => {
-      const row = rowWithKeys(raw, ["companyRecordId", "customerRecordId", "displayName", "isAvailable",
-        "targetState", "targetHost", "targetPort", "targetDatabaseName"]);
-      const company = parseSagCompany({ companyRecordId: row.companyRecordId, customerRecordId: row.customerRecordId,
-        displayName: row.displayName, isAvailable: row.isAvailable });
-      const evidence = parseCatalogSagLegacySqlTargetEvidence({ status: row.targetState, host: row.targetHost,
-        port: row.targetPort, databaseName: row.targetDatabaseName });
-      if (!evidence) throw new Unavailable("invalid_rows");
+      const { company, evidence } = parseSagCompanyWithTarget(raw);
       const target: CatalogSagCompanyTargetObservation = evidence.status === "unverified"
         ? { companyRecordId: company.companyRecordId, state: "unverified", locationToken: null }
         : { companyRecordId: company.companyRecordId, state: "candidate",

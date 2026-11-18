@@ -206,15 +206,36 @@ comprobaron la sintaxis SQL 2019 del lote y sus cuatro módulos, y la
 aplicación/reaplicación con rollback en PortalSAGWeb-TEST: cuatro permisos
 EXECUTE en el rol dedicado, 16 denegaciones directas, tres triggers activos,
 y cero objetos nuevos después del rollback. El manifiesto conserva el hash
-del artefacto; el ejecutor de despliegue todavía no incluye 055. Primero
-deben coordinarse la admisión del cuarto RPC y el ensayo funcional de los
-resultados positivos, errores y recuperación por concesión.
+del artefacto. Ese ensayo inicial no incluyó el ejecutor de despliegue ni
+la publicación con una identidad dedicada.
 
 El adaptador para el nuevo RPC exige exactamente el mismo conjunto de
 Company en orden ascendente, un máximo de 24 MiB de observaciones y huellas
 canónicas o nulas según el estado. Ante una respuesta no confirmada no
-recurre al publicador anterior. Pasaron 10 pruebas del adaptador y TypeScript;
-el trabajador no llama todavía al cuarto RPC.
+recurre al publicador anterior. Pasaron 10 pruebas del adaptador y TypeScript.
+
+El trabajador ya lee destinos y catálogo en la misma transacción SNAPSHOT y
+publica exclusivamente con el cuarto RPC. El pool dedicado verifica los cuatro
+permisos EXECUTE y rechaza acceso directo a las dos tablas de custodia.
+La verificación de la fuente usa el mismo lector de destinos, sin usar la
+clave de cotejo ni el publicador. El verificador obtuvo `verified` contra la
+fuente real SAG Admin con su cuenta de sólo lectura.
+
+El ejecutor con `-Environment qa -IncludeCatalog` aplicó 055 y verificó 25
+migraciones (031–055). Una consulta independiente confirmó el hash de 055
+(`e3d04cd088f3c25f071a8163a91fe6194c2c8cc16c741f938f76c4af1cfcd49c`)
+y cero transacciones abiertas, miembros del rol publicador, observaciones
+y sellos. Pasaron 131 pruebas enfocadas en siete archivos y el build del
+API. Falta demostrar una publicación confirmada de extremo a extremo en QA
+con la identidad SQL dedicada; no se activó ninguna fuente ni se desplegó
+en producción.
+
+En PortalSAGWeb-TEST, un principal sintético sin login, limitado al rol
+publicador durante una transacción, pudo ejecutar el cuarto RPC pero no
+leer directamente ninguna de las dos tablas (SQL 229). El RPC rechazó la
+transacción ambiental (SQL 55309). El rollback quitó el principal y su
+membresía, sin transacciones abiertas. La prueba no demuestra el COMMIT
+independiente de una publicación válida.
 
 ## Verificación de preparación del reporte (2026-11-18)
 

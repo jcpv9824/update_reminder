@@ -17,7 +17,7 @@ const mocks = () => ({
   readBindings: vi.fn<() => Promise<SqlCatalogSourceBinding[]>>().mockResolvedValue([source]),
   loadTransport: vi.fn().mockResolvedValue(transport),
   verify: vi.fn().mockResolvedValue("verified"),
-  discover: vi.fn().mockResolvedValue({ status: "complete", customers: [], companies: [] }),
+  discover: vi.fn().mockResolvedValue("verified"),
   publisherReady: vi.fn().mockResolvedValue(true),
   activate: vi.fn().mockResolvedValue("activated"),
 });
@@ -46,8 +46,7 @@ describe("catalog source certification service", () => {
     io.readBindings.mockResolvedValue([v2]);
     expect(await certifySavedCatalogSource(args, io, { ...env, PORTAL_CATALOG_SAG_V2_ENABLED: "false" })).toBe("ineligible");
     expect(io.loadTransport).not.toHaveBeenCalled();
-    io.discover.mockResolvedValueOnce({ status: "unavailable", reason: "write_access" })
-      .mockResolvedValueOnce({ status: "unavailable", reason: "invalid_rows" });
+    io.discover.mockResolvedValueOnce("not_read_only").mockResolvedValueOnce("unavailable");
     expect(await certifySavedCatalogSource(args, io, env)).toBe("not_read_only");
     expect(await certifySavedCatalogSource(args, io, env)).toBe("unavailable");
     expect(io.activate).not.toHaveBeenCalled();
@@ -71,7 +70,7 @@ describe("catalog source certification service", () => {
     io.readBindings.mockResolvedValue([v2]);
     io.discover.mockImplementationOnce(async () => {
       changing.PORTAL_CATALOG_SAG_V2_ENABLED = "false";
-      return { status: "complete", customers: [], companies: [] };
+      return "verified";
     });
     expect(await certifySavedCatalogSource(args, io, changing)).toBe("superseded");
     expect(io.publisherReady).not.toHaveBeenCalled();

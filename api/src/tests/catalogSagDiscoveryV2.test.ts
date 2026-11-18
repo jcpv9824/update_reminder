@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { catalogExternalSelectSql, readCatalogExternalSource, readCatalogSagDiscoveryV2, readCatalogSagDiscoveryV2WithTargets, verifyCatalogExternalSource,
+  verifyCatalogSagDiscoveryV2Targets,
   type CatalogExternalContract, type CatalogExternalReadStatement, type CatalogExternalSourceTransport } from "../lib/catalogExternalSourceQueries";
 
 const ok = [{ compatible: true, readOnly: true }];
@@ -63,6 +64,14 @@ describe("SAG Admin v2 metadata discovery", () => {
     expect(await readCatalogSagDiscoveryV2WithTargets(badKey.transport, { ...targetScope, matchKey: Buffer.alloc(31) }))
       .toEqual({ status: "unavailable", reason: "invalid_options" });
     expect(badKey.started).not.toHaveBeenCalled();
+  });
+
+  it("certifies the same target-capable source without a matching key and returns no row data", async () => {
+    const valid = fake([ok, counts("0", "1"), [], [{ ...company(1, null), ...locator }]]);
+    expect(await verifyCatalogSagDiscoveryV2Targets(valid.transport)).toBe("verified");
+    expect(valid.started).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ contract: "sag_admin_v2_targets" }));
+    expect(await verifyCatalogSagDiscoveryV2Targets(fake([ok, counts("0", "1"), [], [company(1, null)]]).transport)).toBe("unavailable");
+    expect(await verifyCatalogSagDiscoveryV2Targets(fake([[{ compatible: true, readOnly: false }]]).transport)).toBe("not_read_only");
   });
 
   it("binds a target observation to the pinned key, key version, source and environment", async () => {

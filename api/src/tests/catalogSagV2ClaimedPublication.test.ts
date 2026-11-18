@@ -27,7 +27,7 @@ const cancelled = { outcome: "cancelled", queue: "untouched" };
 const stale = { outcome: "stale", queue: "fenced-stale" };
 const unconfirmed = { outcome: "unconfirmed", queue: "lease-recovery" };
 const reserveRpc = "settings.reserve_catalog_sag_v2_attempt";
-const publishRpc = "settings.publish_catalog_sag_v2_revision";
+const publishRpc = "settings.publish_catalog_sag_v2_with_targets";
 const failureRpc = "settings.fail_catalog_sag_v2_attempt";
 
 function environment(): NodeJS.ProcessEnv {
@@ -48,7 +48,8 @@ function harness() {
       sourceRecordId: i, documentNumber: i === 1 ? " 123-4 " : "NO-ISSUER", reportedCountryId: i, environment: "production",
       licensedModules: "A", domainCandidate: null, testStartedOn: null, productionStartedOn: null, demoStartedOn: null,
     })),
-    companyPage: [{ companyRecordId: 44, customerRecordId: 999, displayName: "Synthetic company", isAvailable: false }],
+    companyPage: [{ companyRecordId: 44, customerRecordId: 999, displayName: "Synthetic company", isAvailable: false,
+      targetState: "unverified", targetHost: null, targetPort: null, targetDatabaseName: null }],
   };
   const readBindings = vi.fn(async (_env: CatalogEnvironment, _signal: AbortSignal, _sourceId: string):
     Promise<readonly SqlCatalogSourceBinding[]> => { events.push("binding"); return [binding]; });
@@ -60,7 +61,7 @@ function harness() {
   });
   const transport: CatalogExternalSourceTransport = {
     withConsistentRead(request, work) {
-      events.push("snapshot"); expect(request.contract).toBe("sag_admin_v2");
+      events.push("snapshot"); expect(request.contract).toBe("sag_admin_v2_targets");
       return work({ consistency: "verified", select });
     },
   };
@@ -176,7 +177,10 @@ describe("claimed SAG v2 publication service", () => {
       { sourceRecordId: 1, token: catalogDocumentNumberToken(syntheticKey, "qa", "123-4")?.toString("hex"), issuer: "CO", documentType: "NIT" },
       { sourceRecordId: 2, issuer: null, documentType: null },
     ]);
-    expect(JSON.parse(published.companies as string)).toEqual(h.rows.companyPage);
+    expect(JSON.parse(published.companies as string)).toEqual([
+      { companyRecordId: 44, customerRecordId: 999, displayName: "Synthetic company", isAvailable: false },
+    ]);
+    expect(JSON.parse(published.targets as string)).toEqual([{ companyRecordId: 44, state: "unverified", locationToken: null }]);
     expect(JSON.stringify(h.calls, (_key, value) => typeof value === "bigint" ? value.toString() : value))
       .not.toMatch(/synthetic-match-key|NO-ISSUER|documentNumber/);
     syntheticKey.fill(0);
@@ -247,7 +251,7 @@ describe("claimed SAG v2 publication service", () => {
     expect(h.io.loadTransport).not.toHaveBeenCalled();
   });
 
-  it("wipes both owned 32-byte key buffers after an unconfirmed publish; never retries or compensates a write", async () => {
+  it("wipes all owned 32-byte key buffers after an unconfirmed publish; never retries or compensates a write", async () => {
     const h = harness();
     const originalFill = Buffer.prototype.fill;
     const owned: Buffer[] = [];
@@ -263,7 +267,7 @@ describe("claimed SAG v2 publication service", () => {
       expect(await publishClaimedCatalogSagV2(claim, h.io, h.env)).toEqual(unconfirmed);
       expect(h.request).toHaveBeenCalledTimes(2);
       expect(h.execute.mock.calls.map(call => call[0])).toEqual([reserveRpc, publishRpc]);
-      expect(new Set(owned).size).toBe(2);
+      expect(new Set(owned).size).toBe(3);
       expect(owned.every(buffer => buffer.every(byte => byte === 0))).toBe(true);
     } finally { wipe.mockRestore(); }
   });

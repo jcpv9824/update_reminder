@@ -87,12 +87,22 @@ SELECT CAST(CASE WHEN
         AND p.permission_name IN (N'CONTROL',N'ALTER',N'TAKE OWNERSHIP',N'SELECT',N'INSERT',N'UPDATE',N'DELETE',N'EXECUTE'))
     AND OBJECT_ID(N'settings.reserve_catalog_sag_v2_attempt', N'P') IS NOT NULL
     AND OBJECT_ID(N'settings.publish_catalog_sag_v2_revision', N'P') IS NOT NULL
+    AND OBJECT_ID(N'settings.publish_catalog_sag_v2_with_targets', N'P') IS NOT NULL
     AND OBJECT_ID(N'settings.fail_catalog_sag_v2_attempt', N'P') IS NOT NULL
     AND HAS_PERMS_BY_NAME(N'settings.reserve_catalog_sag_v2_attempt', N'OBJECT', N'EXECUTE') = 1
     AND HAS_PERMS_BY_NAME(N'settings.publish_catalog_sag_v2_revision', N'OBJECT', N'EXECUTE') = 1
+    AND HAS_PERMS_BY_NAME(N'settings.publish_catalog_sag_v2_with_targets', N'OBJECT', N'EXECUTE') = 1
     AND HAS_PERMS_BY_NAME(N'settings.fail_catalog_sag_v2_attempt', N'OBJECT', N'EXECUTE') = 1
     AND COALESCE(HAS_PERMS_BY_NAME(N'settings.catalog_sag_v2_transition_internal',N'OBJECT',N'EXECUTE'),0) = 0
     AND COALESCE(HAS_PERMS_BY_NAME(N'settings.catalog_customer_attempt_sequence',N'OBJECT',N'UPDATE'),0) = 0
+    AND COALESCE(HAS_PERMS_BY_NAME(N'core.catalog_sag_company_location_observations',N'OBJECT',N'SELECT'),0) = 0
+    AND COALESCE(HAS_PERMS_BY_NAME(N'core.catalog_sag_company_location_observations',N'OBJECT',N'INSERT'),0) = 0
+    AND COALESCE(HAS_PERMS_BY_NAME(N'core.catalog_sag_company_location_observations',N'OBJECT',N'UPDATE'),0) = 0
+    AND COALESCE(HAS_PERMS_BY_NAME(N'core.catalog_sag_company_location_observations',N'OBJECT',N'DELETE'),0) = 0
+    AND COALESCE(HAS_PERMS_BY_NAME(N'core.catalog_sag_company_location_seals',N'OBJECT',N'SELECT'),0) = 0
+    AND COALESCE(HAS_PERMS_BY_NAME(N'core.catalog_sag_company_location_seals',N'OBJECT',N'INSERT'),0) = 0
+    AND COALESCE(HAS_PERMS_BY_NAME(N'core.catalog_sag_company_location_seals',N'OBJECT',N'UPDATE'),0) = 0
+    AND COALESCE(HAS_PERMS_BY_NAME(N'core.catalog_sag_company_location_seals',N'OBJECT',N'DELETE'),0) = 0
     AND NOT EXISTS (SELECT 1 FROM sys.objects AS o JOIN sys.schemas AS s ON s.schema_id=o.schema_id
       CROSS APPLY sys.fn_my_permissions(QUOTENAME(s.name) + N'.' + QUOTENAME(o.name), N'OBJECT') AS p
       WHERE o.is_ms_shipped = 0 AND (
@@ -100,6 +110,7 @@ SELECT CAST(CASE WHEN
         OR (p.permission_name = N'EXECUTE' AND o.object_id NOT IN (
           OBJECT_ID(N'settings.reserve_catalog_sag_v2_attempt', N'P'),
           OBJECT_ID(N'settings.publish_catalog_sag_v2_revision', N'P'),
+          OBJECT_ID(N'settings.publish_catalog_sag_v2_with_targets', N'P'),
           OBJECT_ID(N'settings.fail_catalog_sag_v2_attempt', N'P')))))
   THEN 1 ELSE 0 END AS bit) AS ready
 FROM sys.databases AS d WHERE d.database_id = DB_ID();`;
