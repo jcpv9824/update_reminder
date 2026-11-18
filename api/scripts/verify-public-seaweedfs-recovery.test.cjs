@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const { createHash } = require("node:crypto");
-const { checkLogo } = require("./verify-public-seaweedfs-recovery.cjs");
+const { checkLogo, verifySingleByteRange } = require("./verify-public-seaweedfs-recovery.cjs");
 
 const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
 const hash = createHash("sha256").update(bytes).digest("hex");
@@ -18,4 +18,11 @@ test("does not weaken byte, size, or redirect verification", async () => {
   assert.equal((await checkLogo("login", hash, reader(bytes, { "Content-Length": "0" }))).result, "image_response");
   assert.equal((await checkLogo("login", hash, reader(bytes, { Location: "/unexpected" }))).result, "image_response");
   assert.equal((await checkLogo("login", hash, reader(new Uint8Array(524289)))).result, "checksum");
+});
+
+test("bounds the returned Range bytes independently of the response header", async () => {
+  const options = { status: 206, headers: { "Content-Range": "bytes 0-0/5" } };
+  assert.equal(await verifySingleByteRange(new Response(new Uint8Array([1]), options), 5), true);
+  assert.equal(await verifySingleByteRange(new Response(new Uint8Array([1, 2]), options), 5), false);
+  assert.equal(await verifySingleByteRange(new Response(new Uint8Array([1]), options), 6), false);
 });

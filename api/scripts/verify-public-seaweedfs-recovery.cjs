@@ -24,6 +24,20 @@ async function verifyBytes(response, expectedSize, expectedHash, maximumBytes = 
     digest.digest("hex") === expectedHash;
 }
 
+async function verifySingleByteRange(response, expectedSize) {
+  if (response.status !== 206 || response.headers.get("Content-Range") !== `bytes 0-0/${expectedSize}` ||
+      !response.body) {
+    await response.body?.cancel();
+    return false;
+  }
+  let read = 0;
+  for await (const chunk of response.body) {
+    read += chunk.length;
+    if (read > 1) return false;
+  }
+  return read === 1;
+}
+
 async function checkFile(route, expectedBytes, expectedHash) {
   const slug = encodeURIComponent(route.entry);
   const endpoint = route.kind === "file" ? `/public/files/${slug}` : `/public/downloads/${slug}`;
@@ -47,13 +61,8 @@ async function checkFile(route, expectedBytes, expectedHash) {
     return { endpoint: response.status, object: read.status, result: "checksum" };
   }
   const ranged = await fetch(url, makeOptions({ headers: { Range: "bytes=0-0" } }));
-  const goodRange = ranged.status === 206 && ranged.headers.get("Content-Range") === `bytes 0-0/${expectedBytes}`;
-  if (goodRange) {
-    const oneByte = await ranged.arrayBuffer();
-    return { endpoint: response.status, object: read.status, range: ranged.status, result: oneByte.byteLength === 1 ? "pass" : "range" };
-  }
-  await ranged.body?.cancel();
-  return { endpoint: response.status, object: read.status, range: ranged.status, result: "range" };
+  return { endpoint: response.status, object: read.status, range: ranged.status,
+    result: await verifySingleByteRange(ranged, expectedBytes) ? "pass" : "range" };
 }
 
 async function checkLogo(name, expectedHash, read = fetch) {
@@ -104,7 +113,7 @@ async function main() {
   process.exitCode = passed === total ? 0 : 1;
 }
 
-module.exports = { checkLogo };
+module.exports = { checkLogo, verifySingleByteRange };
 if (require.main === module) {
   main().catch(() => { console.error("Recovery smoke input or setup failed; details withheld."); process.exitCode = 1; });
 }
