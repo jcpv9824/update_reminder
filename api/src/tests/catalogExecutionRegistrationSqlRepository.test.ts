@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { UpdateTask } from "../types/models";
 
-const mock = vi.hoisted(() => ({ query: vi.fn(), begin: vi.fn(), commit: vi.fn(), rollback: vi.fn(), insert: vi.fn(), lockDay: vi.fn(), license: vi.fn(), tx: {} }));
+const mock = vi.hoisted(() => ({ query: vi.fn(), begin: vi.fn(), commit: vi.fn(), rollback: vi.fn(), insert: vi.fn(), lockDay: vi.fn(), license: vi.fn(), population: vi.fn(), tx: {} }));
 vi.mock("mssql", () => ({ default: {
   Request: class {
     parameters: Record<string, unknown> = {};
@@ -19,6 +19,10 @@ vi.mock("../lib/sqlTransaction", () => ({ runSqlTransaction: async (fn: (tx: obj
 vi.mock("../lib/workflowTaskGenerationSqlRepository", () => ({ insertSqlGeneratedTaskInTransaction: mock.insert }));
 vi.mock("../lib/catalogExecutionCoexistenceSql", () => ({ lockCatalogTaskDay: mock.lockDay }));
 vi.mock("../lib/catalogExecutionLicenseSqlProof", () => ({ revalidateSqlCatalogExecutionLicenses: mock.license }));
+vi.mock("../lib/catalogSchedulePopulationCoverage", () => ({
+  catalogPopulationRevisionPrefix: "catalog-population-v1:",
+  lockSqlCatalogSchedulePopulationApproval: mock.population,
+}));
 
 import { registerSqlCatalogTaskExecution, type CatalogExecutionRegistration } from "../lib/catalogExecutionRegistrationSqlRepository";
 import { catalogTaskExecutionKey } from "../lib/catalogTaskTargetPlanning";
@@ -144,6 +148,32 @@ describe("atomic catalog execution registration", () => {
     expect(mock.query.mock.invocationCallOrder[5]).toBeLessThan(mock.license.mock.invocationCallOrder[0]);
     expect(mock.license.mock.invocationCallOrder[0]).toBeLessThan(mock.query.mock.invocationCallOrder[6]);
     expect(mock.query.mock.calls[8][1].validUntil).toEqual(expiry);
+  });
+
+  it("locks an approved population and checks its deadline again at the final registration write", async () => {
+    const revisionId = "catalog-population-v1:00000000-0000-0000-0000-000000000099";
+    const expiry = new Date(now.valueOf() + 30_000);
+    mock.population.mockResolvedValue(expiry);
+    const value = input();
+    rows([], [{ collision: false }], scheduleRows, [{ now }], [{ key: "2" }],
+      [{ linkId: externalLinkId, validUntil: cutoffAt }, { linkId: "link2", validUntil: cutoffAt }],
+      [{ count: 2 }], [{ count: 1 }], [{ result: "catalog-reference-changed" }]);
+    await expect(registerSqlCatalogTaskExecution({ ...value, group: { ...value.group, revisionId } }))
+      .resolves.toEqual({ status: "conflict", reason: "catalog-reference-changed" });
+    expect(mock.population).toHaveBeenCalledExactlyOnceWith(mock.tx, "qa", revisionId);
+    expect(mock.query.mock.calls[8][1].validUntil).toEqual(expiry);
+    expect(mock.rollback).toHaveBeenCalledOnce();
+  });
+
+  it("cannot write when the reviewed population was retired or replaced after planning", async () => {
+    const value = input();
+    rows([]);
+    mock.population.mockResolvedValue(null);
+    await expect(registerSqlCatalogTaskExecution({ ...value, group: { ...value.group,
+      revisionId: "catalog-population-v1:00000000-0000-0000-0000-000000000099" } }))
+      .resolves.toEqual({ status: "conflict", reason: "catalog-reference-changed" });
+    expect(mock.query).toHaveBeenCalledTimes(1);
+    expect(mock.insert).not.toHaveBeenCalled();
   });
 
   it("rolls back all provisional writes when transactional licenses cannot be verified", async () => {

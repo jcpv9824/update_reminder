@@ -5,6 +5,7 @@ import type { CatalogExecutionSourceEvidence } from "./catalogExecutionRegistrat
 import { readSqlCatalogScheduleOperationApprovals } from "./catalogScheduleOperationApprovalSqlRepository";
 import { readSqlCatalogScheduleRoster } from "./schedulingSqlRepository";
 import { readCatalogScheduleLicenseProof } from "./catalogScheduleLicenseProof";
+import { readSqlCatalogSchedulePopulationCoverage } from "./catalogSchedulePopulationCoverage";
 
 type SourceWitness = CatalogExecutionSourceEvidence;
 type InventoryRow = CatalogScheduleDay["inventory"][number];
@@ -143,18 +144,23 @@ export async function generateCatalogOperationalScheduleDay(
  */
 export async function generateApprovedCatalogOperationalScheduleDay(
   input: Omit<OperationalDay, "operationsBySchedule">,
-  io: CatalogScheduleInventoryDependencies & { readOperations?: typeof readSqlCatalogScheduleOperationApprovals },
+  io: Omit<CatalogScheduleInventoryDependencies, "certifyCoverage"> &
+    Partial<Pick<CatalogScheduleInventoryDependencies, "certifyCoverage">> &
+    { readOperations?: typeof readSqlCatalogScheduleOperationApprovals } = {},
 ): ReturnType<typeof generateCatalogPersistedScheduleDay> {
   if (!(input.checkedAt instanceof Date) || !Number.isFinite(input.checkedAt.valueOf())
     || !(input.cutoffAt instanceof Date) || !Number.isFinite(input.cutoffAt.valueOf())) return fail();
+  const dependencies: CatalogScheduleInventoryDependencies = {
+    ...io, certifyCoverage: io.certifyCoverage ?? readSqlCatalogSchedulePopulationCoverage,
+  };
   if (input.checkedAt >= input.cutoffAt) {
-    return generateCatalogOperationalScheduleDay({ ...input, operationsBySchedule: new Map() }, io);
+    return generateCatalogOperationalScheduleDay({ ...input, operationsBySchedule: new Map() }, dependencies);
   }
   const roster = await (io.persisted?.readRoster ?? readSqlCatalogScheduleRoster)(input.date);
   const operationsBySchedule = await (io.readOperations ?? readSqlCatalogScheduleOperationApprovals)(
     input.portalEnvironment, roster.map(({ schedule, version }) => ({ scheduleId: schedule.id, scheduleVersion: version })),
   );
-  return generateCatalogOperationalScheduleDay({ ...input, operationsBySchedule }, { ...io, persisted: {
+  return generateCatalogOperationalScheduleDay({ ...input, operationsBySchedule }, { ...dependencies, persisted: {
     readRoster: async () => roster,
     generate: io.persisted?.generate ?? generateCatalogScheduleDay,
   } });

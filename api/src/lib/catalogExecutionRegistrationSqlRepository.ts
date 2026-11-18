@@ -10,6 +10,7 @@ import { lockCatalogTaskDay } from "./catalogExecutionCoexistenceSql";
 import { catalogDomainRouteFingerprintSql } from "./catalogPhysicalTargetIdentity";
 import { isCatalogScheduleOperationId } from "./catalogScheduleOperationApprovalSqlRepository";
 import { revalidateSqlCatalogExecutionLicenses } from "./catalogExecutionLicenseSqlProof";
+import { catalogPopulationRevisionPrefix, lockSqlCatalogSchedulePopulationApproval } from "./catalogSchedulePopulationCoverage";
 
 type PlannedGroup = CatalogTaskPlan["tasks"][number];
 type SqlKey = number | string;
@@ -216,6 +217,9 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
       // Older immutable executions may have used display text. They can be
       // replayed exactly, but only an opaque approved ID can create new work.
       if (!isCatalogScheduleOperationId(group.operationId)) return conflict("invalid-plan");
+      const approvalDeadline = group.revisionId.startsWith(catalogPopulationRevisionPrefix) ?
+        await lockSqlCatalogSchedulePopulationApproval(transaction, portalEnvironment, group.revisionId) : undefined;
+      if (approvalDeadline === null) return conflict("catalog-reference-changed");
 
       const collision = await new sql.Request(transaction)
         .input("taskId", sql.NVarChar(260), task.id).input("kind", sql.VarChar(20), group.kind)
@@ -397,6 +401,7 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
         return conflict("catalog-reference-changed");
       }
       const deadlines = writes.recordset.map(link => link.validUntil instanceof Date ? link.validUntil.valueOf() : NaN);
+      if (approvalDeadline) deadlines.push(approvalDeadline.valueOf());
       if (deadlines.some(value => !Number.isFinite(value))) return conflict("catalog-reference-changed");
       if (licensed.length && matchKeyVersion !== undefined) {
         const licenseDeadline = await revalidateSqlCatalogExecutionLicenses(transaction, {

@@ -53,7 +53,8 @@ $expected = @(
   '042_catalog_operational_links.sql',
   '043_catalog_domain_scope.sql',
   '044_catalog_schedule_operation_approvals.sql',
-  '045_catalog_schedule_operation_token_check.sql'
+  '045_catalog_schedule_operation_token_check.sql',
+  '046_catalog_schedule_population_approvals.sql'
 )
 
 $resolvedSqlDirectory = (Resolve-Path -LiteralPath $SqlDirectory).Path
