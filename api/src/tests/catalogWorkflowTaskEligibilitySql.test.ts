@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { catalogTaskCurrentLinkSql, catalogTaskHasActiveRepresentativeSql,
+import { catalogTaskActionDateSql, catalogTaskCurrentLinkSql, catalogTaskHasActiveRepresentativeSql,
   catalogTaskHasVisibleLinkSql, catalogTaskActiveLinkProjectionSql,
   catalogTaskHistoryEnvironmentSql } from "../lib/catalogWorkflowTaskEligibilitySql";
 
@@ -85,6 +85,15 @@ describe("shared current catalog workflow eligibility SQL", () => {
     expect(catalogTaskHasActiveRepresentativeSql).toContain("task.target_type='domain' OR catalog_link.database_key=task.database_key");
     expect(catalogTaskHasActiveRepresentativeSql).not.toContain("active_catalog_link");
     expect(catalogTaskHasActiveRepresentativeSql).toMatch(/^NOT EXISTS/);
+  });
+
+  it("checks the Bogotá date only for actions on catalog executions, not for list or history", () => {
+    expect(catalogTaskActionDateSql).toBe("(task.task_date IS NOT NULL AND task.task_date<=CONVERT(date,DATEADD(hour,-5,SYSUTCDATETIME())))");
+    expect(catalogTaskHasActiveRepresentativeSql).toContain("WHERE catalog_execution.task_key=task.task_key");
+    expect(catalogTaskHasActiveRepresentativeSql).toContain(`OR NOT ${catalogTaskActionDateSql}`);
+    for (const read of [statement, catalogTaskHasVisibleLinkSql, catalogTaskActiveLinkProjectionSql, catalogTaskHistoryEnvironmentSql]) {
+      expect(read).not.toContain(catalogTaskActionDateSql);
+    }
   });
 
   it("keeps a filter-independent canonical representative and discovers only same-alias paired matches", () => {

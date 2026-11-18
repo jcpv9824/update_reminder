@@ -1,7 +1,7 @@
 import sql from "mssql";
 import {
   catalogTaskActiveLinkProjectionSql, catalogTaskHasVisibleLinkSql, catalogTaskIsLegacySql,
-  catalogTaskHistoryEnvironmentSql, catalogWorkflowEnvironment,
+  catalogTaskHistoryEnvironmentSql, catalogWorkflowEnvironment, catalogTaskActionDateSql,
 } from "./catalogWorkflowTaskEligibilitySql";
 import { getSqlPool } from "./sql";
 import type { UpdateTask } from "../types/models";
@@ -11,6 +11,7 @@ type SourceJson = { scheduleId: string; scheduleType: string | null; reason: str
 
 export type TaskRow = {
   source_id: string;
+  catalog_planned_only?: boolean;
   dedupe_key: string | null;
   task_date: string;
   task_bucket: string;
@@ -60,6 +61,7 @@ export function mapSqlWorkflowTask(row: TaskRow): UpdateTask {
   const sources = parseJson<SourceJson[]>(row.sources_json, []);
   return {
     id: row.source_id,
+    ...(row.catalog_planned_only === true ? { catalogPlannedOnly: true } : {}),
     dedupeKey: row.dedupe_key ?? undefined,
     taskDate: row.task_date,
     taskBucket: row.task_bucket,
@@ -198,6 +200,8 @@ export async function readSqlWorkflowTasks(filters: WorkflowTaskFilters): Promis
     DECLARE @now datetime2(3)=SYSUTCDATETIME();
     SELECT TOP (1000)
       task.source_id,task.dedupe_key,CONVERT(char(10),task.task_date,23) AS task_date,task.task_bucket,
+      CONVERT(bit,CASE WHEN NOT (${catalogTaskActionDateSql}) AND NOT (${catalogTaskIsLegacySql})
+        THEN 1 ELSE 0 END) AS catalog_planned_only,
       COALESCE(active_catalog_link.client_id,task.client_source_id) AS client_source_id,
       COALESCE(active_catalog_link.client_name,task.client_name_snapshot) AS client_name,
       COALESCE(active_catalog_link.domain_id,task.domain_source_id) AS domain_source_id,

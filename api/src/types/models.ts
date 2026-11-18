@@ -380,6 +380,8 @@ export type TaskStatus =
 
 export type UpdateTask = {
   id: string;
+  /** UI-only hint for a future catalog task; the SQL action guard is authoritative. */
+  catalogPlannedOnly?: true;
   dedupeKey?: string;
   sources?: Array<{
     scheduleId: string;

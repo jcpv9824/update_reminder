@@ -246,6 +246,52 @@ describe("TareasPage (vista unificada)", () => {
     expect(screen.getByText(/Actualización: Actualización puntual/i)).toBeInTheDocument();
   });
 
+  it.each(["domain", "database"] as const)("muestra el destino futuro de catálogo (%s) sin exponer acciones", async (targetType) => {
+    usuarioMock.roles = ["admin"];
+    const fechaFutura = sumarDiasIso(hoyIso(), 4);
+    const planificada = tarea({
+      id: "catalogo_futuro",
+      clientName: "Cliente de catálogo futuro",
+      taskDate: fechaFutura,
+      taskBucket: `${fechaFutura}_${targetType}`,
+      targetType,
+      targetId: "destino_catalogo",
+      targetName: targetType === "database" ? "BASE_CATALOGO_FUTURA" : "https://cliente1.example.com",
+      catalogPlannedOnly: true,
+    });
+    mockTareas(targetType === "database" ? { bases: [planificada] } : { dominios: [planificada] });
+
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    const detalle = screen.getByRole("table");
+    expect(within(detalle).getByText(planificada.clientName)).toBeInTheDocument();
+    if (targetType === "database") expect(within(detalle).getByText(planificada.targetName)).toBeInTheDocument();
+    expect(within(detalle).getByText("Las acciones estarán disponibles en la fecha de la tarea.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Copiar|Ver contraseña|Completar|Bloquear|Resolver bloqueo|Reabrir|Reintentar/i })).not.toBeInTheDocument();
+    expect(apiMock.get.mock.calls.some(([path]) => path?.includes("/access-info"))).toBe(false);
+    expect(apiMock.post).not.toHaveBeenCalled();
+    expect(apiMock.postTaskPassword).not.toHaveBeenCalled();
+  });
+
+  it("excluye el catálogo futuro de la copia masiva sin bloquear una tarea futura heredada", async () => {
+    usuarioMock.roles = ["admin"];
+    const fechaFutura = sumarDiasIso(hoyIso(), 1);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const tareasFuturas = { taskDate: fechaFutura, taskBucket: `${fechaFutura}_domain` };
+    mockTareas({ dominios: [
+      tarea({ ...tareasFuturas, id: "d_catalogo", domainName: "https://catalogo.example.com", catalogPlannedOnly: true }),
+      tarea({ ...tareasFuturas, id: "d_heredado", domainName: "https://heredado.example.com" }),
+    ] });
+
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: /Ver detalle/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Copiar todos los dominios pendientes/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith("heredado.example.com"));
+    expect(within(screen.getByTestId("acciones-tarea-d_heredado")).getByRole("button", { name: "Completar" })).toBeInTheDocument();
+    expect(within(screen.getByTestId("acciones-tarea-d_catalogo")).queryByRole("button")).not.toBeInTheDocument();
+  });
+
   it("consulta tareas hasta próximas 4 días y muestra texto de vista operativa", async () => {
     usuarioMock.roles = ["admin"];
     renderPagina();

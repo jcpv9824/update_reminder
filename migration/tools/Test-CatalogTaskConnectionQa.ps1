@@ -10,20 +10,25 @@ if($descriptor.database -ne 'PortalSAGWeb-TEST' -or ($descriptor.environment -an
 $root=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
 $fragmentModule=Join-Path $root 'api/dist/src/lib/catalogWorkflowTaskEligibilitySql.js'
 if(!(Test-Path -LiteralPath $fragmentModule)){ throw 'Build the current API candidate before rehearsing SQL eligibility.' }
-$fragmentJson=& node -e 'const x=require(process.argv[1]); process.stdout.write(JSON.stringify({selector:x.catalogTaskCurrentLinkSql("e","visible_link","@environment"),projection:x.catalogTaskActiveLinkProjectionSql,representative:x.catalogTaskHasActiveRepresentativeSql,history:x.catalogTaskHistoryEnvironmentSql}));' $fragmentModule
+$fragmentJson=& node -e 'const x=require(process.argv[1]); process.stdout.write(JSON.stringify({selector:x.catalogTaskCurrentLinkSql("e","visible_link","@environment"),projection:x.catalogTaskActiveLinkProjectionSql,representative:x.catalogTaskHasActiveRepresentativeSql,history:x.catalogTaskHistoryEnvironmentSql,actionDate:x.catalogTaskActionDateSql}));' $fragmentModule
 if($LASTEXITCODE -ne 0){ throw 'Could not read the compiled eligibility fragments.' }
 $fragments=$fragmentJson | ConvertFrom-Json
 $selectorMarker='${catalogTaskCurrentLinkSql("e", "visible_link", "@environment")}'
 $query=(Get-Content -Raw -LiteralPath (Join-Path $root 'api/src/lib/catalogTaskDatabaseConnection.ts')).Split([char]96) |
   Where-Object { $_ -match '^\s*DECLARE @now' } | Select-Object -First 1
-if(!$query -or !$query.Contains($selectorMarker) -or !$fragments.selector -or !$fragments.projection -or !$fragments.representative -or !$fragments.history){
+if(!$query -or !$query.Contains($selectorMarker) -or !$query.Contains('${catalogTaskActionDateSql}') -or
+   !$fragments.selector -or !$fragments.projection -or !$fragments.representative -or !$fragments.history -or !$fragments.actionDate){
   throw 'Expected the complete current link eligibility fragments.'
 }
 $query=$query.Replace($selectorMarker,[string]$fragments.selector)
+$query=$query.Replace('${catalogTaskActionDateSql}',[string]$fragments.actionDate)
+if(!$fragments.actionDate.Contains('SYSUTCDATETIME()')){ throw 'Expected the full-precision UTC clock for the Bogotá day gate.' }
+$clockPredicate=$fragments.actionDate.Replace('SYSUTCDATETIME()','boundary.utc_clock')
 $opsQuery="DECLARE @now datetime2(3)=SYSUTCDATETIME(); SELECT active_catalog_link.target_id AS visibleTarget, CONVERT(bit,CASE WHEN "+$fragments.representative+" THEN 1 ELSE 0 END) AS mayMutate, CONVERT(bit,CASE WHEN "+$fragments.history+" THEN 1 ELSE 0 END) AS inHistoryScope, active_catalog_link.matches_filters AS matchesFilters FROM workflow.update_tasks AS task "+$fragments.projection+" WHERE task.task_key=@taskKey;"
 if($query -match '(?im)^\s*(INSERT|UPDATE|DELETE|MERGE|ALTER|DROP|CREATE)\b' -or
    $opsQuery -match '(?im)^\s*(INSERT|UPDATE|DELETE|MERGE|ALTER|DROP|CREATE)\b'){ throw 'Expected read-only grant and eligibility queries.' }
 $literal="DECLARE @probe nvarchar(max)=N'"+$query.Replace("'","''")+"';"
+$literal+="IF EXISTS (SELECT 1 FROM (VALUES (CONVERT(date,'2030-01-02'))) AS task(task_date) CROSS JOIN (VALUES (CONVERT(datetime2(7),'2030-01-02T04:59:59.9999999'),0),(CONVERT(datetime2(7),'2030-01-02T05:00:00.0000000'),1)) AS boundary(utc_clock,expected) WHERE (CASE WHEN "+$clockPredicate+" THEN 1 ELSE 0 END)<>boundary.expected) THROW 53879,N'Unexpected task action date at the Bogotá midnight boundary.',1;"
 $literal+="DECLARE @opsProbe nvarchar(max)=N'"+$opsQuery.Replace("'","''")+"';"
 $cutoffQuery=(Get-Content -Raw -LiteralPath (Join-Path $root 'api/src/lib/catalogTaskCutoffWorker.ts')).Split([char]96) |
   Where-Object { $_ -match '^\s*DECLARE @checkedAt' } | Select-Object -First 1
@@ -48,7 +53,10 @@ SET XACT_ABORT ON;
 IF DB_NAME()<>N'PortalSAGWeb-TEST' OR @@TRANCOUNT<>0 THROW 53880,N'Wrong database or transaction.',1;
 DECLARE @tag nvarchar(72)=N'qa-taskconn-'+LOWER(CONVERT(char(36),NEWID()));
 DECLARE @stamp datetime2(3)=SYSUTCDATETIME(), @target bigint, @physical uniqueidentifier, @taskKey bigint, @execution bigint;
+DECLARE @bogotaToday date=CONVERT(date,DATEADD(hour,-5,@stamp));
+DECLARE @tomorrow date=DATEADD(day,1,@bogotaToday),@legacyKey bigint;
 DECLARE @task nvarchar(150)=@tag+N'-task', @assigned nvarchar(150)=@tag+N'-assigned', @other nvarchar(150)=@tag+N'-broad';
+DECLARE @legacyTask nvarchar(150)=@tag+N'-legacy-future';
 DECLARE @a nvarchar(150)=@tag+N'-a-db', @b nvarchar(150)=@tag+N'-b-db';
 DECLARE @sourceKey bigint,@origin uniqueidentifier,@customerKey bigint,@version smallint,@revision bigint,@lock int;
 DECLARE @bindingVersion binary(8),@profileVersion binary(8);
@@ -96,7 +104,7 @@ BEGIN TRY
   INSERT workflow.update_tasks(source_id,task_date,task_bucket,client_key,client_source_id,client_name_snapshot,domain_key,
     domain_source_id,domain_name_snapshot,target_type,target_source_id,target_name_snapshot,database_key,assigned_role,status,
     created_at,created_by,updated_at,updated_by)
-    SELECT @task,CONVERT(date,@stamp),'fixture',c.client_key,c.source_id,c.name,d.domain_key,d.source_id,d.domain_name,
+    SELECT @task,@bogotaToday,'fixture',c.client_key,c.source_id,c.name,d.domain_key,d.source_id,d.domain_name,
       'database',db.source_id,db.company_name,db.database_key,N'super_admin','pending',@stamp,'fixture',@stamp,'fixture'
       FROM core.databases db JOIN core.clients c ON c.client_key=db.client_key JOIN core.domains d ON d.domain_key=db.domain_key
       WHERE db.source_id=@a;
@@ -123,6 +131,34 @@ BEGIN TRY
   INSERT @cutoffRows EXEC sys.sp_executesql @cutoffProbe,N'@env varchar(10),@execution varbinary(32)','qa',@executionHash;
   IF (SELECT COUNT(*) FROM @cutoffRows WHERE validUntil IS NULL)<>2 THROW 53887,N'Proof registered after the cutoff was accepted.',1;
   UPDATE workflow.catalog_task_executions SET cutoff_at=DATEADD(minute,5,@stamp) WHERE catalog_execution_key=@execution;
+
+  -- A future catalog row stays in the listing but does not carry action authority.
+  UPDATE workflow.update_tasks SET task_date=@tomorrow WHERE task_key=@taskKey;
+  INSERT @ops EXEC sys.sp_executesql @opsProbe,@opsParams,@taskKey,'qa',NULL,NULL;
+  IF NOT EXISTS(SELECT 1 FROM @ops WHERE visibleTarget=@a AND mayMutate=0)
+    THROW 53932,N'A future catalog task was hidden or allowed mutation.',1;
+  DELETE FROM @ops;
+  INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@a,@task,'qa',N'updates.tasks.view_database_connection';
+  INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@a,@task,'qa',N'updates.tasks.reveal_database_password';
+  INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@a,@task,'qa',N'updates.tasks.copy_database_connection_part';
+  IF EXISTS(SELECT 1 FROM @rows) THROW 53933,N'A future catalog task granted a connection action.',1;
+  UPDATE workflow.update_tasks SET task_date=@bogotaToday WHERE task_key=@taskKey;
+
+  -- The date gate applies to the catalog, not to the pre-existing legacy contract.
+  INSERT workflow.update_tasks(source_id,task_date,task_bucket,client_key,client_source_id,client_name_snapshot,domain_key,
+    domain_source_id,domain_name_snapshot,target_type,target_source_id,target_name_snapshot,database_key,assigned_role,status,
+    created_at,created_by,updated_at,updated_by)
+    SELECT @legacyTask,@tomorrow,'fixture',client_key,client_source_id,client_name_snapshot,domain_key,domain_source_id,
+      domain_name_snapshot,target_type,target_source_id,target_name_snapshot,database_key,assigned_role,'pending',
+      @stamp,'fixture',@stamp,'fixture' FROM workflow.update_tasks WHERE task_key=@taskKey;
+  SET @legacyKey=SCOPE_IDENTITY();
+  INSERT workflow.task_assignees(task_key,user_key) SELECT @legacyKey,user_key FROM security.users WHERE source_id=@assigned;
+  INSERT @ops EXEC sys.sp_executesql @opsProbe,@opsParams,@legacyKey,'qa',NULL,NULL;
+  INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@a,@legacyTask,'qa',N'updates.tasks.view_database_connection';
+  IF NOT EXISTS(SELECT 1 FROM @ops WHERE mayMutate=1) OR (SELECT COUNT(*) FROM @rows WHERE databaseId=@a)<>1
+    THROW 53934,N'The catalog date guard changed legacy task authority.',1;
+  DELETE FROM @ops;
+  DELETE FROM @rows;
 
   INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@a,@task,'qa',N'updates.tasks.view_database_connection';
   IF (SELECT COUNT(*) FROM @rows WHERE databaseId=@a AND linkId=@a)<>1 THROW 53881,N'Assigned current representative was not resolved.',1;
@@ -361,8 +397,8 @@ BEGIN CATCH
   IF XACT_STATE()<>0 ROLLBACK TRANSACTION;
   THROW;
 END CATCH;
-SELECT 37 AS passed,
-  (SELECT COUNT(*) FROM workflow.update_tasks WHERE source_id=@task)
+SELECT 42 AS passed,
+  (SELECT COUNT(*) FROM workflow.update_tasks WHERE source_id IN (@task,@legacyTask))
   +(SELECT COUNT(*) FROM security.users WHERE source_id IN (@assigned,@other))
   +(SELECT COUNT(*) FROM core.catalog_physical_targets WHERE target_id=@physical)
   +(SELECT COUNT(*) FROM settings.external_database_connections WHERE source_id=@tag)
@@ -379,7 +415,7 @@ SELECT 37 AS passed,
 $invoke=Join-Path $PSScriptRoot '../connect-sql-server/Invoke-PortalSAGWeb-EphemeralRequest.ps1'
 $response=(& $invoke -SessionDirectory $session -Sql ($literal + [Environment]::NewLine + $fixture) -Mode write -TimeoutSeconds 35 -MaxRows 1) | ConvertFrom-Json -Depth 16
 $row=$response.resultSets[0].rows[0]
-if(!$response.success -or $row.passed -ne 37 -or $row.remaining_fixtures -ne 0){
+if(!$response.success -or $row.passed -ne 42 -or $row.remaining_fixtures -ne 0){
   $number=$response.error.number
   throw "QA connection, cutoff and registration rehearsal did not pass or left residual data (SQL error number: $number)."
 }

@@ -154,6 +154,17 @@ describe("catalog generation ingress", () => {
     expect(fakes.clients).not.toHaveBeenCalled();
   });
 
+  it("reports a partial timer window without treating unavailable dates as success or invoking legacy", async () => {
+    const context = ctx();
+    fakes.catalog.mockResolvedValue({ ...evaluated, status: "unverified", created: 2,
+      days: [{ ...evaluated, created: 2 }, { ...evaluated, date: "2026-11-19", status: "unverified" }] });
+    await runTimer(context);
+    expect(fakes.catalog).toHaveBeenCalledExactlyOnceWith({ trigger: "timer" });
+    expect(fakes.clients).not.toHaveBeenCalled();
+    expect(context.log).toHaveBeenCalledWith(expect.stringContaining("fechas evaluadas=1/2"));
+    expect(context.log).toHaveBeenCalledWith(expect.stringContaining("creadas=2"));
+  });
+
   it("fails closed on invalid mode configuration for HTTP and timer before operational reads", async () => {
     fakes.mode.mockImplementation(() => { throw Object.assign(new Error("private configuration"), { status: 503 }); });
     expect((await invoke("refreshUpdateTasksManual")).status).toBe(503);

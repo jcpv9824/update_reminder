@@ -324,6 +324,7 @@ export type Tarea = {
   id: string;
   taskDate: string;
   taskBucket?: string;
+  catalogPlannedOnly?: true;
   clientId: string;
   clientName: string;
   domainId: string;

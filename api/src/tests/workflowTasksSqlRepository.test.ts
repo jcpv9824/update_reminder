@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mapSqlWorkflowTask, normalizedLogicalTaskCount, readSqlWorkflowTasks } from "../lib/workflowTasksSqlRepository";
 import type { UpdateTask } from "../types/models";
+import { toPublicTask } from "../lib/publicDtos";
 
 const at = new Date("2026-07-21T12:00:00.000Z");
 const mock = vi.hoisted(() => ({ query: vi.fn(), input: vi.fn() }));
@@ -8,7 +9,7 @@ vi.mock("../lib/sql", () => ({ getSqlPool: async () => ({ request: () => mock })
 
 describe("Workflow tasks SQL mapping", () => {
   it("reconstructs a consolidated task without exposing normalized internals in the public DTO layer", () => {
-    const task = mapSqlWorkflowTask({
+    const row: Parameters<typeof mapSqlWorkflowTask>[0] = {
       source_id: "task-1", dedupe_key: "database:db-1:2026-07-21", task_date: "2026-07-21",
       task_bucket: "2026-07", client_source_id: "client-1", client_name: "Cliente",
       domain_source_id: "domain-1", domain_name: "https://example.test", target_type: "database",
@@ -21,13 +22,16 @@ describe("Workflow tasks SQL mapping", () => {
       reopen_reason: null, created_at: at, created_by: "migration", updated_at: at,
       updated_by: "user-1", assignees_json: '[{"id":"user-1"},{"id":"user-2"}]',
       sources_json: '[{"scheduleId":"schedule-1","scheduleType":"special","reason":"primary","createdAt":"2026-07-21T12:00:00.000"},{"scheduleId":"schedule-2","scheduleType":"licensing","reason":null,"createdAt":"2026-07-21T12:01:00.000"}]',
-    });
+    };
+    const task = mapSqlWorkflowTask(row);
 
     expect(task).toMatchObject({
       id: "task-1", targetId: "db-1", scheduleId: "schedule-1", rootScheduleId: "schedule-1",
       assignedUserIds: ["user-1", "user-2"], status: "blocked", blockReason: "Requiere revisión",
       sources: [{ scheduleId: "schedule-1", scheduleType: "special" }, { scheduleId: "schedule-2", scheduleType: "licensing" }],
     });
+    expect(toPublicTask(task)).not.toHaveProperty("catalogPlannedOnly");
+    expect(toPublicTask(mapSqlWorkflowTask({ ...row, catalog_planned_only: true }))).toHaveProperty("catalogPlannedOnly", true);
   });
 
   it("counts consolidated logical target/date identities instead of physical aliases", () => {
@@ -57,6 +61,14 @@ describe("current task SQL visibility", () => {
       expect(call[0]).toContain("link.link_state='active' AND link.retired_at IS NULL");
       expect(call[0].match(/FROM core\.catalog_operational_link_evidence/g)).toHaveLength(1);
     }
+  });
+
+  it("keeps in-range future catalog tasks eligible for the board without granting any action", async () => {
+    await readSqlWorkflowTasks({ today: "2026-11-17", dateTo: "2026-11-21" });
+    const statement: string = mock.query.mock.calls[0][0];
+    expect(statement).toContain("OR active_catalog_link.catalog_execution_link_key IS NOT NULL");
+    expect(statement).toContain("AS catalog_planned_only");
+    expect(statement.split("FROM workflow.update_tasks task").at(-1)).not.toContain("DATEADD(hour,-5,SYSUTCDATETIME())");
   });
 
   it("keeps the legacy generator from adopting hidden, retired, or active catalog occurrences", async () => {

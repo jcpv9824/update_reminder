@@ -32,12 +32,13 @@ describe("catalog generation activation boundary", () => {
 
   it("derives the business day/cutoff server-side and reports receipt-only accounting separately", async () => {
     const io = deps();
-    const result = await runCatalogGeneration({ trigger: "timer" }, io, env);
+    const result = await runCatalogGeneration({ trigger: "refresh", body: { date: day } }, io, env);
     expect(io.generate).toHaveBeenCalledExactlyOnceWith({
       date: day, portalEnvironment: "qa", checkedAt: now, cutoffAt, matchKeyVersion: 7,
       activeLicenseIds: new Set(["module-a"]),
     });
     expect(result).toMatchObject({ date: day, created: 0, existing: 0, accountedOrigins: 1, manualIntentsSaved: 0 });
+    expect(result).not.toHaveProperty("days");
     expect(io.appendIntents).not.toHaveBeenCalled();
   });
 
@@ -90,8 +91,12 @@ describe("catalog generation activation boundary", () => {
   it("fails closed before evaluation when the active module source cannot be read", async () => {
     const io = deps();
     io.readActiveLicenseIds.mockRejectedValue(new Error("private database details"));
-    await expect(runCatalogGeneration({ trigger: "schedule-change" }, io, env))
-      .resolves.toMatchObject({ status: "unverified", created: 0, manualIntentsSaved: 0 });
+    const result = await runCatalogGeneration({ trigger: "schedule-change" }, io, env);
+    expect(result).toMatchObject({ status: "unverified", created: 0, manualIntentsSaved: 0 });
+    expect(result.days).toHaveLength(8);
+    expect(result.days?.every(row => row.status === "unverified" && row.created === 0)).toBe(true);
+    expect(result.message).not.toContain("private database");
+    expect(io.readActiveLicenseIds).toHaveBeenCalledOnce();
     expect(io.generate).not.toHaveBeenCalled();
   });
 
@@ -119,5 +124,95 @@ describe("catalog generation activation boundary", () => {
     expect(result).toMatchObject({ held: 1, conflicts: 1, accountedOrigins: 2, created: 0, existing: 0 });
     expect(result.message).toContain("retenidos");
     expect(result.message).toContain("no son tareas nuevas");
+  });
+});
+
+describe("bounded background pre-generation", () => {
+  const monthEnd = new Date("2030-07-01T04:59:00.000Z"); // June 30 in Bogotá.
+  const expected = ["2030-06-30", "2030-07-01", "2030-07-02", "2030-07-03",
+    "2030-07-04", "2030-07-05", "2030-07-06", "2030-07-07"];
+  const evaluated = { status: "evaluated", registered: 1, existing: 2, held: 3, conflicts: 4, accountedOrigins: 5 };
+
+  it.each(["timer", "schedule-change"] as const)("uses exactly eight serial dates across a month for %s", async trigger => {
+    let inFlight = 0;
+    let peak = 0;
+    const io = { ...deps(), now: vi.fn().mockReturnValue(monthEnd) };
+    io.generate.mockImplementation(async () => {
+      peak = Math.max(peak, ++inFlight);
+      await Promise.resolve();
+      --inFlight;
+      return evaluated;
+    });
+    const result = await runCatalogGeneration({ trigger, actorId: "real-user" }, io, env);
+    expect(io.generate.mock.calls.map(([input]) => input.date)).toEqual(expected);
+    expect(io.generate.mock.calls.map(([input]) => input.cutoffAt.toISOString())).toEqual(
+      [...expected.slice(1), "2030-07-08"].map(date => date + "T05:00:00.000Z"));
+    expect(io.generate.mock.calls.every(([input]) => !("manualScheduleIds" in input))).toBe(true);
+    expect(peak).toBe(1);
+    expect(io.now).toHaveBeenCalledTimes(9);
+    expect(io.readActiveLicenseIds).toHaveBeenCalledOnce();
+    expect(io.appendIntents).not.toHaveBeenCalled();
+    expect(io.readRoster).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ date: expected[0], status: "evaluated", created: 8, existing: 16,
+      held: 24, conflicts: 32, accountedOrigins: 40, manualIntentsSaved: 0 });
+    expect(result.days?.map(row => row.date)).toEqual(expected);
+    expect(result.days?.every(row => row.created === 1 && !("days" in row))).toBe(true);
+  });
+
+  it("keeps committed dates and continues after both a rejected and unverified date without claiming complete success", async () => {
+    const io = { ...deps(), now: () => monthEnd };
+    io.generate.mockResolvedValue(evaluated)
+      .mockResolvedValueOnce(evaluated)
+      .mockRejectedValueOnce(new Error("private driver failure"))
+      .mockResolvedValueOnce({ status: "unverified" });
+    const result = await runCatalogGeneration({ trigger: "timer" }, io, env);
+    expect(result).toMatchObject({ date: expected[0], status: "unverified", created: 6, existing: 12,
+      held: 18, conflicts: 24, accountedOrigins: 30, manualIntentsSaved: 0 });
+    expect(result.days?.map(row => row.status)).toEqual(
+      ["evaluated", "unverified", "unverified", "evaluated", "evaluated", "evaluated", "evaluated", "evaluated"]);
+    expect(result.days?.map(row => row.created)).toEqual([1, 0, 0, 1, 1, 1, 1, 1]);
+    expect(JSON.stringify(result)).not.toContain("private driver failure");
+    expect(result.message).not.toBe("Fecha del catálogo evaluada.");
+    expect(io.generate).toHaveBeenCalledTimes(8);
+  });
+
+  it("checks the fresh Bogotá midnight while retaining the original horizon of the invocation", async () => {
+    const midnight = new Date("2030-07-01T05:00:00.000Z");
+    const io = { ...deps(), now: vi.fn().mockReturnValue(midnight).mockReturnValueOnce(monthEnd) };
+    const result = await runCatalogGeneration({ trigger: "timer" }, io, env);
+    expect(result.days?.map(row => row.date)).toEqual(expected);
+    expect(result.days?.[0]).toMatchObject({ date: expected[0], status: "cutoff", created: 0 });
+    expect(result.status).toBe("evaluated");
+    expect(result.message).toContain("fechas omitidas por corte");
+    expect(io.generate.mock.calls.map(([input]) => input.date)).toEqual(expected.slice(1));
+    expect(io.generate.mock.calls.every(([input]) => input.checkedAt === midnight)).toBe(true);
+  });
+
+  it("preserves the same bounded date keys on a background retry; explicit HTTP retries stay on one date", async () => {
+    const io = { ...deps(), now: () => monthEnd };
+    io.generate.mockResolvedValue(evaluated);
+    await runCatalogGeneration({ trigger: "timer" }, io, env);
+    await runCatalogGeneration({ trigger: "timer" }, io, env);
+    expect(io.generate.mock.calls.map(([input]) => input.date)).toEqual([...expected, ...expected]);
+    expect(io.readActiveLicenseIds).toHaveBeenCalledTimes(2);
+
+    io.generate.mockClear();
+    for (const trigger of ["generate", "refresh"] as const) {
+      const result = await runCatalogGeneration({ trigger, body: { date: expected[7] } }, io, env);
+      expect(result).toMatchObject({ date: expected[7], status: "evaluated", created: 1 });
+      expect(result).not.toHaveProperty("days");
+    }
+    expect(io.generate.mock.calls.map(([input]) => input.date)).toEqual([expected[7], expected[7]]);
+    expect(io.appendIntents).not.toHaveBeenCalled();
+  });
+
+  it("does not accept a caller-supplied background date, window or manual schedule", async () => {
+    for (const body of [{ date: expected[1] }, { windowStart: expected[0] }, { manualScheduleIds: ["manual-1"] }]) {
+      const io = { ...deps(), now: () => monthEnd };
+      await expect(runCatalogGeneration({ trigger: "schedule-change", body }, io, env)).rejects.toMatchObject({ status: 400 });
+      expect(io.readActiveLicenseIds).not.toHaveBeenCalled();
+      expect(io.generate).not.toHaveBeenCalled();
+      expect(io.appendIntents).not.toHaveBeenCalled();
+    }
   });
 });

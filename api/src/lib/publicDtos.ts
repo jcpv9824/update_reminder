@@ -29,6 +29,7 @@ export function toPublicDatabase(database: DatabaseRecord) {
 export function toPublicTask(task: UpdateTask) {
   return {
     id: task.id,
+    ...(task.catalogPlannedOnly === true ? { catalogPlannedOnly: true as const } : {}),
     taskDate: task.taskDate,
     clientId: task.clientId,
     clientName: task.clientName,

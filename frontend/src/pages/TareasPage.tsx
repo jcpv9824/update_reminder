@@ -138,7 +138,7 @@ export function puedeCambiarTarea(
   definicionesRoles: RoleDefinition[] = DEFAULT_ROLE_DEFINITIONS,
   permiso = "updates.tasks.complete"
 ): boolean {
-  if (!usuario) return false;
+  if (!usuario || tarea.catalogPlannedOnly === true) return false;
   if (!hasPermissionForRoleIds(usuario.roles, permiso, definicionesRoles)) return false;
   return puedeVerTarea(usuario, tarea, definicionesRoles);
 }
@@ -319,6 +319,8 @@ function ColumnaTareas({ titulo, targetType, usuario, usuariosMap, definicionesR
   }, [grupos]);
 
   function accionar(id: string, accion: AccionTarea, body?: any) {
+    const tareaActual = qc.getQueryData<Tarea[]>(["tareas", targetType])?.find((tarea) => tarea.id === id);
+    if (tareaActual?.catalogPlannedOnly === true) return;
     cambiarEstado.mutate({ id, accion, body });
   }
 
@@ -547,7 +549,9 @@ function DetalleGrupo({ grupo, usuario, definicionesRoles, guardado, onSolicitar
     });
   }, [busquedaDetalle, conexionesVigentes, grupo.tareas, grupo.targetType, servidorSeleccionado]);
 
-  const pendientes = tareasFiltradas.filter((t) => t.status !== "completed" && t.status !== "cancelled");
+  const pendientes = tareasFiltradas.filter((t) => t.catalogPlannedOnly !== true && t.status !== "completed" && t.status !== "cancelled");
+  const mostrarCopiaMasiva = !grupo.tareas.some((t) => t.catalogPlannedOnly === true) ||
+    tareasFiltradas.some((t) => t.catalogPlannedOnly !== true);
   return (
     <>
       <p>
@@ -584,7 +588,7 @@ function DetalleGrupo({ grupo, usuario, definicionesRoles, guardado, onSolicitar
       <p className="texto-ayuda">
         Mostrando {tareasFiltradas.length} de {grupo.tareas.length} {grupo.targetType === "domain" ? "dominios" : "bases"} del detalle.
       </p>
-      {grupo.targetType === "domain" ? (
+      {mostrarCopiaMasiva && (grupo.targetType === "domain" ? (
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           <button
             type="button"
@@ -601,7 +605,7 @@ function DetalleGrupo({ grupo, usuario, definicionesRoles, guardado, onSolicitar
         >
           Copiar todas las bases pendientes
         </button>
-      )}
+      ))}
 
       <table style={{ marginTop: 12 }}>
         <thead>
@@ -631,6 +635,7 @@ function DetalleGrupo({ grupo, usuario, definicionesRoles, guardado, onSolicitar
               </td>
             </tr>
           ) : tareasFiltradas.map((tarea) => {
+            const soloPlanificada = tarea.catalogPlannedOnly === true;
             const estado = guardado[tarea.id];
             const puedeCompletar = puedeCambiarTarea(usuario, tarea, definicionesRoles, TASK_ACTION_PERMISSIONS.complete);
             const puedeBloquear = puedeCambiarTarea(usuario, tarea, definicionesRoles, TASK_ACTION_PERMISSIONS.block);
@@ -653,14 +658,21 @@ function DetalleGrupo({ grupo, usuario, definicionesRoles, guardado, onSolicitar
                   <>
                     <td style={{ fontFamily: "monospace" }}>{dominioPublicable}</td>
                     <td>
-                      <ConexionBaseCelda tarea={tarea} usuario={usuario} definicionesRoles={definicionesRoles} onConexionCargada={registrarConexion} />
+                      {soloPlanificada ? (
+                        <>
+                          <div>{tarea.targetName}</div>
+                          <span className="texto-ayuda">La conexión estará disponible en la fecha de la tarea.</span>
+                        </>
+                      ) : (
+                        <ConexionBaseCelda tarea={tarea} usuario={usuario} definicionesRoles={definicionesRoles} onConexionCargada={registrarConexion} />
+                      )}
                     </td>
                   </>
                 )}
                 <td><EtiquetaEstado estado={tarea.completedWithProblems ? "blocked" : tarea.status} /></td>
                 <td style={{ maxWidth: 260, fontSize: 12 }}>
                   <div>{notaMostrada}</div>
-                  {estado?.estado && (
+                  {!soloPlanificada && estado?.estado && (
                     <div className={`estado-guardado estado-guardado-${estado.estado}`}>
                       {estado.estado === "guardando" && "Guardando..."}
                       {estado.estado === "guardado" && "Guardado"}
@@ -676,12 +688,10 @@ function DetalleGrupo({ grupo, usuario, definicionesRoles, guardado, onSolicitar
                   )}
                 </td>
                 <td className="acciones-tabla acciones-fila-tarea celda-acciones" data-testid={`acciones-tarea-${tarea.id}`}>
-                  {grupo.targetType === "domain" ? (
+                  {!soloPlanificada && grupo.targetType === "domain" && (
                     <button type="button" className="primario" onClick={() => copiarTexto(dominioPublicable)}>
                       Copiar dominio para publicar
                     </button>
-                  ) : (
-                    null
                   )}
                   {puedeCompletar && tarea.status !== "completed" && tarea.status !== "cancelled" && (
                     <button type="button" className="exito" onClick={() => onSolicitarCompletar(tarea)}>Completar</button>
@@ -695,7 +705,11 @@ function DetalleGrupo({ grupo, usuario, definicionesRoles, guardado, onSolicitar
                   {puedeReabrir && tarea.status === "completed" && (
                     <button type="button" onClick={() => setReabrir(tarea)}>Reabrir</button>
                   )}
-                  {!tieneAccionDisponible && <span className="texto-ayuda">Sin permiso</span>}
+                  {!tieneAccionDisponible && (
+                    <span className="texto-ayuda">
+                      {soloPlanificada ? "Las acciones estarán disponibles en la fecha de la tarea." : "Sin permiso"}
+                    </span>
+                  )}
                 </td>
               </tr>
             );

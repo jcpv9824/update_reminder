@@ -4,7 +4,7 @@ import type { CatalogEnvironment } from "./catalogSourceConfiguration";
 import { writeSqlAuditLog } from "./auditSqlWriter";
 import { runSqlTransaction } from "./sqlTransaction";
 import { getSecret } from "./keyVault";
-import { catalogTaskCurrentLinkSql } from "./catalogWorkflowTaskEligibilitySql";
+import { catalogTaskActionDateSql, catalogTaskCurrentLinkSql } from "./catalogWorkflowTaskEligibilitySql";
 
 export type TaskConnectionPart = "serverHostPort" | "initialCatalog" | "userId" | "password";
 type RequestAction = { kind: "view" | "reveal" } | { kind: "copy"; part: TaskConnectionPart };
@@ -77,7 +77,8 @@ WHERE task.target_type='database' AND task.status IN ('pending','in_progress','f
     AND EXISTS(SELECT 1 FROM grants WHERE permission_key=N'updates.tasks.view')
     AND EXISTS(SELECT 1 FROM grants WHERE permission_key=@permission)))
   AND ((e.catalog_execution_key IS NULL AND task.database_key=db.database_key AND task.domain_key=db.domain_key AND task.client_key=db.client_key)
-    OR (e.retired_at IS NULL AND l.catalog_execution_link_key IS NOT NULL AND (e.cutoff_at>@now OR e.cutoff_evaluated_at IS NOT NULL)
+    OR (e.retired_at IS NULL AND ${catalogTaskActionDateSql}
+      AND l.catalog_execution_link_key IS NOT NULL AND (e.cutoff_at>@now OR e.cutoff_evaluated_at IS NOT NULL)
       AND l.catalog_execution_link_key=(SELECT TOP(1) visible_link.catalog_execution_link_key
         FROM workflow.catalog_task_execution_links AS visible_link
         WHERE visible_link.catalog_execution_key=e.catalog_execution_key AND visible_link.link_state='active' AND visible_link.retired_at IS NULL

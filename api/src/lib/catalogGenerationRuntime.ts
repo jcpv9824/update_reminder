@@ -17,12 +17,18 @@ export type CatalogGenerationResult = {
   accountedOrigins: number;
   manualIntentsSaved: number;
   message: string;
+  /** Only background runs report the separate, independently committed Bogotá dates. */
+  days?: Omit<CatalogGenerationResult, "days">[];
 };
+type DayResult = Omit<CatalogGenerationResult, "days">;
 const publicError = (status: number, code: string): never => { throw Object.assign(new Error(code), { status }); };
 const badRequest = (): never => publicError(400, "catalog_generation_request_invalid");
 const notConfigured = (): never => publicError(503, "catalog_generation_configuration_invalid");
 const dayMs = 86_400_000;
 const utcOffsetMs = 5 * 3_600_000;
+const horizonDays = 7;
+const shiftDay = (date: string, offset: number) => new Date(Date.parse(date) + offset * dayMs).toISOString().slice(0, 10);
+const cutoffFor = (date: string) => new Date(Date.parse(date) + dayMs + utcOffsetMs);
 const validISODate = (value: unknown): value is string => typeof value === "string" &&
   /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 const validId = (id: unknown): id is string => typeof id === "string" && id.length >= 1 &&
@@ -50,7 +56,7 @@ function scope(request: Request, now: Date): { date: string; cutoffAt: Date; man
   if (!Number.isFinite(now.valueOf())) return notConfigured();
   // Bogotá UTC-5; only the instant matters, regardless of host local timezone.
   const today = new Date(now.valueOf() - utcOffsetMs).toISOString().slice(0, 10);
-  const horizon = new Date(Date.parse(today) + 7 * dayMs).toISOString().slice(0, 10);
+  const horizon = shiftDay(today, horizonDays);
   const body = request.body === undefined ? {} : request.body;
   if (!body || typeof body !== "object" || Array.isArray(body)) return badRequest();
   const keys = Object.keys(body);
@@ -62,7 +68,7 @@ function scope(request: Request, now: Date): { date: string; cutoffAt: Date; man
   if (!validISODate(date) || date < today || date > horizon || !Array.isArray(manualScheduleIds) ||
     manualScheduleIds.length > 100 || manualScheduleIds.some(id => !validId(id)) ||
     new Set(manualScheduleIds).size !== manualScheduleIds.length) return badRequest();
-  const cutoffAt = new Date(Date.parse(date) + dayMs + utcOffsetMs);
+  const cutoffAt = cutoffFor(date);
   return { date, cutoffAt, manualScheduleIds: [...manualScheduleIds] };
 }
 
@@ -80,7 +86,7 @@ async function readActiveLicenseIds(): Promise<ReadonlySet<string>> {
 const dependencies = { now: () => new Date(), readActiveLicenseIds, readRoster: readSqlCatalogScheduleRoster,
   appendIntents: appendSqlCatalogManualDayIntents, generate: generateApprovedCatalogOperationalScheduleDay };
 
-function incomplete(date: string, status: "cutoff" | "unverified", manualIntentsSaved: number): CatalogGenerationResult {
+function incomplete(date: string, status: "cutoff" | "unverified", manualIntentsSaved: number): DayResult {
   return { date, status, created: 0, existing: 0, held: 0, conflicts: 0, accountedOrigins: 0, manualIntentsSaved,
     message: status === "cutoff" ? manualIntentsSaved
       ? "La solicitud quedó registrada. El corte de generación de esta fecha ya pasó."
@@ -89,12 +95,63 @@ function incomplete(date: string, status: "cutoff" | "unverified", manualIntents
         : "No se pudo verificar la generación del catálogo." };
 }
 
+async function evaluateDay(input: Parameters<typeof generateApprovedCatalogOperationalScheduleDay>[0],
+  generate: typeof dependencies.generate, manualIntentsSaved: number): Promise<DayResult> {
+  const { date } = input;
+  try {
+    const outcome = await generate(input);
+    if (outcome.status !== "evaluated") return incomplete(date, outcome.status, manualIntentsSaved);
+    const { registered, existing, held, conflicts } = outcome;
+    const accountedOrigins = ("accountedOrigins" in outcome ? outcome.accountedOrigins : undefined) ?? 0;
+    const summary = held || conflicts ? "Fecha evaluada con destinos retenidos o en conflicto." : "Fecha del catálogo evaluada.";
+    return { date, status: "evaluated", created: registered, existing, held, conflicts, accountedOrigins, manualIntentsSaved,
+      message: accountedOrigins > 0 ? summary + " Los recibos de procedencia no son tareas nuevas ni conceden acceso." : summary };
+  } catch { return incomplete(date, "unverified", manualIntentsSaved); }
+}
+
+async function evaluateBackgroundWindow(today: string, config: ReturnType<typeof configuration>,
+  io: typeof dependencies): Promise<CatalogGenerationResult> {
+  const days: DayResult[] = [];
+  let activeLicenseIds: ReadonlySet<string> | undefined;
+  try { activeLicenseIds = await io.readActiveLicenseIds(); }
+  catch { /* Without this evidence all not-yet-cutoff dates remain unverified. */ }
+  for (let offset = 0; offset <= horizonDays; offset++) {
+    const date = shiftDay(today, offset);
+    const cutoffAt = cutoffFor(date);
+    // Keep the invocation's horizon anchored, but recheck the day's own
+    // deadline after earlier dates may have spent time in SQL.
+    const checkedAt = io.now();
+    if (!Number.isFinite(checkedAt.valueOf())) days.push(incomplete(date, "unverified", 0));
+    else if (checkedAt >= cutoffAt) days.push(incomplete(date, "cutoff", 0));
+    else if (!activeLicenseIds) days.push(incomplete(date, "unverified", 0));
+    else days.push(await evaluateDay({ ...config, date, checkedAt, cutoffAt, activeLicenseIds }, io.generate, 0));
+  }
+  const evaluated = days.filter(day => day.status === "evaluated");
+  const unverified = days.some(day => day.status === "unverified");
+  const status = unverified ? "unverified" : evaluated.length ? "evaluated" : "cutoff";
+  const totals = evaluated.reduce((sum, day) => ({
+    created: sum.created + day.created,
+    existing: sum.existing + day.existing,
+    held: sum.held + day.held,
+    conflicts: sum.conflicts + day.conflicts,
+    accountedOrigins: sum.accountedOrigins + day.accountedOrigins,
+  }), { created: 0, existing: 0, held: 0, conflicts: 0, accountedOrigins: 0 });
+  const summary = status === "unverified" ? "No se pudieron verificar una o más fechas del catálogo."
+    : status === "cutoff" ? "El corte de generación de las fechas ya pasó."
+    : days.some(day => day.status === "cutoff") ? "Ventana del catálogo evaluada con fechas omitidas por corte."
+    : "Ventana del catálogo evaluada.";
+  return { date: today, status, ...totals, manualIntentsSaved: 0, days,
+    message: totals.accountedOrigins > 0 ? summary + " Los recibos de procedencia no son tareas nuevas ni conceden acceso." : summary };
+}
+
 /** The existing route must authorize generation before calling this internal service. */
 export async function runCatalogGeneration(request: Request, io = dependencies,
   env: NodeJS.ProcessEnv = process.env): Promise<CatalogGenerationResult> {
-  const { portalEnvironment, matchKeyVersion } = configuration(env);
+  const config = configuration(env);
+  const { portalEnvironment, matchKeyVersion } = config;
   const checkedAt = io.now();
   const { date, cutoffAt, manualScheduleIds } = scope(request, checkedAt);
+  if (request.trigger === "timer" || request.trigger === "schedule-change") return evaluateBackgroundWindow(date, config, io);
   if (checkedAt >= cutoffAt) return incomplete(date, "cutoff", 0);
   let manualIntentsSaved = 0;
   if (manualScheduleIds.length) {
@@ -115,13 +172,8 @@ export async function runCatalogGeneration(request: Request, io = dependencies,
     manualIntentsSaved = selected.length;
   }
   try {
-    const outcome = await io.generate({ date, portalEnvironment, matchKeyVersion, checkedAt, cutoffAt,
-      activeLicenseIds: await io.readActiveLicenseIds(), ...(manualScheduleIds.length ? { manualScheduleIds } : {}) });
-    if (outcome.status !== "evaluated") return incomplete(date, outcome.status, manualIntentsSaved);
-    const { registered, existing, held, conflicts } = outcome;
-    const accountedOrigins = ("accountedOrigins" in outcome ? outcome.accountedOrigins : undefined) ?? 0;
-    const summary = held || conflicts ? "Fecha evaluada con destinos retenidos o en conflicto." : "Fecha del catálogo evaluada.";
-    return { date, status: "evaluated", created: registered, existing, held, conflicts, accountedOrigins, manualIntentsSaved,
-      message: accountedOrigins > 0 ? summary + " Los recibos de procedencia no son tareas nuevas ni conceden acceso." : summary };
+    return await evaluateDay({ date, portalEnvironment, matchKeyVersion, checkedAt, cutoffAt,
+      activeLicenseIds: await io.readActiveLicenseIds(), ...(manualScheduleIds.length ? { manualScheduleIds } : {}) },
+    io.generate, manualIntentsSaved);
   } catch { return incomplete(date, "unverified", manualIntentsSaved); }
 }

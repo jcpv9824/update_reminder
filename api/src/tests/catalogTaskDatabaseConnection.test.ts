@@ -48,6 +48,20 @@ describe("task-bound database connection disclosure", () => {
     await expect(readAuditedTaskDatabaseConnection({ ...request, action: { kind: "reveal" } }, io)).rejects.toThrow("audit unavailable");
   });
 
+  it.each([
+    { kind: "view" as const },
+    { kind: "copy" as const, part: "userId" as const },
+    { kind: "reveal" as const },
+    { kind: "copy" as const, part: "password" as const },
+  ])("never reads a secret or audits a future catalog task denied by SQL: %j", async action => {
+    const io = setup();
+    io.read.mockResolvedValue(null);
+    expect(await readAuditedTaskDatabaseConnection({ ...request, action }, io)).toBeNull();
+    expect(io.read).toHaveBeenCalledOnce();
+    expect(io.secret).not.toHaveBeenCalled();
+    expect(io.audit).not.toHaveBeenCalled();
+  });
+
   it("audits explicit field and password copies separately without the copied value", async () => {
     const io = setup();
     expect(await readAuditedTaskDatabaseConnection({ ...request, action: { kind: "copy", part: "userId" } }, io))
@@ -153,8 +167,11 @@ describe("task-bound database connection disclosure", () => {
     const query = source.split("`").find(part => /^\s*DECLARE @now/.test(part))!;
     expect(query).toBeTruthy();
     const selector = '${catalogTaskCurrentLinkSql("e", "visible_link", "@environment")}';
+    const actionDate = '${catalogTaskActionDateSql}';
     expect(query).toContain(selector);
-    expect(query.replace(selector, "")).not.toContain("${");
+    expect(query).toContain("DECLARE @now datetime2(3)=SYSUTCDATETIME();");
+    expect(query).toContain("OR (e.retired_at IS NULL AND " + actionDate);
+    expect(query.replace(selector, "").replace(actionDate, "")).not.toContain("${");
     for (const predicate of [
       "FROM core.catalog_operational_link_evidence AS bridge",
       "bridge.link_id=TRY_CONVERT(uniqueidentifier,l.link_id) AND DATALENGTH(l.link_id)=72",

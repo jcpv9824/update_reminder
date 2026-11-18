@@ -107,11 +107,14 @@ export const catalogTaskHistoryEnvironmentSql = `(${catalogTaskIsLegacySql} OR E
 export const catalogTaskHasVisibleLinkSql = `(${catalogTaskIsLegacySql}
   OR active_catalog_link.catalog_execution_link_key IS NOT NULL)`;
 
-/** Legacy mutation paths act on the stored representative, not on alternate visible links. */
+/** Catalog actions start at midnight Bogotá (UTC−5). Visibility alone does not grant action. */
+export const catalogTaskActionDateSql = `(task.task_date IS NOT NULL AND task.task_date<=CONVERT(date,DATEADD(hour,-5,SYSUTCDATETIME())))`;
+
+/** Existing mutation paths act only on the due, stored representative, not on alternate visible links. */
 export const catalogTaskHasActiveRepresentativeSql = `NOT EXISTS (
   SELECT 1 FROM workflow.catalog_task_executions catalog_execution
   WHERE catalog_execution.task_key=task.task_key
-    AND (catalog_execution.retired_at IS NOT NULL OR NOT EXISTS (
+    AND (catalog_execution.retired_at IS NOT NULL OR NOT ${catalogTaskActionDateSql} OR NOT EXISTS (
       SELECT 1 FROM workflow.catalog_task_execution_links catalog_link
       WHERE catalog_link.catalog_execution_key=catalog_execution.catalog_execution_key
         AND ${catalogTaskCurrentLinkSql("catalog_execution", "catalog_link", "@portalEnvironment")}

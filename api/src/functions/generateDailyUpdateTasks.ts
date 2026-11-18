@@ -335,7 +335,8 @@ app.timer("generateDailyUpdateTasks", {
       if (mode === "catalog") {
         const result = await runCatalogGeneration({ trigger: "timer" });
         await sweepCatalogCutoffs(message => ctx.log(message));
-        ctx.log(`Catálogo: estado=${result.status}; creadas=${result.created}; existentes=${result.existing}; retenidas=${result.held}; conflictos=${result.conflicts}; procedencias=${result.accountedOrigins}.`);
+        const dates = result.days ? ` fechas evaluadas=${result.days.filter(day => day.status === "evaluated").length}/${result.days.length};` : "";
+        ctx.log(`Catálogo: estado=${result.status};${dates} creadas=${result.created}; existentes=${result.existing}; retenidas=${result.held}; conflictos=${result.conflicts}; procedencias=${result.accountedOrigins}.`);
         return;
       }
       const isoDate = todayInBogotaIso();
