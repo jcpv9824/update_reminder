@@ -19,6 +19,7 @@ import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import { readSqlDomains, readSqlPublicDatabases, type DomainFilters } from "../lib/coreMastersSqlRepository";
 import { createSqlDomain, setSqlDomainStatus, updateSqlDomain } from "../lib/domainsSqlWriteRepository";
 import { deleteSqlCoreCascade } from "../lib/coreCascadeSqlRepository";
+import { catalogMasterReadOnly, catalogOwnsOperationalMasters } from "../lib/catalogMasterOwnership";
 import type { DomainRecord } from "../types/models";
 
 async function getUserOrFail(req: HttpRequest) {
@@ -86,6 +87,7 @@ app.http("domainsCreate", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canCreateDomain(user, roleDefinitions)) return forbidden();
+      if (catalogOwnsOperationalMasters()) return catalogMasterReadOnly("dominios");
       const body = await req.json();
       const parsed = DomainSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
@@ -156,6 +158,7 @@ app.http("domainsUpdate", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canEditDomain(user, roleDefinitions)) return forbidden();
+      if (catalogOwnsOperationalMasters()) return catalogMasterReadOnly("dominios");
       const id = req.params.id;
       const body = await req.json() as any;
       if (typeof body.environment === "string" && !isAllowedEnvironment(body.environment)) return badRequest("El ambiente debe ser Producción, Pruebas o Demo.");
@@ -179,6 +182,7 @@ async function setDomainStatus(req: HttpRequest, action: "domain_deactivated" | 
   const roleDefinitions = await loadRoleDefinitions();
   const allowed = status === "active" ? canReactivateDomain(user, roleDefinitions) : canDeactivateDomain(user, roleDefinitions);
   if (!allowed) return forbidden();
+  if (catalogOwnsOperationalMasters()) return catalogMasterReadOnly("dominios");
   const id = req.params.id;
   const result = await setSqlDomainStatus(
     id,
@@ -203,6 +207,7 @@ app.http("domainsDelete", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canDeleteDomain(user, roleDefinitions)) return forbidden();
+      if (catalogOwnsOperationalMasters()) return catalogMasterReadOnly("dominios");
       const id = req.params.id;
       const cascade = req.query.get("cascade") === "true";
       const result = await deleteSqlCoreCascade("domain", id, cascade, { id: user.id, email: user.email });

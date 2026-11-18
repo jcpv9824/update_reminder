@@ -161,8 +161,11 @@ candidato final pasó TypeScript y Vite. Su suite independiente con
 `npx vitest run --maxWorkers=1` terminó **302/303 en 280,07 s**. Sólo falló la
 prueba existente de inventario de dominios esperando la tabla durante la carga
 inicial de roles; el caso exacto aislado pasó **1/1**, sin cambiar código ni
-ampliar tiempos. La prueba nueva pasó. No se declara verde la suite completa.
-Pendientes: suite completa final limpia, concurrencia y flujo integrado de QA.
+ampliar tiempos. La prueba nueva pasó. La repetición completa posterior de
+Orquestación sobre `6b02c86`, `npx vitest run --maxWorkers=2`, pasó **303/303 en
+34 archivos y 93,78 s**, sin editar pruebas, configuración ni tiempos. Se
+conserva el fallo anterior como antecedente, no se lo transforma en éxito.
+Pendientes: concurrencia y flujo integrado de QA.
 No se aplicó 051 permanentemente ni se habilitó automatización en producción
 con estos resultados.
 
@@ -179,6 +182,80 @@ con estos resultados.
 La API requiere un entorno explícito `PORTAL_SAG_ENVIRONMENT=qa` o `production`. El lector requiere una versión de la clave de emparejamiento en `PORTAL_CATALOG_MATCH_KEY_VERSION`, coincidente con las revisiones publicadas. Esto no es la clave ni autoriza guardarla en el repositorio.
 
 La actualización explícita lee exclusivamente la versión de Key Vault indicada en `PORTAL_CATALOG_MATCH_KEY_SECRET_VERSION` del secreto `PORTAL_CATALOG_MATCH_KEY_SECRET_NAME`. Debe representar 32 bytes generados con un generador criptográfico y codificados en hexadecimal. La 038 no inscribe valores: un operador autorizado debe registrar una sola vez, antes de cualquier revisión del entorno, la versión numérica, los 16 bytes de la versión exacta de Key Vault y la prueba HMAC producida por `buildCatalogMatchKeyEvidence`; debe usar el bloqueo transaccional exclusivo `portal-sag:catalog-customer-publication:<entorno>`. SQL no guarda la clave, y el publicador exige que coincidan versión, referencia y prueba antes de reservar, registrar un fallo o publicar. No se puede sustituir la inscripción ni tomar la última versión por defecto. Este flujo no rota claves ni inscribe automáticamente. Antes de habilitar, falta hacer la inscripción real y certificar las conexiones. La protección de inmutabilidad no sustituye los controles de acceso al principal de base de datos que tiene privilegios de propietario.
+
+## Auditoría del alcance real: no equivale a un refactor terminado
+
+La revisión de código de `6b02c86` encontró pendientes funcionales, no sólo
+pasos de despliegue. Las pruebas anteriores certifican sus casos concretos;
+no prueban que todos los datos del origen alimenten ya la aplicación.
+
+| Requisito | Evidencia actual | Trabajo necesario antes de activar |
+| --- | --- | --- |
+| Clientes ERP en tiempo de lectura | La revisión publica identidad opaca, nombre oficial y `sc_activo`; el consumidor conserva permisos por fuente | Certificar fuentes y resolver su lectura consistente; no inferir país/emisor ni publicar revisiones incompletas |
+| Relaciones cliente–dominio–base desde SAG Admin | El contrato sólo proyecta `Customers`: dominio observado, ambiente, fechas y códigos de módulos. No proyecta `Companies` | Incorporar el descubrimiento y la reconciliación automática de relaciones por identificadores estables. Una base nueva del Admin aún no aparece sola en el inventario |
+| Inventarios operativos | Los lectores de dominios y bases requieren registros locales y vínculos 042 aprobados | No usar el sembrado manual de unos pocos vínculos como sustituto de la integración completa. Distinguir inventario realmente completo de vínculos conocidos que sí fueron verificados |
+| Licencias con nombre y filtros | Se actualizan letras observadas; nombres y filtros usan la correspondencia 041 con módulos locales existentes | Reconciliar el maestro con la fuente autorizada de módulos y completar correspondencias sin inventarlas; no confundir letras desconocidas con ausencia de licencia |
+| Programar y previsualizar | `FrecuenciasPage` consulta maestros anteriores; la ejecución del catálogo usa vínculos y pruebas diferentes | Llevar selectores, filtros, validación y vista previa al mismo contrato de catálogo que ejecuta las tareas |
+| Cobertura de programación | La aprobación 046 fija fuentes/configuraciones y vínculos conocidos, pero no incluye por sí sola nuevos registros sin vínculo | Detectar relaciones descubiertas nuevas, pendientes o ambiguas; nunca declarar completa una población que omite esos registros |
+| Maestros de sólo lectura | Clientes ya lo aplicaba. El incremento posterior bloquea también las 16 mutaciones HTTP de dominios, bases y licencias con lectura del catálogo habilitada | Certificar el corte integrado conservando lecturas históricas, conciliación interna y acciones de tarea autorizadas; no habilitar el catálogo antes de completar su alimentación |
+| Conexión de una tarea asignada | Se valida la relación externa, pero se sirve un perfil operativo local con secreto en Key Vault | Completar el aprovisionamiento/resolución para destinos nuevos sin leer contraseñas en el catálogo ni otorgar acceso por semejanza de nombre |
+| Conteo de usuarios | Existen contador, certificaciones por destino y mensaje de indisponibilidad | Certificar destinos y cuentas de conteo de sólo lectura y ejecutar el reporte completo; la lectura de origen no demuestra permisos en cada base de cliente |
+
+El archivo de vista suministrado por el propietario relaciona
+`Companies.CustomerId → Customers.Id`. La exploración SELECT de metadatos
+confirmó esa FK y las columnas `Companies.Id`, `CustomerId`, `IsAvailable`,
+`Name` y `StringConnection`. La identidad agrupada del cliente sigue saliendo
+de `Customers.Document`, no de `Companies.Document`; no se crea un maestro de
+compañías. No se leyó el valor de `StringConnection`: sólo se consultaron
+nombres/tipos de columnas. Cualquier proyección nueva debe obtener únicamente
+metadatos de destino permitidos, sin devolver la cadena completa ni contraseñas;
+un valor no interpretable debe quedar visible como no verificado, no desaparecer
+de la población.
+
+La vista original contiene 24 equivalencias explícitas de módulos (A–R y U–Z),
+pero no S/T. No se ejecutó su DDL y no se considera ese listado una prueba de
+que contiene todos los módulos actuales. Falta comprobar el catálogo completo.
+
+La exploración agregada posterior, usando sólo SELECT con la nueva cuenta,
+encontró **86 filas Customers**, ninguna sin documento, y **122 filas Companies**,
+sin padres nulos ni desconocidos. Las 122 tenían `IsAvailable=1`; ese dato no
+demuestra la semántica de un futuro valor falso ni sustituye `sc_activo` de ERP.
+Se observaron **25 códigos distintos: A–S y U–Z**. S aparece en dos Customers y
+no está descrito en la vista entregada; T no apareció. Debe conservarse S como
+código observado sin inventarle nombre ni excluir a sus clientes de los filtros.
+Estos conteos proceden de consultas de exploración separadas, no son una revisión
+consistente sellada ni una autorización para afirmar cobertura operativa. No se
+consultaron cadenas de conexión ni contraseñas para obtenerlos.
+
+La revisión de consistencia mantiene SNAPSHOT como contrato actual. RCSI da
+consistencia por sentencia, no entre las páginas del lector actual. Una
+alternativa SERIALIZABLE necesita una decisión explícita y pruebas de bloqueo:
+conserva bloqueos hasta terminar la transacción; `LOCK_TIMEOUT` limita la espera
+para adquirirlos, no el tiempo que los retiene. No se ha añadido ni activado esa
+alternativa. Referencias oficiales:
+[niveles de aislamiento](https://learn.microsoft.com/en-us/sql/t-sql/statements/set-transaction-isolation-level-transact-sql?view=sql-server-ver15)
+y [LOCK_TIMEOUT](https://learn.microsoft.com/en-us/sql/t-sql/statements/set-lock-timeout-transact-sql).
+
+## Incremento local: cierre de las mutaciones heredadas
+
+`catalogMasterOwnership.ts` centraliza el bloqueo de las mutaciones HTTP de
+Dominios, Bases de Datos y Licenciamiento cuando
+`PORTAL_CATALOG_READ_ENABLED=true`. Los 16 endpoints conservan autenticación y
+permiso de acción antes de responder 409; rechazan incluso a `super_admin`
+antes de leer el cuerpo, buscar destinos, escribir, borrar en cascada o acceder
+a secretos. Las modificaciones de estado de licencias forman parte de PUT.
+No modifica permisos ni DDL, no impide la conciliación interna y no bloquea
+consultas/copias/revelaciones autorizadas desde tareas. Con flag apagado o
+ausente se mantiene el comportamiento anterior.
+
+La matriz reprodujo primero los **16 fallos** (50 casos ya pasaban). Con el
+cambio pasaron **66/66 casos nuevos**, **152/152 pruebas enfocadas** de Desarrollo
+y **156/156 en ocho archivos** de QA independiente. El build del API pasó. La
+suite completa posterior pasó **1.506/1.506 en 160 archivos, 194,60 s**. Son
+resultados locales; no se activó el flag ni se publicó este incremento en
+producción. Para revertir el código se restaura el paquete anterior, sin borrar
+historia ni cambiar permisos; eso recuperaría también la posibilidad de
+mutaciones heredadas al activar lectura del catálogo.
 
 ## Antes de activar
 

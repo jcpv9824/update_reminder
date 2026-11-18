@@ -29,6 +29,7 @@ import { readSqlWorkflowTasks } from "../lib/workflowTasksSqlRepository";
 import { deleteSqlCoreCascade } from "../lib/coreCascadeSqlRepository";
 import type { DatabaseRecord, UpdateTask } from "../types/models";
 import { readAuditedTaskDatabaseConnection } from "../lib/catalogTaskDatabaseConnection";
+import { catalogMasterReadOnly, catalogOwnsOperationalMasters } from "../lib/catalogMasterOwnership";
 
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -90,6 +91,7 @@ app.http("databasesCreate", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canCreateDatabase(user, roleDefinitions)) return forbidden();
+      if (catalogOwnsOperationalMasters()) return catalogMasterReadOnly("bases de datos");
       const body = await req.json();
       const parsed = DbCreateSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
@@ -226,6 +228,7 @@ app.http("databasesUpdate", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canEditDatabase(user, roleDefinitions)) return forbidden();
+      if (catalogOwnsOperationalMasters()) return catalogMasterReadOnly("bases de datos");
       const body = await req.json() as any;
       if (typeof body.environment === "string" && !isAllowedEnvironment(body.environment)) return badRequest("El ambiente debe ser Producción, Pruebas o Demo.");
       if (typeof body.rawDbAccess === "string" && body.rawDbAccess.trim()) {
@@ -255,6 +258,7 @@ async function setDbStatus(req: HttpRequest, action: "database_deactivated" | "d
   const roleDefinitions = await loadRoleDefinitions();
   const allowed = status === "active" ? canReactivateDatabase(user, roleDefinitions) : canDeactivateDatabase(user, roleDefinitions);
   if (!allowed) return forbidden();
+  if (catalogOwnsOperationalMasters()) return catalogMasterReadOnly("bases de datos");
   const result = await setSqlDatabaseStatus(
     req.params.id,
     status,
@@ -279,6 +283,7 @@ app.http("databasesDelete", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canDeleteDatabase(user, roleDefinitions)) return forbidden();
+      if (catalogOwnsOperationalMasters()) return catalogMasterReadOnly("bases de datos");
       const db = await findDatabase(req.params.id);
       if (!db) return notFound("Base de datos no encontrada.");
       const cascade = req.query.get("cascade") === "true";

@@ -14,6 +14,7 @@ import {
 } from "../lib/managementAccess";
 import { getPagination } from "../lib/pagination";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
+import { catalogMasterReadOnly, catalogOwnsOperationalMasters } from "../lib/catalogMasterOwnership";
 import { readSqlLicenseAssignments, readSqlLicenseModules } from "../lib/licensingSqlRepository";
 import {
   createSqlLicenseAssignment,
@@ -81,6 +82,7 @@ app.http("licenseModulesCreate", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canCreateLicense(user, roleDefinitions)) return forbidden("No tiene permisos para crear licencias.");
+      if (catalogOwnsOperationalMasters()) return catalogMasterReadOnly("licenciamiento");
       const parsed = ModuleSchema.safeParse(await req.json().catch(() => ({})));
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const record = await createSqlLicenseModule(`license_module_${randomUUID()}`, parsed.data, {
@@ -103,6 +105,7 @@ app.http("licenseModulesUpdate", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canEditLicense(user, roleDefinitions)) return forbidden("No tiene permisos para editar licencias.");
+      if (catalogOwnsOperationalMasters()) return catalogMasterReadOnly("licenciamiento");
       const id = req.params.id;
       const current = await findSqlLicenseModule(id);
       if (!current || current.status === "deleted" || current.deletedAt) return notFound("Licencia o módulo no encontrado.");
@@ -128,6 +131,7 @@ app.http("licenseModulesDelete", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canDeleteLicense(user, roleDefinitions)) return forbidden("No tiene permisos para eliminar licencias.");
+      if (catalogOwnsOperationalMasters()) return catalogMasterReadOnly("licenciamiento");
       const id = req.params.id;
       const result = await deleteSqlLicenseModule(id, { id: user.id, email: user.email });
       if (!result.found) return notFound("Licencia o módulo no encontrado.");
@@ -176,6 +180,7 @@ app.http("licenseAssignmentsCreate", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canCreateLicense(user, roleDefinitions)) return forbidden("No tiene permisos para crear asignaciones.");
+      if (catalogOwnsOperationalMasters()) return catalogMasterReadOnly("licenciamiento");
       const parsed = AssignmentSchema.safeParse(await req.json().catch(() => ({})));
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
       const record = await createSqlLicenseAssignment(`license_assignment_${randomUUID()}`, parsed.data, {
@@ -198,6 +203,7 @@ app.http("licenseAssignmentsUpdate", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canEditLicense(user, roleDefinitions)) return forbidden("No tiene permisos para editar asignaciones.");
+      if (catalogOwnsOperationalMasters()) return catalogMasterReadOnly("licenciamiento");
       const id = req.params.id;
       const current = await findSqlLicenseAssignment(id);
       if (!current || current.status === "deleted" || current.deletedAt) return notFound("Asignación no encontrada.");
@@ -223,6 +229,7 @@ app.http("licenseAssignmentsDelete", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canDeleteLicense(user, roleDefinitions)) return forbidden("No tiene permisos para eliminar asignaciones.");
+      if (catalogOwnsOperationalMasters()) return catalogMasterReadOnly("licenciamiento");
       const deleted = await deleteSqlLicenseAssignment(req.params.id, { id: user.id, email: user.email });
       return deleted ? ok({ ok: true, deleted: true }) : notFound("Asignación no encontrada.");
     } catch (e: any) {
