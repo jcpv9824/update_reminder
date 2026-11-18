@@ -5,6 +5,50 @@ debe hacerse sobre el candidato exacto, con un API no productivo y SQL Server
 2019 de QA, y antes de aprobar el corte. Las pruebas deben usar datos
 sintéticos autorizados y terminar con verificación de cero residuos.
 
+## Evidencia de la cola 051 (2026-11-18)
+
+`Test-CatalogRefreshQueueQa.ps1` usa sólo una sesión efímera de control completo
+con destino exacto `PortalSAGWeb-TEST`, SQL Server 2019 y compatibilidad 150.
+Requiere 050 instalada, 051 ausente, ninguna fuente QA activa y ninguna clave
+QA inscrita. No lee claves reales ni abre conexiones externas. Crea metadatos
+sintéticos dentro de una transacción que revierte; no suspende triggers.
+
+Resultados observados: instalación y reejecución idempotente **1/1, 58 ms**;
+ensayo completo **30/30, 855 ms**, más dos verificaciones de los conjuntos de
+resultado reales de estado (ERP autorizado con dependencia SAG oculta y acceso
+revocado sin metadatos). La lectura independiente posterior confirmó 051
+ausente, 050 presente, cero usuarios/perfiles sintéticos y cero claves QA.
+
+Casos: selección vacía, selección falsificada sin escritura parcial, todos los
+ERP autorizados, coalescencia, límite de claim sin repetición activa, prueba
+sintética exacta de clave y siete negativas de concesión/versiones/propietario,
+reserva idempotente, perfil cambiado, publicación/cabecera/evento/finalización
+con reversión conjunta, finalización repetida, intento posterior exitoso,
+fallido o sin cabecera, vencimiento y recuperación, retiro por cambio de
+vínculo, cinco intentos con espera y fallo terminal, aislamiento de otra fuente
+y enfriamiento del temporizador. Los doce lotes compilados y la 051 pasaron
+TSql150; el hash LF de la 051 coincide con el manifiesto.
+
+Dos defectos del fixture se corrigieron antes de obtener el resultado: DECLARE
+de variables TABLE separadas y cero scopes en la revisión ERP (los scopes de
+cobertura son exclusivos de SAG Admin). No se relajaron restricciones de la
+aplicación ni se conservaron datos sintéticos para hacer pasar el ensayo.
+
+Límites: es una sesión SQL y ejecución directa de los lotes compilados. No
+certifica una carrera real entre dos sesiones, la unidad transaccional completa
+del servicio JavaScript con su escritor de auditoría, conexiones remotas ni el
+flujo navegador→API→fuentes. Esos casos y la certificación de las cuentas reales
+siguen pendientes antes de activar o publicar en producción. Los cuatro
+interruptores de lectura/automatización API/frontend no se habilitaron por este
+ensayo. El resultado no es aprobación global del refactor.
+
+```powershell
+pwsh -NoProfile -File migration/tools/Test-CatalogRefreshQueueQa.ps1 -SessionDirectory <sesion-qa> -ProbeStage bootstrap
+pwsh -NoProfile -File migration/tools/Test-CatalogRefreshQueueQa.ps1 -SessionDirectory <sesion-qa> -ProbeStage all
+```
+
+## Matriz pendiente de certificación integral
+
 | Caso | Resultado esperado |
 | --- | --- |
 | Manual → temporizador y temporizador → manual: mismo vínculo lógico, destino físico, operación y responsables | Una tarea y un evento de creación. Los dos orígenes quedan registrados una vez. Dos reintentos simultáneos no duplican tarea, intención ni orígenes. Invertir el orden de los identificadores no cambia el representante. |

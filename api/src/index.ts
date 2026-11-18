@@ -5,6 +5,8 @@ import "./functions/users";
 import "./functions/roles";
 import "./functions/clients";
 import "./functions/catalogCustomers";
+import "./functions/catalogRefresh";
+import "./functions/processCatalogRefresh";
 import "./functions/catalogSources";
 import "./functions/domains";
 import "./functions/databases";

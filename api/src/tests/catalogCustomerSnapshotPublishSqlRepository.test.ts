@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { createSqlCatalogCustomerSnapshotPublisher } from "../lib/catalogCustomerSnapshotPublishSqlRepository";
+import { createSqlCatalogCustomerSnapshotPublisher, type CatalogPublicationOperator } from "../lib/catalogCustomerSnapshotPublishSqlRepository";
 import type { CatalogRefreshPublication } from "../lib/catalogCustomerRefresh";
 
 vi.mock("mssql", () => ({
   default: {
     VarChar: vi.fn(), UniqueIdentifier: {}, VarBinary: vi.fn(), SmallInt: {}, DateTime2: vi.fn(),
-    NVarChar: vi.fn(), MAX: -1, Int: {}, ISOLATION_LEVEL: { SERIALIZABLE: 99 },
+    NVarChar: vi.fn(), MAX: -1, Int: {}, TinyInt: {}, ISOLATION_LEVEL: { SERIALIZABLE: 99 },
   },
 }));
 const audit = vi.hoisted(() => vi.fn());
@@ -19,23 +19,84 @@ const revision: CatalogRefreshPublication = {
   rows: [{ sourceRecordId: 54, issuerScope: "CO:NIT", matchToken: Buffer.alloc(32, 171), name: " Synthetic ERP ", activeCode: "S" }],
 };
 const operator = { ...revision, id: "operator", vaultSecretVersion: Buffer.alloc(16, 1), keyVerifier: Buffer.alloc(32, 2) };
+const worker = { kind: "worker", environment: revision.environment, sourceId: revision.sourceId,
+  bindingRevision: revision.bindingRevision, profileRevision: revision.profileRevision, matchKeyVersion: revision.matchKeyVersion,
+  vaultSecretVersion: operator.vaultSecretVersion, keyVerifier: operator.keyVerifier, attempt: 2,
+  jobId: "1a56df91-f51c-4320-a626-67fd22fd3db8", workerId: "3a56df91-f51c-4320-a626-67fd22fd3db8",
+  leaseToken: "4a56df91-f51c-4320-a626-67fd22fd3db8" } satisfies CatalogPublicationOperator;
 
-function setup() {
+function setup(identity: CatalogPublicationOperator = operator) {
   audit.mockClear();
   const input = vi.fn().mockReturnThis();
   const query = vi.fn().mockResolvedValue({ recordset: [{ result: "published" }] });
-  const authorize = vi.fn().mockResolvedValue({ recordset: [{ allowed: 1 }] });
+  const authorize = vi.fn().mockResolvedValue({ recordset: [{ allowed: 1, attemptOrdinal: revision.attemptOrdinal }] });
   const begin = vi.fn().mockResolvedValue(undefined);
   const commit = vi.fn().mockResolvedValue(undefined);
   const rollback = vi.fn().mockResolvedValue(undefined);
   const pool = { transaction: vi.fn(() => ({ request: () => ({ input, query: (sql: string) =>
-    sql.includes("SELECT 1 AS allowed FROM security.users") ? authorize(sql) : query(sql) }), begin, commit, rollback })) };
-  const sink = createSqlCatalogCustomerSnapshotPublisher(pool as unknown as Parameters<typeof createSqlCatalogCustomerSnapshotPublisher>[0], { operator });
+    sql.includes("SELECT 1 AS allowed") ? authorize(sql) : query(sql) }), begin, commit, rollback })) };
+  const sink = createSqlCatalogCustomerSnapshotPublisher(pool as unknown as Parameters<typeof createSqlCatalogCustomerSnapshotPublisher>[0], { operator: identity });
   const value = (name: string) => input.mock.calls.find(call => call[0] === name)?.[2];
   return { sink, pool, input, query, authorize, begin, commit, rollback, value };
 }
 
 describe("catalog customer snapshot SQL publisher", () => {
+  it("reserves a durable attempt on the exact service lease and rechecks the SQL clock before commit", async () => {
+    const fake = setup(worker);
+    fake.query.mockResolvedValueOnce({ recordset: [{ attemptOrdinal: revision.attemptOrdinal }] });
+    expect(await fake.sink.reserveAttempt()).toBe(revision.attemptOrdinal);
+    expect(fake.authorize.mock.calls[0][0]).toContain("j.job_id=@jobId AND j.worker_id=@workerId AND j.lease_token=@leaseToken");
+    expect(fake.authorize.mock.calls[0][0]).toContain("j.attempt_no=@jobAttempt");
+    expect(fake.authorize.mock.calls[0][0]).toContain("b.row_version=@binding AND p.row_version=@profile");
+    expect(fake.authorize.mock.calls[0][0]).toContain("k.vault_secret_version=@vaultSecretVersion AND k.key_verifier=@keyVerifier");
+    expect(fake.authorize.mock.calls[0][0]).toContain("WHERE @leaseUntil>SYSUTCDATETIME()");
+    expect(fake.authorize.mock.calls[0][0]).not.toContain("security.users");
+    expect(fake.value("actorId")).toBeUndefined();
+    expect(fake.value("jobId")).toBe(worker.jobId);
+    expect(fake.value("leaseToken")).toBe(worker.leaseToken);
+    expect(fake.value("jobAttempt")).toBe(2);
+    expect(fake.query.mock.calls[0][0]).toContain("UPDATE settings.catalog_source_refresh_jobs SET attempt_ordinal=@ordinal");
+    expect(fake.query.mock.calls[1][0]).toContain("j.lease_expires_at>SYSUTCDATETIME()");
+    expect(fake.query.mock.invocationCallOrder[1]).toBeLessThan(fake.commit.mock.invocationCallOrder[0]);
+  });
+
+  it("does not reserve, publish, or record failure when the job lease or certified pins are denied", async () => {
+    const fake = setup(worker);
+    fake.authorize.mockResolvedValue({ recordset: [] });
+    await expect(fake.sink.reserveAttempt()).rejects.toThrow("catalog_publication_failed");
+    await expect(fake.sink.publish(revision)).rejects.toThrow("catalog_publication_failed");
+    await expect(fake.sink.recordFailure(revision)).rejects.toThrow("catalog_publication_failed");
+    expect(fake.query).not.toHaveBeenCalled();
+    expect(fake.rollback).toHaveBeenCalledTimes(3);
+    fake.authorize.mockResolvedValue({ recordset: [{ allowed: 1, attemptOrdinal: "18" }] });
+    await expect(fake.sink.publish(revision)).rejects.toThrow("catalog_publication_failed");
+    await expect(fake.sink.recordFailure(revision)).rejects.toThrow("catalog_publication_failed");
+    expect(fake.query).not.toHaveBeenCalled();
+    expect(fake.commit).not.toHaveBeenCalled();
+  });
+
+  it("commits success and service audit atomically, and rolls back if the lease expires afterward", async () => {
+    const ok = setup(worker);
+    ok.query.mockResolvedValueOnce({ recordset: [{ result: "published" }] })
+      .mockResolvedValueOnce({ recordset: [{ completed: true }] });
+    await expect(ok.sink.publish(revision)).resolves.toBe("published");
+    expect(ok.query.mock.calls[1][0]).toContain("j.attempt_ordinal=CONVERT(bigint,@reservedOrdinal)");
+    expect(ok.query.mock.calls[1][0]).toContain("IF @leaseUntil<=SYSUTCDATETIME() THROW");
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ performedBy: "system:catalog-refresh" }));
+    expect(ok.commit).toHaveBeenCalledOnce();
+    const expired = setup(worker);
+    expired.query.mockResolvedValueOnce({ recordset: [{ result: "published" }] }).mockRejectedValueOnce(new Error("expiry"));
+    await expect(expired.sink.publish(revision)).rejects.toThrow("catalog_publication_failed");
+    expect(expired.rollback).toHaveBeenCalledOnce();
+    expect(expired.commit).not.toHaveBeenCalled();
+    const failure = setup(worker);
+    failure.query.mockResolvedValueOnce({ recordset: [{ result: "failed" }] }).mockRejectedValueOnce(new Error("expiry"));
+    await expect(failure.sink.recordFailure(revision)).rejects.toThrow("catalog_publication_failed");
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ performedBy: "system:catalog-refresh",
+      action: "catalog_source_refresh_failed" }));
+    expect(failure.rollback).toHaveBeenCalledOnce();
+    expect(failure.commit).not.toHaveBeenCalled();
+  });
   it("binds operator work to the exact active source and rechecks authorization inside each transaction", async () => {
     const fake = setup();
     const sink = fake.sink;

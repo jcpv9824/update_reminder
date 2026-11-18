@@ -1,8 +1,9 @@
 import { useState, type ReactElement } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { Paginacion } from "../components/Comunes";
+import { catalogRefreshMessages, catalogRefreshServiceIfEnabled, useCatalogRefresh } from "../hooks/useCatalogRefresh";
 
 const VISTAS = {
   domains: { titulo: "Dominios", columna: "Dominio" },
@@ -38,34 +39,61 @@ export default function CatalogoInventarioRoute({ vista, legado }: { vista: Vist
 function InventarioCatalogo({ alcance, vista }: { alcance: string; vista: Vista }) {
   const [pagina, setPagina] = useState(1);
   const { titulo, columna } = VISTAS[vista];
+  const queryClient = useQueryClient();
+  const consultas = { queryKey: ["catalogo-inventario", alcance, vista] };
+  const service = catalogRefreshServiceIfEnabled();
+  const actualizacion = useCatalogRefresh({
+    service,
+    scopeKey: alcance,
+    onSettled: () => {
+      void queryClient.cancelQueries(consultas);
+      void queryClient.invalidateQueries(consultas);
+    },
+    onAccessDenied: () => queryClient.removeQueries(consultas),
+  });
+  const accesoDenegado = actualizacion.state === "denied";
   const consulta = useQuery({
-    queryKey: ["catalogo-inventario", alcance, vista, pagina, TAMANO_PAGINA],
-    queryFn: ({ signal }) => api.get<Inventario>(`/catalog/inventory/${vista}?page=${pagina}&pageSize=${TAMANO_PAGINA}`, { signal }),
+    queryKey: [...consultas.queryKey, pagina, TAMANO_PAGINA],
+    queryFn: ({ signal }) => actualizacion.read(signal, () =>
+      api.get<Inventario>(`/catalog/inventory/${vista}?page=${pagina}&pageSize=${TAMANO_PAGINA}`, { signal })),
+    enabled: !accesoDenegado,
     retry: false,
     gcTime: 0,
   });
-  // Refreshes recheck authorization and source coverage; never leave previous data on screen while waiting or after an error.
   const consultaPausada = consulta.fetchStatus === "paused";
-  const resultado = consulta.isError || consulta.isFetching || consultaPausada ? undefined : consulta.data;
+  const resultado = accesoDenegado || (!service && (consulta.isError || consulta.isFetching || consultaPausada))
+    ? undefined : consulta.data;
   const disponible = resultado?.state === "verified" || resultado?.state === "partial" ? resultado : undefined;
+  const avisoActualizacion = catalogRefreshMessages[actualizacion.state];
+
+  function actualizarLista() {
+    if (service) actualizacion.request();
+    else void consulta.refetch();
+  }
 
   return (
     <>
       <div className="encabezado-pagina">
         <h2>{titulo}</h2>
-        <button type="button" className="secundario" disabled={consulta.isFetching || consultaPausada} onClick={() => void consulta.refetch()}>
+        <button type="button" className="secundario" onClick={actualizarLista}
+          disabled={accesoDenegado || (service ? actualizacion.state === "pending" : consulta.isFetching || consultaPausada)}>
           Actualizar lista
         </button>
       </div>
       <p className="texto-ayuda">Catálogo de SAG Web de solo lectura.</p>
+      {avisoActualizacion && (
+        <p className={`alerta ${accesoDenegado ? "alerta-error" : "alerta-info"}`} role={accesoDenegado ? "alert" : "status"}>
+          {avisoActualizacion}
+        </p>
+      )}
 
-      {consulta.isFetching ? (
+      {!accesoDenegado && (consulta.isFetching ? (
         <p className="cargando" role="status">Consultando catálogo…</p>
       ) : consulta.isError || consultaPausada ? (
         <div className="alerta alerta-error" role="alert">No se pudo consultar el catálogo.</div>
       ) : resultado && !disponible ? (
         <div className="alerta alerta-info" role="alert">El catálogo no está disponible o todavía no se ha verificado.</div>
-      ) : null}
+      ) : null)}
 
       {disponible && (
         <>

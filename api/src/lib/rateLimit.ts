@@ -49,6 +49,8 @@ export const RATE_LIMIT_POLICIES = {
   setup: { maxAttempts: 5, windowSeconds: 3600, blockSeconds: 3600 },
   testEmail: { maxAttempts: 10, windowSeconds: 600, blockSeconds: 1800 },
   integrationTest: { maxAttempts: 10, windowSeconds: 600, blockSeconds: 1800 },
+  catalogRefreshRequest: { maxAttempts: 60, windowSeconds: 60, blockSeconds: 60 },
+  catalogRefreshStatus: { maxAttempts: 120, windowSeconds: 60, blockSeconds: 60 },
   companyLogo: { maxAttempts: 20, windowSeconds: 600, blockSeconds: 900 },
   mastersReport: { maxAttempts: 5, windowSeconds: 3600, blockSeconds: 3600 },
   userEmail: { maxAttempts: 10, windowSeconds: 3600, blockSeconds: 3600 },

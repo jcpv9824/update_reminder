@@ -73,10 +73,13 @@ describe("Vistas independientes del catálogo", () => {
 
   it.each(routes)("%s conserva su fuente heredada con la opción desactivada", async (path, _label, _view, permission, legacy) => {
     vi.stubEnv("VITE_PORTAL_CATALOG_READ_ENABLED", "false");
+    vi.stubEnv("VITE_PORTAL_CATALOG_AUTOMATION_ENABLED", "true");
     mockRequests(permission, () => { throw new Error("No debe consultar el catálogo"); });
     renderRoute(path);
     await waitFor(() => expect(get.mock.calls.some(([request]) => request.startsWith(legacy))).toBe(true));
     expect(get.mock.calls.some(([request]) => request.startsWith("/catalog/inventory/"))).toBe(false);
+    expect(get.mock.calls.some(([request]) => request.startsWith("/catalog/refresh/status"))).toBe(false);
+    expect(post).not.toHaveBeenCalled();
   });
 
   it.each(routes)("%s rechaza el acceso directo sin el permiso de la vista", async (path) => {
@@ -135,5 +138,42 @@ describe("Vistas independientes del catálogo", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/no está disponible/);
     const requests = get.mock.calls.filter(([path]) => path.startsWith("/catalog/inventory/"));
     expect(requests.map(([path]) => path)).toEqual([1, 2, 1].map(n => `/catalog/inventory/databases?page=${n}&pageSize=25`));
+  });
+
+  it.each(routes)("%s encola al abrir con solo permiso de lectura y aborta al salir", async (path, label, _view, permission) => {
+    vi.stubEnv("VITE_PORTAL_CATALOG_READ_ENABLED", "true");
+    vi.stubEnv("VITE_PORTAL_CATALOG_AUTOMATION_ENABLED", "true");
+    mockRequests(permission, () => page());
+    post.mockImplementation(() => new Promise(() => {}));
+    const rendered = renderRoute(path);
+    await screen.findByRole("table", { name: `${label} del catálogo` });
+    expect(post).toHaveBeenCalledExactlyOnceWith("/catalog/refresh", {}, { signal: expect.any(AbortSignal) });
+    rendered.unmount();
+    expect(post.mock.calls[0][2].signal.aborted).toBe(true);
+  });
+
+  it("revalida una sola vez tras el estado terminal y conserva filas si falla una fuente", async () => {
+    vi.stubEnv("VITE_PORTAL_CATALOG_READ_ENABLED", "true");
+    vi.stubEnv("VITE_PORTAL_CATALOG_AUTOMATION_ENABLED", "true");
+    post.mockResolvedValue({ accepted: 0, coalesced: 1 });
+    get.mockImplementation(async (path: string) => {
+      if (path === "/roles") return [{ id: "role-inventory", active: true, permissions: ["clients.domains.view"], name: "Lector" }];
+      if (path === "/catalog/refresh/status") return {
+        pending: false,
+        items: [{ sourceId: "10000000-0000-4000-8000-000000000001", status: "failed", updatedAt: "2026-11-18T12:00:00Z" }],
+      };
+      return page("partial", [{ id: "registro-prueba", customerName: "Cliente de ejemplo", name: "Registro autorizado", environment: "test" }]);
+    });
+    renderRoute("/dominios");
+    expect(await screen.findByText("Registro autorizado")).toBeInTheDocument();
+    const requests = () => get.mock.calls.filter(([path]) => path.startsWith("/catalog/inventory/domains"));
+    const warning = await screen.findByText(/No se pudieron actualizar todas las fuentes/i, {}, { timeout: 5_000 });
+    expect(warning).toHaveAttribute("role", "status");
+    await waitFor(() => expect(requests()).toHaveLength(2));
+    expect(screen.getByText("Registro autorizado")).toBeInTheDocument();
+    expect(screen.getByText("La información del catálogo está incompleta.")).toBeInTheDocument();
+    expect(post).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Actualizar lista" }));
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
   });
 });

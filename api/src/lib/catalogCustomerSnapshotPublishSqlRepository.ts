@@ -4,10 +4,13 @@ import { writeSqlAuditLog } from "./auditSqlWriter";
 import type { CatalogRefreshPublication, CatalogRefreshSink } from "./catalogCustomerRefresh";
 import { normalizeCatalogSagInventoryEvidence } from "./catalogSagInventoryEvidence";
 import type { CatalogMatchKeyEvidence } from "./catalogMatchKeyEvidence";
+import { bindCatalogRefreshFence, catalogRefreshFenceSql, catalogRefreshPublicationLockSql,
+  completePublishedCatalogRefresh, currentCertifiedCatalogSourceSql, type CatalogRefreshClaim } from "./catalogRefreshQueueSqlRepository";
 
 type Stamp = Parameters<CatalogRefreshSink["recordFailure"]>[0];
-export type CatalogPublicationOperator = Pick<Stamp, "environment" | "sourceId" | "bindingRevision" |
-  "profileRevision" | "matchKeyVersion"> & CatalogMatchKeyEvidence & { id: string };
+type HumanCatalogPublicationOperator = Pick<Stamp, "environment" | "sourceId" | "bindingRevision" |
+  "profileRevision" | "matchKeyVersion"> & { kind?: "human"; id: string };
+export type CatalogPublicationOperator = (HumanCatalogPublicationOperator | (CatalogRefreshClaim & { kind: "worker" })) & CatalogMatchKeyEvidence;
 const maxRows = 100_000;
 const maxScopes = 512;
 const maxPayloadBytes = 16 * 1024 * 1024;
@@ -198,6 +201,7 @@ const failureBatch = `${lockAndCheck}
   ELSE
     INSERT INTO settings.catalog_customer_revision_heads(catalog_source_key,attempt_status,attempted_at,attempt_ordinal)
     VALUES(@sourceKey,'failed',@now,@ordinal);
+  SELECT CAST('failed' AS varchar(11)) AS result;
 `;
 
 const reserveAttemptBatch = `
@@ -205,6 +209,52 @@ const reserveAttemptBatch = `
   SET @reserved=NEXT VALUE FOR settings.catalog_customer_attempt_sequence;
   SELECT CONVERT(varchar(19),@reserved) AS attemptOrdinal;
 `;
+
+const authorizeWorkerBatch = `${catalogRefreshPublicationLockSql}
+  DECLARE @leaseUntil datetime2(3),@ordinal bigint;
+  SELECT @leaseUntil=j.lease_expires_at,@ordinal=j.attempt_ordinal
+  FROM settings.catalog_source_refresh_jobs AS j WITH (UPDLOCK,HOLDLOCK)
+  JOIN settings.catalog_source_bindings AS b WITH (UPDLOCK,HOLDLOCK) ON b.catalog_source_key=j.catalog_source_key
+  JOIN settings.external_database_connections AS p WITH (UPDLOCK,HOLDLOCK)
+    ON p.external_database_connection_key=b.external_database_connection_key
+  JOIN settings.catalog_match_key_registry AS k ON k.portal_environment=j.portal_environment
+    AND k.match_key_version=j.match_key_version
+  WHERE ${catalogRefreshFenceSql} AND ${currentCertifiedCatalogSourceSql}
+    AND b.row_version=@binding AND p.row_version=@profile
+    AND k.vault_secret_version=@vaultSecretVersion AND k.key_verifier=@keyVerifier;
+  SELECT 1 AS allowed, CONVERT(varchar(19),@ordinal) AS attemptOrdinal
+  WHERE @leaseUntil>SYSUTCDATETIME();
+`;
+
+const reserveWorkerAttemptBatch = `
+  SET NOCOUNT ON;
+  DECLARE @jobKey bigint,@now datetime2(3)=SYSUTCDATETIME(),@ordinal bigint;
+  SELECT @jobKey=j.job_key,@ordinal=j.attempt_ordinal FROM settings.catalog_source_refresh_jobs AS j
+  JOIN settings.catalog_source_bindings AS b ON b.catalog_source_key=j.catalog_source_key
+  WHERE ${catalogRefreshFenceSql} AND j.lease_expires_at>@now;
+  IF @jobKey IS NULL THROW 55104,N'Catalog refresh lease unavailable.',1;
+  IF @ordinal IS NULL
+  BEGIN
+    SET @ordinal=NEXT VALUE FOR settings.catalog_customer_attempt_sequence;
+    UPDATE settings.catalog_source_refresh_jobs SET attempt_ordinal=@ordinal WHERE job_key=@jobKey;
+    INSERT settings.catalog_source_refresh_attempts(job_key,attempt_no,attempt_ordinal,event_kind,occurred_at)
+    VALUES(@jobKey,@jobAttempt,@ordinal,'reserved',@now);
+  END;
+  SELECT CONVERT(varchar(19),@ordinal) AS attemptOrdinal;
+`;
+
+const recheckWorkerLeaseBatch = `
+  SET NOCOUNT ON;
+  IF NOT EXISTS(SELECT 1 FROM settings.catalog_source_refresh_jobs AS j
+    JOIN settings.catalog_source_bindings AS b ON b.catalog_source_key=j.catalog_source_key
+    WHERE ${catalogRefreshFenceSql} AND j.lease_expires_at>SYSUTCDATETIME())
+    THROW 55104,N'Catalog refresh lease expired before commit.',1;
+`;
+
+/** Used verbatim by the SQL rehearsal; no caller-supplied SQL is accepted by the publisher. */
+export const catalogRefreshWorkerPublicationSqlBatches = { authorize: authorizeWorkerBatch,
+  reserve: reserveWorkerAttemptBatch, recheckLease: recheckWorkerLeaseBatch, publish: publishBatch,
+  publishWithSagaEvidence: publishWithSagaEvidenceBatch, recordFailure: failureBatch } as const;
 
 function validStamp(stamp: Stamp): boolean {
   return ["qa", "production"].includes(stamp.environment) && uuid.test(stamp.sourceId) &&
@@ -292,21 +342,35 @@ export function createSqlCatalogCustomerSnapshotPublisher(
   if (!Number.isInteger(freshnessMinutes) || freshnessMinutes < 1 || freshnessMinutes > 1440) {
     throw new Error("invalid_catalog_publication");
   }
-  if (!operator?.id?.trim() || operator.id.length > 150 ||
+  if (!operator || (operator.kind === "worker"
+      ? !uuid.test(operator.jobId) || !uuid.test(operator.workerId) || !uuid.test(operator.leaseToken) ||
+        !Number.isInteger(operator.attempt) || operator.attempt < 1 || operator.attempt > 5
+      : !operator.id?.trim() || operator.id.length > 150) ||
     !Buffer.isBuffer(operator.vaultSecretVersion) || operator.vaultSecretVersion.length !== 16 ||
     !Buffer.isBuffer(operator.keyVerifier) || operator.keyVerifier.length !== 32 || !validStamp({ ...operator,
     observedAt: new Date(), attemptOrdinal: "1" })) throw new Error("invalid_catalog_publication");
+  const performedBy = operator.kind === "worker" ? "system:catalog-refresh" : operator.id;
   function assertOperatorScope(stamp: Stamp) {
     if (operator.sourceId !== stamp.sourceId || operator.environment !== stamp.environment ||
       operator.bindingRevision !== stamp.bindingRevision || operator.profileRevision !== stamp.profileRevision ||
       operator.matchKeyVersion !== stamp.matchKeyVersion) throw new Error("invalid_catalog_publication");
   }
-  async function transaction<T>(work: (request: sql.Request, current: sql.Transaction) => Promise<T>): Promise<T> {
+  async function transaction<T>(work: (request: sql.Request, current: sql.Transaction) => Promise<T>,
+    expectedOrdinal?: string, completesJob = false): Promise<T> {
     let current: sql.Transaction | undefined;
     try {
       current = pool.transaction();
       await current.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
-      {
+      if (operator.kind === "worker") {
+        const allowed = await bindCatalogRefreshFence(current.request(), operator)
+          .input("vaultSecretVersion", sql.VarBinary(16), operator.vaultSecretVersion)
+          .input("keyVerifier", sql.VarBinary(32), operator.keyVerifier)
+          .query<{ allowed: number; attemptOrdinal: string | null }>(authorizeWorkerBatch);
+        if (allowed.recordset.length !== 1 || allowed.recordset[0].allowed !== 1 ||
+          (expectedOrdinal !== undefined && allowed.recordset[0].attemptOrdinal !== expectedOrdinal)) {
+          throw new Error("catalog_publication_forbidden");
+        }
+      } else {
         const allowed = await current.request().input("actorId", sql.NVarChar(150), operator.id)
           .input("source", sql.UniqueIdentifier, operator.sourceId).input("environment", sql.VarChar(10), operator.environment)
           .input("binding", sql.VarBinary(8), Buffer.from(operator.bindingRevision, "hex"))
@@ -338,6 +402,9 @@ export function createSqlCatalogCustomerSnapshotPublisher(
         if (allowed.recordset.length !== 1) throw new Error("catalog_publication_forbidden");
       }
       const result = await work(current.request(), current);
+      if (operator.kind === "worker" && !completesJob) {
+        await bindCatalogRefreshFence(current.request(), operator).query(recheckWorkerLeaseBatch);
+      }
       await current.commit();
       return result;
     } catch {
@@ -349,7 +416,9 @@ export function createSqlCatalogCustomerSnapshotPublisher(
   return {
     async reserveAttempt() {
       return transaction(async request => {
-        const result = await request.query<{ attemptOrdinal: string }>(reserveAttemptBatch);
+        const result = operator.kind === "worker"
+          ? await bindCatalogRefreshFence(request, operator).query<{ attemptOrdinal: string }>(reserveWorkerAttemptBatch)
+          : await request.query<{ attemptOrdinal: string }>(reserveAttemptBatch);
         const ordinal = result.recordset[0]?.attemptOrdinal;
         if (result.recordset.length !== 1 || !validOrdinal(ordinal)) throw new Error("invalid_catalog_sql_result");
         return ordinal;
@@ -377,17 +446,30 @@ export function createSqlCatalogCustomerSnapshotPublisher(
         if (status === "published") {
           await writeSqlAuditLog(current, {
             entityType: "catalog_source_binding", entityId: revision.sourceId, action: "catalog_source_refreshed",
-            performedBy: operator.id, performedByEmail: "system",
+            performedBy, performedByEmail: "system",
             metadata: { environment: revision.environment, sourceRole: revision.role, status },
           });
         }
+        if (operator.kind === "worker") {
+          // Also checks the SQL clock after inserting completion history. If expired, neither the head,
+          // its historical witness, the audit nor the job can commit.
+          await completePublishedCatalogRefresh(current, operator, revision.attemptOrdinal,
+            status === "published" ? "succeeded" : "superseded");
+        }
         return status;
-      });
+      }, revision.attemptOrdinal, true);
     },
     async recordFailure(attempt) {
       assertOperatorScope(attempt);
       if (!validStamp(attempt)) throw new Error("invalid_catalog_publication");
-      await transaction(async request => { await bindStamp(request, attempt).query(failureBatch); });
+      await transaction(async (request, current) => {
+        const result = await bindStamp(request, attempt).query<{ result: string }>(failureBatch);
+        if (operator.kind === "worker" && result.recordset[0]?.result === "failed") {
+          await writeSqlAuditLog(current, { entityType: "catalog_source_binding", entityId: attempt.sourceId,
+            action: "catalog_source_refresh_failed", performedBy, performedByEmail: "system",
+            metadata: { environment: attempt.environment } });
+        }
+      }, attempt.attemptOrdinal);
     },
   };
 }

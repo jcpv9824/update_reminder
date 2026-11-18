@@ -1,7 +1,8 @@
 import { useEffect, useId, useState, type FormEvent } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryFilters } from "@tanstack/react-query";
 import { Paginacion } from "../components/Comunes";
 import CatalogoClienteIndicadores, { type CargadoresIndicadores } from "../components/CatalogoClienteIndicadores";
+import { catalogRefreshMessages, useCatalogRefresh, type CatalogRefreshService } from "../hooks/useCatalogRefresh";
 
 type Estado = "active" | "inactive" | "unverified";
 type Presencia = "in_web" | "not_in_web" | "unverified";
@@ -53,6 +54,7 @@ type Props = {
   load: CargarCatalogoClientes;
   loadDetail?: CargarDetalleCliente;
   indicadores?: CargadoresIndicadores;
+  refreshService?: CatalogRefreshService;
 };
 
 const FILTROS_INICIALES: CatalogoClientesQuery = { state: "active", web: "in_web", page: 1, pageSize: 25 };
@@ -117,26 +119,68 @@ export default function CatalogoClientesPage(props: Props) {
   return <CatalogoClientesContenido key={props.scopeKey} {...props} />;
 }
 
-function CatalogoClientesContenido({ scopeKey, load, loadDetail, indicadores }: Props) {
+function CatalogoClientesContenido({ scopeKey, load, loadDetail, indicadores, refreshService }: Props) {
   const id = useId();
+  const queryClient = useQueryClient();
   const [filtros, setFiltros] = useState<CatalogoClientesQuery>(FILTROS_INICIALES);
   const [busqueda, setBusqueda] = useState("");
   const [ultimaListaFuentes, setUltimaListaFuentes] = useState<readonly FuenteCatalogoCliente[]>([]);
   const [detalleAbierto, setDetalleAbierto] = useState<string | null>(null);
+  const sinFuentes = filtros.sourceIds?.length === 0;
+  const alcancesIndicadores = new Set([true, false].flatMap(dominios => [true, false].map(licencias =>
+    JSON.stringify([scopeKey, dominios, licencias]))));
+  const consultas: QueryFilters = {
+    queryKey: ["catalogo-clientes"],
+    predicate: ({ queryKey }) => queryKey[1] === scopeKey
+      || (queryKey[2] === "indicadores" && typeof queryKey[1] === "string" && alcancesIndicadores.has(queryKey[1])),
+  };
+  const actualizacion = useCatalogRefresh({
+    service: refreshService,
+    scopeKey,
+    sourceIds: filtros.sourceIds,
+    criteria: filtros.search,
+    onSettled: () => {
+      // Reread even if an initial request started before the revision was published.
+      void queryClient.cancelQueries(consultas);
+      void queryClient.invalidateQueries(consultas);
+    },
+    onAccessDenied: () => {
+      setUltimaListaFuentes([]);
+      setDetalleAbierto(null);
+      queryClient.removeQueries(consultas);
+    },
+  });
+  const accesoDenegado = actualizacion.state === "denied";
   const consulta = useQuery({
     queryKey: ["catalogo-clientes", scopeKey, "lista", filtros],
-    queryFn: ({ signal }) => load(filtros, signal),
+    queryFn: ({ signal }) => actualizacion.read(signal, () => load(filtros, signal)),
+    // The read endpoint interprets an omitted source filter as all, not none.
+    enabled: !sinFuentes && !accesoDenegado,
     retry: false,
     gcTime: 0,
   });
-  // A failed query must not display stale results (including results cached before an access change).
-  const pagina = consulta.isError ? undefined : consulta.data;
+  const pagina = sinFuentes || accesoDenegado || (!refreshService && consulta.isError) ? undefined : consulta.data;
   const nuevasFuentes = pagina?.sources;
   useEffect(() => {
     if (nuevasFuentes) setUltimaListaFuentes(nuevasFuentes);
   }, [nuevasFuentes]);
-  const fuentes = consulta.isError ? [] : nuevasFuentes ?? ultimaListaFuentes;
+  const fuentes = accesoDenegado || (!refreshService && consulta.isError) ? [] : nuevasFuentes ?? ultimaListaFuentes;
   const todas = filtros.sourceIds === undefined;
+  const avisoActualizacion = catalogRefreshMessages[actualizacion.state];
+
+  function vigilarAcceso<T>(cargar?: (id: string, signal: AbortSignal) => Promise<T>) {
+    return !refreshService || !cargar ? cargar :
+      (id: string, signal: AbortSignal) => actualizacion.read(signal, () => cargar(id, signal));
+  }
+  const detalleVigilado = vigilarAcceso(loadDetail);
+  const indicadoresVigilados = indicadores && {
+    dominios: vigilarAcceso(indicadores.dominios), licencias: vigilarAcceso(indicadores.licencias),
+  };
+
+  function actualizarLista() {
+    if (refreshService) actualizacion.request();
+    else void consulta.refetch();
+  }
 
   function cambiar(cambios: Partial<CatalogoClientesQuery>) {
     setDetalleAbierto(null);
@@ -157,17 +201,26 @@ function CatalogoClientesContenido({ scopeKey, load, loadDetail, indicadores }: 
 
   function buscar(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    cambiar({ search: busqueda.trim() || undefined });
+    const search = busqueda.trim() || undefined;
+    cambiar({ search });
+    // Unchanged criteria do not restart the hook's automatic refresh effect.
+    if (search === filtros.search) actualizacion.request();
   }
 
   return (
     <>
       <div className="encabezado-pagina">
         <h2>Clientes</h2>
-        <button type="button" className="secundario" disabled={consulta.isFetching} onClick={() => void consulta.refetch()}>
+        <button type="button" className="secundario" onClick={actualizarLista}
+          disabled={sinFuentes || accesoDenegado || (refreshService ? actualizacion.state === "pending" : consulta.isFetching)}>
           Actualizar lista
         </button>
       </div>
+      {avisoActualizacion && (
+        <p className={`alerta ${accesoDenegado ? "alerta-error" : "alerta-info"}`} role={accesoDenegado ? "alert" : "status"}>
+          {avisoActualizacion}
+        </p>
+      )}
       <form className="barra-filtros" onSubmit={buscar} aria-label="Filtros de clientes">
         <div className="campo">
           <label htmlFor={`${id}-buscar`}>Buscar por nombre oficial</label>
@@ -211,12 +264,15 @@ function CatalogoClientesContenido({ scopeKey, load, loadDetail, indicadores }: 
         </fieldset>
       </form>
 
-      {consulta.isError ? (
-        <div className="alerta alerta-error" role="alert">
-          No se pudo consultar el catálogo.{" "}
-          <button type="button" className="secundario" onClick={() => void consulta.refetch()}>Reintentar</button>
-        </div>
-      ) : consulta.isPending ? <p className="cargando" role="status">Cargando clientes…</p> : null}
+      {sinFuentes && <p className="texto-ayuda" role="status">Selecciona al menos una fuente para consultar el catálogo.</p>}
+      {!sinFuentes && !accesoDenegado && (
+        consulta.isError ? (
+          <div className="alerta alerta-error" role="alert">
+            No se pudo consultar el catálogo.{" "}
+            <button type="button" className="secundario" onClick={() => void consulta.refetch()}>Reintentar</button>
+          </div>
+        ) : consulta.isPending ? <p className="cargando" role="status">Cargando clientes…</p> : null
+      )}
 
       {pagina && (
         <>
@@ -252,7 +308,7 @@ function CatalogoClientesContenido({ scopeKey, load, loadDetail, indicadores }: 
                   return (
                     <CustomerRows key={cliente.id} cliente={cliente} abierto={abierto} panelId={panelId}
                       onToggle={() => setDetalleAbierto(abierto ? null : cliente.id)} scopeKey={scopeKey}
-                      loadDetail={loadDetail} indicadores={indicadores} />
+                      loadDetail={detalleVigilado} indicadores={indicadoresVigilados} />
                   );
                 })}
               </tbody>

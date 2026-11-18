@@ -4,6 +4,7 @@ import { useAuth } from "../auth/AuthContext";
 import type {
   CargadoresIndicadores, IndicadorDominiosCliente, IndicadorLicenciasCliente,
 } from "../components/CatalogoClienteIndicadores";
+import { catalogRefreshServiceIfEnabled } from "../hooks/useCatalogRefresh";
 import { hasPermissionForRoleIds } from "../permissionAccess";
 import type { RoleDefinition } from "../permissionModel";
 import CatalogoClientesPage, {
@@ -59,5 +60,6 @@ export default function CatalogoClientesRoute() {
     load={(query, signal) => api.get<CatalogoClientesResponse>(catalogCustomersPath(query), { signal })}
     loadDetail={loadDetail}
     indicadores={indicadores}
+    refreshService={catalogRefreshServiceIfEnabled()}
   />;
 }

@@ -94,11 +94,84 @@ La verificación local del 2026-11-18 terminó con **1.405/1.405 pruebas del API
 
 ## Interruptores, desactivados por defecto
 
+### Actualización automática: candidato local 051, no habilitado
+
+La migración `051_catalog_refresh_queue.sql` agrega trabajos por fuente y un
+historial inmutable de intentos. El candidato usa concesiones de 120 segundos,
+hasta cinco intentos y recuperación con espera creciente. La publicación exige
+el trabajo, intento, propietario, concesión, versiones del perfil/vínculo y
+prueba de la clave exactos. La revisión, la cabecera, su evento histórico, la
+auditoría y la finalización exitosa del trabajo comparten transacción; las
+consultas externas no mantienen abierta esa transacción. Un intento superado
+por otro no acredita éxito si la cabecera posterior está fallida o no verificada.
+
+Con `PORTAL_CATALOG_AUTOMATION_ENABLED=true` y lectura habilitada, el
+temporizador solicita fuentes vencidas cada minuto, con intervalo objetivo de
+cinco minutos entre actualizaciones. Procesa como máximo cuatro trabajos por
+invocación, en dos tandas de dos. No activa perfiles ni modifica sus permisos.
+Cada fuente publica por separado: el fallo de una no revierte otra. Al terminar
+reconcilia únicamente el día actual de Bogotá y ejecuta el barrido de corte si
+sus interruptores están habilitados. Cerca de medianoche adelanta una pasada
+después de la primera tanda; esto no prueba por sí solo todas las carreras de
+corte bajo carga ni autoriza ampliar la vigencia de las revisiones.
+
+`POST /api/catalog/refresh` acepta únicamente `sourceIds` opcional (hasta 50
+UUID distintos) y encola ERP autorizados, más la dependencia SAG interna cuando
+corresponde; devuelve sólo cantidades de ERP. Omitir el filtro significa todos
+los autorizados; `[]` significa ninguno. `GET /api/catalog/refresh/status`
+consulta el estado sin encolar trabajos y revalida permisos en SQL. Ninguna de
+esas rutas devuelve concesiones, perfiles, claves ni datos de conexión.
+
+El frontend necesita además
+`VITE_PORTAL_CATALOG_AUTOMATION_ENABLED=true`. Al abrir el inventario o
+actualizarlo solicita una lectura nueva; Clientes también lo hace al enviar
+una búsqueda o cambiar fuentes. Consulta el estado cada dos segundos, con
+límite total de 60 segundos; dejar de observar no cancela el trabajo durable.
+Una selección vacía no consulta el catálogo ni solicita actualizaciones. Una
+respuesta 401/403 retira datos y caché del alcance afectado. Los interruptores
+apagados no generan esas solicitudes.
+
+Evidencia parcial del candidato congelado: 051 y los doce lotes SQL compilados
+de cola/publicación pasaron el analizador TSql150 y el SHA-256 de 051 coincidió
+con el manifiesto. API pasó **1.440/1.440 pruebas en 159 archivos**, su build,
+el guard SQL-only y ambas auditorías. Frontend pasó **302/302 pruebas en 34
+archivos**, ambas auditorías, TypeScript y Vite; las pruebas enfocadas fueron
+35/35. Los conjuntos completos se ejecutaron uno después del otro. Una
+ejecución simultánea anterior de comprobaciones de frontend agotó memoria de
+Node; la repetición secuencial final pasó.
+
+El ensayo inicial del guion SQL de QA detectó declaraciones TABLE inválidas en
+el propio fixture, antes de ejecutar SQL; se corrigieron y se validó el cuerpo
+completo con TSql150. Luego la instalación y reejecución de 051 con reversión
+pasó **1/1 en 58 ms**, preservando 050 y sin residuos. El primer ensayo
+funcional llegó a 17 comprobaciones y rechazó una fila sintética ERP que
+declaraba cobertura de scopes reservada a SAG Admin; se corrigió el dato de
+prueba, no la restricción. El ensayo corregido pasó **30/30 en 855 ms**, más
+dos comprobaciones de respuestas de estado (dependencia SAG oculta y acceso
+revocado), con **cero filas de prueba restantes**. Comprueba publicación,
+cabecera histórica y finalización en una misma reversión, pero no acredita la
+transacción completa de JavaScript con el escritor de auditoría, concurrencia
+real entre dos sesiones ni conexiones externas.
+
+La revisión independiente del frontend repitió 35 pruebas enfocadas y detectó
+que enviar de nuevo la misma búsqueda no pedía una actualización. Desarrollo
+reprodujo el fallo y corrigió ese caso con una prueba nueva: una búsqueda
+idéntica terminada vuelve a encolar y releer; una pendiente se coalesce. El
+candidato final pasó TypeScript y Vite. Su suite independiente con
+`npx vitest run --maxWorkers=1` terminó **302/303 en 280,07 s**. Sólo falló la
+prueba existente de inventario de dominios esperando la tabla durante la carga
+inicial de roles; el caso exacto aislado pasó **1/1**, sin cambiar código ni
+ampliar tiempos. La prueba nueva pasó. No se declara verde la suite completa.
+Pendientes: suite completa final limpia, concurrencia y flujo integrado de QA.
+No se aplicó 051 permanentemente ni se habilitó automatización en producción
+con estos resultados.
+
 | Flujo | API | Frontend (compilación) |
 | --- | --- | --- |
 | Registro de fuentes | `PORTAL_CATALOG_ADMIN_ENABLED=true` | `VITE_PORTAL_CATALOG_ADMIN_ENABLED=true` |
 | Actualización explícita de una fuente | `PORTAL_CATALOG_SOURCE_REFRESH_ENABLED=true`, junto al de administración | — |
 | Lectura de clientes | `PORTAL_CATALOG_READ_ENABLED=true` | `VITE_PORTAL_CATALOG_READ_ENABLED=true` |
+| Actualización automática del catálogo | `PORTAL_CATALOG_AUTOMATION_ENABLED=true`, requiere lectura y configuración de clave exacta | `VITE_PORTAL_CATALOG_AUTOMATION_ENABLED=true`, requiere lectura |
 | Barrido de corte | `PORTAL_CATALOG_CUTOFF_ENABLED=true`, después de la 039 y de certificar el catálogo | — |
 | Reporte desde el catálogo | `PORTAL_CATALOG_MASTERS_REPORT_ENABLED=true`, requiere habilitar lectura del catálogo | — |
 | Conteo en reporte de maestros | `PORTAL_CATALOG_ACTIVE_USERS_REPORT_ENABLED=true` | — |
@@ -109,14 +182,38 @@ La actualización explícita lee exclusivamente la versión de Key Vault indicad
 
 ## Antes de activar
 
-1. Certificar el esquema 031–050 en QA. `Apply-PortalSAGWeb-PendingMigrationsThroughSession.ps1 -Environment qa -IncludeCatalog` suma 031–050 al paquete. Sus hashes están fijados sobre texto LF. Las consultas de tareas requieren la vista de la 042; la carga de dominios compartidos, la 043; y el programador, operaciones versionadas 044–045, cobertura 046, intenciones manuales 047, recibos de procedencia 048, observaciones 049 y testigos históricos 050. Activar filtros y programación solo cuando las correspondencias estén certificadas.
-2. Integrar y certificar la carga de revisiones con cuentas de sólo lectura, credenciales referenciadas y pruebas de aislamiento por fuente. Un borrador no cuenta como fuente habilitada y un endpoint que responde no equivale a un catálogo alimentado. Falta conectar el ciclo automático de actualización y observación: la publicación conserva por defecto 30 minutos de frescura y el temporizador de generación actual sólo corre a la 01:00 de Bogotá. Esa combinación no produce por sí sola una prueba vigente hasta el siguiente corte de medianoche. Debe existir una lectura y observación oportunas antes de cada corte, con aislamiento de fallos, límites de trabajo y autorización de publicación; no se resuelve ampliando artificialmente la frescura ni declarando suficiente el fixture histórico de QA.
+1. Certificar el esquema 031–051 en QA. `Apply-PortalSAGWeb-PendingMigrationsThroughSession.ps1 -Environment qa -IncludeCatalog` suma 031–051 al paquete. Sus hashes están fijados sobre texto LF. Las consultas de tareas requieren la vista de la 042; la carga de dominios compartidos, la 043; y el programador, operaciones versionadas 044–045, cobertura 046, intenciones manuales 047, recibos de procedencia 048, observaciones 049, testigos históricos 050 y cola de actualización 051. Activar filtros y programación solo cuando las correspondencias estén certificadas.
+2. Integrar y certificar la carga de revisiones con cuentas de sólo lectura, credenciales referenciadas y pruebas de aislamiento por fuente. Un borrador no cuenta como fuente habilitada y un endpoint que responde no equivale a un catálogo alimentado. El ciclo automático del candidato 051 todavía necesita certificación integrada y operativa: la publicación conserva por defecto 30 minutos de frescura y el temporizador diario heredado sólo corre a la 01:00 de Bogotá. Debe demostrarse que la cola y la reconciliación periódica producen una lectura y observación oportunas antes de cada corte, con aislamiento de fallos, límites de trabajo y autorización de publicación; no se resuelve ampliando artificialmente la frescura ni declarando suficiente el fixture histórico de QA.
 3. Conectar y certificar las relaciones cliente–dominio–base, el catálogo de licencias, la deduplicación en la programación y en tareas, y el reporte de usuarios activos. El código de comparación, corte y conteo no habilita por sí solo el programador, no identifica destinos físicos sin evidencia aprobada y no prueba el esquema `usuarios` de una base remota. Verificar de punta a punta en QA la asignación, el corte y los registros de apertura, revelación y copia usando un perfil de prueba, no credenciales reales de clientes.
    La revisión ERP y el registro físico aún no identifican por sí solos el mismo vínculo lógico. Poblar y certificar la correspondencia aprobada de la 042 antes de habilitar consumidores; nunca inferirla por nombre de cliente, hostname, nombre de base o coincidencia casual de identificadores. Los listados heredados sin paginación tienen un tope: no constituyen un inventario completo. El proveedor futuro deberá comprobar las versiones de las revisiones y de las equivalencias utilizadas en cada planificación, y volver a comprobar el vínculo al registrar o autorizar la tarea. Con vínculos ya registrados, no ejecutar el reemplazo masivo heredado de la 021: elimina filas de maestros referenciadas por estas claves foráneas. La carga del catálogo debe reconciliar sin borrar identidades ni historia.
    No reinstalar el índice global antiguo si ya existen nombres compartidos. El rollback del API no borra relaciones ni cambia el índice; un eventual rollback del esquema requiere conciliar las colisiones globales con el responsable y preparar una recuperación separada.
 4. Certificar en QA el corte de clientes una vez migrados sus consumidores. Al activar la lectura del catálogo, el servidor rechaza creación, edición, borrado, desactivación y reactivación por el API heredado, incluso para administradores; las lecturas heredadas se mantienen para los módulos que aún dependen de ellas. Verificar permisos, historial, tareas, reportes y reversión antes de habilitar los interruptores en producción.
 
 ## Preflight de un perfil inicial
+
+### Perfiles iniciales registrados por autorización del propietario (2026-11-18)
+
+Se leyeron los dos archivos locales `.env` entregados por el propietario, sin
+imprimir sus valores. En la sesión autenticada de `super_admin` del Portal de
+producción se crearon **SAG Admin · Catálogo** y **ERP · Clientes (fuente
+inicial)** usando el flujo existente **Guardar y validar** de Conexiones. Ambos
+mostraron validación de TLS y consulta de lectura exitosa. Las contraseñas se
+guardaron mediante el servicio existente en Key Vault, nunca en SQL ni Git.
+Los dos perfiles quedaron **deshabilitados**: guardar un perfil no certifica ni
+activa su vínculo de catálogo. No se cambiaron App Settings ni permisos remotos.
+
+El preflight del catálogo confirmó `compatible=true` y `readOnly=true` en
+ambas fuentes, pero la lectura de datos dentro de SNAPSHOT no pudo completarse.
+SAG Admin devolvió el número SQL 3952. Una consulta SELECT de metadatos confirmó
+`snapshot_isolation_state=0` en ambas fuentes. ERP sí tiene
+`is_read_committed_snapshot_on=1`; SAG Admin no. RCSI no sustituye el SNAPSHOT
+exigido para una revisión paginada coherente. No se relajó ese contrato ni se
+modificó la configuración del origen. Falta resolver con el administrador del
+origen la disponibilidad de SNAPSHOT antes de certificar y activar las fuentes.
+Una conexión TLS válida no se reporta como catálogo ya alimentado.
+
+Los antecedentes siguientes corresponden a perfiles anteriores y no describen
+los permisos de las nuevas cuentas de sólo lectura.
 
 Después de compilar el API, ejecutar desde `api/`: `node scripts/verify-catalog-origin.cjs <archivo-env-fuera-del-repo> <erp_v1|sag_admin_v1>`. El comando sólo devuelve el contrato y el estado; no copia el archivo, no publica datos ni modifica la configuración. El servidor debe ser un hostname con puerto numérico opcional (`servidor,puerto` o variable separada). Las credenciales nunca se pasan por argumentos.
 
