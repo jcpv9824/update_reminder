@@ -1,5 +1,11 @@
+import { useQuery } from "@tanstack/react-query";
 import { api, type ApiError } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import type {
+  CargadoresIndicadores, IndicadorDominiosCliente, IndicadorLicenciasCliente,
+} from "../components/CatalogoClienteIndicadores";
+import { hasPermissionForRoleIds } from "../permissionAccess";
+import type { RoleDefinition } from "../permissionModel";
 import CatalogoClientesPage, {
   type CatalogoClientesQuery,
   type CatalogoClientesResponse,
@@ -30,13 +36,28 @@ async function loadDetail(id: string, signal: AbortSignal): Promise<ResumenCatal
 
 export default function CatalogoClientesRoute() {
   const auth = useAuth();
-  if (import.meta.env.VITE_PORTAL_CATALOG_READ_ENABLED !== "true") return <ClientesPage />;
+  const catalogoHabilitado = import.meta.env.VITE_PORTAL_CATALOG_READ_ENABLED === "true";
+  const consultaRoles = useQuery({
+    queryKey: ["roles"],
+    queryFn: () => api.get<RoleDefinition[]>("/roles"),
+    enabled: catalogoHabilitado && !auth.cargando && !!auth.usuario,
+  });
+  if (!catalogoHabilitado) return <ClientesPage />;
   if (auth.cargando || !auth.usuario) return null;
+  // Unknown permissions do not enable optional indicator queries.
+  const roles = consultaRoles.isSuccess && Array.isArray(consultaRoles.data) ? consultaRoles.data : [];
+  const verDominios = hasPermissionForRoleIds(auth.usuario.roles, "clients.domains.view", roles);
+  const verLicencias = hasPermissionForRoleIds(auth.usuario.roles, "clients.licensing.view", roles);
+  const indicadores: CargadoresIndicadores = {
+    dominios: verDominios ? (id, signal) => api.get<IndicadorDominiosCliente>(`/catalog/customers/${encodeURIComponent(id)}/domains`, { signal }) : undefined,
+    licencias: verLicencias ? (id, signal) => api.get<IndicadorLicenciasCliente>(`/catalog/customers/${encodeURIComponent(id)}/licenses`, { signal }) : undefined,
+  };
   const scope = JSON.stringify([auth.usuario.id, [...auth.usuario.roles].sort()]);
   return <CatalogoClientesPage
     key={scope}
     scopeKey={scope}
     load={(query, signal) => api.get<CatalogoClientesResponse>(catalogCustomersPath(query), { signal })}
     loadDetail={loadDetail}
+    indicadores={indicadores}
   />;
 }

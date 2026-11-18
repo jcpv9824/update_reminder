@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import type { CargarDominiosCliente, CargarLicenciasCliente, CargadoresIndicadores } from "../components/CatalogoClienteIndicadores";
 import CatalogoClientesPage, {
   type CatalogoClientesResponse,
   type CargarCatalogoClientes,
@@ -29,11 +30,11 @@ const initial: CatalogoClientesResponse = {
   pageSize: 25,
 };
 
-function renderPage(load: CargarCatalogoClientes, loadDetail?: CargarDetalleCliente) {
+function renderPage(load: CargarCatalogoClientes, loadDetail?: CargarDetalleCliente, indicadores?: CargadoresIndicadores) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   return render(
     <QueryClientProvider client={client}>
-      <CatalogoClientesPage scopeKey="alcance-de-prueba" load={load} loadDetail={loadDetail} />
+      <CatalogoClientesPage scopeKey="alcance-de-prueba" load={load} loadDetail={loadDetail} indicadores={indicadores} />
     </QueryClientProvider>
   );
 }
@@ -141,5 +142,65 @@ describe("catálogo de clientes multiempresa", () => {
     expect(screen.queryByText(cliente.name)).toBeNull();
     expect(screen.queryByRole("checkbox", { name: "Colombia" })).toBeNull();
     expect(screen.getByRole("status")).toHaveTextContent("Cargando clientes");
+  });
+
+  it("consulta el indicador autorizado solo al abrirlo y muestra dominios sin enlaces ni destinos", async () => {
+    const load = vi.fn<CargarCatalogoClientes>().mockResolvedValue(initial);
+    const loadDetail = vi.fn<CargarDetalleCliente>().mockResolvedValue(cliente);
+    const dominios = vi.fn<CargarDominiosCliente>().mockResolvedValue({
+      state: "stale", verifiedAt: "2026-11-17T14:30:00Z", partial: true,
+      items: [{ host: "ejemplo.invalid", observations: [
+        { environment: "production", startedOn: "2026-11-17" }, { environment: "test", startedOn: null },
+      ] }],
+    });
+    renderPage(load, loadDetail, { dominios });
+    await screen.findByText(cliente.name);
+    expect(dominios).toHaveBeenCalledTimes(0);
+    fireEvent.click(screen.getByRole("button", { name: "Ver fuentes de Comercial Ejemplo" }));
+    const boton = await screen.findByRole("button", { name: "Ver dominios observados" });
+    expect(screen.queryByRole("button", { name: "Ver licencias observadas" })).toBeNull();
+    expect(dominios).toHaveBeenCalledTimes(0);
+    fireEvent.click(boton);
+    const panel = screen.getByRole("region", { name: "Dominios observados" });
+    expect(await within(panel).findByText("ejemplo.invalid")).toBeInTheDocument();
+    expect(within(panel).queryByRole("link")).toBeNull();
+    expect(within(panel).getByText("Desactualizada", { exact: false })).toBeInTheDocument();
+    expect(within(panel).getByText(/información parcial/i)).toBeInTheDocument();
+    expect(within(panel).getByText(/Inicio no verificado/)).toBeInTheDocument();
+    const diaObservado = new Intl.DateTimeFormat("es-CO", { dateStyle: "medium", timeZone: "UTC" })
+      .format(new Date("2026-11-17T00:00:00Z"));
+    expect(within(panel).getByText(diaObservado)).toHaveAttribute("datetime", "2026-11-17");
+    expect(dominios).toHaveBeenCalledExactlyOnceWith(cliente.id, expect.any(AbortSignal));
+  });
+
+  it("distingue licencias no observadas de evidencia no disponible", async () => {
+    const load = vi.fn<CargarCatalogoClientes>().mockResolvedValue(initial);
+    const loadDetail = vi.fn<CargarDetalleCliente>().mockResolvedValue(cliente);
+    const dominios = vi.fn<CargarDominiosCliente>().mockResolvedValue({
+      state: "unavailable", verifiedAt: null, partial: true,
+      items: [{ host: "no-visible.invalid", observations: [] }],
+    });
+    const licencias = vi.fn<CargarLicenciasCliente>().mockResolvedValue({
+      state: "verified", verifiedAt: null, partial: false, items: [],
+    });
+    renderPage(load, loadDetail, { dominios, licencias });
+    fireEvent.click(await screen.findByRole("button", { name: "Ver fuentes de Comercial Ejemplo" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Ver licencias observadas" }));
+    expect(await screen.findByText(/No se observaron licencias en la información disponible/)).toBeInTheDocument();
+    expect(dominios).toHaveBeenCalledTimes(0);
+    fireEvent.click(screen.getByRole("button", { name: "Ver dominios observados" }));
+    expect(await screen.findByText(/No hay evidencia disponible sobre dominios/)).toBeInTheDocument();
+    expect(screen.queryByText("no-visible.invalid")).toBeNull();
+  });
+
+  it("no expone los indicadores de un detalle que dejó de estar autorizado", async () => {
+    const load = vi.fn<CargarCatalogoClientes>().mockResolvedValue(initial);
+    const loadDetail = vi.fn<CargarDetalleCliente>().mockResolvedValue(null);
+    const dominios = vi.fn<CargarDominiosCliente>();
+    renderPage(load, loadDetail, { dominios });
+    fireEvent.click(await screen.findByRole("button", { name: "Ver fuentes de Comercial Ejemplo" }));
+    await screen.findByText(/El cliente ya no está disponible/);
+    expect(screen.queryByRole("button", { name: "Ver dominios observados" })).toBeNull();
+    expect(dominios).toHaveBeenCalledTimes(0);
   });
 });

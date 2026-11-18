@@ -44,6 +44,13 @@ async function readClient(id: string): Promise<ClientRecord | null> {
   return (await readSqlClients(id))[0] ?? null;
 }
 
+// Preserve legacy reads for dependent modules, but no client mutation may
+// bypass read-only catalog ownership by calling an older API directly.
+function catalogOwnsClients(): boolean {
+  return process.env.PORTAL_CATALOG_READ_ENABLED?.trim() === "true";
+}
+const readOnlyClientResponse = () => conflict("El catálogo de clientes es de solo lectura.");
+
 app.http("clientsList", {
   route: "clients",
   methods: ["GET"],
@@ -80,6 +87,7 @@ app.http("clientsCreate", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canCreateClient(user, roleDefinitions)) return forbidden();
+      if (catalogOwnsClients()) return readOnlyClientResponse();
       const body = await req.json();
       const parsed = ClientSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0].message);
@@ -144,6 +152,7 @@ app.http("clientsUpdate", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canEditClient(user, roleDefinitions)) return forbidden();
+      if (catalogOwnsClients()) return readOnlyClientResponse();
       const id = req.params.id;
       const body = await req.json();
       const parsed = partialUpdate(ClientSchema).safeParse(body);
@@ -171,6 +180,7 @@ app.http("clientsDeactivate", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canDeactivateClient(user, roleDefinitions)) return forbidden();
+      if (catalogOwnsClients()) return readOnlyClientResponse();
       const id = req.params.id;
       const resource = await updateSqlClient(id, { status: "inactive" }, { id: user.id, email: user.email }, "client_deactivated");
       return resource ? ok(resource) : notFound("Cliente no encontrado.");
@@ -189,6 +199,7 @@ app.http("clientsReactivate", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canReactivateClient(user, roleDefinitions)) return forbidden();
+      if (catalogOwnsClients()) return readOnlyClientResponse();
       const id = req.params.id;
       const resource = await updateSqlClient(id, { status: "active" }, { id: user.id, email: user.email }, "client_reactivated");
       return resource ? ok(resource) : notFound("Cliente no encontrado.");
@@ -207,6 +218,7 @@ app.http("clientsDelete", {
       const user = await getUserOrFail(req);
       const roleDefinitions = await loadRoleDefinitions();
       if (!canDeleteClient(user, roleDefinitions)) return forbidden();
+      if (catalogOwnsClients()) return readOnlyClientResponse();
       const id = req.params.id;
       const cascade = req.query.get("cascade") === "true";
       const result = await deleteSqlCoreCascade("client", id, cascade, { id: user.id, email: user.email });

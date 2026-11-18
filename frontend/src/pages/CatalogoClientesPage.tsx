@@ -1,6 +1,7 @@
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Paginacion } from "../components/Comunes";
+import CatalogoClienteIndicadores, { type CargadoresIndicadores } from "../components/CatalogoClienteIndicadores";
 
 type Estado = "active" | "inactive" | "unverified";
 type Presencia = "in_web" | "not_in_web" | "unverified";
@@ -51,6 +52,7 @@ type Props = {
   /** Loaders must enforce authorization server-side, including every source and detail. */
   load: CargarCatalogoClientes;
   loadDetail?: CargarDetalleCliente;
+  indicadores?: CargadoresIndicadores;
 };
 
 const FILTROS_INICIALES: CatalogoClientesQuery = { state: "active", web: "in_web", page: 1, pageSize: 25 };
@@ -71,10 +73,11 @@ function UltimaVerificacion({ value }: { value: string | null }) {
     : <span>Sin fecha verificada</span>;
 }
 
-function DetalleFuentes({ cliente, scopeKey, loadDetail, panelId }: {
+function DetalleFuentes({ cliente, scopeKey, loadDetail, indicadores, panelId }: {
   cliente: ResumenCatalogoCliente;
   scopeKey: string;
   loadDetail?: CargarDetalleCliente;
+  indicadores?: CargadoresIndicadores;
   panelId: string;
 }) {
   const detalle = useQuery({
@@ -83,6 +86,7 @@ function DetalleFuentes({ cliente, scopeKey, loadDetail, panelId }: {
     enabled: !!loadDetail, retry: false, gcTime: 0,
   });
   const fuentes = loadDetail ? (detalle.isError ? undefined : detalle.data?.sources) : cliente.sources;
+  const alcanceIndicadores = JSON.stringify([scopeKey, !!indicadores?.dominios, !!indicadores?.licencias]);
   return (
     <section id={panelId} aria-label={`Fuentes de ${cliente.name}`} className="tarjeta">
       <h3>{loadDetail ? "Procedencias autorizadas" : "Procedencias en este resultado"}</h3>
@@ -100,6 +104,9 @@ function DetalleFuentes({ cliente, scopeKey, loadDetail, panelId }: {
           ))}
         </ul>
       ) : <p>Sin procedencias disponibles.</p>)}
+      {indicadores && detalle.isSuccess && detalle.data &&
+        <CatalogoClienteIndicadores key={alcanceIndicadores} scopeKey={alcanceIndicadores}
+          customerId={cliente.id} indicadores={indicadores} />}
     </section>
   );
 }
@@ -110,7 +117,7 @@ export default function CatalogoClientesPage(props: Props) {
   return <CatalogoClientesContenido key={props.scopeKey} {...props} />;
 }
 
-function CatalogoClientesContenido({ scopeKey, load, loadDetail }: Props) {
+function CatalogoClientesContenido({ scopeKey, load, loadDetail, indicadores }: Props) {
   const id = useId();
   const [filtros, setFiltros] = useState<CatalogoClientesQuery>(FILTROS_INICIALES);
   const [busqueda, setBusqueda] = useState("");
@@ -244,7 +251,8 @@ function CatalogoClientesContenido({ scopeKey, load, loadDetail }: Props) {
                   const panelId = `${id}-detalle`;
                   return (
                     <CustomerRows key={cliente.id} cliente={cliente} abierto={abierto} panelId={panelId}
-                      onToggle={() => setDetalleAbierto(abierto ? null : cliente.id)} scopeKey={scopeKey} loadDetail={loadDetail} />
+                      onToggle={() => setDetalleAbierto(abierto ? null : cliente.id)} scopeKey={scopeKey}
+                      loadDetail={loadDetail} indicadores={indicadores} />
                   );
                 })}
               </tbody>
@@ -257,13 +265,14 @@ function CatalogoClientesContenido({ scopeKey, load, loadDetail }: Props) {
   );
 }
 
-function CustomerRows({ cliente, abierto, panelId, onToggle, scopeKey, loadDetail }: {
+function CustomerRows({ cliente, abierto, panelId, onToggle, scopeKey, loadDetail, indicadores }: {
   cliente: ResumenCatalogoCliente;
   abierto: boolean;
   panelId: string;
   onToggle: () => void;
   scopeKey: string;
   loadDetail?: CargarDetalleCliente;
+  indicadores?: CargadoresIndicadores;
 }) {
   return (
     <>
@@ -281,7 +290,7 @@ function CustomerRows({ cliente, abierto, panelId, onToggle, scopeKey, loadDetai
         </td>
       </tr>
       {abierto && <tr><td colSpan={4}>
-        <DetalleFuentes cliente={cliente} scopeKey={scopeKey} loadDetail={loadDetail} panelId={panelId} />
+        <DetalleFuentes cliente={cliente} scopeKey={scopeKey} loadDetail={loadDetail} indicadores={indicadores} panelId={panelId} />
       </td></tr>}
     </>
   );
