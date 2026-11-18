@@ -1,5 +1,5 @@
-import { createHmac } from "node:crypto";
 import { catalogSagLegacySqlTargetOuterApply, parseCatalogSagLegacySqlTargetEvidence } from "./catalogSagLegacySqlTargetProjection";
+import { deriveCatalogSagCompanyLocationToken } from "./catalogSagCompanyLocationProof";
 import type { CatalogEnvironment } from "./catalogSourceConfiguration";
 
 /** Fixed, SELECT-only contracts. The transport owns TLS, credentials and target authorization. */
@@ -543,16 +543,19 @@ export async function readCatalogSagDiscoveryV2WithTargets(transport: CatalogExt
     !Number.isInteger(scope.matchKeyVersion) || scope.matchKeyVersion < 1 || scope.matchKeyVersion > 32767) {
     return { status: "unavailable", reason: "invalid_options" };
   }
-  const environment = scope.environment, sourceId = scope.sourceId.toLowerCase(), version = scope.matchKeyVersion;
+  const pins = { environment: scope.environment, sourceId: scope.sourceId, matchKeyVersion: scope.matchKeyVersion };
   const key = Buffer.from(scope.matchKey);
   try {
     const result = await readSagDiscovery(transport, options, "sag_admin_v2_targets", raw => {
       const { company, evidence } = parseSagCompanyWithTarget(raw);
-      const target: CatalogSagCompanyTargetObservation = evidence.status === "unverified"
-        ? { companyRecordId: company.companyRecordId, state: "unverified", locationToken: null }
-        : { companyRecordId: company.companyRecordId, state: "candidate",
-          locationToken: createHmac("sha256", key).update(JSON.stringify(["portal-sag/company-location/v1",
-            environment, sourceId, version, company.companyRecordId, evidence.host, evidence.port, evidence.databaseName])).digest("hex") };
+      const companyRecordId = company.companyRecordId;
+      if (evidence.status === "unverified") {
+        const target: CatalogSagCompanyTargetObservation = { companyRecordId, state: "unverified", locationToken: null };
+        return { company, target };
+      }
+      const locationToken = deriveCatalogSagCompanyLocationToken({ ...pins, companyRecordId }, key, evidence);
+      if (locationToken === null) throw new Unavailable("invalid_rows");
+      const target: CatalogSagCompanyTargetObservation = { companyRecordId, state: "candidate", locationToken };
       return { company, target };
     }, row => row.company.companyRecordId);
     if (result.status !== "complete") return result;
