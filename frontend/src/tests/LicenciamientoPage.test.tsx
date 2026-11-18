@@ -128,7 +128,7 @@ describe("LicenciamientoPage", () => {
     apiMock.post.mockResolvedValue({ id: "module_wms", name: "WMS", code: "WMS", status: "active" });
     renderPage();
     fireEvent.click(await screen.findByRole("button", { name: "Nuevo módulo" }));
-    await userEvent.type(textField("Nombre *"), "WMS");
+    fireEvent.change(textField("Nombre *"), { target: { value: "WMS" } });
     expect(screen.queryByText("Código *")).toBeNull();
     expect(screen.getByText(/Opcional. Si lo deja vacío/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
