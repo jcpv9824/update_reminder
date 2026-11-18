@@ -13,8 +13,13 @@ type PlannedGroup = CatalogTaskPlan["tasks"][number];
 type SqlKey = number | string;
 type OriginKind = "normal" | "special" | "licensing";
 type Link = { linkId: string; clientId: string; domainId: string; databaseId: string | null;
-  catalogSourceId: string | null; recordId: string; environment: string };
+  catalogSourceId: string | null; recordId: string; environment: string;
+  revisionId?: string; bindingVersion?: string; profileVersion?: string };
 type Attachment = { linkId: string; scheduleId: string };
+
+/** Exact approved ERP observation read before planning. Never trust it from HTTP. */
+export type CatalogExecutionSourceEvidence = Readonly<{ sourceId: string; revisionId: string;
+  bindingVersion: string; profileVersion: string; verifiedUntil: string }>;
 
 /** Trusted input from the verified planner; never deserialize this contract from HTTP. */
 export type CatalogExecutionRegistration = Readonly<{
@@ -26,6 +31,8 @@ export type CatalogExecutionRegistration = Readonly<{
   scheduleVersions: ReadonlyMap<string, string>;
   /** An explicit null means local reconciliation. Missing entries are not local evidence. */
   catalogSourceIdsByLink: ReadonlyMap<string, string | null>;
+  /** Required for every external link, forbidden for a local link. */
+  catalogEvidenceByLink?: ReadonlyMap<string, CatalogExecutionSourceEvidence>;
 }>;
 
 type Conflict = "invalid-plan" | "cutoff-passed" | "legacy-task-collision" | "execution-conflict"
@@ -41,6 +48,7 @@ const conflict = (reason: Conflict): never => { throw new RegistrationConflict(r
 const safeText = (value: unknown, max: number): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= max && value === value.trim() && !/\p{Cc}/u.test(value);
 const sourceIdFormat = /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i;
+const versionFormat = /^[0-9a-f]{16}$/;
 const day = /^\d{4}-\d{2}-\d{2}$/;
 const identity = (link: Link) => JSON.stringify([link.linkId, link.clientId, link.domainId, link.databaseId,
   link.recordId, link.environment, link.catalogSourceId?.toLowerCase() ?? null]);
@@ -90,9 +98,19 @@ function parseInput(input: CatalogExecutionRegistration) {
         !["production", "test", "demo"].includes(link.environment) ||
         (link.kind === "database" ? !safeText(link.databaseId, 150) : link.databaseId !== undefined)) return conflict("invalid-plan");
     const catalogSourceId = input.catalogSourceIdsByLink.get(link.linkId);
-    if (catalogSourceId !== null && (catalogSourceId === undefined || !sourceIdFormat.test(catalogSourceId))) return conflict("invalid-plan");
+    if (catalogSourceId !== null && (catalogSourceId?.length !== 36 || !sourceIdFormat.test(catalogSourceId))) return conflict("invalid-plan");
+    const evidence = input.catalogEvidenceByLink?.get(link.linkId);
+    if (catalogSourceId === null ? evidence !== undefined
+      : (!evidence || evidence.sourceId !== catalogSourceId || !sourceIdFormat.test(link.linkId) ||
+        evidence.revisionId !== evidence.revisionId.trim() || !/^[1-9][0-9]{0,18}$/.test(evidence.revisionId) ||
+        BigInt(evidence.revisionId) > 9223372036854775807n ||
+        evidence.bindingVersion.length !== 16 || !versionFormat.test(evidence.bindingVersion) ||
+        evidence.profileVersion.length !== 16 || !versionFormat.test(evidence.profileVersion) ||
+        !Number.isFinite(Date.parse(evidence.verifiedUntil)))) return conflict("invalid-plan");
     const record: Link = { linkId: link.linkId, clientId: link.customerId, domainId: link.domainId,
-      databaseId: link.databaseId ?? null, environment: link.environment, recordId: link.catalogRecordId, catalogSourceId };
+      databaseId: link.databaseId ?? null, environment: link.environment, recordId: link.catalogRecordId, catalogSourceId,
+      ...(evidence ? { revisionId: evidence.revisionId, bindingVersion: evidence.bindingVersion,
+        profileVersion: evidence.profileVersion } : {}) };
     const previous = links.get(link.linkId);
     if (previous && identity(previous) !== identity(record)) return conflict("invalid-plan");
     links.set(link.linkId, record);
@@ -101,6 +119,7 @@ function parseInput(input: CatalogExecutionRegistration) {
         task.targetId === (link.databaseId ?? link.domainId)) representative = true;
   }
   if (!representative || links.size !== input.catalogSourceIdsByLink.size) return conflict("invalid-plan");
+  if (input.catalogEvidenceByLink && [...input.catalogEvidenceByLink.keys()].some(id => !links.has(id))) return conflict("invalid-plan");
   const schedules = [...new Set([...attachments.values()].map(item => item.scheduleId))].sort();
   if (input.scheduleVersions.size !== schedules.length || schedules.some(id =>
     !/^[a-f0-9]{16}$/.test(input.scheduleVersions.get(id) ?? ""))) return conflict("invalid-plan");
@@ -272,7 +291,8 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
             CASE WHEN revision.verified_until<pt.valid_until THEN revision.verified_until ELSE pt.valid_until END
           FROM OPENJSON(@links) WITH (
             linkId nvarchar(260), clientId nvarchar(150), domainId nvarchar(150), databaseId nvarchar(150),
-            catalogSourceId uniqueidentifier, recordId nvarchar(260), environment varchar(20)
+            catalogSourceId uniqueidentifier, recordId nvarchar(260), environment varchar(20),
+            revisionId varchar(20), bindingVersion char(16), profileVersion char(16)
           ) AS r
           JOIN core.clients AS c ON c.source_id=r.clientId AND c.status='active'
             AND c.source_id COLLATE Latin1_General_100_BIN2=r.clientId COLLATE Latin1_General_100_BIN2
@@ -309,8 +329,22 @@ export async function registerSqlCatalogTaskExecution(input: CatalogExecutionReg
             AND evidence.source_record_id=TRY_CONVERT(int,r.recordId)
             AND CONVERT(nvarchar(11),evidence.source_record_id) COLLATE Latin1_General_100_BIN2=r.recordId COLLATE Latin1_General_100_BIN2
             AND DATALENGTH(CONVERT(nvarchar(11),evidence.source_record_id))=DATALENGTH(r.recordId)
+          LEFT JOIN core.catalog_operational_link_evidence AS bridge WITH (HOLDLOCK)
+            ON bridge.link_id=TRY_CONVERT(uniqueidentifier,r.linkId) AND DATALENGTH(r.linkId)=72
+            AND bridge.portal_environment=@portalEnvironment AND bridge.target_kind=@kind
+            AND bridge.link_environment=r.environment COLLATE Latin1_General_100_BIN2
+            AND bridge.client_key=c.client_key AND bridge.domain_key=d.domain_key
+            AND ((@kind='domain' AND bridge.database_key IS NULL) OR (@kind='database' AND bridge.database_key=db.database_key))
+            AND bridge.catalog_source_key=b.catalog_source_key AND bridge.source_record_id=evidence.source_record_id
+            AND bridge.evidence_state='verified' AND bridge.revision_key=revision.revision_key
+            AND bridge.revision_key=TRY_CONVERT(bigint,r.revisionId)
+            AND bridge.binding_version=TRY_CONVERT(binary(8),r.bindingVersion,2)
+            AND bridge.profile_version=TRY_CONVERT(binary(8),r.profileVersion,2)
           WHERE (@kind='domain' OR db.database_key IS NOT NULL)
-            AND (r.catalogSourceId IS NULL OR (b.validated_at<=@registryNow AND evidence.source_record_id IS NOT NULL
+            AND ((r.catalogSourceId IS NULL AND NOT EXISTS (
+              SELECT 1 FROM core.catalog_operational_links AS externalLink WITH (HOLDLOCK)
+              WHERE externalLink.link_id=TRY_CONVERT(uniqueidentifier,r.linkId) AND externalLink.portal_environment=@portalEnvironment
+            )) OR (bridge.link_id IS NOT NULL AND b.validated_at<=@registryNow AND evidence.source_record_id IS NOT NULL
               AND (b.source_role<>'erp-customers' OR evidence.active_code='S')));
           IF EXISTS(SELECT 1 FROM @accepted WHERE validUntil<=SYSUTCDATETIME())
           BEGIN

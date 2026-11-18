@@ -77,6 +77,19 @@ describe("catalog schedule day", () => {
     expect(origins).toEqual(["client1:domain1:production", "client2:domain2:test"]);
   });
 
+  it("keeps the full domain name and stable target ID when the redundant task label is short", async () => {
+    const domainName = "x".repeat(238) + "🌐" + "path";
+    const { databaseId: _unused, ...link } = data.inventory[0].link;
+    const deps = io();
+    deps.resolve.mockResolvedValue([{ status: "verified", id: physicalId }]);
+    const singleRule = { ...rule(1), scope: { ...rule(1).scope, kind: "domain" as const } };
+    await generateCatalogScheduleDay({ ...data, rules: [singleRule], inventory: [{ ...data.inventory[0],
+      link: { ...link, kind: "domain" }, domainName, targetName: domainName }] }, deps);
+    expect(deps.register.mock.calls[0][0].task).toMatchObject({
+      domainName, targetId: "domain1", targetName: "x".repeat(238) + "…",
+    });
+  });
+
   it("has no writes when coverage is incomplete, the cutoff passed, or the manual request is out of scope", async () => {
     const deps = io();
     await expect(generateCatalogScheduleDay({ ...data, revision: { id: "revision1", complete: false } }, deps))

@@ -1,5 +1,5 @@
 import type { UpdateTask } from "../types/models";
-import { registerSqlCatalogTaskExecution } from "./catalogExecutionRegistrationSqlRepository";
+import { registerSqlCatalogTaskExecution, type CatalogExecutionSourceEvidence } from "./catalogExecutionRegistrationSqlRepository";
 import { readSqlCatalogPhysicalTargets, planCatalogTasksWithVerifiedTargets } from "./catalogPhysicalTargetSqlRepository";
 import type { CatalogEnvironment } from "./catalogSourceConfiguration";
 import { catalogAssignedUsers, type CatalogTaskKind, type CatalogTaskLink, type CatalogTaskRequest } from "./catalogTaskTargetPlanning";
@@ -20,6 +20,7 @@ export type CatalogScheduleDay = {
   revision: { id: string; complete: boolean };
   rules: readonly CatalogScheduleRule[];
   inventory: readonly { link: CatalogTaskLink; sourceId: string | null;
+    sourceEvidence?: CatalogExecutionSourceEvidence;
     clientName: string; domainName: string; targetName: string }[];
   /** Already authorized by caller; a generic refresh leaves this absent. */
   manualScheduleIds?: readonly string[];
@@ -31,6 +32,8 @@ const dependencies = { resolve: readSqlCatalogPhysicalTargets, register: registe
 const ruleKey = (scheduleId: string, kind: CatalogTaskKind) => JSON.stringify([scheduleId, kind]);
 const validDay = (date: string) => /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(Date.parse(date))
   && new Date(date).toISOString().slice(0, 10) === date;
+// The workflow stores a 240-unit display label separately from the 500-unit domain name.
+const webTargetLabel = (name: string) => name.length <= 240 ? name : name.slice(0, 239).replace(/[\uD800-\uDBFF]$/, "") + "…";
 
 /**
  * Runs one Bogotá business date using the full trusted roster, not browser-provided targets.
@@ -91,7 +94,8 @@ export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io =
     const task: UpdateTask = {
       id: `catalog-${group.executionKey}`, taskDate: input.date, taskBucket: getTaskDateBucket(input.date, group.kind),
       clientId: link.customerId, clientName, domainId: link.domainId, domainName,
-      targetType: group.kind, targetId: link.databaseId ?? link.domainId, targetName,
+      targetType: group.kind, targetId: link.databaseId ?? link.domainId,
+      targetName: group.kind === "domain" ? webTargetLabel(targetName) : targetName,
       scheduleId: representative.scheduleId, rootScheduleId: representative.scheduleId,
       assignedRole: workflowRole, assignedUserIds: catalogAssignedUsers(assignment),
       status: "pending", result: null, notes: "", createdAt: now, createdBy: "system", updatedAt: now, updatedBy: "system",
@@ -99,7 +103,11 @@ export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io =
     };
     const write = await io.register({ group, task, portalEnvironment: input.portalEnvironment,
       cutoffAt: input.cutoffAt, catalogSourceIdsByLink: new Map(group.sources.map(({ link: row }) =>
-        [row.linkId, inventory.get(row.linkId)!.sourceId])), scheduleVersions: new Map(group.sources.map(source =>
+        [row.linkId, inventory.get(row.linkId)!.sourceId])),
+      catalogEvidenceByLink: new Map(group.sources.flatMap(({ link: row }) => {
+        const evidence = inventory.get(row.linkId)!.sourceEvidence;
+        return evidence ? [[row.linkId, evidence] as const] : [];
+      })), scheduleVersions: new Map(group.sources.map(source =>
         [source.scheduleId, versions.get(source.scheduleId)!])) });
     if (write.status === "conflict") result.conflicts++;
     else result[write.status]++;

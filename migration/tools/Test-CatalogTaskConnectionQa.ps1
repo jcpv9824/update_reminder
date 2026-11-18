@@ -35,6 +35,7 @@ DECLARE @task nvarchar(150)=@tag+N'-task', @assigned nvarchar(150)=@tag+N'-assig
 DECLARE @a nvarchar(150)=@tag+N'-a-db', @b nvarchar(150)=@tag+N'-b-db';
 DECLARE @sourceKey bigint,@origin uniqueidentifier,@customerKey bigint,@version smallint,@revision bigint,@lock int;
 DECLARE @bindingVersion binary(8),@profileVersion binary(8);
+DECLARE @operationalOwner bigint,@operationalLink bigint,@logicalLinkId uniqueidentifier=NEWID(),@wrongLinkId uniqueidentifier=NEWID();
 DECLARE @params nvarchar(max)=N'@actor nvarchar(150), @db nvarchar(150), @task nvarchar(260), @environment varchar(10), @permission nvarchar(160)';
 DECLARE @rows TABLE(serverHostPort nvarchar(500),initialCatalog nvarchar(256),userId nvarchar(256),secretName nvarchar(256),
   databaseId nvarchar(150),taskId nvarchar(260),linkId nvarchar(260),profileVersion varchar(16),linkVersion varchar(16),executionVersion varchar(16));
@@ -158,18 +159,60 @@ BEGIN TRY
   INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.reveal_database_password';
   IF EXISTS(SELECT 1 FROM @rows) THROW 53891,N'Missing ERP record authorized a grant.',1;
 
+  -- Advance the same profile's sealed head so the negative revision probe is
+  -- a genuine historical revision, not an arbitrary nonexistent number.
+  DECLARE @staleRevision bigint=@revision,@currentAt datetime2(3)=SYSUTCDATETIME();
+  SET @attempt+=1;
+  INSERT core.catalog_customer_source_revisions(catalog_source_key,source_role,binding_version,profile_version,match_key_version,
+    attempt_ordinal,expected_rows,expected_scopes,observed_at,verified_until)
+    VALUES(@sourceKey,'erp-customers',@bindingVersion,@profileVersion,@version,@attempt,1,0,@currentAt,@validUntil);
+  SET @revision=SCOPE_IDENTITY();
+  INSERT core.catalog_customer_revision_rows(revision_key,source_role,source_record_id,catalog_customer_key,official_name,active_code)
+    VALUES(@revision,'erp-customers',1,@customerKey,N'QA Fixture','S');
+  UPDATE core.catalog_customer_source_revisions SET sealed_at=@currentAt WHERE revision_key=@revision;
+  UPDATE settings.catalog_customer_revision_heads
+    SET revision_key=@revision,attempt_status='succeeded',attempted_at=@currentAt,attempt_ordinal=@attempt
+    WHERE catalog_source_key=@sourceKey;
+
+  INSERT core.catalog_operational_owners(portal_environment,catalog_customer_key,client_key,registered_by)
+    SELECT 'qa',@customerKey,client_key,N'fixture' FROM core.databases WHERE source_id=@b;
+  SELECT @operationalOwner=owner_key FROM core.catalog_operational_owners
+    WHERE portal_environment='qa' AND catalog_customer_key=@customerKey;
+  INSERT core.catalog_operational_links(link_id,owner_key,portal_environment,client_key,domain_key,database_key,
+    catalog_source_key,source_record_id,target_kind,link_environment,registered_by)
+    SELECT @logicalLinkId,@operationalOwner,'qa',client_key,domain_key,database_key,@sourceKey,1,'database','test',N'fixture'
+    FROM core.databases WHERE source_id=@b;
+  SELECT @operationalLink=link_key FROM core.catalog_operational_links WHERE link_id=@logicalLinkId;
+  INSERT core.catalog_operational_link_approvals(link_key,binding_version,profile_version,revision_key,approval_reference,approved_by)
+    VALUES(@operationalLink,@bindingVersion,@profileVersion,@revision,'QA-TASK-CONNECTION',N'fixture');
+
   DECLARE @planned nvarchar(max),@record nvarchar(260)=N'1 ';
+  DECLARE @canonicalLinkId varchar(36)=LOWER(CONVERT(char(36),@logicalLinkId)),@currentRevision varchar(20)=CONVERT(varchar(20),@revision);
   DECLARE @registrationParams nvarchar(180)=N'@executionId bigint,@kind varchar(20),@portalEnvironment varchar(10),@physicalId uniqueidentifier,@links nvarchar(max)';
   DECLARE @accepted TABLE(linkId nvarchar(260),validUntil datetime2(3));
-  SELECT @planned=(SELECT @tag+N'-registration' AS linkId,@record AS recordId,db.source_id AS databaseId,
-      c.source_id AS clientId,d.source_id AS domainId,CONVERT(char(36),@origin) AS catalogSourceId,'test' AS environment
+  SELECT @planned=(SELECT @canonicalLinkId AS linkId,@record AS recordId,db.source_id AS databaseId,
+      c.source_id AS clientId,d.source_id AS domainId,LOWER(CONVERT(char(36),@origin)) AS catalogSourceId,'test' AS environment,
+      @currentRevision AS revisionId,LOWER(CONVERT(char(16),@bindingVersion,2)) AS bindingVersion,
+      LOWER(CONVERT(char(16),@profileVersion,2)) AS profileVersion
     FROM core.databases db JOIN core.domains d ON d.domain_key=db.domain_key JOIN core.clients c ON c.client_key=db.client_key
     WHERE db.source_id=@b FOR JSON PATH);
   INSERT @accepted EXEC sys.sp_executesql @registerProbe,@registrationParams,@execution,'database','qa',@physical,@planned;
   IF EXISTS(SELECT 1 FROM @accepted) THROW 53892,N'An inexact record was registered.',1;
   SET @planned=JSON_MODIFY(@planned,'$[0].recordId',N'1');
+  SET @planned=JSON_MODIFY(@planned,'$[0].linkId',LOWER(CONVERT(char(36),@wrongLinkId)));
   INSERT @accepted EXEC sys.sp_executesql @registerProbe,@registrationParams,@execution,'database','qa',@physical,@planned;
-  IF (SELECT COUNT(*) FROM @accepted WHERE validUntil=@validUntil)<>1 THROW 53893,N'The registered link did not inherit the earlier evidence expiry.',1;
+  IF EXISTS(SELECT 1 FROM @accepted) THROW 53895,N'A different logical link ID was registered.',1;
+  SET @planned=JSON_MODIFY(@planned,'$[0].linkId',@canonicalLinkId);
+  SET @planned=JSON_MODIFY(@planned,'$[0].revisionId',CONVERT(varchar(20),@staleRevision));
+  INSERT @accepted EXEC sys.sp_executesql @registerProbe,@registrationParams,@execution,'database','qa',@physical,@planned;
+  IF EXISTS(SELECT 1 FROM @accepted) THROW 53896,N'A historical revision was accepted during registration.',1;
+  SET @planned=JSON_MODIFY(@planned,'$[0].revisionId',@currentRevision);
+  DECLARE @misclassified nvarchar(max)=JSON_MODIFY(@planned,'$[0].catalogSourceId',NULL);
+  INSERT @accepted EXEC sys.sp_executesql @registerProbe,@registrationParams,@execution,'database','qa',@physical,@misclassified;
+  IF EXISTS(SELECT 1 FROM @accepted) THROW 53897,N'An external logical link was accepted as local.',1;
+  INSERT @accepted EXEC sys.sp_executesql @registerProbe,@registrationParams,@execution,'database','qa',@physical,@planned;
+  IF (SELECT COUNT(*) FROM @accepted WHERE linkId=@canonicalLinkId AND validUntil=@validUntil)<>1
+    THROW 53893,N'The registered link was not exact or did not inherit the earlier evidence expiry.',1;
 
   UPDATE workflow.catalog_task_execution_links SET catalog_record_id=N'1' WHERE link_id=@b;
   UPDATE core.database_access_profiles SET sql_user_id=N'changed-fixture' WHERE source_id=@tag+N'-b-profile';
@@ -181,19 +224,23 @@ BEGIN CATCH
   IF XACT_STATE()<>0 ROLLBACK TRANSACTION;
   THROW;
 END CATCH;
-SELECT 13 AS passed,
+SELECT 16 AS passed,
   (SELECT COUNT(*) FROM workflow.update_tasks WHERE source_id=@task)
   +(SELECT COUNT(*) FROM security.users WHERE source_id IN (@assigned,@other))
   +(SELECT COUNT(*) FROM core.catalog_physical_targets WHERE target_id=@physical)
   +(SELECT COUNT(*) FROM settings.external_database_connections WHERE source_id=@tag)
   +(SELECT COUNT(*) FROM settings.catalog_source_bindings WHERE catalog_source_key=@sourceKey)
   +(SELECT COUNT(*) FROM core.catalog_customer_ids WHERE catalog_customer_key=@customerKey)
-  +(SELECT COUNT(*) FROM core.catalog_customer_source_revisions WHERE revision_key=@revision) AS remaining_fixtures;
+  +(SELECT COUNT(*) FROM core.catalog_customer_source_revisions WHERE catalog_source_key=@sourceKey)
+  +(SELECT COUNT(*) FROM core.catalog_operational_owners WHERE owner_key=@operationalOwner)
+  +(SELECT COUNT(*) FROM core.catalog_operational_links WHERE link_id IN (@logicalLinkId,@wrongLinkId))
+  +(SELECT COUNT(*) FROM core.catalog_operational_link_approvals WHERE link_key=@operationalLink)
+  +(SELECT COUNT(*) FROM workflow.catalog_task_execution_links WHERE catalog_execution_key=@execution) AS remaining_fixtures;
 '@
 $invoke=Join-Path $PSScriptRoot '../connect-sql-server/Invoke-PortalSAGWeb-EphemeralRequest.ps1'
 $response=(& $invoke -SessionDirectory $session -Sql ($literal + [Environment]::NewLine + $fixture) -Mode write -TimeoutSeconds 35 -MaxRows 1) | ConvertFrom-Json -Depth 16
 $row=$response.resultSets[0].rows[0]
-if(!$response.success -or $row.passed -ne 13 -or $row.remaining_fixtures -ne 0){
+if(!$response.success -or $row.passed -ne 16 -or $row.remaining_fixtures -ne 0){
   $number=$response.error.number
   throw "QA connection, cutoff and registration rehearsal did not pass or left residual data (SQL error number: $number)."
 }
