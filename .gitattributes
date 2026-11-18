@@ -21,3 +21,4 @@ migration/sql/048_catalog_task_origin_receipts.sql text eol=lf
 migration/sql/049_catalog_once_observations.sql text eol=lf
 migration/sql/050_catalog_once_completion_witnesses.sql text eol=lf
 migration/sql/051_catalog_refresh_queue.sql text eol=lf
+migration/sql/052_catalog_sag_company_evidence.sql text eol=lf

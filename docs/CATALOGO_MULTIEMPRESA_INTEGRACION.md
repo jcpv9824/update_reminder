@@ -236,6 +236,45 @@ alternativa. Referencias oficiales:
 [niveles de aislamiento](https://learn.microsoft.com/en-us/sql/t-sql/statements/set-transaction-isolation-level-transact-sql?view=sql-server-ver15)
 y [LOCK_TIMEOUT](https://learn.microsoft.com/en-us/sql/t-sql/statements/set-lock-timeout-transact-sql).
 
+## Contrato en desarrollo: observaciones de bases desde SAG Admin
+
+El lector dedicado v2 pasó 70 pruebas enfocadas y el build del API. Sobre la
+fuente real, la ejecución de solo lectura completó 86 Customers y 122
+Companies en 2.051 ms, con cero referencias a padres no encontrados. La prueba
+sólo emitió conteos y tiempo. No guardó filas ni publicó una revisión.
+
+El borrador 052 pasó TSql150, incluidos sus tres bloques SQL dinámicos. En
+`PortalSAGWeb-TEST`, se aplicó dos veces en una transacción de ensayo, se
+verificaron restricciones, triggers y permisos de escritura, y se revirtió.
+La lectura posterior dentro del ensayo confirmó 051 presente y los objetos
+052 ausentes. El ensayo funcional `Test-CatalogSagCompanyEvidenceQa.ps1`
+pasó **34/34 casos en 2.411 ms**, con cero residuos. Incluyó conteos
+discordantes, v1 frente a v2 vacío, padres no resueltos, inmutabilidad y
+publicación con evento histórico. Fue un ensayo de una sesión con transacciones
+revertidas, no una certificación de concurrencia ni del publicador del API.
+
+El lector `sag_admin_v2` debe obtener Customers y Companies en una sola
+transacción SNAPSHOT, con conteos y paginación independientes por `Id`. Se
+descarta la revisión entera si un conjunto falla, si no coincide su conteo,
+o si falla el fin de lectura. Un registro de Companies se conserva aunque
+no coincida con un Customer de esa misma revisión o no esté disponible.
+`Name` es una etiqueta de origen, no el nombre SQL de la base. El lector de
+metadatos no selecciona `StringConnection`, `Token` ni credenciales.
+
+En la persistencia propuesta, `expected_sag_company_rows=NULL` significa que
+la revisión histórica no tiene esa evidencia; cero significa que el contrato
+v2 leyó el conjunto completo y no había registros. Las filas tendrán una
+clave primaria `(revision_key, company_record_id)` y conservarán el
+`customer_record_id` declarado, incluso si es nulo o no resuelve en esa
+revisión. No se crean maestros de compañías en la interfaz. La resolución
+será por revisión y cliente, sin unir por nombre ni a través de otra fuente.
+
+El sello verificará conjuntamente los conteos de clientes y asociaciones;
+una revisión parcial nunca reemplazará la cabecera. El contrato v1 no se
+reclasifica ni se actualiza automáticamente. La evidencia de descubrimiento
+no autoriza conexiones ni tareas; el destino físico y su acceso se validan
+aparte. Aún no se conecta este contrato a consumidores ni se activa en Azure.
+
 ## Incremento local: cierre de las mutaciones heredadas
 
 `catalogMasterOwnership.ts` centraliza el bloqueo de las mutaciones HTTP de
