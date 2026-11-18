@@ -85,6 +85,27 @@ la ejecución al rol general. Una prueba positiva de `COMMIT` con el principal
 dedicado requiere una base desechable autorizada en SQL Server 2019. La
 instancia instalada localmente usa la versión 17; no acredita esa prueba.
 
+## Verificación de preparación del reporte (2026-11-18)
+
+El conjunto enfocado de conteo, perfiles, permisos de destinatarios y outbox
+pasó **61/61, 9 archivos, 10,94 s** en `8e741fa`:
+
+```powershell
+cd api
+npm test -- --maxWorkers=2 catalogActiveUser catalogMastersActiveUsers catalogReportRecipients catalogReportingProfile mastersReportSqlData emailOutboxLease
+```
+
+Una consulta de metadatos en `PortalSAGWeb-TEST` encontró cero destinos SQL
+físicos y cero perfiles de conteo activos. La función interna
+`certifyCatalogReportingProfile` no tiene un consumidor operativo fuera de
+pruebas. Para acreditar el flujo real hacen falta el registro auditado,
+una cuenta de conteo de solo lectura dedicada, y un ensayo de entrega sin
+usar credenciales de tareas. Las pruebas anteriores no sustituyen ese ensayo.
+
+La consulta de recursos de Azure no encontró slots en la Function App de
+producción y encontró una sola Static Web App en el grupo productivo. No se
+crearon recursos, slots ni se usó producción como ambiente de prueba.
+
 ## Matriz pendiente de certificación integral
 
 | Caso | Resultado esperado |
