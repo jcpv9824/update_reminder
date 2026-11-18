@@ -149,6 +149,22 @@ cuenta publicadora real. Pasaron 83 pruebas enfocadas y TypeScript. Los
 publicadores anteriores rechazan un vínculo v2 antes de resolver secretos o
 abrir el publicador heredado. No se habilitó la bandera ni se modificó Azure.
 
+Conexiones puede preparar nuevos borradores SAG v2 sólo por configuración
+del servidor. No cambia contratos de fuentes existentes ni retira la
+fuente activa. La verificación v2 completa Customers y Companies en una
+lectura SNAPSHOT; la activación vuelve a exigir un publicador dedicado listo,
+autorización del operador después de la lectura y versiones exactas en SQL.
+SQL vuelve a confirmar que el operador sigue activo, pero no vuelve a
+resolver sus permisos de rol dentro de esa transacción.
+
+Pasaron 54 pruebas enfocadas, TypeScript y el build. El servicio compilado de
+verificación leyó SAG Admin con el perfil oficial de solo lectura: **86
+clientes, 122 asociaciones, cero llamadas a los caminos de escritura o v1**.
+El SQL exacto de activación pasó tres casos con rollback en PortalSAGWeb-TEST:
+actor ausente rechazado, contrato ambiguo rechazado y versión exacta aceptada.
+Quedaron cero fixtures y cero transacciones. No se creó ni activó un vínculo
+real ni se cambió producción.
+
 ## Verificación de preparación del reporte (2026-11-18)
 
 El conjunto enfocado de conteo, perfiles, permisos de destinatarios y outbox

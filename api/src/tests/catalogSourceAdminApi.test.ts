@@ -12,6 +12,7 @@ const stubs = vi.hoisted(() => ({
   save: vi.fn(),
   certify: vi.fn(),
   publish: vi.fn(),
+  refreshConfig: vi.fn(),
   limit: vi.fn(),
 }));
 vi.mock("@azure/functions", () => ({
@@ -23,7 +24,8 @@ vi.mock("../lib/auth", () => ({ requireUser: stubs.requireUser, loadUserProfile:
 vi.mock("../lib/managementAccess", () => ({ canManageIntegration: stubs.canManageIntegration }));
 vi.mock("../lib/roleDefinitionStore", () => ({ loadRoleDefinitions: stubs.loadRoleDefinitions }));
 vi.mock("../lib/catalogSourceCertification", () => ({ certifySavedCatalogSource: stubs.certify }));
-vi.mock("../lib/catalogSourcePublication", () => ({ publishSavedCatalogSource: stubs.publish }));
+vi.mock("../lib/catalogSourcePublication", () => ({ publishSavedCatalogSource: stubs.publish,
+  readCatalogRefreshConfiguration: stubs.refreshConfig }));
 vi.mock("../lib/rateLimit", () => ({ enforceRequestRateLimit: stubs.limit, RATE_LIMIT_POLICIES: { integrationTest: {} } }));
 vi.mock("../lib/catalogSourceBindingsSqlRepository", () => ({
   CATALOG_ERP_ISSUER_SCOPE: /^[A-Z]{2}:[A-Z][A-Z0-9_-]{0,31}$/,
@@ -67,6 +69,25 @@ describe("catalog source draft management routes", () => {
     stubs.save.mockResolvedValue({ status: "saved", binding });
     stubs.limit.mockResolvedValue(null);
     stubs.certify.mockResolvedValue("verified");
+    stubs.refreshConfig.mockReturnValue(null);
+  });
+
+  it("selects v2 for SAG only from the configured server environment and does not accept a browser contract", async () => {
+    stubs.refreshConfig.mockReturnValue({ environment: "qa", matchKeyVersion: 2, includeSag: true, includeSagV2: true });
+    const save = stubs.routes.get(saveRoute)!;
+    expect((await save(request({ role: "sag-admin", contractVersion: "sag_admin_v2" }))).status).toBe(400);
+    expect(stubs.save).not.toHaveBeenCalled();
+    expect((await save(request({ role: "sag-admin" }))).status).toBe(200);
+    expect(stubs.save).toHaveBeenCalledExactlyOnceWith({ profileId: "profile-test", environment: "qa", role: "sag-admin" }, actor, "sag_admin_v2");
+  });
+
+  it("reauthorizes after the source probe and denies an operator who lost edit access", async () => {
+    stubs.certify.mockImplementationOnce(async ({ authorizeActivation }) => {
+      stubs.canManageIntegration.mockImplementation((_actor, action) => action === "test_database");
+      return await authorizeActivation() ? "activated" : "forbidden";
+    });
+    expect((await stubs.routes.get(activateRoute)!(request({}))).status).toBe(403);
+    expect(stubs.loadUserProfile).toHaveBeenCalledTimes(2);
   });
   afterEach(() => { vi.unstubAllEnvs(); });
 

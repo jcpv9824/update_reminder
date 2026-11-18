@@ -130,16 +130,18 @@ async function findLockedDraftOrActive(
 export async function saveSqlCatalogSourceDraft(
   input: CatalogSourceDraftInput,
   actor: Pick<CurrentUser, "id">,
+  sagContract: "sag_admin_v1" | "sag_admin_v2" = "sag_admin_v1",
 ): Promise<SqlCatalogSourceDraftResult> {
   if (!input.profileId || input.profileId !== input.profileId.trim() || input.profileId.length > 150 ||
       /\p{Cc}/u.test(input.profileId) || (input.environment !== "qa" && input.environment !== "production") ||
       (input.role !== "erp-customers" && input.role !== "sag-admin") ||
       (input.role === "erp-customers" && !CATALOG_ERP_ISSUER_SCOPE.test(input.issuerScope)) ||
-      (input.role === "sag-admin" && input.issuerScope !== undefined)) {
+      (input.role === "sag-admin" && (input.issuerScope !== undefined ||
+        (sagContract !== "sag_admin_v1" && sagContract !== "sag_admin_v2")))) {
     throw new Error("Borrador de fuente de catálogo inválido.");
   }
   const issuerScope = input.role === "erp-customers" ? input.issuerScope : null;
-  const contractVersion = input.role === "erp-customers" ? "erp_v1" : "sag_admin_v1";
+  const contractVersion = input.role === "erp-customers" ? "erp_v1" : sagContract;
   return runSqlTransaction(async transaction => {
     const profile = (await catalogProfileRequest(transaction, input).query<{
       display_name: string;
@@ -157,6 +159,11 @@ export async function saveSqlCatalogSourceDraft(
     if (candidates.length > 1) return { status: "conflict" };
     const existing = candidates[0];
     const sameDefinition = existing?.source_role === input.role && existing?.issuer_scope === issuerScope;
+    if (existing && existing.contract_version !== contractVersion &&
+        (contractVersion === "sag_admin_v2" || existing.contract_version === "sag_admin_v2")) {
+      // Release configuration may choose a version for a new binding only.
+      return sameDefinition ? { status: "saved", binding: mapCatalogSourceBindingRow(existing) } : { status: "conflict" };
+    }
     if (existing?.source_state === "active") {
       // Idempotent reads of the same definition do not edit or invalidate an active binding.
       return sameDefinition ? { status: "saved", binding: mapCatalogSourceBindingRow(existing) } : { status: "conflict" };

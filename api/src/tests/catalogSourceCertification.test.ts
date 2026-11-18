@@ -17,10 +17,66 @@ const mocks = () => ({
   readBindings: vi.fn<() => Promise<SqlCatalogSourceBinding[]>>().mockResolvedValue([source]),
   loadTransport: vi.fn().mockResolvedValue(transport),
   verify: vi.fn().mockResolvedValue("verified"),
+  discover: vi.fn().mockResolvedValue({ status: "complete", customers: [], companies: [] }),
+  publisherReady: vi.fn().mockResolvedValue(true),
   activate: vi.fn().mockResolvedValue("activated"),
 });
 
 describe("catalog source certification service", () => {
+  const v2 = { ...source, role: "sag-admin", contractVersion: "sag_admin_v2", issuerScope: undefined } as const;
+  const env = { PORTAL_SAG_ENVIRONMENT: "qa", PORTAL_CATALOG_READ_ENABLED: "true", PORTAL_CATALOG_AUTOMATION_ENABLED: "true",
+    PORTAL_CATALOG_SAG_V2_ENABLED: "true", PORTAL_CATALOG_MATCH_KEY_VERSION: "2",
+    PORTAL_CATALOG_MATCH_KEY_SECRET_NAME: "fixture-key", PORTAL_CATALOG_MATCH_KEY_SECRET_VERSION: "ab".repeat(16),
+    PORTAL_CATALOG_SAG_ISSUER_MAP: '[{"countryId":1,"issuerScope":"CO:NIT"}]', SQL_DATABASE: "PortalSAGWeb-TEST",
+    SQL_SERVER_HOST: "qa.sagweb.co,54103", PORTAL_CATALOG_SAG_V2_PUBLISHER_USERNAME: "publisher-fixture",
+    PORTAL_CATALOG_SAG_V2_PUBLISHER_PASSWORD_SECRET_NAME: "fixture-publisher", PORTAL_CATALOG_SAG_V2_PUBLISHER_PASSWORD_SECRET_VERSION: "cd".repeat(16) };
+
+  it("uses a complete v2 discovery without falling back to legacy; verification does not open the publisher or write", async () => {
+    const io = mocks();
+    io.readBindings.mockResolvedValue([v2]);
+    expect(await certifySavedCatalogSource({ ...args, action: "verify" }, io, env)).toBe("verified");
+    expect(io.discover).toHaveBeenCalledExactlyOnceWith(transport, { signal: undefined });
+    expect(io.verify).not.toHaveBeenCalled();
+    expect(io.publisherReady).not.toHaveBeenCalled();
+    expect(io.activate).not.toHaveBeenCalled();
+  });
+
+  it("requires configured v2 before credential access and rejects partial or privileged discovery", async () => {
+    const io = mocks();
+    io.readBindings.mockResolvedValue([v2]);
+    expect(await certifySavedCatalogSource(args, io, { ...env, PORTAL_CATALOG_SAG_V2_ENABLED: "false" })).toBe("ineligible");
+    expect(io.loadTransport).not.toHaveBeenCalled();
+    io.discover.mockResolvedValueOnce({ status: "unavailable", reason: "write_access" })
+      .mockResolvedValueOnce({ status: "unavailable", reason: "invalid_rows" });
+    expect(await certifySavedCatalogSource(args, io, env)).toBe("not_read_only");
+    expect(await certifySavedCatalogSource(args, io, env)).toBe("unavailable");
+    expect(io.activate).not.toHaveBeenCalled();
+    expect(io.verify).not.toHaveBeenCalled();
+  });
+
+  it("requires the dedicated publisher and current authority before committing a v2 activation", async () => {
+    const io = mocks();
+    io.readBindings.mockResolvedValue([v2]);
+    io.publisherReady.mockResolvedValueOnce(false);
+    expect(await certifySavedCatalogSource(args, io, env)).toBe("unavailable");
+    expect(await certifySavedCatalogSource({ ...args, authorizeActivation: async () => false }, io, env)).toBe("forbidden");
+    expect(io.activate).not.toHaveBeenCalled();
+    expect(await certifySavedCatalogSource({ ...args, authorizeActivation: async () => true }, io, env)).toBe("activated");
+    expect(io.activate).toHaveBeenCalledExactlyOnceWith(v2, expect.objectContaining({ contractVersion: "sag_admin_v2" }), actor);
+  });
+
+  it("does not activate from an earlier v2 configuration after the probe", async () => {
+    const io = mocks();
+    const changing = { ...env };
+    io.readBindings.mockResolvedValue([v2]);
+    io.discover.mockImplementationOnce(async () => {
+      changing.PORTAL_CATALOG_SAG_V2_ENABLED = "false";
+      return { status: "complete", customers: [], companies: [] };
+    });
+    expect(await certifySavedCatalogSource(args, io, changing)).toBe("superseded");
+    expect(io.publisherReady).not.toHaveBeenCalled();
+    expect(io.activate).not.toHaveBeenCalled();
+  });
   it("does not load credentials for a missing, retired, or different environment binding", async () => {
     for (const rows of [[], [{ ...source, environment: "production" as const }], [{ ...source, state: "retired" as const }]]) {
       const io = mocks();

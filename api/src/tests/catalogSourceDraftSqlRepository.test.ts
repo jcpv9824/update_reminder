@@ -61,6 +61,14 @@ describe("catalog source draft SQL repository", () => {
     expect(mocks.audit).not.toHaveBeenCalled();
   });
 
+  it.each(["draft", "active"])("does not promote a stored SAG v1 %s when the configured new-draft contract becomes v2", async source_state => {
+    responds([profile], [{ ...row, source_state, source_role: "sag-admin", issuer_scope: null, contract_version: "sag_admin_v1" }]);
+    await expect(saveSqlCatalogSourceDraft({ profileId: input.profileId, environment: "qa", role: "sag-admin" }, actor, "sag_admin_v2"))
+      .resolves.toMatchObject({ status: "saved", binding: { contractVersion: "sag_admin_v1", state: source_state } });
+    expect(mocks.query).toHaveBeenCalledTimes(2);
+    expect(mocks.audit).not.toHaveBeenCalled();
+  });
+
   it("cannot change an active issuer or role and refuses ambiguous or retired bindings", async () => {
     responds([profile], [{ ...row, source_state: "active", issuer_scope: "US:TIN" }],
       [profile], [{ ...row, source_state: "active", source_role: "sag-admin", issuer_scope: null }],

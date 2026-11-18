@@ -27,6 +27,9 @@ function pins(env: NodeJS.ProcessEnv) {
   return { pool, poolKey, policyKey };
 }
 
+/** Internal comparison token only; never include this value in HTTP or telemetry. */
+export const catalogSagV2ConfigurationPin = (env: NodeJS.ProcessEnv) => pins(env)?.policyKey ?? null;
+
 /** Ready means checked on the dedicated connection, not just configured. */
 export async function prepareCatalogSagV2Publication(env: NodeJS.ProcessEnv): Promise<PreparedCatalogSagV2Publication | null> {
   const initial = pins(env);

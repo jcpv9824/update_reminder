@@ -13,7 +13,7 @@ import {
 import type { CatalogEnvironment } from "../lib/catalogSourceConfiguration";
 import { certifySavedCatalogSource } from "../lib/catalogSourceCertification";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
-import { publishSavedCatalogSource } from "../lib/catalogSourcePublication";
+import { publishSavedCatalogSource, readCatalogRefreshConfiguration } from "../lib/catalogSourcePublication";
 
 const PROFILE_ID = z.string().min(1).max(150).refine(value => value.trim() === value && !/\p{Cc}/u.test(value));
 const DRAFT = z.discriminatedUnion("role", [
@@ -94,9 +94,19 @@ function sourceCertification(action: "verify" | "activate") {
       const environment = configuredCatalogEnvironment();
       const limited = await enforceRequestRateLimit(req, "integration_connection_test", actor.id, RATE_LIMIT_POLICIES.integrationTest);
       if (limited) return limited;
-      const status = await certifySavedCatalogSource({ environment, sourceId: sourceId.data, action, actor });
+      const status = await certifySavedCatalogSource({ environment, sourceId: sourceId.data, action, actor,
+        ...(action === "activate" && { authorizeActivation: async () => {
+          if (!catalogAdminEnabled() || configuredCatalogEnvironment() !== environment) return false;
+          const current = await loadUserProfile(await requireUser(req));
+          if (!current || current.id !== actor.id) return false;
+          const currentRoles = await loadRoleDefinitions();
+          return canManageIntegration(current, "test_database", currentRoles) &&
+            canManageIntegration(current, "edit_database", currentRoles);
+        } }),
+      });
       if (status === "verified" || status === "activated") return ok({ status });
       if (status === "missing") return notFound("No se encontró la fuente del catálogo.");
+      if (status === "forbidden") return forbidden();
       if (status === "not_read_only") return conflict("La cuenta configurada no cumple los permisos de solo lectura.");
       if (status === "unavailable") return { status: 503, jsonBody: { error: "No se pudo verificar la conexión o su contrato de lectura." } };
       if (status === "superseded") return conflict("El perfil o la fuente cambiaron. Recargue y vuelva a verificar.");
@@ -158,9 +168,11 @@ app.http("catalogSourceDraftSave", {
       catch { return badRequest("El cuerpo JSON no es válido."); }
       const draft = DRAFT.safeParse(body);
       if (!draft.success) return badRequest("Use un rol de catálogo y, para ERP, un emisor con formato CO:NIT.");
-      const result = await saveSqlCatalogSourceDraft({
-        profileId: id.data, environment: configuredCatalogEnvironment(), ...draft.data,
-      }, actor);
+      const environment = configuredCatalogEnvironment();
+      const config = readCatalogRefreshConfiguration();
+      const input = { profileId: id.data, environment, ...draft.data };
+      const result = draft.data.role === "sag-admin" && config?.environment === environment && config.includeSagV2
+        ? await saveSqlCatalogSourceDraft(input, actor, "sag_admin_v2") : await saveSqlCatalogSourceDraft(input, actor);
       if (result.status === "saved") return ok(presentBinding(result.binding));
       if (result.status === "profile-not-found") return notFound("No se encontró el perfil de base de datos.");
       if (result.status === "unsupported-profile") {

@@ -21,6 +21,14 @@ const activateBindingSql = `
     @LockOwner='Transaction', @LockTimeout=5000;
   IF @lockResult<0 THROW 53120, N'Catalog source activation lock unavailable.', 1;
 
+  IF NOT EXISTS (SELECT 1 FROM security.users AS u WITH (HOLDLOCK)
+    WHERE u.source_id=@actorId AND u.source_id COLLATE Latin1_General_100_BIN2=@actorId COLLATE Latin1_General_100_BIN2
+      AND DATALENGTH(u.source_id)=DATALENGTH(@actorId) AND u.active=1)
+  BEGIN
+    SELECT CAST('superseded' AS varchar(10)) AS result;
+    RETURN;
+  END;
+
   DECLARE @profileKey bigint, @bindingKey bigint;
   SELECT @profileKey=p.external_database_connection_key
   FROM settings.external_database_connections AS p WITH (UPDLOCK,HOLDLOCK)
@@ -34,7 +42,8 @@ const activateBindingSql = `
       AND b.external_database_connection_key=@profileKey AND b.portal_environment=@environment
       AND b.source_state=@expectedState AND (b.source_state='draft'
         OR (b.source_state='active' AND b.validated_profile_version<>CONVERT(binary(8),@profileVersion)))
-      AND b.source_role=@role AND b.contract_version=@contract
+      AND b.source_role=@role AND b.contract_version COLLATE Latin1_General_100_BIN2=@contract COLLATE Latin1_General_100_BIN2
+      AND DATALENGTH(b.contract_version)=DATALENGTH(@contract)
       AND (b.issuer_scope COLLATE Latin1_General_100_BIN2=@issuerScope COLLATE Latin1_General_100_BIN2
         OR (b.issuer_scope IS NULL AND @issuerScope IS NULL));
 
@@ -97,7 +106,8 @@ export async function activateSqlCatalogSource(
       (binding.environment !== "qa" && binding.environment !== "production") ||
       !((binding.role === "erp-customers" && binding.contractVersion === "erp_v1" &&
         typeof binding.issuerScope === "string" && CATALOG_ERP_ISSUER_SCOPE.test(binding.issuerScope)) ||
-        (binding.role === "sag-admin" && binding.contractVersion === "sag_admin_v1" && binding.issuerScope === undefined)) ||
+        (binding.role === "sag-admin" && (binding.contractVersion === "sag_admin_v1" || binding.contractVersion === "sag_admin_v2")
+          && binding.issuerScope === undefined)) ||
       getCatalogSourceActivationIssue({ binding, verification: evidence, existing: [],
         nowMs: Date.now(), maxEvidenceAgeMs: CATALOG_SOURCE_ACTIVATION_PROOF_MAX_AGE_MS }) !== null) return "superseded";
 
