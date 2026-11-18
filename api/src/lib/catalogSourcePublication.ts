@@ -9,6 +9,7 @@ import { buildCatalogMatchKeyEvidence } from "./catalogMatchKeyEvidence";
 import type { CatalogRefreshClaim, CatalogRefreshSettings } from "./catalogRefreshQueueSqlRepository";
 import type { SqlCatalogSourceBinding } from "./catalogSourceBindingsSqlRepository";
 import type { CatalogRefreshSink } from "./catalogCustomerRefresh";
+import { readCatalogSagV2PublisherPoolSettings } from "./catalogSagV2PublisherPool";
 
 const deps = { readBindings: readSqlCatalogSourceBindings, getSecret, loadTransport: loadCatalogSourceTransport,
   async publisher(operator: CatalogPublicationOperator) { return createSqlCatalogCustomerSnapshotPublisher(await getSqlPool(), { operator }); } };
@@ -30,8 +31,15 @@ export function readCatalogRefreshConfiguration(values: NodeJS.ProcessEnv = proc
   const environment = values.PORTAL_SAG_ENVIRONMENT?.trim();
   const key = keyConfig(values);
   if (!catalogRefreshEnabled(values) || !key || (environment !== "qa" && environment !== "production")) return null;
-  return { environment, matchKeyVersion: key.keyVersion, includeSag: parseCatalogSagPolicy(values.PORTAL_CATALOG_SAG_ISSUER_MAP) !== null };
+  const includeSag = parseCatalogSagPolicy(values.PORTAL_CATALOG_SAG_ISSUER_MAP) !== null;
+  const includeSagV2 = includeSag && values.PORTAL_CATALOG_SAG_V2_ENABLED?.trim() === "true"
+    && readCatalogSagV2PublisherPoolSettings(values)?.environment === environment;
+  return { environment, matchKeyVersion: key.keyVersion, includeSag, ...(includeSagV2 && { includeSagV2: true }) };
 }
+
+const isLegacySource = (source: SqlCatalogSourceBinding) =>
+  (source.role === "erp-customers" && source.contractVersion === "erp_v1") ||
+  (source.role === "sag-admin" && source.contractVersion === "sag_admin_v1");
 
 /** Deployment-owned data only. Do not infer country from the document or assume absence coverage. */
 export function parseCatalogSagPolicy(raw: string | undefined): CatalogSagIdentityPolicy | null {
@@ -59,7 +67,7 @@ export async function publishSavedCatalogSource(input: { environment: CatalogEnv
   const source = (await io.readBindings(input.environment)).find(row => row.environment === input.environment &&
     row.id.toLowerCase() === input.sourceId.toLowerCase());
   if (!source) return "missing" as const;
-  if (source.state !== "active" || !source.canReadCurrentProfile) return "ineligible" as const;
+  if (source.state !== "active" || !source.canReadCurrentProfile || !isLegacySource(source)) return "ineligible" as const;
   const cfg = keyConfig(values);
   const sagPolicy = source.role === "sag-admin" ? parseCatalogSagPolicy(values.PORTAL_CATALOG_SAG_ISSUER_MAP) : undefined;
   if (!cfg || sagPolicy === null) return "not_configured" as const;
@@ -80,7 +88,7 @@ export async function publishClaimedCatalogSource(claim: CatalogRefreshClaim, io
   if (claim.environment !== config.environment || claim.matchKeyVersion !== config.matchKeyVersion) return "stale";
   const lookup = async () => (await io.readBindings(config.environment)).find(row => row.environment === config.environment &&
     row.id.toLowerCase() === claim.sourceId.toLowerCase() && row.bindingVersion === claim.bindingRevision &&
-    row.profileRevision === claim.profileRevision && row.state === "active" && row.canReadCurrentProfile);
+    row.profileRevision === claim.profileRevision && row.state === "active" && row.canReadCurrentProfile && isLegacySource(row));
   const source = await lookup();
   if (!source) return "stale";
   const sagPolicy = source.role === "sag-admin" ? parseCatalogSagPolicy(values.PORTAL_CATALOG_SAG_ISSUER_MAP) : undefined;

@@ -79,6 +79,30 @@ export async function readSqlCatalogSourceBindings(
   return result.recordset.map(mapCatalogSourceBindingRow);
 }
 
+/** Exact worker authority lookup; no profiles outside the pinned scope enter the process. */
+export async function readSqlCatalogSourceBindingForClaim(
+  environment: CatalogEnvironment, signal: AbortSignal, sourceId: string,
+): Promise<SqlCatalogSourceBinding[]> {
+  if (signal.aborted) throw new Error("catalog_binding_lookup_cancelled");
+  const pool = await getSqlPool();
+  if (signal.aborted) throw new Error("catalog_binding_lookup_cancelled");
+  const request = pool.request().input("environment", sql.VarChar(10), environment)
+    .input("sourceId", sql.UniqueIdentifier, sourceId);
+  const cancel = () => { try { request.cancel(); } catch { /* lookup will time out */ } };
+  signal.addEventListener("abort", cancel, { once: true });
+  try {
+    const result = await request.query<SourceBindingRow>(`
+      SELECT TOP (2) ${BINDING_PROJECTION}
+      FROM settings.catalog_source_bindings AS b
+      JOIN settings.external_database_connections AS p
+        ON p.external_database_connection_key=b.external_database_connection_key
+      WHERE b.portal_environment=@environment AND b.source_id=@sourceId;
+    `);
+    if (signal.aborted) throw new Error("catalog_binding_lookup_cancelled");
+    return result.recordset.map(mapCatalogSourceBindingRow);
+  } finally { signal.removeEventListener("abort", cancel); }
+}
+
 function catalogProfileRequest(transaction: sql.Transaction, input: CatalogSourceDraftInput): sql.Request {
   return new sql.Request(transaction)
     .input("profileId", sql.NVarChar(150), input.profileId)

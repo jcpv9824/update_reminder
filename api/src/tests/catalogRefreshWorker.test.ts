@@ -6,17 +6,26 @@ const config = { PORTAL_CATALOG_AUTOMATION_ENABLED: "true", PORTAL_CATALOG_READ_
   PORTAL_SAG_ENVIRONMENT: "qa", PORTAL_CATALOG_MATCH_KEY_VERSION: "2",
   PORTAL_CATALOG_MATCH_KEY_SECRET_NAME: "synthetic-key", PORTAL_CATALOG_MATCH_KEY_SECRET_VERSION: "0".repeat(32),
   PORTAL_CATALOG_GENERATION_MODE: "catalog" };
+const sagConfig = { ...config, PORTAL_CATALOG_SAG_V2_ENABLED: "true",
+  PORTAL_CATALOG_SAG_ISSUER_MAP: '[{"countryId":1,"issuerScope":"CO:NIT"}]',
+  SQL_DATABASE: "PortalSAGWeb-TEST", SQL_SERVER_HOST: "qa.sagweb.co,54103",
+  PORTAL_CATALOG_SAG_V2_PUBLISHER_USERNAME: "publisher-fixture",
+  PORTAL_CATALOG_SAG_V2_PUBLISHER_PASSWORD_SECRET_NAME: "publisher-fixture-ref",
+  PORTAL_CATALOG_SAG_V2_PUBLISHER_PASSWORD_SECRET_VERSION: "ab".repeat(16) };
 const claim = (i: number): CatalogRefreshClaim => ({ jobId: `10000000-0000-4000-8000-00000000000${i}`,
   leaseToken: `20000000-0000-4000-8000-00000000000${i}`, workerId: "30000000-0000-4000-8000-000000000000",
   sourceId: `40000000-0000-4000-8000-00000000000${i}`, attempt: 1, environment: "qa",
   bindingRevision: "ab".repeat(8), profileRevision: "bc".repeat(8), matchKeyVersion: 2 });
 const legacy = (i: number) => ({ kind: "legacy" as const, claim: claim(i) });
 const sagV2 = (i: number) => ({ kind: "sag-v2" as const, claim: claim(i) });
-const mocks = () => ({ enqueueDue: vi.fn().mockResolvedValue(2), claim: vi.fn().mockResolvedValue([]),
+const mocks = () => {
+  const publishSagV2 = vi.fn();
+  return { enqueueDue: vi.fn().mockResolvedValue(2), claim: vi.fn().mockResolvedValue([]),
   publish: vi.fn().mockResolvedValue("published"), complete: vi.fn().mockResolvedValue(true),
-  publishSagV2: vi.fn(),
+  publishSagV2, prepareSagV2: vi.fn().mockResolvedValue({ isCurrent: () => true, publish: publishSagV2 }),
   generate: vi.fn().mockResolvedValue({ status: "evaluated" }), cutoff: vi.fn().mockResolvedValue(null),
-  now: vi.fn().mockReturnValue(new Date("2026-11-19T04:59:00Z")) });
+  now: vi.fn().mockReturnValue(new Date("2026-11-19T04:59:00Z")) };
+};
 
 describe("durable catalog refresh tick", () => {
   it.each([{ PORTAL_CATALOG_AUTOMATION_ENABLED: undefined }, { PORTAL_CATALOG_READ_ENABLED: "false" },
@@ -92,11 +101,13 @@ describe("durable catalog refresh tick", () => {
     [{ outcome: "ineligible", queue: "untouched" }, "deferred"],
   ] as const)("never compensates a SAG v2 claim after result %j", async (result, count) => {
     const io = mocks();
-    const env = { ...config, PORTAL_CATALOG_SAG_V2_ENABLED: "true" };
+    const env = sagConfig;
     io.claim.mockResolvedValueOnce([sagV2(1)]);
     io.publishSagV2.mockResolvedValue(result);
     expect(await runCatalogRefreshTick(io, env)).toMatchObject({ claimed: 1, [count]: 1 });
     expect(io.publishSagV2).toHaveBeenCalledExactlyOnceWith(claim(1), env);
+    expect(io.prepareSagV2.mock.invocationCallOrder[0]).toBeLessThan(io.claim.mock.invocationCallOrder[0]);
+    expect(io.claim).toHaveBeenCalledWith(expect.objectContaining({ includeSagV2: true }), expect.any(String), 2);
     expect(io.publish).not.toHaveBeenCalled();
     expect(io.complete).not.toHaveBeenCalled();
   });
@@ -105,14 +116,33 @@ describe("durable catalog refresh tick", () => {
     const io = mocks();
     io.claim.mockResolvedValueOnce([sagV2(1), legacy(2)]);
     io.publishSagV2.mockRejectedValue(new Error("synthetic private error"));
-    const env = { ...config, PORTAL_CATALOG_SAG_V2_ENABLED: state === "disabled" ? undefined : "true" };
-    const { publishSagV2, ...legacyOnly } = io;
+    const env = { ...sagConfig, PORTAL_CATALOG_SAG_V2_ENABLED: state === "disabled" ? undefined : "true" };
+    const { prepareSagV2, publishSagV2, ...legacyOnly } = io;
     const result = await runCatalogRefreshTick(state === "missing-handler" ? legacyOnly : io, env);
     expect(result).toMatchObject({ claimed: 2, published: 1, deferred: 1 });
     expect(io.publish).toHaveBeenCalledExactlyOnceWith(claim(2), env);
     expect(io.complete).not.toHaveBeenCalled();
     expect(publishSagV2).toHaveBeenCalledTimes(state === "throws" ? 1 : 0);
     expect(JSON.stringify(result)).not.toContain("synthetic private error");
+  });
+
+  it("keeps legacy ERP working when the dedicated pool does not become ready", async () => {
+    const io = mocks();
+    io.prepareSagV2.mockRejectedValueOnce(new Error("synthetic readiness detail"));
+    io.claim.mockResolvedValueOnce([legacy(1)]);
+    const result = await runCatalogRefreshTick(io, sagConfig);
+    expect(result).toMatchObject({ published: 1 });
+    expect(io.prepareSagV2).toHaveBeenCalledExactlyOnceWith(sagConfig);
+    expect(io.enqueueDue).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ includeSagV2: false }));
+    expect(io.claim).toHaveBeenCalledWith(expect.objectContaining({ includeSagV2: false }), expect.any(String), 2);
+    expect(io.publishSagV2).not.toHaveBeenCalled();
+  });
+
+  it("does not prepare the pool with an incomplete v2 configuration", async () => {
+    const io = mocks();
+    await runCatalogRefreshTick(io, { ...sagConfig, SQL_SERVER_HOST: undefined });
+    expect(io.prepareSagV2).not.toHaveBeenCalled();
+    expect(io.claim).toHaveBeenCalledWith(expect.objectContaining({ includeSagV2: false }), expect.any(String), 2);
   });
 
   it("never treats a malformed claim envelope as legacy work", async () => {

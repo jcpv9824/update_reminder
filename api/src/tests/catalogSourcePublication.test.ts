@@ -95,6 +95,15 @@ describe("saved-source publication", () => {
     expect(parseCatalogSagPolicy('[{"countryId":1,"issuerScope":"CO:NIT"},{"countryId":1,"issuerScope":"VE:RIF"}]')).toBeNull();
   });
 
+  it("does not open legacy publication dependencies for a v2 binding", async () => {
+    const io = setup([{ ...source, role: "sag-admin", contractVersion: "sag_admin_v2", issuerScope: undefined }]);
+    const values = { ...automation, PORTAL_CATALOG_SAG_ISSUER_MAP: '[{"countryId":1,"issuerScope":"CO:NIT"}]' };
+    const { actorId: _, ...job } = claim;
+    expect(await publishSavedCatalogSource(request, io, values)).toBe("ineligible");
+    expect(await publishClaimedCatalogSource(job, io, values)).toBe("stale");
+    for (const fn of [io.getSecret, io.publisher, io.loadTransport, mock.refresh]) expect(fn).not.toHaveBeenCalled();
+  });
+
   it("binds the verifier to the exact key bytes, vault version, numeric version and environment", () => {
     const vault = "ab".repeat(16), bytes = Buffer.alloc(32, 1);
     const original = buildCatalogMatchKeyEvidence("qa", 2, vault, bytes);

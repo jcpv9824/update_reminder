@@ -4,7 +4,7 @@ import { runCatalogTaskCutoffSweep } from "./catalogTaskCutoffWorker";
 import { catalogRefreshEnabled, readCatalogRefreshConfiguration, publishClaimedCatalogSource } from "./catalogSourcePublication";
 import { enqueueDueCatalogRefreshSources, claimCatalogRefreshJobs, completeCatalogRefreshClaim,
   type CatalogRefreshClaim, type CatalogRefreshWork } from "./catalogRefreshQueueSqlRepository";
-import type { CatalogSagV2RefreshOutcome } from "./catalogSagV2RefreshOrchestrator";
+import { prepareCatalogSagV2Publication, type PreparedCatalogSagV2Publication } from "./catalogSagV2PublicationRuntime";
 
 const bogotaDay = new Intl.DateTimeFormat("sv-SE", { timeZone: "America/Bogota", year: "numeric", month: "2-digit", day: "2-digit" });
 const utcNextMidnightInBogota = (day: string) => Date.parse(day) + (24 + 5) * 60 * 60 * 1000;
@@ -44,6 +44,7 @@ function readWork(value: unknown): CatalogRefreshWork | null {
 const dependencies = {
   enqueueDue: enqueueDueCatalogRefreshSources, claim: claimCatalogRefreshJobs,
   publish: (claim: CatalogRefreshClaim, env: NodeJS.ProcessEnv) => publishClaimedCatalogSource(claim, undefined, env),
+  prepareSagV2: prepareCatalogSagV2Publication,
   complete: completeCatalogRefreshClaim,
   generate: (request: { trigger: "refresh"; body: { date: string } }, env: NodeJS.ProcessEnv) =>
     runCatalogGeneration(request, undefined, env),
@@ -51,16 +52,22 @@ const dependencies = {
   now: () => new Date(),
 };
 
-type CatalogRefreshWorkerIO = typeof dependencies & {
-  publishSagV2?: (claim: CatalogRefreshClaim, env: NodeJS.ProcessEnv) => Promise<CatalogSagV2RefreshOutcome>;
-};
+type CatalogRefreshWorkerIO = Omit<typeof dependencies, "prepareSagV2"> & Partial<Pick<typeof dependencies, "prepareSagV2">>;
 
 /** Stateless, bounded dispatch. No secret, job token, request body or exception is included in telemetry. */
 export async function runCatalogRefreshTick(io: CatalogRefreshWorkerIO = dependencies, env: NodeJS.ProcessEnv = process.env) {
   if (!catalogRefreshEnabled(env)) return null;
   const config = readCatalogRefreshConfiguration(env);
   if (!config) return { configuration: "invalid" } as const;
-  const sagV2Enabled = env.PORTAL_CATALOG_SAG_V2_ENABLED?.trim() === "true";
+  let ready: PreparedCatalogSagV2Publication | null = null;
+  if (config.includeSagV2 && io.prepareSagV2) {
+    try { ready = await io.prepareSagV2(env); } catch { /* ERP remains independent */ }
+  }
+  const readyForCurrentConfig = () => {
+    try { return !!ready && env.PORTAL_CATALOG_SAG_V2_ENABLED?.trim() === "true" && ready.isCurrent(env); }
+    catch { return false; }
+  };
+  const admission = () => ({ ...config, includeSagV2: readyForCurrentConfig() });
   const stats = { enqueued: 0, claimed: 0, published: 0, superseded: 0, cancelled: 0, failed: 0, deferred: 0, queueErrors: 0,
     generation: "skipped" as "skipped" | "evaluated" | "unverified" | "cutoff" | "failed",
     cutoff: "skipped" as "skipped" | "evaluated" | "failed", generationErrors: 0, unverifiedDays: 0, cutoffErrors: 0, closureErrors: 0 };
@@ -86,10 +93,10 @@ export async function runCatalogRefreshTick(io: CatalogRefreshWorkerIO = depende
   let earlyDay: string | undefined;
   let changedSinceReconciliation = false;
   const workerId = randomUUID();
-  try { stats.enqueued = await io.enqueueDue(config); } catch { stats.queueErrors++; }
+  try { stats.enqueued = await io.enqueueDue(admission()); } catch { stats.queueErrors++; }
   for (let wave = 0; wave < 2; wave++) {
     let claims: CatalogRefreshWork[];
-    try { claims = await io.claim(config, workerId, 2); } catch { stats.queueErrors++; break; }
+    try { claims = await io.claim(admission(), workerId, 2); } catch { stats.queueErrors++; break; }
     if (!claims.length) break;
     stats.claimed += claims.length;
     changedSinceReconciliation = true;
@@ -101,8 +108,7 @@ export async function runCatalogRefreshTick(io: CatalogRefreshWorkerIO = depende
       }
       if (work.kind === "sag-v2") {
         try {
-          const result = sagV2Enabled && env.PORTAL_CATALOG_SAG_V2_ENABLED?.trim() === "true" && io.publishSagV2
-            ? await io.publishSagV2(work.claim, env) : null;
+          const result = ready && readyForCurrentConfig() ? await ready.publish(work.claim, env) : null;
           if (result?.queue === "settled") {
             if (result.outcome === "published" && result.jobStatus === "succeeded") { stats.published++; return; }
             if (result.outcome === "superseded" && result.jobStatus === "succeeded") { stats.superseded++; return; }
