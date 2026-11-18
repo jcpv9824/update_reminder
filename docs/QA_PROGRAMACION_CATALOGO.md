@@ -7,6 +7,15 @@ sintéticos autorizados y terminar con verificación de cero residuos.
 
 ## Evidencia de la cola 051 (2026-11-18)
 
+Después del ensayo con reversión, se aplicó permanentemente 051 **sólo en
+`PortalSAGWeb-TEST`** desde una exportación de `d674cd2`. Se comprobó el hash
+`f2428de9520b288f09d91130f2da4a86dfbe779941e2888c3f3cbf2adea5b2f3` sobre
+el archivo exportado. El ejecutor dio `PASS 051` y verificó 017–030 y
+031–051. La lectura posterior encontró un registro exitoso de 051, cero
+trabajos, cero intentos y cero fuentes QA activas. No se habilitó el
+temporizador ni se desplegó el API. El ensayo que exige 051 ausente no debe
+repetirse en esta base ya migrada.
+
 `Test-CatalogRefreshQueueQa.ps1` usa sólo una sesión efímera de control completo
 con destino exacto `PortalSAGWeb-TEST`, SQL Server 2019 y compatibilidad 150.
 Requiere 050 instalada, 051 ausente, ninguna fuente QA activa y ninguna clave
