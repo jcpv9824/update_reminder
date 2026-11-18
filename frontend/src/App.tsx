@@ -8,6 +8,7 @@ import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import ResetPasswordPage from "./pages/ResetPasswordPage";
 import DashboardPage from "./pages/DashboardPage";
 import CatalogoClientesRoute from "./pages/CatalogoClientesRoute";
+import CatalogoInventarioRoute from "./pages/CatalogoInventarioRoute";
 import DominiosPage from "./pages/DominiosPage";
 import BasesDeDatosPage from "./pages/BasesDeDatosPage";
 import LicenciamientoPage from "./pages/LicenciamientoPage";
@@ -64,9 +65,9 @@ function Enrutador() {
           <Route index element={<InicioPage />} />
           <Route path="tareas" element={<Protegido permiso="updates.tasks.view" element={<TareasPage />} />} />
           <Route path="clientes" element={<Protegido permiso="clients.clients.view" element={<CatalogoClientesRoute />} />} />
-          <Route path="dominios" element={<Protegido permiso="clients.domains.view" element={<DominiosPage />} />} />
-          <Route path="bases-de-datos" element={<Protegido permiso="clients.databases.view" element={<BasesDeDatosPage />} />} />
-          <Route path="licenciamiento" element={<Protegido permiso="clients.licensing.view" element={<LicenciamientoPage />} />} />
+          <Route path="dominios" element={<Protegido permiso="clients.domains.view" element={<CatalogoInventarioRoute vista="domains" legado={<DominiosPage />} />} />} />
+          <Route path="bases-de-datos" element={<Protegido permiso="clients.databases.view" element={<CatalogoInventarioRoute vista="databases" legado={<BasesDeDatosPage />} />} />} />
+          <Route path="licenciamiento" element={<Protegido permiso="clients.licensing.view" element={<CatalogoInventarioRoute vista="licenses" legado={<LicenciamientoPage />} />} />} />
           <Route path="frecuencias" element={<Protegido permiso="updates.schedules.view" element={<FrecuenciasPage />} />} />
           <Route path="admin/formatos-impresion" element={<Protegido permiso="configuration.print_formats.view" element={<FormatosImpresionAdminPage />} />} />
           <Route path="admin/descargas-publicas" element={<Protegido permiso="implementation.public_downloads.view" element={<DescargasPublicasAdminPage />} />} />

@@ -5,7 +5,9 @@ import { readAuthorizedCatalogSourceIds } from "../lib/catalogSourceAccessSqlRep
 import { readSqlCatalogCustomerSnapshots } from "../lib/catalogCustomerSnapshotsSqlRepository";
 import { createCatalogCustomerInventoryHttp } from "../lib/catalogCustomerInventoryHttp";
 import { readSqlCatalogSagCustomerEvidence } from "../lib/catalogSagCustomerEvidenceSqlRepository";
-import { canViewClients, canViewDomains, canViewLicensingOption } from "../lib/managementAccess";
+import { createCatalogMasterInventoryHttp } from "../lib/catalogMasterInventoryHttp";
+import { readSqlCatalogMasterInventory } from "../lib/catalogMasterInventorySqlRepository";
+import { canViewClients, canViewDatabases, canViewDomains, canViewLicensingOption } from "../lib/managementAccess";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import type { CatalogEnvironment } from "../lib/catalogSourceConfiguration";
 
@@ -85,5 +87,30 @@ for (const view of ["domains", "licenses"] as const) {
   app.http(`catalogCustomerInventory_${view}`, {
     route: `catalog/customers/{id}/${view}`, methods: ["GET"], authLevel: "anonymous",
     handler: request => inventory(request, view),
+  });
+}
+
+const standalone = createCatalogMasterInventoryHttp({
+  enabled: () => process.env.PORTAL_CATALOG_READ_ENABLED?.trim() === "true",
+  authorize: async (request, view) => {
+    try {
+      const actor = await loadUserProfile(await requireUser(request));
+      if (!actor) return { status: 403 };
+      const roles = (await loadRoleDefinitions()).filter(role => role.active !== false);
+      const permission = view === "domains" ? canViewDomains : view === "databases" ? canViewDatabases : canViewLicensingOption;
+      return permission(actor, roles) ? { actorId: actor.id } : { status: 403 };
+    } catch (error) {
+      const status = (error as { status?: unknown } | null)?.status;
+      if (status === 401 || status === 403) return { status };
+      throw error;
+    }
+  },
+  readSources: actorId => readAuthorizedCatalogSourceIds({ actorId, environment: environment() }),
+  read: query => readSqlCatalogMasterInventory({ ...query, environment: environment(), matchKeyVersion: matchKeyVersion() }),
+});
+for (const view of ["domains", "databases", "licenses"] as const) {
+  app.http(`catalogMasterInventory_${view}`, {
+    route: `catalog/inventory/${view}`, methods: ["GET"], authLevel: "anonymous",
+    handler: request => standalone(request, view),
   });
 }
