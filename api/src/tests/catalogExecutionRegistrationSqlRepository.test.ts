@@ -1,0 +1,143 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { UpdateTask } from "../types/models";
+
+const mock = vi.hoisted(() => ({ query: vi.fn(), begin: vi.fn(), commit: vi.fn(), rollback: vi.fn(), insert: vi.fn(), lockDay: vi.fn(), tx: {} }));
+vi.mock("mssql", () => ({ default: {
+  Request: class {
+    parameters: Record<string, unknown> = {};
+    constructor(readonly tx: object) {}
+    input(name: string, _type: unknown, value: unknown) { this.parameters[name] = value; return this; }
+    query(query: string) { return mock.query(query, this.parameters, this.tx); }
+  },
+  NVarChar: vi.fn(), VarChar: vi.fn(), VarBinary: vi.fn(), DateTime2: vi.fn(), Date: Symbol(), BigInt: Symbol(), MAX: Symbol(),
+} }));
+vi.mock("../lib/sqlTransaction", () => ({ runSqlTransaction: async (fn: (tx: object) => Promise<unknown>) => {
+  mock.begin();
+  try { const result = await fn(mock.tx); mock.commit(); return result; }
+  catch (error) { mock.rollback(); throw error; }
+} }));
+vi.mock("../lib/workflowTaskGenerationSqlRepository", () => ({ insertSqlGeneratedTaskInTransaction: mock.insert }));
+vi.mock("../lib/catalogExecutionCoexistenceSql", () => ({ lockCatalogTaskDay: mock.lockDay }));
+
+import { registerSqlCatalogTaskExecution, type CatalogExecutionRegistration } from "../lib/catalogExecutionRegistrationSqlRepository";
+import { catalogTaskExecutionKey } from "../lib/catalogTaskTargetPlanning";
+
+const sourceId = "00000000-0000-0000-0000-000000000001";
+const cutoffAt = new Date("2030-06-23T05:00:00.000Z");
+const now = new Date("2030-06-21T01:00:00.000Z");
+const occurrenceId = "2030-06-22";
+const logical = (n: number) => ({ linkId: `link${n}`, customerId: `customer${n}`, domainId: `domain${n}`, databaseId: `database${n}`,
+  kind: "database" as const, state: "active" as const, environment: "production" as const, catalogRecordId: `record${n}`,
+  moduleIds: ["module1"], target: { status: "verified" as const, id: "physical-db-1" } });
+const task: UpdateTask = { id: "catalog_workflow1", taskDate: occurrenceId, taskBucket: "2030-06-22-database",
+  clientId: "customer1", clientName: "Cliente uno", domainId: "domain1", domainName: "Dominio uno", targetType: "database",
+  targetId: "database1", targetName: "Base uno", scheduleId: "schedule_1", assignedRole: "db_updater", assignedUserIds: [],
+  status: "pending", result: null, notes: "", completedAt: null, completedBy: null,
+  createdAt: now.toISOString(), updatedAt: now.toISOString(), createdBy: "system", updatedBy: "system" };
+
+const input = (): CatalogExecutionRegistration => {
+  const assignment = { kind: "role" as const, id: "db_updater" };
+  return { group: { occurrenceId, revisionId: "revision1", kind: "database", targetId: "physical-db-1", operationId: "release1", assignment,
+    executionKey: catalogTaskExecutionKey(occurrenceId, "database", "physical-db-1"),
+    sources: [1, 2].map(n => ({ scheduleId: `schedule_${n}`, operationId: "release1", assignment, link: logical(n) })) },
+  task, cutoffAt, portalEnvironment: "qa", catalogSourceIdsByLink: new Map([["link1", sourceId], ["link2", null]]) };
+};
+
+const scheduleRows = [{ scheduleId: "schedule_1", scheduleKey: "1", origin: "licensing" },
+  { scheduleId: "schedule_2", scheduleKey: "2", origin: "special" }];
+const existing = { executionId: "2", taskId: task.id, operationId: "release1", occurrenceId, targetId: "physical-db-1", kind: "database",
+  status: "completed", taskDate: task.taskDate, cutoffAt, retiredAt: null, representativeTarget: task.targetId, representativeClient: task.clientId,
+  representativeDomain: task.domainId, primaryScheduleId: "schedule_1", assignedRole: task.assignedRole, usersJson: "[]" };
+const existingLinks = [1, 2].map(n => ({ linkId: `link${n}`, clientId: `customer${n}`, domainId: `domain${n}`, databaseId: `database${n}`,
+  catalogSourceId: n === 1 ? sourceId : null, recordId: `record${n}`, environment: "production", scheduleId: `schedule_${n}`,
+  detachedAt: null, state: "active" }));
+const rows = (...response: object[][]) => {
+  for (const recordset of response) mock.query.mockResolvedValueOnce({ recordset });
+};
+
+beforeEach(() => { vi.resetAllMocks(); mock.insert.mockResolvedValue(17); mock.lockDay.mockResolvedValue(true); });
+
+describe("atomic catalog execution registration", () => {
+  it("locks the execution and every legacy logical target, then writes all origins and an immutable event in one transaction", async () => {
+    rows([], [{ collision: false }], scheduleRows, [{ now }], [{ key: "2" }], [{ linkId: "link1" }, { linkId: "link2" }],
+      [{ count: 2 }], [{ count: 1 }], []);
+    await expect(registerSqlCatalogTaskExecution(input())).resolves.toEqual({ status: "registered", taskId: task.id });
+    expect(mock.begin).toHaveBeenCalledOnce();
+    expect(mock.commit).toHaveBeenCalledOnce();
+    expect(mock.rollback).not.toHaveBeenCalled();
+    expect(mock.lockDay).toHaveBeenCalledExactlyOnceWith(mock.tx, task);
+    expect(mock.lockDay.mock.invocationCallOrder[0]).toBeLessThan(mock.query.mock.invocationCallOrder[0]);
+    expect(mock.query.mock.calls.every(([, , transaction]) => transaction === mock.tx)).toBe(true);
+    expect(mock.query.mock.calls[0][0]).toContain("UPDLOCK,HOLDLOCK");
+    expect(mock.query.mock.calls[0][0]).toContain("WHERE e.execution_key");
+    expect(mock.query.mock.calls[1][1].targetIds).toBe('["database1","database2"]');
+    expect(mock.insert).toHaveBeenCalledExactlyOnceWith(mock.tx, expect.objectContaining({ targetId: "database1", createdBy: "system",
+      sources: [{ scheduleId: "schedule_1", scheduleType: "licensing", createdAt: now.toISOString() }] }));
+    expect(mock.query.mock.calls[5][0]).toContain("b.portal_environment=@portalEnvironment");
+    expect(JSON.parse(mock.query.mock.calls[5][1].links)).toEqual([expect.objectContaining({ linkId: "link1", catalogSourceId: sourceId }),
+      expect.objectContaining({ linkId: "link2", catalogSourceId: null })]);
+    expect(mock.query.mock.calls[6][1].attachments).toContain('"scheduleId":"schedule_2"');
+    expect(mock.query.mock.calls[7][1].origins).toBe('[{"key":"2","origin":"special"}]');
+    expect(mock.query.mock.calls[8][0]).toContain("'registered'");
+    expect(Buffer.isBuffer(mock.query.mock.calls[8][1].token)).toBe(true);
+  });
+
+  it("returns the exact completed execution on replay without any writes or status changes", async () => {
+    rows([existing], existingLinks);
+    await expect(registerSqlCatalogTaskExecution(input())).resolves.toEqual({ status: "existing", taskId: task.id });
+    expect(mock.query).toHaveBeenCalledTimes(2);
+    expect(mock.insert).not.toHaveBeenCalled();
+  });
+
+  it("does not attach changed origins, reuse a different operation, or reopen retired work", async () => {
+    rows([existing], [{ ...existingLinks[0], detachedAt: now }, existingLinks[1]], [{ ...existing, operationId: "other" }],
+      [{ ...existing, retiredAt: now }]);
+    for (const reason of ["source-set-changed", "execution-conflict", "retired"]) {
+      await expect(registerSqlCatalogTaskExecution(input())).resolves.toEqual({ status: "conflict", reason });
+    }
+    expect(mock.insert).not.toHaveBeenCalled();
+    expect(mock.rollback).toHaveBeenCalledTimes(3);
+  });
+
+  it("rejects prior legacy tasks and cutoff expiry without a workflow write", async () => {
+    rows([], [{ collision: true }], [], [{ collision: false }], scheduleRows, []);
+    await expect(registerSqlCatalogTaskExecution(input())).resolves.toEqual({ status: "conflict", reason: "legacy-task-collision" });
+    await expect(registerSqlCatalogTaskExecution(input())).resolves.toEqual({ status: "conflict", reason: "cutoff-passed" });
+    expect(mock.insert).not.toHaveBeenCalled();
+  });
+
+  it("fails before relation locks or writes when a legacy generator holds the date lock", async () => {
+    mock.lockDay.mockResolvedValueOnce(false);
+    await expect(registerSqlCatalogTaskExecution(input())).resolves.toEqual({ status: "conflict", reason: "coexistence-lock-unavailable" });
+    expect(mock.query).not.toHaveBeenCalled();
+    expect(mock.insert).not.toHaveBeenCalled();
+    expect(mock.rollback).toHaveBeenCalledOnce();
+  });
+
+  it("rolls back the new task if any logical reference went stale before persistence", async () => {
+    rows([], [{ collision: false }], scheduleRows, [{ now }], [{ key: "2" }], [{ linkId: "link1" }]);
+    await expect(registerSqlCatalogTaskExecution(input())).resolves.toEqual({ status: "conflict", reason: "catalog-reference-changed" });
+    expect(mock.insert).toHaveBeenCalledOnce();
+    expect(mock.rollback).toHaveBeenCalledOnce();
+    expect(mock.commit).not.toHaveBeenCalled();
+  });
+
+  it("propagates unexpected duplicate-key errors rather than counting them as idempotency", async () => {
+    rows([], [{ collision: false }], scheduleRows, [{ now }]);
+    const sqlError = Object.assign(new Error("duplicate from driver"), { number: 2627 });
+    mock.insert.mockRejectedValueOnce(sqlError);
+    await expect(registerSqlCatalogTaskExecution(input())).rejects.toBe(sqlError);
+    expect(mock.rollback).toHaveBeenCalledOnce();
+  });
+
+  it("rejects spoofed representatives and absent origin mapping before starting a transaction", async () => {
+    const valid = input();
+    await expect(registerSqlCatalogTaskExecution({ ...valid, task: { ...valid.task, targetId: "physical-db-1" } }))
+      .resolves.toEqual({ status: "conflict", reason: "invalid-plan" });
+    await expect(registerSqlCatalogTaskExecution({ ...valid, catalogSourceIdsByLink: new Map([["link1", sourceId]]) }))
+      .resolves.toEqual({ status: "conflict", reason: "invalid-plan" });
+    await expect(registerSqlCatalogTaskExecution({ ...valid, group: { ...valid.group, assignment: { kind: "unassigned" } } }))
+      .resolves.toEqual({ status: "conflict", reason: "workflow-assignment-required" });
+    expect(mock.begin).not.toHaveBeenCalled();
+  });
+});

@@ -1,5 +1,6 @@
 import sql from "mssql";
 import { writeSqlAuditLog } from "./auditSqlWriter";
+import { catalogTaskIsLegacySql } from "./catalogWorkflowTaskEligibilitySql";
 
 type Actor = { id: string; email: string };
 type TaskRow = {
@@ -18,13 +19,14 @@ export async function cancelOpenSqlTasksForTarget(
   const query = new sql.Request(transaction);
   query.input("targetKey", sql.BigInt, target.key);
   const targetPredicate = target.type === "domain"
-    ? "domain_key=@targetKey"
-    : "target_type='database' AND database_key=@targetKey";
+    ? "task.domain_key=@targetKey"
+    : "task.target_type='database' AND task.database_key=@targetKey";
   const result = await query.query<TaskRow>(`
     SELECT task_key,source_id,client_source_id,client_name_snapshot,domain_source_id,
       domain_name_snapshot,target_type,target_source_id,task_date,status,result,notes
-    FROM workflow.update_tasks WITH (UPDLOCK,HOLDLOCK)
-    WHERE ${targetPredicate} AND status NOT IN ('completed','cancelled')
+    FROM workflow.update_tasks task WITH (UPDLOCK,HOLDLOCK)
+    WHERE ${targetPredicate} AND task.status NOT IN ('completed','cancelled')
+      AND ${catalogTaskIsLegacySql}
     ORDER BY task_key;
   `);
   for (const task of result.recordset) {
@@ -83,6 +85,7 @@ export async function cancelOpenSqlTasksForSchedule(
     LEFT JOIN workflow.task_sources source ON source.task_key=task.task_key
     WHERE (task.primary_schedule_source_id=@scheduleId OR source.schedule_source_id=@scheduleId)
       AND task.status NOT IN ('completed','cancelled')
+      AND ${catalogTaskIsLegacySql}
     ORDER BY task.task_key;
   `);
   for (const task of result.recordset) {

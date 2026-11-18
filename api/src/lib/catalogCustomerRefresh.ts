@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { readCatalogExternalSource, type CatalogExternalSourceTransport } from "./catalogExternalSourceQueries";
 import type { CatalogEnvironment, CatalogSourceBinding } from "./catalogSourceConfiguration";
+import { normalizeCatalogSagInventoryEvidence, type CatalogSagInventoryEvidence } from "./catalogSagInventoryEvidence";
 
 type Stamp = Readonly<{
   environment: CatalogEnvironment;
@@ -18,12 +19,14 @@ export type CatalogRefreshRow = Readonly<{
   matchToken: Buffer | null;
   name: string | null;
   activeCode: "S" | "N" | null;
+  sagEvidence?: CatalogSagInventoryEvidence;
 }>;
 
 export type CatalogRefreshPublication = Stamp & Readonly<{
   role: CatalogSourceBinding["role"];
   rows: readonly CatalogRefreshRow[];
   completeScopes: readonly string[];
+  includesSagInventory?: boolean;
 }>;
 
 export interface CatalogRefreshSink {
@@ -45,6 +48,9 @@ export function catalogDocumentNumberToken(key: Buffer, environment: CatalogEnvi
 const issuerScope = /^[A-Z]{2}:[A-Z][A-Z0-9_-]{0,31}$/;
 const bindingId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 const rowVersion = /^[0-9a-f]{16}$/i;
+const bogotaDay = new Intl.DateTimeFormat("sv-SE", {
+  timeZone: "America/Bogota", year: "numeric", month: "2-digit", day: "2-digit",
+});
 
 /** Trust is supplied by reviewed source configuration, never guessed from the number. */
 export interface CatalogSagIdentityPolicy {
@@ -114,14 +120,16 @@ export async function refreshCatalogCustomerSource(args: {
   }
   const result = await readCatalogExternalSource(transport, "sag_admin_v1", { signal });
   if (result.status !== "complete") return unavailable();
+  const asOfDate = bogotaDay.format(observedAt);
   const rows = result.records.map((row): CatalogRefreshRow => {
     const matchToken = token(row.documentNumber);
     const scope = matchToken && row.reportedCountryId !== null
       ? scopesByCountry.get(row.reportedCountryId) ?? null : null;
-    return { sourceRecordId: row.sourceRecordId, issuerScope: scope, matchToken, name: null, activeCode: null };
+    return { sourceRecordId: row.sourceRecordId, issuerScope: scope, matchToken, name: null, activeCode: null,
+      sagEvidence: normalizeCatalogSagInventoryEvidence(row, asOfDate) };
   });
   if (signal?.aborted) return "cancelled";
   // Unmapped SAG rows cannot support a negative membership claim for any issuer.
-  return sink.publish({ ...stamp, role: binding.role, rows,
+  return sink.publish({ ...stamp, role: binding.role, rows, includesSagInventory: true,
     completeScopes: rows.some(row => !row.issuerScope) ? [] : completeScopes });
 }

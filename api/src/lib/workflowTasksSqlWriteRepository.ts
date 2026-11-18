@@ -3,6 +3,7 @@ import type { UpdateTask } from "../types/models";
 import { writeSqlAuditLog } from "./auditSqlWriter";
 import { runSqlTransaction } from "./sqlTransaction";
 import { mapSqlWorkflowTask, type TaskRow } from "./workflowTasksSqlRepository";
+import { catalogTaskHasActiveRepresentativeSql } from "./catalogWorkflowTaskEligibilitySql";
 
 type Actor = { id: string; email: string };
 
@@ -99,8 +100,9 @@ async function lockTask(transaction: sql.Transaction, sourceId: string): Promise
         FROM workflow.task_sources source WHERE source.task_key=task.task_key
         ORDER BY source.is_primary DESC,source.created_at,source.schedule_source_id FOR JSON PATH),N'[]') AS sources_json
     FROM workflow.update_tasks AS task WITH (UPDLOCK,HOLDLOCK)
-    WHERE task.source_id=@sourceId OR EXISTS
-      (SELECT 1 FROM workflow.task_source_aliases alias WHERE alias.task_key=task.task_key AND alias.alias_source_id=@sourceId)
+    WHERE (task.source_id=@sourceId OR EXISTS
+      (SELECT 1 FROM workflow.task_source_aliases alias WHERE alias.task_key=task.task_key AND alias.alias_source_id=@sourceId))
+      AND ${catalogTaskHasActiveRepresentativeSql}
     ORDER BY CASE WHEN task.source_id=@sourceId THEN 0 ELSE 1 END,task.task_key;
   `);
   return result.recordset[0] ?? null;

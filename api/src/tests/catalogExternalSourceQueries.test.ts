@@ -9,6 +9,7 @@ import {
 } from "../lib/catalogExternalSourceQueries";
 
 const validSchema = [{ compatible: true, readOnly: true }];
+const noSagEvidence = { domainCandidate: null, testStartedOn: null, productionStartedOn: null, demoStartedOn: null };
 const erpRow = (sourceRecordId: number, activeCode: string | null = "S", documentNumber: string | null = "001234") =>
   ({ sourceRecordId, officialName: "Nombre ERP", activeCode, documentNumber });
 
@@ -45,18 +46,23 @@ describe("catalog verified external contracts", () => {
 
   it("returns SAG document and country evidence without inventing the issuer, environment or module membership", async () => {
     const { transport, select } = fake(() => [
-      { sourceRecordId: 1, documentNumber: " 00123-A ", reportedCountryId: 4, environment: " Producción ", licensedModules: "B,A;B|D" },
-      { sourceRecordId: 2, documentNumber: "00123-A", reportedCountryId: 7, environment: "qa", licensedModules: "" },
-      { sourceRecordId: 3, documentNumber: null, reportedCountryId: null, environment: "other", licensedModules: "A9" },
+      { sourceRecordId: 1, documentNumber: " 00123-A ", reportedCountryId: 4, environment: " Producción ", licensedModules: "B,A;B|D",
+        ...noSagEvidence, domainCandidate: "tenant.example", productionStartedOn: "2026-01-01" },
+      { sourceRecordId: 2, documentNumber: "00123-A", reportedCountryId: 7, environment: "qa", licensedModules: "", ...noSagEvidence },
+      { sourceRecordId: 3, documentNumber: null, reportedCountryId: null, environment: "other", licensedModules: "A9", ...noSagEvidence },
     ]);
     const result = await readCatalogExternalSource(transport, "sag_admin_v1");
     expect(result).toEqual({ status: "complete", records: [
-      { sourceRecordId: 1, documentNumber: "00123-A", reportedCountryId: 4, environment: "production", licenseCodes: ["A", "B", "D"] },
-      { sourceRecordId: 2, documentNumber: "00123-A", reportedCountryId: 7, environment: "test", licenseCodes: [] },
-      { sourceRecordId: 3, documentNumber: null, reportedCountryId: null, environment: "unknown", licenseCodes: null },
+      { sourceRecordId: 1, documentNumber: "00123-A", reportedCountryId: 4, environment: "production", licenseCodes: ["A", "B", "D"],
+        ...noSagEvidence, domainCandidate: "tenant.example", productionStartedOn: "2026-01-01" },
+      { sourceRecordId: 2, documentNumber: "00123-A", reportedCountryId: 7, environment: "test", licenseCodes: [], ...noSagEvidence },
+      { sourceRecordId: 3, documentNumber: null, reportedCountryId: null, environment: "unknown", licenseCodes: null, ...noSagEvidence },
     ] });
     expect(select.mock.calls[1][0].sql).toMatch(/FROM dbo\.Customers/);
-    expect(select.mock.calls[1][0].sql).not.toMatch(/StringConnection|Companies|Url|SELECT \*/i);
+    const statement = select.mock.calls[1][0].sql;
+    expect(statement).not.toMatch(/StringConnection|Companies|SELECT \*|c\.Url AS|FechasEnvironment AS/i);
+    expect(statement).toContain("THEN CONVERT(varchar(253),LOWER(host.candidate");
+    expect(statement).toContain("AND DATALENGTH(item.[key])=CASE");
     expect(catalogDocumentKey({ issuer: "", type: "NIT", number: "00123-A" })).toBeNull();
     expect(catalogDocumentKey({ issuer: "CO", type: "NIT", number: "00123-A" })).not.toBe(
       catalogDocumentKey({ issuer: "PE", type: "NIT", number: "00123-A" }));

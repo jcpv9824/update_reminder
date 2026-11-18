@@ -1,4 +1,7 @@
+migration/sql/01[789]_*.sql text eol=lf
+migration/sql/02[0-9]_*.sql text eol=lf
 migration/sql/031_catalog_source_bindings.sql text eol=lf
 migration/sql/032_catalog_task_execution.sql text eol=lf
 migration/sql/033_catalog_customer_snapshots.sql text eol=lf
 migration/sql/034_catalog_source_access.sql text eol=lf
+migration/sql/035_catalog_sag_discovery_evidence.sql text eol=lf

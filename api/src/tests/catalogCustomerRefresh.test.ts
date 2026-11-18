@@ -10,6 +10,7 @@ const binding: CatalogSourceBinding = {
 };
 const matchKey = Buffer.alloc(32, 42);
 const now = () => new Date("2026-11-01T00:00:00Z");
+const noSagEvidence = { domainCandidate: null, testStartedOn: null, productionStartedOn: null, demoStartedOn: null };
 
 function setup(rows: readonly unknown[], compatible = true, readOnly = true) {
   const select = vi.fn(async (statement: { tag: string }) => statement.tag === "schema" ? [{ compatible, readOnly }] : rows);
@@ -48,16 +49,20 @@ describe("refreshCatalogCustomerSource", () => {
 
   it("keeps unknown SAG issuers unresolved and suppresses negative claims", async () => {
     const { args, sink } = setup([
-      { sourceRecordId: 1, documentNumber: "12301", reportedCountryId: 9, environment: "production", licensedModules: "A" },
-      { sourceRecordId: 2, documentNumber: "12302", reportedCountryId: 400, environment: "test", licensedModules: "B" },
+      { sourceRecordId: 1, documentNumber: "12301", reportedCountryId: 9, environment: "production", licensedModules: "A",
+        ...noSagEvidence, domainCandidate: "tenant.example", productionStartedOn: "2026-10-31" },
+      { sourceRecordId: 2, documentNumber: "12302", reportedCountryId: 400, environment: "test", licensedModules: "B",
+        ...noSagEvidence },
     ]);
     expect(await refreshCatalogCustomerSource({ ...args,
       binding: { ...binding, role: "sag-admin", contractVersion: "sag_admin_v1", issuerScope: undefined },
       sagPolicy: { scopesByCountry: new Map([[9, "CO:NIT"]]), completeScopes: ["CO:NIT"] },
     })).toBe("published");
-    expect(sink.publish).toHaveBeenCalledWith(expect.objectContaining({ role: "sag-admin", completeScopes: [], rows: [
-      { sourceRecordId: 1, issuerScope: "CO:NIT", matchToken: expect.any(Buffer), name: null, activeCode: null },
-      { sourceRecordId: 2, issuerScope: null, matchToken: expect.any(Buffer), name: null, activeCode: null },
+    expect(sink.publish).toHaveBeenCalledWith(expect.objectContaining({ role: "sag-admin", includesSagInventory: true, completeScopes: [], rows: [
+      expect.objectContaining({ sourceRecordId: 1, issuerScope: "CO:NIT", matchToken: expect.any(Buffer), name: null, activeCode: null,
+        sagEvidence: { ...noSagEvidence, domainCandidate: "tenant.example", productionStartedOn: "2026-10-31",
+          environment: "production", licenseCodes: ["A"] } }),
+      expect.objectContaining({ sourceRecordId: 2, issuerScope: null, matchToken: expect.any(Buffer), name: null, activeCode: null }),
     ] }));
   });
 
@@ -91,7 +96,7 @@ describe("refreshCatalogCustomerSource", () => {
     const scopesByCountry = new Map([[9, "CO:NIT"]]);
     const sagBinding = { ...binding, role: "sag-admin" as const, contractVersion: "sag_admin_v1", issuerScope: undefined };
     const observation = { sourceRecordId: 1, documentNumber: "12301", reportedCountryId: 9,
-      environment: "production", licensedModules: "A" };
+      environment: "production", licensedModules: "A", ...noSagEvidence };
     select.mockImplementationOnce(async () => [{ compatible: true, readOnly: true }]).mockImplementationOnce(async () => {
       scopesByCountry.set(9, "US:EIN");
       return [observation];

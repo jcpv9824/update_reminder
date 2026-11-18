@@ -3,6 +3,7 @@ import type { UpdateSchedule, UpdateTask } from "../types/models";
 import { writeSqlAuditLog } from "./auditSqlWriter";
 import { runSqlTransaction } from "./sqlTransaction";
 import { rootScheduleId } from "./taskGenerator";
+import { isLegacyCandidateCoveredByCatalog, lockCatalogTaskDay } from "./catalogExecutionCoexistenceSql";
 
 function isUniqueViolation(error: unknown): boolean {
   const candidate = error as { number?: number; originalError?: { info?: { number?: number } } };
@@ -49,73 +50,80 @@ async function upsertTaskSource(transaction: sql.Transaction, taskKey: number, t
   void result;
 }
 
+/** Insert one generated task without owning the transaction or swallowing a collision. */
+export async function insertSqlGeneratedTaskInTransaction(transaction: sql.Transaction, task: UpdateTask): Promise<number> {
+  const request = new sql.Request(transaction);
+  request.input("sourceId", sql.NVarChar(260), task.id);
+  request.input("dedupeKey", sql.NVarChar(500), task.dedupeKey ?? null);
+  request.input("taskDate", sql.Date, task.taskDate);
+  request.input("taskBucket", sql.NVarChar(100), task.taskBucket);
+  request.input("clientId", sql.NVarChar(150), task.clientId);
+  request.input("clientName", sql.NVarChar(200), task.clientName);
+  request.input("domainId", sql.NVarChar(150), task.domainId);
+  request.input("domainName", sql.NVarChar(500), task.domainName);
+  request.input("targetType", sql.VarChar(20), task.targetType);
+  request.input("targetId", sql.NVarChar(150), task.targetId);
+  request.input("targetName", sql.NVarChar(240), task.targetName);
+  request.input("scheduleId", sql.NVarChar(150), rootScheduleId(task.rootScheduleId || task.scheduleId));
+  request.input("assignedRole", sql.NVarChar(80), task.assignedRole);
+  request.input("status", sql.VarChar(30), task.status);
+  request.input("result", sql.NVarChar(500), task.result ?? null);
+  request.input("notes", sql.NVarChar(sql.MAX), task.notes ?? null);
+  request.input("createdAt", sql.DateTime2(3), new Date(task.createdAt));
+  request.input("createdBy", sql.NVarChar(150), task.createdBy);
+  request.input("updatedAt", sql.DateTime2(3), new Date(task.updatedAt));
+  request.input("updatedBy", sql.NVarChar(150), task.updatedBy);
+  const result = await request.query<{ task_key: number }>(`
+    INSERT workflow.update_tasks
+    (source_id,dedupe_key,task_date,task_bucket,client_key,client_source_id,client_name_snapshot,
+     domain_key,domain_source_id,domain_name_snapshot,target_type,target_source_id,target_name_snapshot,
+     database_key,primary_schedule_source_id,primary_schedule_key,is_historical_orphan,assigned_role,
+     status,result,notes,created_at,created_by,updated_at,updated_by)
+    OUTPUT INSERTED.task_key
+    SELECT @sourceId,@dedupeKey,@taskDate,@taskBucket,client.client_key,@clientId,@clientName,
+      domain_record.domain_key,@domainId,@domainName,@targetType,@targetId,@targetName,
+      CASE WHEN @targetType='database' THEN database_record.database_key END,
+      schedule.source_id,schedule.schedule_key,0,@assignedRole,
+      @status,@result,@notes,@createdAt,@createdBy,@updatedAt,@updatedBy
+    FROM core.clients client
+    JOIN core.domains domain_record ON domain_record.client_key=client.client_key
+      AND domain_record.source_id=@domainId AND domain_record.status='active'
+    LEFT JOIN core.databases database_record
+      ON @targetType='database' AND database_record.client_key=client.client_key
+      AND database_record.domain_key=domain_record.domain_key AND database_record.source_id=@targetId
+      AND database_record.status='active'
+    JOIN scheduling.update_schedules schedule ON schedule.source_id=@scheduleId
+      AND schedule.active=1 AND schedule.deleted_at IS NULL
+    WHERE client.source_id=@clientId AND client.status='active'
+      AND ((@targetType='domain' AND domain_record.source_id=@targetId) OR database_record.database_key IS NOT NULL);
+  `);
+  const key = result.recordset[0]?.task_key;
+  if (!key) throw Object.assign(new Error("El objetivo de la tarea no pertenece a la jerarquía activa."), { status: 400 });
+  await replaceTaskAssignees(transaction, key, task.assignedUserIds ?? []);
+  await upsertTaskSource(transaction, key, task);
+  const history = new sql.Request(transaction);
+  history.input("taskKey", sql.BigInt, key);
+  history.input("performedAt", sql.DateTime2(3), new Date(task.createdAt));
+  await history.query(`
+    INSERT workflow.task_status_history
+      (task_key,previous_status,new_status,action,performed_by,performed_by_email,performed_at,is_inferred)
+    VALUES(@taskKey,NULL,'pending',N'task_generated',N'system',N'system',@performedAt,0);
+  `);
+  await writeSqlAuditLog(transaction, {
+    entityType: "task", entityId: task.id, clientId: task.clientId, clientName: task.clientName,
+    domainId: task.domainId, domainName: task.domainName, action: "task_generated",
+    performedBy: "system", performedByEmail: "system",
+    metadata: { scheduleId: rootScheduleId(task.scheduleId), targetType: task.targetType, targetId: task.targetId, date: task.taskDate },
+    after: task,
+  });
+  return key;
+}
+
 export async function createSqlGeneratedTask(task: UpdateTask): Promise<boolean> {
   try {
-    return await runSqlTransaction(async (transaction) => {
-      const request = new sql.Request(transaction);
-      request.input("sourceId", sql.NVarChar(260), task.id);
-      request.input("dedupeKey", sql.NVarChar(500), task.dedupeKey ?? null);
-      request.input("taskDate", sql.Date, task.taskDate);
-      request.input("taskBucket", sql.NVarChar(100), task.taskBucket);
-      request.input("clientId", sql.NVarChar(150), task.clientId);
-      request.input("clientName", sql.NVarChar(200), task.clientName);
-      request.input("domainId", sql.NVarChar(150), task.domainId);
-      request.input("domainName", sql.NVarChar(500), task.domainName);
-      request.input("targetType", sql.VarChar(20), task.targetType);
-      request.input("targetId", sql.NVarChar(150), task.targetId);
-      request.input("targetName", sql.NVarChar(240), task.targetName);
-      request.input("scheduleId", sql.NVarChar(150), rootScheduleId(task.rootScheduleId || task.scheduleId));
-      request.input("assignedRole", sql.NVarChar(80), task.assignedRole);
-      request.input("status", sql.VarChar(30), task.status);
-      request.input("result", sql.NVarChar(500), task.result ?? null);
-      request.input("notes", sql.NVarChar(sql.MAX), task.notes ?? null);
-      request.input("createdAt", sql.DateTime2(3), new Date(task.createdAt));
-      request.input("createdBy", sql.NVarChar(150), task.createdBy);
-      request.input("updatedAt", sql.DateTime2(3), new Date(task.updatedAt));
-      request.input("updatedBy", sql.NVarChar(150), task.updatedBy);
-      const result = await request.query<{ task_key: number }>(`
-        INSERT workflow.update_tasks
-        (source_id,dedupe_key,task_date,task_bucket,client_key,client_source_id,client_name_snapshot,
-         domain_key,domain_source_id,domain_name_snapshot,target_type,target_source_id,target_name_snapshot,
-         database_key,primary_schedule_source_id,primary_schedule_key,is_historical_orphan,assigned_role,
-         status,result,notes,created_at,created_by,updated_at,updated_by)
-        OUTPUT INSERTED.task_key
-        SELECT @sourceId,@dedupeKey,@taskDate,@taskBucket,client.client_key,@clientId,@clientName,
-          domain_record.domain_key,@domainId,@domainName,@targetType,@targetId,@targetName,
-          CASE WHEN @targetType='database' THEN database_record.database_key END,
-          schedule.source_id,schedule.schedule_key,0,@assignedRole,
-          @status,@result,@notes,@createdAt,@createdBy,@updatedAt,@updatedBy
-        FROM core.clients client
-        JOIN core.domains domain_record ON domain_record.client_key=client.client_key
-          AND domain_record.source_id=@domainId AND domain_record.status='active'
-        LEFT JOIN core.databases database_record
-          ON @targetType='database' AND database_record.client_key=client.client_key
-          AND database_record.domain_key=domain_record.domain_key AND database_record.source_id=@targetId
-          AND database_record.status='active'
-        JOIN scheduling.update_schedules schedule ON schedule.source_id=@scheduleId
-          AND schedule.active=1 AND schedule.deleted_at IS NULL
-        WHERE client.source_id=@clientId AND client.status='active'
-          AND ((@targetType='domain' AND domain_record.source_id=@targetId) OR database_record.database_key IS NOT NULL);
-      `);
-      const key = result.recordset[0]?.task_key;
-      if (!key) throw Object.assign(new Error("El objetivo de la tarea no pertenece a la jerarquía activa."), { status: 400 });
-      await replaceTaskAssignees(transaction, key, task.assignedUserIds ?? []);
-      await upsertTaskSource(transaction, key, task);
-      const history = new sql.Request(transaction);
-      history.input("taskKey", sql.BigInt, key);
-      history.input("performedAt", sql.DateTime2(3), new Date(task.createdAt));
-      await history.query(`
-        INSERT workflow.task_status_history
-          (task_key,previous_status,new_status,action,performed_by,performed_by_email,performed_at,is_inferred)
-        VALUES(@taskKey,NULL,'pending',N'task_generated',N'system',N'system',@performedAt,0);
-      `);
-      await writeSqlAuditLog(transaction, {
-        entityType: "task", entityId: task.id, clientId: task.clientId, clientName: task.clientName,
-        domainId: task.domainId, domainName: task.domainName, action: "task_generated",
-        performedBy: "system", performedByEmail: "system",
-        metadata: { scheduleId: rootScheduleId(task.scheduleId), targetType: task.targetType, targetId: task.targetId, date: task.taskDate },
-        after: task,
-      });
+    return await runSqlTransaction(async transaction => {
+      if (!await legacyGenerationAllowed(transaction, task)) return false;
+      await insertSqlGeneratedTaskInTransaction(transaction, task);
       return true;
     });
   } catch (error) {
@@ -124,8 +132,16 @@ export async function createSqlGeneratedTask(task: UpdateTask): Promise<boolean>
   }
 }
 
+async function legacyGenerationAllowed(transaction: sql.Transaction, task: UpdateTask): Promise<boolean> {
+  if (!await lockCatalogTaskDay(transaction, task)) {
+    throw Object.assign(new Error("La generación de tareas de esa fecha está ocupada; inténtelo de nuevo."), { status: 409 });
+  }
+  return !await isLegacyCandidateCoveredByCatalog(transaction, task);
+}
+
 export async function syncSqlGeneratedTask(task: UpdateTask, action: "task_assignment_synced" | "task_obsoleted"): Promise<boolean> {
   return runSqlTransaction(async (transaction) => {
+    if (!await legacyGenerationAllowed(transaction, task)) return false;
     const lock = new sql.Request(transaction);
     lock.input("sourceId", sql.NVarChar(260), task.id);
     lock.input("targetType", sql.VarChar(20), task.targetType);

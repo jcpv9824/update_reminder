@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { mapSqlWorkflowTask, normalizedLogicalTaskCount } from "../lib/workflowTasksSqlRepository";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mapSqlWorkflowTask, normalizedLogicalTaskCount, readSqlWorkflowTasks } from "../lib/workflowTasksSqlRepository";
 import type { UpdateTask } from "../types/models";
 
 const at = new Date("2026-07-21T12:00:00.000Z");
+const mock = vi.hoisted(() => ({ query: vi.fn(), input: vi.fn() }));
+vi.mock("../lib/sql", () => ({ getSqlPool: async () => ({ request: () => mock }) }));
 
 describe("Workflow tasks SQL mapping", () => {
   it("reconstructs a consolidated task without exposing normalized internals in the public DTO layer", () => {
@@ -35,5 +37,37 @@ describe("Workflow tasks SQL mapping", () => {
       { ...task, id: "task-alias" },
       { ...task, id: "task-2", taskDate: "2026-07-22" },
     ])).toBe(2);
+  });
+});
+
+describe("current task SQL visibility", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mock.query.mockResolvedValue({ recordset: [] });
+  });
+
+  it("omits invisible or retired occurrences from the board and direct open-task lookup", async () => {
+    await readSqlWorkflowTasks({ today: "2026-11-17" });
+    await readSqlWorkflowTasks({ today: "2026-11-17", sourceId: "look-up", operationalOnly: false });
+    for (const call of mock.query.mock.calls) {
+      expect(call[0]).toContain("task.status='completed' OR NOT EXISTS");
+      expect(call[0]).toContain("catalog_execution.retired_at IS NOT NULL");
+      expect(call[0]).toContain("catalog_link.link_state='active'");
+    }
+  });
+
+  it("keeps the legacy generator from adopting hidden, retired, or active catalog occurrences", async () => {
+    await readSqlWorkflowTasks({ today: "2026-11-17", operationalOnly: false, includeCancelled: true, legacyOnly: true });
+    expect(mock.query.mock.calls[0][0]).toMatch(/NOT EXISTS \([\s\S]*?catalog_execution\.task_key=task\.task_key\s+\)/);
+    expect(mock.query.mock.calls[0][0]).not.toContain("catalog_link.link_state");
+  });
+
+  it("projects an active alternate link and matches client/domain filters on that projection", async () => {
+    await readSqlWorkflowTasks({ today: "2026-11-17", clientId: "visible-client", domainId: "visible-domain" });
+    const statement: string = mock.query.mock.calls[0][0];
+    expect(statement).toContain("link.link_state='active'");
+    expect(statement).toContain("COALESCE(active_catalog_link.target_id,task.target_source_id) AS target_source_id");
+    expect(statement).toContain("COALESCE(active_catalog_link.client_id,task.client_source_id)=@clientId");
+    expect(statement).toContain("COALESCE(active_catalog_link.domain_id,task.domain_source_id)=@domainId");
   });
 });

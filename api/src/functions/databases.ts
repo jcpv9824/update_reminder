@@ -125,7 +125,8 @@ async function findDatabase(id: string): Promise<DatabaseRecord | null> {
 
 async function findTask(id: string): Promise<UpdateTask | null> {
   const today = new Date().toISOString().slice(0, 10);
-  return (await readSqlWorkflowTasks({ sourceId: id, today, operationalOnly: false }))[0] ?? null;
+  // Historical or shared catalog tasks are not grants via this legacy lookup.
+  return (await readSqlWorkflowTasks({ sourceId: id, today, operationalOnly: false, legacyOnly: true }))[0] ?? null;
 }
 
 function canUseDatabaseTaskAction(

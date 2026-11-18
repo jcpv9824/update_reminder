@@ -63,6 +63,76 @@ describe("catalog customer snapshot SQL publisher", () => {
     expect(JSON.parse(fake.value("rows"))[0]).toMatchObject({ allocationId: null, officialName: null, activeCode: null });
     await expect(fake.sink.publish({ ...revision, role: "sag-admin", rows: [{ ...saga, issuerScope: null }] }))
       .resolves.toBe("published");
+    expect(fake.value("inventory")).toBeUndefined();
+    for (const [batch] of fake.query.mock.calls) {
+      expect(batch).not.toContain("has_sag_inventory_evidence");
+      expect(batch).not.toContain("catalog_sag_revision_evidence");
+    }
+  });
+
+  const sagEvidence = {
+    domainCandidate: "qa.example.test", environment: "test" as const, licenseCodes: ["A", "U"],
+    testStartedOn: "2026-11-16", productionStartedOn: null, demoStartedOn: null,
+  };
+  const sag = { ...revision.rows[0], name: null, activeCode: null };
+  const certifiedSag = {
+    ...revision, role: "sag-admin" as const, includesSagInventory: true,
+    rows: [{ ...sag, sagEvidence }],
+  } satisfies CatalogRefreshPublication;
+
+  it("binds an allowlisted payload and inserts it after parent rows, before seal and publish", async () => {
+    const fake = setup();
+    const unchecked = { ...sagEvidence, secret: "ungraded private value" };
+    await expect(fake.sink.publish({ ...certifiedSag, rows: [{ ...sag, sagEvidence: unchecked }] }))
+      .resolves.toBe("published");
+    expect(JSON.parse(fake.value("inventory"))).toEqual([{
+      sourceRecordId: 54, domainCandidate: "qa.example.test", environmentKind: "test", licenseCodes: "AU",
+      testStartedOn: "2026-11-16", productionStartedOn: null, demoStartedOn: null,
+    }]);
+    expect(fake.value("rows")).not.toContain("qa.example.test");
+    const batch = fake.query.mock.calls[0][0] as string;
+    expect(batch).toContain("verified_until,has_sag_inventory_evidence");
+    expect(batch).not.toContain("qa.example.test");
+    expect(batch.indexOf("INSERT INTO core.catalog_customer_revision_rows"))
+      .toBeLessThan(batch.indexOf("INSERT INTO core.catalog_sag_revision_evidence"));
+    expect(batch.indexOf("INSERT INTO core.catalog_sag_revision_evidence"))
+      .toBeLessThan(batch.indexOf("SET sealed_at=@now"));
+    expect(fake.commit).toHaveBeenCalledOnce();
+  });
+
+  it("certifies an explicitly empty complete SAG revision and preserves null versus empty module evidence", async () => {
+    const fake = setup();
+    await expect(fake.sink.publish({ ...certifiedSag, rows: [] })).resolves.toBe("published");
+    expect(fake.value("inventory")).toBe("[]");
+    expect(fake.query.mock.calls[0][0]).toContain("has_sag_inventory_evidence");
+    const another = setup();
+    await expect(another.sink.publish({ ...certifiedSag, rows: [
+      { ...sag, sagEvidence: { ...sagEvidence, licenseCodes: null } },
+      { ...sag, sourceRecordId: 55, sagEvidence: { ...sagEvidence, licenseCodes: [] } },
+    ] })).resolves.toBe("published");
+    expect(JSON.parse(another.value("inventory")).map((row: { licenseCodes: string | null }) => row.licenseCodes))
+      .toEqual([null, ""]);
+  });
+
+  it("rejects evidence on ERP, incomplete SAG, and noncanonical or private fields before SQL", async () => {
+    const fake = setup();
+    const invalid = [
+      { ...revision, includesSagInventory: true },
+      { ...revision, rows: [{ ...revision.rows[0], sagEvidence }] },
+      { ...certifiedSag, includesSagInventory: false },
+      { ...certifiedSag, rows: [sag, { ...sag, sourceRecordId: 55, sagEvidence }] },
+      ...[
+        { ...sagEvidence, domainCandidate: "https://qa.example.test/synthetic" },
+        { ...sagEvidence, domainCandidate: "QA.EXAMPLE.TEST" },
+        { ...sagEvidence, licenseCodes: ["U", "A"] },
+        { ...sagEvidence, licenseCodes: ["T"] },
+        { ...sagEvidence, testStartedOn: "2026-02-30" },
+      ].map(sagEvidence => ({ ...certifiedSag, rows: [{ ...sag, sagEvidence }] })),
+    ] satisfies CatalogRefreshPublication[];
+    for (const publication of invalid) {
+      await expect(fake.sink.publish(publication)).rejects.toThrow("invalid_catalog_publication");
+    }
+    expect(fake.pool.transaction).not.toHaveBeenCalled();
   });
 
   it("does not enter a transaction with malformed evidence", async () => {

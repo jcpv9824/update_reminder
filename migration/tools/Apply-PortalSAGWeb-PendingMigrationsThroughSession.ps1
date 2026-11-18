@@ -3,7 +3,9 @@ param(
   [ValidateSet('qa','production')]
   [string]$Environment='qa',
 
-  [string]$SessionDirectory
+  [string]$SessionDirectory,
+
+  [switch]$IncludeCatalog
 )
 
 $ErrorActionPreference='Stop'
@@ -69,6 +71,25 @@ $migrations=@(
   @{version='029';name='029_company_storage_labels.sql'},
   @{version='030';name='030_object_storage_profiles.sql'}
 )
+
+if($IncludeCatalog){
+  $migrations += @(
+    @{version='031';name='031_catalog_source_bindings.sql'},
+    @{version='032';name='032_catalog_task_execution.sql'},
+    @{version='033';name='033_catalog_customer_snapshots.sql'},
+    @{version='034';name='034_catalog_source_access.sql'},
+    @{version='035';name='035_catalog_sag_discovery_evidence.sql'}
+  )
+  # Check the entire selected package before submitting its first write.
+  foreach($entry in $migrations){
+    $name=[string]$entry.name
+    $path=Join-Path $sqlDirectory $name
+    if(-not (Test-Path -LiteralPath $path) -or -not $manifest.ContainsKey($name) -or
+       (Get-Sha256Hex $path) -cne $manifest[$name]){
+      throw "Catalog deployment package validation failed for $name."
+    }
+  }
+}
 
 foreach($migration in $migrations){
   $version=[string]$migration.version
@@ -194,3 +215,32 @@ if($row.applied_count -ne 14 -or $row.trailing_domain_identities -ne 0 -or
 }
 
 Write-Host "$expectedDatabase migrations 017-030 are applied and verified." -ForegroundColor Green
+
+if($IncludeCatalog){
+  $catalogVerificationSql=@'
+SELECT
+  (SELECT COUNT(*) FROM migration.schema_migrations
+    WHERE migration_version IN ('031','032','033','034','035') AND succeeded=1) AS catalog_migration_count,
+  (SELECT COUNT(*) FROM (VALUES
+    (N'settings.catalog_source_bindings'), (N'workflow.catalog_task_executions'),
+    (N'workflow.catalog_task_execution_links'), (N'workflow.catalog_task_execution_sources'),
+    (N'workflow.catalog_task_execution_events'), (N'core.catalog_customer_source_revisions'),
+    (N'settings.catalog_customer_revision_heads'), (N'security.catalog_source_readers'),
+    (N'core.catalog_sag_revision_evidence')) AS expected(name)
+    WHERE OBJECT_ID(expected.name,N'U') IS NOT NULL) AS catalog_tables_ready,
+  (SELECT COUNT(*) FROM sys.triggers WHERE is_disabled=0 AND object_id IN (
+    OBJECT_ID(N'core.TR_catalog_sag_revision_evidence_sealed',N'TR'),
+    OBJECT_ID(N'core.TR_catalog_sag_revision_evidence_assert',N'TR'),
+    OBJECT_ID(N'workflow.TR_catalog_task_execution_events_immutable',N'TR'),
+    OBJECT_ID(N'settings.TR_catalog_customer_revision_heads_publish',N'TR'))) AS catalog_triggers_ready,
+  CASE WHEN COL_LENGTH(N'core.catalog_customer_source_revisions',N'has_sag_inventory_evidence')=1
+    THEN 1 ELSE 0 END AS sag_evidence_flag_ready;
+'@
+  $catalogVerification=Invoke-SessionSql -Sql $catalogVerificationSql -Mode read -TimeoutSeconds 120 -MaxRows 5
+  $catalogRow=$catalogVerification.resultSets[0].rows[0]
+  if($catalogRow.catalog_migration_count -ne 5 -or $catalogRow.catalog_tables_ready -ne 9 -or
+     $catalogRow.catalog_triggers_ready -ne 4 -or $catalogRow.sag_evidence_flag_ready -ne 1){
+    throw 'Catalog migration post-verification failed.'
+  }
+  Write-Host "$expectedDatabase migrations 031-035 are applied and verified." -ForegroundColor Green
+}

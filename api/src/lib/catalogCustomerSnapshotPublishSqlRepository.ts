@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import sql from "mssql";
 import type { CatalogRefreshPublication, CatalogRefreshSink } from "./catalogCustomerRefresh";
+import { normalizeCatalogSagInventoryEvidence } from "./catalogSagInventoryEvidence";
 
 type Stamp = Parameters<CatalogRefreshSink["recordFailure"]>[0];
 const maxRows = 100_000;
@@ -48,7 +49,7 @@ const lockAndCheck = `
   END;
 `;
 
-const publishBatch = `${lockAndCheck}
+const preparePublishBatch = `${lockAndCheck}
   DECLARE @now datetime2(3)=SYSUTCDATETIME();
   DECLARE @freshUntil datetime2(3)=DATEADD(minute,@freshnessMinutes,@observedAt);
   IF @freshUntil<=@now OR @observedAt>@now THROW 53326, N'Catalog evidence time is invalid at publication.', 1;
@@ -140,10 +141,13 @@ const publishBatch = `${lockAndCheck}
     WHERE i.catalog_customer_key IS NULL;
   END;
 
+`;
+
+const insertRevision = (includesInventory: boolean) => `
   DECLARE @revisionKey bigint;
   INSERT INTO core.catalog_customer_source_revisions(catalog_source_key,source_role,binding_version,profile_version,
-    match_key_version,attempt_ordinal,expected_rows,expected_scopes,observed_at,verified_until)
-  VALUES(@sourceKey,@sourceRole,@bindingRevision,@profileRevision,@matchKeyVersion,@ordinal,@rowCount,@scopeCount,@observedAt,@freshUntil);
+    match_key_version,attempt_ordinal,expected_rows,expected_scopes,observed_at,verified_until${includesInventory ? ",has_sag_inventory_evidence" : ""})
+  VALUES(@sourceKey,@sourceRole,@bindingRevision,@profileRevision,@matchKeyVersion,@ordinal,@rowCount,@scopeCount,@observedAt,@freshUntil${includesInventory ? ",1" : ""});
   SET @revisionKey=CONVERT(bigint,SCOPE_IDENTITY());
 
   INSERT INTO core.catalog_customer_revision_rows(revision_key,source_role,source_record_id,catalog_customer_key,
@@ -152,7 +156,17 @@ const publishBatch = `${lockAndCheck}
   FROM #catalog_input;
   INSERT INTO core.catalog_customer_revision_scopes(revision_key,issuer,document_type)
   SELECT @revisionKey,issuer,documentType FROM OPENJSON(@scopes) WITH(issuer char(2),documentType varchar(32));
+`;
 
+const insertSagaEvidence = `
+  INSERT INTO core.catalog_sag_revision_evidence(revision_key,source_record_id,domain_candidate,environment_kind,
+    license_codes,test_started_on,production_started_on,demo_started_on)
+  SELECT @revisionKey,sourceRecordId,domainCandidate,environmentKind,licenseCodes,testStartedOn,productionStartedOn,demoStartedOn
+  FROM OPENJSON(@inventory) WITH (sourceRecordId int,domainCandidate varchar(253),environmentKind varchar(10),
+    licenseCodes varchar(25),testStartedOn date,productionStartedOn date,demoStartedOn date);
+`;
+
+const sealAndPublishBatch = `
   -- Triggers certify exact counts before allowing the head to advance, all in this transaction.
   SET @now=SYSUTCDATETIME();
   IF @freshUntil<=@now THROW 53326, N'Catalog evidence expired before publication.', 1;
@@ -165,6 +179,11 @@ const publishBatch = `${lockAndCheck}
     VALUES(@sourceKey,@revisionKey,'succeeded',@now,@ordinal);
   SELECT CAST('published' AS varchar(11)) AS result;
 `;
+
+// Baseline batch doesn't reference any 035 objects. Only an explicitly certified
+// SAG revision selects the opt-in batch; SQL 035 must exist before enabling it.
+const publishBatch = preparePublishBatch + insertRevision(false) + sealAndPublishBatch;
+const publishWithSagaEvidenceBatch = preparePublishBatch + insertRevision(true) + insertSagaEvidence + sealAndPublishBatch;
 
 const failureBatch = `${lockAndCheck}
   -- A failure only marks freshness. It must never clear or write a revision or change opaque IDs.
@@ -198,9 +217,12 @@ function splitScope(scope: string | null) {
   return { issuer, documentType };
 }
 
-function validateAndSerialize(revision: CatalogRefreshPublication): { rows: string; scopes: string } {
+function validateAndSerialize(revision: CatalogRefreshPublication): { rows: string; scopes: string; inventory: string | null } {
+  const includesInventory = revision.includesSagInventory === true;
   if (!validStamp(revision) || !["erp-customers", "sag-admin"].includes(revision.role) ||
       revision.rows.length > maxRows || revision.completeScopes.length > maxScopes ||
+      (revision.includesSagInventory !== undefined && typeof revision.includesSagInventory !== "boolean") ||
+      (includesInventory && revision.role !== "sag-admin") ||
       (revision.role === "erp-customers" && revision.completeScopes.length > 0)) throw new Error("invalid_catalog_publication");
   const seen = new Set<number>();
   const isErp = revision.role === "erp-customers";
@@ -210,6 +232,7 @@ function validateAndSerialize(revision: CatalogRefreshPublication): { rows: stri
         (row.issuerScope !== null && row.matchToken === null) ||
         (isErp && row.issuerScope === null && row.matchToken !== null) ||
         (!isErp && (row.name !== null || row.activeCode !== null)) ||
+        (includesInventory !== (row.sagEvidence !== undefined)) ||
         (row.name !== null && (typeof row.name !== "string" || row.name.length > 512 || /\p{Cc}/u.test(row.name))) ||
         !["S", "N", null].includes(row.activeCode)) throw new Error("invalid_catalog_publication");
     seen.add(row.sourceRecordId);
@@ -223,8 +246,28 @@ function validateAndSerialize(revision: CatalogRefreshPublication): { rows: stri
   }
   const scopes = [...covered].map(sc => splitScope(sc));
   const encoded = JSON.stringify(rows);
-  if (Buffer.byteLength(encoded, "utf8") > maxPayloadBytes) throw new Error("invalid_catalog_publication");
-  return { rows: encoded, scopes: JSON.stringify(scopes) };
+  const inventory = includesInventory ? JSON.stringify(revision.rows.map(row => {
+    const evidence = row.sagEvidence;
+    if (!evidence || typeof evidence !== "object") throw new Error("invalid_catalog_publication");
+    // The source adapter already applied the reporting-day cutoff. Re-check
+    // canonical shape/calendar syntax here and serialize only approved data.
+    const normalized = normalizeCatalogSagInventoryEvidence(evidence, "9999-12-31");
+    if (evidence.domainCandidate !== normalized.domainCandidate || evidence.environment !== normalized.environment ||
+        evidence.testStartedOn !== normalized.testStartedOn || evidence.productionStartedOn !== normalized.productionStartedOn ||
+        evidence.demoStartedOn !== normalized.demoStartedOn ||
+        (normalized.licenseCodes === null ? evidence.licenseCodes !== null :
+          !Array.isArray(evidence.licenseCodes) || evidence.licenseCodes.length !== normalized.licenseCodes.length ||
+          evidence.licenseCodes.some((code, i) => code !== normalized.licenseCodes![i]))) {
+      throw new Error("invalid_catalog_publication");
+    }
+    return { sourceRecordId: row.sourceRecordId, domainCandidate: normalized.domainCandidate,
+      environmentKind: normalized.environment, licenseCodes: normalized.licenseCodes?.join("") ?? null,
+      testStartedOn: normalized.testStartedOn, productionStartedOn: normalized.productionStartedOn, demoStartedOn: normalized.demoStartedOn };
+  })) : null;
+  if (Buffer.byteLength(encoded, "utf8") + Buffer.byteLength(inventory ?? "", "utf8") > maxPayloadBytes) {
+    throw new Error("invalid_catalog_publication");
+  }
+  return { rows: encoded, scopes: JSON.stringify(scopes), inventory };
 }
 
 function bindStamp(request: sql.Request, stamp: Stamp): sql.Request {
@@ -271,14 +314,17 @@ export function createSqlCatalogCustomerSnapshotPublisher(
     async publish(revision) {
       const payload = validateAndSerialize(revision);
       return transaction(async request => {
-        const result = await bindStamp(request, revision)
+        const bound = bindStamp(request, revision)
           .input("sourceRole", sql.VarChar(15), revision.role)
           .input("rows", sql.NVarChar(sql.MAX), payload.rows)
           .input("scopes", sql.NVarChar(sql.MAX), payload.scopes)
           .input("rowCount", sql.Int, revision.rows.length)
           .input("scopeCount", sql.Int, revision.completeScopes.length)
-          .input("freshnessMinutes", sql.Int, freshnessMinutes)
-          .query<{ result: string }>(publishBatch);
+          .input("freshnessMinutes", sql.Int, freshnessMinutes);
+        const result = payload.inventory === null
+          ? await bound.query<{ result: string }>(publishBatch)
+          : await bound.input("inventory", sql.NVarChar(sql.MAX), payload.inventory)
+            .query<{ result: string }>(publishWithSagaEvidenceBatch);
         const status = result.recordset[0]?.result;
         if (result.recordset.length !== 1 || (status !== "published" && status !== "superseded")) {
           throw new Error("invalid_catalog_sql_result");

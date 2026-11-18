@@ -1,4 +1,7 @@
 import sql from "mssql";
+import {
+  catalogTaskActiveLinkProjectionSql, catalogTaskHasVisibleLinkSql, catalogTaskIsLegacySql,
+} from "./catalogWorkflowTaskEligibilitySql";
 import { getSqlPool } from "./sql";
 import type { UpdateTask } from "../types/models";
 
@@ -113,6 +116,8 @@ export type WorkflowTaskFilters = {
   domainId?: string | null;
   today: string;
   includeCancelled?: boolean;
+  /** Existing generation/cleanup must never reconcile catalog-owned tasks as legacy work. */
+  legacyOnly?: boolean;
 };
 
 export async function readSqlWorkflowTasks(filters: WorkflowTaskFilters): Promise<UpdateTask[]> {
@@ -120,6 +125,10 @@ export async function readSqlWorkflowTasks(filters: WorkflowTaskFilters): Promis
   const request = pool.request();
   const conditions: string[] = [];
   request.input("today", sql.VarChar(10), filters.today);
+  request.input("clientId", sql.NVarChar(150), filters.clientId ?? null);
+  request.input("domainId", sql.NVarChar(150), filters.domainId ?? null);
+  if (filters.legacyOnly) conditions.push(catalogTaskIsLegacySql);
+  else conditions.push(`(task.status='completed' OR ${catalogTaskHasVisibleLinkSql})`);
   if (filters.sourceId) {
     request.input("sourceId", sql.NVarChar(260), filters.sourceId);
     conditions.push("(task.source_id=@sourceId OR EXISTS (SELECT 1 FROM workflow.task_source_aliases alias WHERE alias.task_key=task.task_key AND alias.alias_source_id=@sourceId))");
@@ -152,12 +161,10 @@ export async function readSqlWorkflowTasks(filters: WorkflowTaskFilters): Promis
     conditions.push("task.status<>'cancelled'");
   }
   if (filters.clientId) {
-    request.input("clientId", sql.NVarChar(150), filters.clientId);
-    conditions.push("task.client_source_id=@clientId");
+    conditions.push("COALESCE(active_catalog_link.client_id,task.client_source_id)=@clientId");
   }
   if (filters.domainId) {
-    request.input("domainId", sql.NVarChar(150), filters.domainId);
-    conditions.push("task.domain_source_id=@domainId");
+    conditions.push("COALESCE(active_catalog_link.domain_id,task.domain_source_id)=@domainId");
   }
 
   if (filters.operationalOnly !== false) {
@@ -184,9 +191,12 @@ export async function readSqlWorkflowTasks(filters: WorkflowTaskFilters): Promis
   const result = await request.query<TaskRow>(`
     SELECT TOP (1000)
       task.source_id,task.dedupe_key,CONVERT(char(10),task.task_date,23) AS task_date,task.task_bucket,
-      task.client_source_id,task.client_name_snapshot AS client_name,
-      task.domain_source_id,task.domain_name_snapshot AS domain_name,
-      task.target_type,task.target_source_id,task.target_name_snapshot AS target_name,
+      COALESCE(active_catalog_link.client_id,task.client_source_id) AS client_source_id,
+      COALESCE(active_catalog_link.client_name,task.client_name_snapshot) AS client_name,
+      COALESCE(active_catalog_link.domain_id,task.domain_source_id) AS domain_source_id,
+      COALESCE(active_catalog_link.domain_name,task.domain_name_snapshot) AS domain_name,
+      task.target_type,COALESCE(active_catalog_link.target_id,task.target_source_id) AS target_source_id,
+      COALESCE(active_catalog_link.target_name,task.target_name_snapshot) AS target_name,
       task.primary_schedule_source_id,task.assigned_role,task.status,task.result,task.notes,
       task.completed_at,task.completed_by,task.completed_with_problems,task.problem_note,task.completion_note,
       task.blocked_at,task.blocked_by,task.block_reason,task.resolved_at,task.resolved_by,task.resolution_comment,
@@ -200,6 +210,7 @@ export async function readSqlWorkflowTasks(filters: WorkflowTaskFilters): Promis
         FROM workflow.task_sources source WHERE source.task_key=task.task_key
         ORDER BY source.is_primary DESC,source.created_at,source.schedule_source_id FOR JSON PATH),N'[]') AS sources_json
     FROM workflow.update_tasks task
+    ${catalogTaskActiveLinkProjectionSql}
     WHERE ${conditions.join(" AND ")}
     ORDER BY task.task_date,task.target_type,task.target_name_snapshot,task.source_id;
   `);

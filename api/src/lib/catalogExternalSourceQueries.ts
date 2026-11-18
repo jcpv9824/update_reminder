@@ -17,6 +17,10 @@ export interface CatalogSagSourceRecord {
   environment: "production" | "test" | "demo" | "unknown";
   /** null means membership cannot be interpreted; [] is a verified empty set. */
   licenseCodes: readonly string[] | null;
+  domainCandidate: string | null;
+  testStartedOn: string | null;
+  productionStartedOn: string | null;
+  demoStartedOn: string | null;
 }
 
 export interface CatalogExternalReadStatement {
@@ -71,6 +75,8 @@ const fields = {
     ["dbo.Customers", "CountryId", [56]],
     ["dbo.Customers", "Environment", textTypes],
     ["dbo.Customers", "LicensedModules", textTypes],
+    ["dbo.Customers", "Url", textTypes],
+    ["dbo.Customers", "FechasEnvironment", textTypes],
   ],
 } as const;
 
@@ -122,17 +128,59 @@ const pages = {
   WHERE @afterId IS NULL OR c.ka_nl_tercero > @afterId
   ORDER BY c.ka_nl_tercero ASC`,
   sag_admin_v1: `SELECT TOP (@pageSize)
-    Id AS sourceRecordId,
-    CASE WHEN DATALENGTH(CONVERT(nvarchar(max), Document)) <= 256
-      THEN CONVERT(nvarchar(128), Document) ELSE NULL END AS documentNumber,
-    CountryId AS reportedCountryId,
-    CASE WHEN DATALENGTH(CONVERT(nvarchar(max), Environment)) <= 128
-      THEN CONVERT(nvarchar(64), Environment) ELSE NULL END AS environment,
-    CASE WHEN DATALENGTH(CONVERT(nvarchar(max), LicensedModules)) <= 2048
-      THEN CONVERT(nvarchar(1024), LicensedModules) ELSE NULL END AS licensedModules
-  FROM dbo.Customers
-  WHERE @afterId IS NULL OR Id > @afterId
-  ORDER BY Id ASC`,
+    c.Id AS sourceRecordId,
+    CASE WHEN DATALENGTH(CONVERT(nvarchar(max), c.Document)) <= 256
+      THEN CONVERT(nvarchar(128), c.Document) ELSE NULL END AS documentNumber,
+    c.CountryId AS reportedCountryId,
+    CASE WHEN DATALENGTH(CONVERT(nvarchar(max), c.Environment)) <= 128
+      THEN CONVERT(nvarchar(64), c.Environment) ELSE NULL END AS environment,
+    CASE WHEN DATALENGTH(CONVERT(nvarchar(max), c.LicensedModules)) <= 2048
+      THEN CONVERT(nvarchar(1024), c.LicensedModules) ELSE NULL END AS licensedModules,
+    CASE WHEN LEN(host.candidate) BETWEEN 3 AND 253 AND CHARINDEX(N'.',host.candidate)>0
+      AND DATALENGTH(host.candidate)=DATALENGTH(RTRIM(host.candidate))
+      AND host.candidate COLLATE Latin1_General_100_BIN2 NOT LIKE N'%[^0-9A-Za-z.-]%'
+      THEN CONVERT(varchar(253),LOWER(host.candidate COLLATE Latin1_General_100_BIN2)) END AS domainCandidate,
+    dates.testStartedOn, dates.productionStartedOn, dates.demoStartedOn
+  FROM dbo.Customers AS c
+  CROSS APPLY (VALUES (CASE WHEN DATALENGTH(CONVERT(nvarchar(max),c.Url))<=8000
+    THEN LTRIM(RTRIM(CONVERT(nvarchar(4000),c.Url))) END)) AS raw(link)
+  CROSS APPLY (VALUES (CASE
+    WHEN LOWER(LEFT(raw.link,8) COLLATE Latin1_General_100_BIN2)=N'https://' THEN SUBSTRING(raw.link,9,4000)
+    WHEN LOWER(LEFT(raw.link,7) COLLATE Latin1_General_100_BIN2)=N'http://' THEN SUBSTRING(raw.link,8,4000)
+    ELSE NULL END)) AS url(rest)
+  CROSS APPLY (VALUES (LEFT(url.rest,PATINDEX(N'%[/?#]%',COALESCE(url.rest,N'')+N'/')-1))) AS authority(part)
+  CROSS APPLY (VALUES (CHARINDEX(N':',authority.part),
+    SUBSTRING(authority.part,CHARINDEX(N':',authority.part)+1,4000))) AS port(splitAt,suffix)
+  CROSS APPLY (VALUES (CASE
+    WHEN CHARINDEX(N'@',authority.part)>0 OR CHARINDEX(NCHAR(92),authority.part)>0 THEN NULL
+    WHEN port.splitAt=0 THEN authority.part
+    WHEN LEN(port.suffix) BETWEEN 1 AND 5 AND port.suffix COLLATE Latin1_General_100_BIN2 NOT LIKE N'%[^0-9]%'
+      AND TRY_CONVERT(int,port.suffix) BETWEEN 1 AND 65535 THEN LEFT(authority.part,NULLIF(port.splitAt,0)-1)
+    END)) AS host(candidate)
+  OUTER APPLY (
+    SELECT
+      CASE WHEN SUM(CASE WHEN item.[key]=N'FechaInicioPruebas' THEN 1 ELSE 0 END)=1
+        THEN MAX(CASE WHEN item.[key]=N'FechaInicioPruebas' THEN valid.dayText END) END AS testStartedOn,
+      CASE WHEN SUM(CASE WHEN item.[key]=N'FechaInicioProduccion' THEN 1 ELSE 0 END)=1
+        THEN MAX(CASE WHEN item.[key]=N'FechaInicioProduccion' THEN valid.dayText END) END AS productionStartedOn,
+      CASE WHEN SUM(CASE WHEN item.[key]=N'FechaInicioDemo' THEN 1 ELSE 0 END)=1
+        THEN MAX(CASE WHEN item.[key]=N'FechaInicioDemo' THEN valid.dayText END) END AS demoStartedOn
+    FROM OPENJSON(CASE WHEN DATALENGTH(c.FechasEnvironment)<=8192 AND ISJSON(c.FechasEnvironment)=1
+      THEN c.FechasEnvironment ELSE N'{}' END) AS item
+    CROSS APPLY (VALUES (CASE WHEN item.[type]=1 AND DATALENGTH(item.[value]) BETWEEN 20 AND 128
+      AND LEFT(item.[value],10) COLLATE Latin1_General_100_BIN2 LIKE N'[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+      AND (LEN(item.[value])=10 OR (SUBSTRING(item.[value],11,1)=N'T'
+        AND TRY_CONVERT(datetimeoffset(3),item.[value],127) IS NOT NULL))
+      AND TRY_CONVERT(date,LEFT(item.[value],10),23) IS NOT NULL
+      THEN CONVERT(varchar(10),LEFT(item.[value],10)) END)) AS valid(dayText)
+    WHERE item.[key] COLLATE Latin1_General_100_BIN2 IN (N'FechaInicioPruebas',N'FechaInicioProduccion',N'FechaInicioDemo')
+      AND DATALENGTH(item.[key])=CASE item.[key] COLLATE Latin1_General_100_BIN2
+        WHEN N'FechaInicioPruebas' THEN DATALENGTH(N'FechaInicioPruebas')
+        WHEN N'FechaInicioProduccion' THEN DATALENGTH(N'FechaInicioProduccion')
+        WHEN N'FechaInicioDemo' THEN DATALENGTH(N'FechaInicioDemo') END
+  ) AS dates
+  WHERE @afterId IS NULL OR c.Id > @afterId
+  ORDER BY c.Id ASC`,
 } as const;
 
 /** Shared with the transport: callers cannot introduce any other SQL text. */
@@ -180,7 +228,8 @@ function parseErp(value: unknown): CatalogErpSourceRecord {
 }
 
 function parseSag(value: unknown): CatalogSagSourceRecord {
-  const row = rowWithKeys(value, ["sourceRecordId", "documentNumber", "reportedCountryId", "environment", "licensedModules"]);
+  const row = rowWithKeys(value, ["sourceRecordId", "documentNumber", "reportedCountryId", "environment", "licensedModules",
+    "domainCandidate", "testStartedOn", "productionStartedOn", "demoStartedOn"]);
   const env = optionalText(row.environment, 64)?.toLowerCase();
   const environment = env && ["production", "produccion", "producción", "prod"].includes(env) ? "production" :
     env && ["test", "testing", "prueba", "pruebas", "qa"].includes(env) ? "test" : env === "demo" ? "demo" : "unknown";
@@ -189,7 +238,9 @@ function parseSag(value: unknown): CatalogSagSourceRecord {
   return { sourceRecordId: sqlInt(row.sourceRecordId), documentNumber: document && !/\p{C}/u.test(document) ? document : null,
     reportedCountryId: row.reportedCountryId === null ? null : sqlInt(row.reportedCountryId), environment,
     licenseCodes: modules !== undefined && /^[A-Z ,;|]*$/.test(modules)
-      ? [...new Set(modules.replace(/[^A-Z]/g, ""))].sort() : null };
+      ? [...new Set(modules.replace(/[^A-Z]/g, ""))].sort() : null,
+    domainCandidate: optionalText(row.domainCandidate, 253), testStartedOn: optionalText(row.testStartedOn, 10),
+    productionStartedOn: optionalText(row.productionStartedOn, 10), demoStartedOn: optionalText(row.demoStartedOn, 10) };
 }
 
 function positiveInt(value: number | undefined, fallback: number, max: number): number {

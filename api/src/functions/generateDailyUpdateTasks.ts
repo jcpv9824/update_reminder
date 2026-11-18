@@ -141,6 +141,7 @@ export async function runTaskGeneration(
     dateTo: windowEnd,
     operationalOnly: false,
     includeCancelled: true,
+    legacyOnly: true,
   });
   const initialExistingTasks = existing.length;
 
