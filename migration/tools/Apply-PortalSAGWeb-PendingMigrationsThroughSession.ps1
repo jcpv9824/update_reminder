@@ -95,7 +95,9 @@ if($IncludeCatalog){
     @{version='049';name='049_catalog_once_observations.sql'},
     @{version='050';name='050_catalog_once_completion_witnesses.sql'},
     @{version='051';name='051_catalog_refresh_queue.sql'},
-    @{version='052';name='052_catalog_sag_company_evidence.sql'}
+    @{version='052';name='052_catalog_sag_company_evidence.sql'},
+    @{version='053';name='053_catalog_sag_v2_publication.sql'},
+    @{version='054';name='054_catalog_sql_target_instance_identity.sql'}
   )
   # Check the entire selected package before submitting its first write.
   foreach($entry in $migrations){
@@ -237,7 +239,7 @@ if($IncludeCatalog){
   $catalogVerificationSql=@'
 SELECT
   (SELECT COUNT(*) FROM migration.schema_migrations
-    WHERE migration_version IN ('031','032','033','034','035','036','037','038','039','040','041','042','043','044','045','046','047','048','049','050','051','052') AND succeeded=1) AS catalog_migration_count,
+    WHERE migration_version IN ('031','032','033','034','035','036','037','038','039','040','041','042','043','044','045','046','047','048','049','050','051','052','053','054') AND succeeded=1) AS catalog_migration_count,
   (SELECT COUNT(*) FROM (VALUES
     (N'settings.catalog_source_bindings'), (N'workflow.catalog_task_executions'),
     (N'workflow.catalog_task_execution_links'), (N'workflow.catalog_task_execution_sources'),
@@ -253,7 +255,8 @@ SELECT
     (N'scheduling.catalog_once_observations'), (N'scheduling.catalog_once_observation_pairs'),
     (N'settings.catalog_source_head_events'), (N'scheduling.catalog_once_source_witnesses'),
     (N'scheduling.catalog_once_closure_scan_cursors'), (N'settings.catalog_source_refresh_jobs'),
-    (N'settings.catalog_source_refresh_attempts'),(N'core.catalog_sag_company_revision_rows')) AS expected(name)
+    (N'settings.catalog_source_refresh_attempts'),(N'core.catalog_sag_company_revision_rows'),
+    (N'core.catalog_sql_target_instance_identities')) AS expected(name)
     WHERE OBJECT_ID(expected.name,N'U') IS NOT NULL) AS catalog_tables_ready,
   (SELECT COUNT(*) FROM sys.triggers WHERE is_disabled=0 AND object_id IN (
     OBJECT_ID(N'core.TR_catalog_sag_revision_evidence_sealed',N'TR'),
@@ -294,7 +297,9 @@ SELECT
     OBJECT_ID(N'scheduling.TR_catalog_once_source_witnesses_append_only',N'TR'),
     OBJECT_ID(N'settings.tr_catalog_source_refresh_attempts_immutable',N'TR'),
     OBJECT_ID(N'core.TR_catalog_sag_company_revision_rows_guard',N'TR'),
-    OBJECT_ID(N'core.TR_catalog_sag_company_revision_seal',N'TR'))) AS catalog_triggers_ready,
+    OBJECT_ID(N'core.TR_catalog_sag_company_revision_seal',N'TR'),
+    OBJECT_ID(N'core.TR_catalog_sql_target_instance_identities_insert',N'TR'),
+    OBJECT_ID(N'core.TR_catalog_sql_target_instance_identities_immutable',N'TR'))) AS catalog_triggers_ready,
   CASE WHEN OBJECT_ID(N'core.catalog_operational_link_evidence',N'V') IS NOT NULL
     THEN 1 ELSE 0 END AS catalog_operational_evidence_ready,
   (SELECT COUNT(*) FROM sys.indexes WHERE is_disabled=0 AND is_unique=1 AND has_filter=1
@@ -472,6 +477,44 @@ SELECT
       AND grantee_principal_id=DATABASE_PRINCIPAL_ID(N'portal_runtime') AND state='D'
       AND permission_name IN ('INSERT','UPDATE','DELETE'))=3
     THEN 1 ELSE 0 END AS catalog_sag_company_evidence_ready,
+  CASE WHEN EXISTS(SELECT 1 FROM sys.database_principals WHERE name=N'portal_catalog_v2_publisher'
+      AND type='R' AND owning_principal_id=DATABASE_PRINCIPAL_ID(N'dbo'))
+    AND (SELECT COUNT(*) FROM sys.sql_modules m JOIN sys.objects o ON o.object_id=m.object_id
+      JOIN sys.schemas s ON s.schema_id=o.schema_id WHERE o.type='P' AND s.name=N'settings'
+        AND o.name IN(N'catalog_sag_v2_transition_internal',N'reserve_catalog_sag_v2_attempt',
+          N'publish_catalog_sag_v2_revision',N'fail_catalog_sag_v2_attempt')
+        AND COALESCE(o.principal_id,s.principal_id)=DATABASE_PRINCIPAL_ID(N'dbo')
+        AND m.execute_as_principal_id IS NULL)=4
+    AND (SELECT COUNT(*) FROM sys.database_permissions WHERE grantee_principal_id=DATABASE_PRINCIPAL_ID(N'portal_catalog_v2_publisher'))=3
+    AND (SELECT COUNT(*) FROM sys.database_permissions WHERE class=1 AND minor_id=0
+      AND grantee_principal_id=DATABASE_PRINCIPAL_ID(N'portal_catalog_v2_publisher') AND state='G' AND permission_name='EXECUTE'
+      AND major_id IN(OBJECT_ID(N'settings.reserve_catalog_sag_v2_attempt',N'P'),
+        OBJECT_ID(N'settings.publish_catalog_sag_v2_revision',N'P'),OBJECT_ID(N'settings.fail_catalog_sag_v2_attempt',N'P')))=3
+    AND (SELECT COUNT(*) FROM sys.database_permissions WHERE class=1 AND minor_id=0
+      AND grantee_principal_id=DATABASE_PRINCIPAL_ID(N'portal_runtime') AND state='D' AND permission_name='EXECUTE'
+      AND major_id IN(OBJECT_ID(N'settings.catalog_sag_v2_transition_internal',N'P'),
+        OBJECT_ID(N'settings.reserve_catalog_sag_v2_attempt',N'P'),OBJECT_ID(N'settings.publish_catalog_sag_v2_revision',N'P'),
+        OBJECT_ID(N'settings.fail_catalog_sag_v2_attempt',N'P')))=4
+    AND NOT EXISTS(SELECT 1 FROM sys.database_permissions WHERE class=1 AND minor_id=0
+      AND grantee_principal_id=DATABASE_PRINCIPAL_ID(N'public') AND state IN ('G','W') AND permission_name='EXECUTE'
+      AND major_id IN(OBJECT_ID(N'settings.catalog_sag_v2_transition_internal',N'P'),
+        OBJECT_ID(N'settings.reserve_catalog_sag_v2_attempt',N'P'),OBJECT_ID(N'settings.publish_catalog_sag_v2_revision',N'P'),
+        OBJECT_ID(N'settings.fail_catalog_sag_v2_attempt',N'P')))
+    THEN 1 ELSE 0 END AS catalog_sag_v2_publisher_ready,
+  CASE WHEN (SELECT COUNT(*) FROM sys.indexes WHERE object_id=OBJECT_ID(N'core.catalog_sql_target_instance_identities',N'U')
+      AND is_unique=1 AND is_disabled=0 AND name IN(N'PK_catalog_sql_target_instance_identities',
+        N'UQ_catalog_sql_target_instance_identities_proof'))=2
+    AND EXISTS(SELECT 1 FROM sys.foreign_keys WHERE parent_object_id=OBJECT_ID(N'core.catalog_sql_target_instance_identities',N'U')
+      AND referenced_object_id=OBJECT_ID(N'core.catalog_physical_targets',N'U')
+      AND name=N'FK_catalog_sql_target_instance_identities_target' AND is_disabled=0 AND is_not_trusted=0)
+    AND (SELECT COUNT(*) FROM sys.check_constraints WHERE parent_object_id=OBJECT_ID(N'core.catalog_sql_target_instance_identities',N'U')
+      AND name IN(N'CK_catalog_sql_target_instance_identities_scope',N'CK_catalog_sql_target_instance_identities_ids')
+      AND is_disabled=0 AND is_not_trusted=0)=2
+    AND (SELECT COUNT(*) FROM sys.database_permissions WHERE class=1 AND minor_id=0
+      AND major_id=OBJECT_ID(N'core.catalog_sql_target_instance_identities',N'U')
+      AND grantee_principal_id=DATABASE_PRINCIPAL_ID(N'portal_runtime') AND state='D'
+      AND permission_name IN ('INSERT','UPDATE','DELETE'))=3
+    THEN 1 ELSE 0 END AS catalog_sql_target_instance_ready,
   CASE WHEN COL_LENGTH(N'core.catalog_physical_target_links',N'registered_at') IS NOT NULL
     THEN 1 ELSE 0 END AS physical_registration_time_ready,
   CASE WHEN COL_LENGTH(N'core.catalog_customer_source_revisions',N'has_sag_inventory_evidence')=1
@@ -479,8 +522,8 @@ SELECT
 '@
   $catalogVerification=Invoke-SessionSql -Sql $catalogVerificationSql -Mode read -TimeoutSeconds 120 -MaxRows 5
   $catalogRow=$catalogVerification.resultSets[0].rows[0]
-  if($catalogRow.catalog_migration_count -ne 22 -or $catalogRow.catalog_tables_ready -ne 30 -or
-     $catalogRow.catalog_triggers_ready -ne 39 -or $catalogRow.sag_evidence_flag_ready -ne 1 -or
+  if($catalogRow.catalog_migration_count -ne 24 -or $catalogRow.catalog_tables_ready -ne 31 -or
+     $catalogRow.catalog_triggers_ready -ne 41 -or $catalogRow.sag_evidence_flag_ready -ne 1 -or
      $catalogRow.catalog_operational_evidence_ready -ne 1 -or
      $catalogRow.catalog_operational_uniqueness_ready -ne 3 -or
      $catalogRow.catalog_domain_scope_ready -ne 1 -or $catalogRow.legacy_global_domain_index_count -ne 0 -or
@@ -495,8 +538,9 @@ SELECT
      $catalogRow.catalog_once_completion_checks_ready -ne 5 -or $catalogRow.catalog_once_completion_permissions_ready -ne 1 -or
      $catalogRow.catalog_refresh_indexes_ready -ne 7 -or $catalogRow.catalog_refresh_foreign_keys_ready -ne 2 -or
      $catalogRow.catalog_refresh_checks_ready -ne 8 -or $catalogRow.catalog_refresh_permissions_ready -ne 1 -or
-     $catalogRow.catalog_sag_company_evidence_ready -ne 1 -or $catalogRow.physical_registration_time_ready -ne 1){
+     $catalogRow.catalog_sag_company_evidence_ready -ne 1 -or $catalogRow.catalog_sag_v2_publisher_ready -ne 1 -or
+     $catalogRow.catalog_sql_target_instance_ready -ne 1 -or $catalogRow.physical_registration_time_ready -ne 1){
     throw 'Catalog migration post-verification failed.'
   }
-  Write-Host "$expectedDatabase migrations 031-052 are applied and verified." -ForegroundColor Green
+  Write-Host "$expectedDatabase migrations 031-054 are applied and verified." -ForegroundColor Green
 }

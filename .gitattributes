@@ -22,3 +22,5 @@ migration/sql/049_catalog_once_observations.sql text eol=lf
 migration/sql/050_catalog_once_completion_witnesses.sql text eol=lf
 migration/sql/051_catalog_refresh_queue.sql text eol=lf
 migration/sql/052_catalog_sag_company_evidence.sql text eol=lf
+migration/sql/053_catalog_sag_v2_publication.sql text eol=lf
+migration/sql/054_catalog_sql_target_instance_identity.sql text eol=lf
