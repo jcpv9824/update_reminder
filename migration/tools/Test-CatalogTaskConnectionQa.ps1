@@ -8,10 +8,23 @@ if($descriptor.database -ne 'PortalSAGWeb-TEST' -or ($descriptor.environment -an
   throw 'This rehearsal requires the PortalSAGWeb-TEST session.'
 }
 $root=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
+$fragmentModule=Join-Path $root 'api/dist/src/lib/catalogWorkflowTaskEligibilitySql.js'
+if(!(Test-Path -LiteralPath $fragmentModule)){ throw 'Build the current API candidate before rehearsing SQL eligibility.' }
+$fragmentJson=& node -e 'const x=require(process.argv[1]); process.stdout.write(JSON.stringify({selector:x.catalogTaskCurrentLinkSql("e","visible_link","@environment"),projection:x.catalogTaskActiveLinkProjectionSql,representative:x.catalogTaskHasActiveRepresentativeSql,history:x.catalogTaskHistoryEnvironmentSql}));' $fragmentModule
+if($LASTEXITCODE -ne 0){ throw 'Could not read the compiled eligibility fragments.' }
+$fragments=$fragmentJson | ConvertFrom-Json
+$selectorMarker='${catalogTaskCurrentLinkSql("e", "visible_link", "@environment")}'
 $query=(Get-Content -Raw -LiteralPath (Join-Path $root 'api/src/lib/catalogTaskDatabaseConnection.ts')).Split([char]96) |
   Where-Object { $_ -match '^\s*DECLARE @now' } | Select-Object -First 1
-if(!$query -or $query -match '(?im)^\s*(INSERT|UPDATE|DELETE|MERGE|ALTER|DROP|CREATE)\b'){ throw 'Expected one read-only grant query.' }
+if(!$query -or !$query.Contains($selectorMarker) -or !$fragments.selector -or !$fragments.projection -or !$fragments.representative -or !$fragments.history){
+  throw 'Expected the complete current link eligibility fragments.'
+}
+$query=$query.Replace($selectorMarker,[string]$fragments.selector)
+$opsQuery="DECLARE @now datetime2(3)=SYSUTCDATETIME(); SELECT active_catalog_link.target_id AS visibleTarget, CONVERT(bit,CASE WHEN "+$fragments.representative+" THEN 1 ELSE 0 END) AS mayMutate, CONVERT(bit,CASE WHEN "+$fragments.history+" THEN 1 ELSE 0 END) AS inHistoryScope, active_catalog_link.matches_filters AS matchesFilters FROM workflow.update_tasks AS task "+$fragments.projection+" WHERE task.task_key=@taskKey;"
+if($query -match '(?im)^\s*(INSERT|UPDATE|DELETE|MERGE|ALTER|DROP|CREATE)\b' -or
+   $opsQuery -match '(?im)^\s*(INSERT|UPDATE|DELETE|MERGE|ALTER|DROP|CREATE)\b'){ throw 'Expected read-only grant and eligibility queries.' }
 $literal="DECLARE @probe nvarchar(max)=N'"+$query.Replace("'","''")+"';"
+$literal+="DECLARE @opsProbe nvarchar(max)=N'"+$opsQuery.Replace("'","''")+"';"
 $cutoffQuery=(Get-Content -Raw -LiteralPath (Join-Path $root 'api/src/lib/catalogTaskCutoffWorker.ts')).Split([char]96) |
   Where-Object { $_ -match '^\s*DECLARE @checkedAt' } | Select-Object -First 1
 $routeHash=(Get-Content -Raw -LiteralPath (Join-Path $root 'api/src/lib/catalogPhysicalTargetIdentity.ts')).Split([char]96)[1]
@@ -38,6 +51,8 @@ DECLARE @bindingVersion binary(8),@profileVersion binary(8);
 DECLARE @operationalOwner bigint,@operationalLink bigint,@logicalLinkId uniqueidentifier=NEWID(),@wrongLinkId uniqueidentifier=NEWID();
 DECLARE @canonicalLinkId varchar(36)=LOWER(CONVERT(char(36),@logicalLinkId));
 DECLARE @params nvarchar(max)=N'@actor nvarchar(150), @db nvarchar(150), @task nvarchar(260), @environment varchar(10), @permission nvarchar(160)';
+DECLARE @opsParams nvarchar(max)=N'@taskKey bigint, @portalEnvironment varchar(10), @clientId nvarchar(150), @domainId nvarchar(150)';
+DECLARE @ops TABLE(visibleTarget nvarchar(150),mayMutate bit,inHistoryScope bit,matchesFilters int);
 DECLARE @rows TABLE(serverHostPort nvarchar(500),initialCatalog nvarchar(256),userId nvarchar(256),secretName nvarchar(256),
   databaseId nvarchar(150),taskId nvarchar(260),linkId nvarchar(260),profileVersion varchar(16),linkVersion varchar(16),executionVersion varchar(16),
   catalogSourceId varchar(36),catalogRevisionId varchar(20),catalogBindingVersion varchar(16),catalogProfileVersion varchar(16),
@@ -110,6 +125,43 @@ BEGIN TRY
   INSERT @rows EXEC sys.sp_executesql @probe,@params,@other,@a,@task,'qa',N'updates.tasks.reveal_database_password';
   INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.reveal_database_password';
   IF EXISTS(SELECT 1 FROM @rows) THROW 53882,N'Broad visibility or another alias granted access.',1;
+
+  INSERT @ops EXEC sys.sp_executesql @opsProbe,@opsParams,@taskKey,'qa',NULL,NULL;
+  IF NOT EXISTS (SELECT 1 FROM @ops WHERE visibleTarget=@a AND mayMutate=1)
+    THROW 53920,N'A current stored representative was not eligible.',1;
+  DELETE FROM @ops;
+  INSERT @ops EXEC sys.sp_executesql @opsProbe,@opsParams,@taskKey,'production',NULL,NULL;
+  IF NOT EXISTS (SELECT 1 FROM @ops WHERE visibleTarget IS NULL AND mayMutate=0 AND inHistoryScope=0)
+    THROW 53921,N'Task materialized across Portal environments.',1;
+  DELETE FROM @ops;
+  DECLARE @clientB nvarchar(150)=@tag+N'-b',@domainB nvarchar(150)=@tag+N'-b-web',@domainA nvarchar(150)=@tag+N'-a-web';
+  INSERT @ops EXEC sys.sp_executesql @opsProbe,@opsParams,@taskKey,'qa',@clientB,@domainB;
+  IF NOT EXISTS (SELECT 1 FROM @ops WHERE visibleTarget=@a AND matchesFilters=1)
+    THROW 53927,N'A filtered sibling changed the actionable representative or hid the task.',1;
+  DELETE FROM @ops;
+  INSERT @ops EXEC sys.sp_executesql @opsProbe,@opsParams,@taskKey,'qa',@clientB,@domainA;
+  IF NOT EXISTS (SELECT 1 FROM @ops WHERE visibleTarget=@a AND matchesFilters=0)
+    THROW 53928,N'Filters were incorrectly satisfied by two different aliases.',1;
+  DELETE FROM @ops;
+  UPDATE workflow.catalog_task_executions SET cutoff_at=DATEADD(millisecond,-1,SYSUTCDATETIME()) WHERE catalog_execution_key=@execution;
+  INSERT @ops EXEC sys.sp_executesql @opsProbe,@opsParams,@taskKey,'qa',NULL,NULL;
+  IF NOT EXISTS (SELECT 1 FROM @ops WHERE visibleTarget IS NULL AND mayMutate=0)
+    THROW 53925,N'Task materialized after cutoff before the cutoff was reconciled.',1;
+  UPDATE workflow.catalog_task_executions SET cutoff_at=DATEADD(minute,5,@stamp) WHERE catalog_execution_key=@execution;
+  DELETE FROM @ops;
+  SAVE TRANSACTION fixturePhysical;
+  UPDATE p SET retired_at=SYSUTCDATETIME() FROM core.catalog_physical_target_links p
+    JOIN core.databases db ON db.database_key=p.database_key WHERE p.physical_target_key=@target AND db.source_id=@a;
+  INSERT @ops EXEC sys.sp_executesql @opsProbe,@opsParams,@taskKey,'qa',NULL,NULL;
+  IF NOT EXISTS (SELECT 1 FROM @ops WHERE visibleTarget=@b AND mayMutate=0)
+    THROW 53922,N'A stale representative stayed selected or an alternate could authorize the old mutation.',1;
+  INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.view_database_connection';
+  IF (SELECT COUNT(*) FROM @rows WHERE databaseId=@b AND linkId=@b)<>1
+    THROW 53923,N'The surviving displayed alias did not match the connection grant selector.',1;
+  ROLLBACK TRANSACTION fixturePhysical;
+  DELETE FROM @ops;
+  DELETE FROM @rows;
+
   UPDATE workflow.catalog_task_execution_links SET link_state='hidden',state_reason='unverifiable' WHERE link_id=@a;
   INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.view_database_connection';
   IF (SELECT COUNT(*) FROM @rows WHERE databaseId=@b AND linkId=@b)<>1 THROW 53883,N'Surviving representative was not resolved.',1;
@@ -259,6 +311,11 @@ BEGIN TRY
   DECLARE @beforeRetirement datetime2(3)=SYSUTCDATETIME();
   WAITFOR DELAY '00:00:00.025';
   UPDATE core.catalog_operational_links SET retired_at=SYSUTCDATETIME() WHERE link_key=@operationalLink;
+  INSERT @ops EXEC sys.sp_executesql @opsProbe,@opsParams,@taskKey,'qa',NULL,NULL;
+  IF NOT EXISTS (SELECT 1 FROM @ops WHERE visibleTarget IS NULL AND mayMutate=0)
+    THROW 53924,N'A task with no current alias was still eligible.',1;
+  IF NOT EXISTS (SELECT 1 FROM @ops WHERE inHistoryScope=1)
+    THROW 53926,N'Loss of live evidence removed the task from its own history scope.',1;
   INSERT @rows EXEC sys.sp_executesql @probe,@params,@assigned,@b,@task,'qa',N'updates.tasks.reveal_database_password';
   IF EXISTS(SELECT 1 FROM @rows) THROW 53917,N'A retired 042 link authorized a grant.',1;
   DELETE FROM @cutoffRows;
@@ -276,7 +333,7 @@ BEGIN CATCH
   IF XACT_STATE()<>0 ROLLBACK TRANSACTION;
   THROW;
 END CATCH;
-SELECT 25 AS passed,
+SELECT 34 AS passed,
   (SELECT COUNT(*) FROM workflow.update_tasks WHERE source_id=@task)
   +(SELECT COUNT(*) FROM security.users WHERE source_id IN (@assigned,@other))
   +(SELECT COUNT(*) FROM core.catalog_physical_targets WHERE target_id=@physical)
@@ -292,7 +349,7 @@ SELECT 25 AS passed,
 $invoke=Join-Path $PSScriptRoot '../connect-sql-server/Invoke-PortalSAGWeb-EphemeralRequest.ps1'
 $response=(& $invoke -SessionDirectory $session -Sql ($literal + [Environment]::NewLine + $fixture) -Mode write -TimeoutSeconds 35 -MaxRows 1) | ConvertFrom-Json -Depth 16
 $row=$response.resultSets[0].rows[0]
-if(!$response.success -or $row.passed -ne 25 -or $row.remaining_fixtures -ne 0){
+if(!$response.success -or $row.passed -ne 34 -or $row.remaining_fixtures -ne 0){
   $number=$response.error.number
   throw "QA connection, cutoff and registration rehearsal did not pass or left residual data (SQL error number: $number)."
 }

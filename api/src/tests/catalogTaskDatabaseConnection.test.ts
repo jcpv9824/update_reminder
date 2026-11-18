@@ -148,11 +148,13 @@ describe("task-bound database connection disclosure", () => {
     expect(io.audit).toHaveBeenCalledOnce();
   });
 
-  it("keeps grant extraction standalone and requires every exact bridge dimension for external links", () => {
+  it("shares the current representative selector and requires every exact bridge dimension for external links", () => {
     const source = readFileSync(new URL("../lib/catalogTaskDatabaseConnection.ts", import.meta.url), "utf8");
     const query = source.split("`").find(part => /^\s*DECLARE @now/.test(part))!;
     expect(query).toBeTruthy();
-    expect(query).not.toContain("${");
+    const selector = '${catalogTaskCurrentLinkSql("e", "visible_link", "@environment")}';
+    expect(query).toContain(selector);
+    expect(query.replace(selector, "")).not.toContain("${");
     for (const predicate of [
       "FROM core.catalog_operational_link_evidence AS bridge",
       "bridge.link_id=TRY_CONVERT(uniqueidentifier,l.link_id) AND DATALENGTH(l.link_id)=72",
@@ -179,6 +181,7 @@ describe("task-bound database connection disclosure", () => {
     // Legacy tasks still use their own scoped target, not the external bridge.
     expect(query).toContain("e.catalog_execution_key IS NULL AND task.database_key=db.database_key AND task.domain_key=db.domain_key AND task.client_key=db.client_key");
     expect(query).toContain("visible_link.catalog_execution_link_key");
+    expect(query.indexOf(selector)).toBeLessThan(query.indexOf("ORDER BY CASE WHEN visible_link.database_key"));
     expect(query).toContain("NOT EXISTS(SELECT 1 FROM workflow.task_assignees WHERE task_key=task.task_key)");
     for (const alias of ["catalogSourceId", "catalogRevisionId", "catalogBindingVersion", "catalogProfileVersion", "catalogVerifiedUntil"])
       expect(query).toContain(` AS ${alias}`);

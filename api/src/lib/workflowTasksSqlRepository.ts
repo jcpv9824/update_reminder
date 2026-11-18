@@ -1,6 +1,7 @@
 import sql from "mssql";
 import {
   catalogTaskActiveLinkProjectionSql, catalogTaskHasVisibleLinkSql, catalogTaskIsLegacySql,
+  catalogTaskHistoryEnvironmentSql, catalogWorkflowEnvironment,
 } from "./catalogWorkflowTaskEligibilitySql";
 import { getSqlPool } from "./sql";
 import type { UpdateTask } from "../types/models";
@@ -127,8 +128,9 @@ export async function readSqlWorkflowTasks(filters: WorkflowTaskFilters): Promis
   request.input("today", sql.VarChar(10), filters.today);
   request.input("clientId", sql.NVarChar(150), filters.clientId ?? null);
   request.input("domainId", sql.NVarChar(150), filters.domainId ?? null);
+  request.input("portalEnvironment", sql.VarChar(10), catalogWorkflowEnvironment());
   if (filters.legacyOnly) conditions.push(catalogTaskIsLegacySql);
-  else conditions.push(`(task.status='completed' OR ${catalogTaskHasVisibleLinkSql})`);
+  else conditions.push(`((task.status='completed' AND ${catalogTaskHistoryEnvironmentSql}) OR ${catalogTaskHasVisibleLinkSql})`);
   if (filters.sourceId) {
     request.input("sourceId", sql.NVarChar(260), filters.sourceId);
     conditions.push("(task.source_id=@sourceId OR EXISTS (SELECT 1 FROM workflow.task_source_aliases alias WHERE alias.task_key=task.task_key AND alias.alias_source_id=@sourceId))");
@@ -160,11 +162,15 @@ export async function readSqlWorkflowTasks(filters: WorkflowTaskFilters): Promis
   } else if (!filters.sourceId && !filters.includeCancelled) {
     conditions.push("task.status<>'cancelled'");
   }
-  if (filters.clientId) {
-    conditions.push("COALESCE(active_catalog_link.client_id,task.client_source_id)=@clientId");
-  }
-  if (filters.domainId) {
-    conditions.push("COALESCE(active_catalog_link.domain_id,task.domain_source_id)=@domainId");
+  if (filters.clientId || filters.domainId) {
+    // Discover through any eligible alias, but always display the same canonical
+    // actionable representative as credential access. Historical/legacy rows
+    // keep their stored identity filters rather than adopting an alternate alias.
+    conditions.push(`((task.status NOT IN ('completed','cancelled')
+      AND active_catalog_link.catalog_execution_link_key IS NOT NULL AND active_catalog_link.matches_filters=1)
+      OR ((task.status IN ('completed','cancelled') OR active_catalog_link.catalog_execution_link_key IS NULL)
+        AND (@clientId IS NULL OR task.client_source_id=@clientId)
+        AND (@domainId IS NULL OR task.domain_source_id=@domainId)))`);
   }
 
   if (filters.operationalOnly !== false) {
@@ -189,6 +195,7 @@ export async function readSqlWorkflowTasks(filters: WorkflowTaskFilters): Promis
   }
 
   const result = await request.query<TaskRow>(`
+    DECLARE @now datetime2(3)=SYSUTCDATETIME();
     SELECT TOP (1000)
       task.source_id,task.dedupe_key,CONVERT(char(10),task.task_date,23) AS task_date,task.task_bucket,
       COALESCE(active_catalog_link.client_id,task.client_source_id) AS client_source_id,

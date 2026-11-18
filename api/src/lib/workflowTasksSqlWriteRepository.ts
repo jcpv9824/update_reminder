@@ -3,7 +3,7 @@ import type { UpdateTask } from "../types/models";
 import { writeSqlAuditLog } from "./auditSqlWriter";
 import { runSqlTransaction } from "./sqlTransaction";
 import { mapSqlWorkflowTask, type TaskRow } from "./workflowTasksSqlRepository";
-import { catalogTaskHasActiveRepresentativeSql } from "./catalogWorkflowTaskEligibilitySql";
+import { catalogTaskHasActiveRepresentativeSql, catalogWorkflowEnvironment } from "./catalogWorkflowTaskEligibilitySql";
 
 type Actor = { id: string; email: string };
 
@@ -81,7 +81,9 @@ export function buildSqlTaskTransition(
 async function lockTask(transaction: sql.Transaction, sourceId: string): Promise<TaskRow | null> {
   const request = new sql.Request(transaction);
   request.input("sourceId", sql.NVarChar(260), sourceId);
+  request.input("portalEnvironment", sql.VarChar(10), catalogWorkflowEnvironment());
   const result = await request.query<TaskRow>(`
+    DECLARE @now datetime2(3)=SYSUTCDATETIME();
     SELECT TOP (1)
       task.source_id,task.dedupe_key,CONVERT(char(10),task.task_date,23) AS task_date,task.task_bucket,
       task.client_source_id,task.client_name_snapshot AS client_name,
@@ -141,17 +143,24 @@ export async function changeSqlWorkflowTaskStatus(
     request.input("reopenedAt", sql.DateTime2(3), updated.reopenedAt ? new Date(updated.reopenedAt) : null);
     request.input("reopenedBy", sql.NVarChar(150), updated.reopenedBy ?? null);
     request.input("reopenReason", sql.NVarChar(sql.MAX), updated.reopenReason ?? null);
-    request.input("now", sql.DateTime2(3), now);
+    request.input("updatedAt", sql.DateTime2(3), now);
+    request.input("portalEnvironment", sql.VarChar(10), catalogWorkflowEnvironment());
     request.input("actorId", sql.NVarChar(150), actor.id);
-    await request.query(`
-      UPDATE workflow.update_tasks
+    const mutation = await request.query<{ changed: number }>(`
+      DECLARE @now datetime2(3)=SYSUTCDATETIME();
+      UPDATE task
       SET status=@status,result=@result,notes=@notes,completed_at=@completedAt,completed_by=@completedBy,
         completed_with_problems=@completedWithProblems,problem_note=@problemNote,completion_note=@completionNote,
         blocked_at=@blockedAt,blocked_by=@blockedBy,block_reason=@blockReason,resolved_at=@resolvedAt,
         resolved_by=@resolvedBy,resolution_comment=@resolutionComment,reopened_at=@reopenedAt,
-        reopened_by=@reopenedBy,reopen_reason=@reopenReason,updated_at=@now,updated_by=@actorId
-      WHERE source_id=@sourceId;
+        reopened_by=@reopenedBy,reopen_reason=@reopenReason,updated_at=@updatedAt,updated_by=@actorId
+      FROM workflow.update_tasks AS task
+      WHERE task.source_id=@sourceId AND ${catalogTaskHasActiveRepresentativeSql};
+      SELECT @@ROWCOUNT AS changed;
     `);
+    // A proof can expire while the locked task is mapped. No target/history/audit
+    // write is allowed unless the status UPDATE itself still passes the guard.
+    if (mutation.recordset[0]?.changed !== 1) return null;
 
     if (newStatus === "completed") {
       const target = new sql.Request(transaction);

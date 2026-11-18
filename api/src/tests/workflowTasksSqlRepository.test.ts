@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mapSqlWorkflowTask, normalizedLogicalTaskCount, readSqlWorkflowTasks } from "../lib/workflowTasksSqlRepository";
 import type { UpdateTask } from "../types/models";
 
@@ -45,14 +45,17 @@ describe("current task SQL visibility", () => {
     vi.resetAllMocks();
     mock.query.mockResolvedValue({ recordset: [] });
   });
+  afterEach(() => vi.unstubAllEnvs());
 
   it("omits invisible or retired occurrences from the board and direct open-task lookup", async () => {
     await readSqlWorkflowTasks({ today: "2026-11-17" });
     await readSqlWorkflowTasks({ today: "2026-11-17", sourceId: "look-up", operationalOnly: false });
     for (const call of mock.query.mock.calls) {
-      expect(call[0]).toContain("task.status='completed' OR NOT EXISTS");
-      expect(call[0]).toContain("catalog_execution.retired_at IS NOT NULL");
-      expect(call[0]).toContain("catalog_link.link_state='active'");
+      expect(call[0]).toContain("task.status='completed' AND (NOT EXISTS");
+      expect(call[0]).toContain("OR active_catalog_link.catalog_execution_link_key IS NOT NULL");
+      expect(call[0]).toContain("e.retired_at IS NULL");
+      expect(call[0]).toContain("link.link_state='active' AND link.retired_at IS NULL");
+      expect(call[0].match(/FROM core\.catalog_operational_link_evidence/g)).toHaveLength(1);
     }
   });
 
@@ -62,12 +65,55 @@ describe("current task SQL visibility", () => {
     expect(mock.query.mock.calls[0][0]).not.toContain("catalog_link.link_state");
   });
 
-  it("projects an active alternate link and matches client/domain filters on that projection", async () => {
+  it("discovers aliases by paired filters without changing the canonical actionable projection", async () => {
     await readSqlWorkflowTasks({ today: "2026-11-17", clientId: "visible-client", domainId: "visible-domain" });
     const statement: string = mock.query.mock.calls[0][0];
     expect(statement).toContain("link.link_state='active'");
     expect(statement).toContain("COALESCE(active_catalog_link.target_id,task.target_source_id) AS target_source_id");
-    expect(statement).toContain("COALESCE(active_catalog_link.client_id,task.client_source_id)=@clientId");
-    expect(statement).toContain("COALESCE(active_catalog_link.domain_id,task.domain_source_id)=@domainId");
+    expect(statement).toContain("active_catalog_link.catalog_execution_link_key IS NOT NULL AND active_catalog_link.matches_filters=1");
+    expect(statement).toContain("(@clientId IS NULL OR task.client_source_id=@clientId)");
+    expect(statement).toContain("(@domainId IS NULL OR task.domain_source_id=@domainId)");
+    expect(statement).toMatch(/MAX\(CASE WHEN \(@clientId IS NULL OR client\.source_id=@clientId\)\s+AND \(@domainId IS NULL OR domain_row\.source_id=@domainId\) THEN 1 ELSE 0 END\) OVER \(\) AS matches_filters/);
+    expect(statement).toContain("CASE WHEN link.client_key=task.client_key AND link.domain_key=task.domain_key");
+    expect(statement).toContain("link.catalog_execution_link_key\n) AS active_catalog_link");
+    const projectionOrder = statement.slice(statement.lastIndexOf("ORDER BY CASE WHEN link.client_key"), statement.indexOf(") AS active_catalog_link"));
+    expect(projectionOrder).not.toContain("@clientId");
+    expect(projectionOrder).not.toContain("@domainId");
+    expect(statement.match(/FROM core\.catalog_operational_link_evidence/g)).toHaveLength(1);
+  });
+
+  it.each([{ clientId: "c" }, { domainId: "d" }, { clientId: "c", domainId: "d" }])("keeps historical and legacy snapshot filters for %j", async filters => {
+    await readSqlWorkflowTasks({ today: "2026-11-17", ...filters });
+    const statement: string = mock.query.mock.calls[0][0];
+    expect(statement).toContain("task.status NOT IN ('completed','cancelled')");
+    expect(statement).toContain("task.status IN ('completed','cancelled') OR active_catalog_link.catalog_execution_link_key IS NULL");
+    expect(statement).toContain("AND (@clientId IS NULL OR task.client_source_id=@clientId)");
+    expect(statement).toContain("AND (@domainId IS NULL OR task.domain_source_id=@domainId)");
+  });
+
+  it.each(["qa", "production", " qa "])("binds the trusted explicit environment %j", async value => {
+    vi.stubEnv("PORTAL_SAG_ENVIRONMENT", value);
+    await readSqlWorkflowTasks({ today: "2026-11-17" });
+    expect(mock.input).toHaveBeenCalledWith("portalEnvironment", expect.anything(), value.trim());
+    expect(mock.query.mock.calls[0][0]).toContain("DECLARE @now datetime2(3)=SYSUTCDATETIME();");
+  });
+
+  it.each([undefined, "", "QA", "unknown"])("fails closed for catalog with environment %j without blocking legacy history", async value => {
+    vi.stubEnv("PORTAL_SAG_ENVIRONMENT", value);
+    await readSqlWorkflowTasks({ today: "2026-11-17", operationalOnly: false });
+    expect(mock.input).toHaveBeenCalledWith("portalEnvironment", expect.anything(), null);
+    const statement: string = mock.query.mock.calls[0][0];
+    expect(statement).toContain("@portalEnvironment IS NOT NULL AND e.retired_at IS NULL");
+    expect(statement).toContain("task.status='completed' AND (NOT EXISTS");
+    expect(statement).toContain("catalog_execution.task_key=task.task_key");
+  });
+
+  it("keeps completed and cancelled snapshots while evaluating cancelled eligibility", async () => {
+    await readSqlWorkflowTasks({ today: "2026-11-17", includeCancelled: true });
+    const statement: string = mock.query.mock.calls[0][0];
+    expect(statement).toContain("WHERE e.task_key=task.task_key AND task.status<>'completed'");
+    expect(statement).toContain("CASE WHEN task.status<>'cancelled' THEN client.source_id END AS client_id");
+    expect(statement).toContain("CASE WHEN task.status='cancelled' THEN NULL WHEN task.target_type='database'");
+    expect(statement).not.toContain("AND task.status<>'cancelled'");
   });
 });

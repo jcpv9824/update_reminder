@@ -4,6 +4,7 @@ import type { CatalogEnvironment } from "./catalogSourceConfiguration";
 import { writeSqlAuditLog } from "./auditSqlWriter";
 import { runSqlTransaction } from "./sqlTransaction";
 import { getSecret } from "./keyVault";
+import { catalogTaskCurrentLinkSql } from "./catalogWorkflowTaskEligibilitySql";
 
 export type TaskConnectionPart = "serverHostPort" | "initialCatalog" | "userId" | "password";
 type RequestAction = { kind: "view" | "reveal" } | { kind: "copy"; part: TaskConnectionPart };
@@ -80,6 +81,7 @@ WHERE task.target_type='database' AND task.status IN ('pending','in_progress','f
       AND l.catalog_execution_link_key=(SELECT TOP(1) visible_link.catalog_execution_link_key
         FROM workflow.catalog_task_execution_links AS visible_link
         WHERE visible_link.catalog_execution_key=e.catalog_execution_key AND visible_link.link_state='active' AND visible_link.retired_at IS NULL
+          AND ${catalogTaskCurrentLinkSql("e", "visible_link", "@environment")}
         ORDER BY CASE WHEN visible_link.database_key=task.database_key AND visible_link.client_key=task.client_key
           AND visible_link.domain_key=task.domain_key THEN 0 ELSE 1 END,visible_link.catalog_execution_link_key)
       AND ((l.catalog_source_key IS NULL AND NOT EXISTS (
