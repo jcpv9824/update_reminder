@@ -276,6 +276,42 @@ reclasifica ni se actualiza automáticamente. La evidencia de descubrimiento
 no autoriza conexiones ni tareas; el destino físico y su acceso se validan
 aparte. Aún no se conecta este contrato a consumidores ni se activa en Azure.
 
+### Límite de autorización del publicador
+
+Una consulta de metadatos en `PortalSAGWeb-TEST` confirmó denegaciones
+explícitas para `portal_runtime` en las tablas de identidad, revisión, filas,
+scopes, evidencia SAG 035 y 052, cabecera y secuencia de publicación. El
+publicador anterior emite DML directamente. Añadir un procedimiento sólo para
+Companies no resolvería la escritura del resto ni probaría que el flujo
+funciona con una cuenta de privilegio mínimo. La excepción operativa del
+propietario no debe convertirse en un requisito nuevo para v2.
+
+El siguiente incremento debe reservar y publicar mediante operaciones SQL
+fijas con autoridad acotada, manteniendo los DENY de escritura directa y
+sin cambiar las cuentas existentes. Se deben conservar la autorización de
+actor o trabajador, la versión del perfil/vínculo, la clave inscrita y el
+orden de intentos. El bloqueo de aplicación coordina transacciones: por sí
+solo no concede autorización. La prueba de QA debe ejecutar las operaciones
+con el principal previsto y comprobar rollback de revisión, cabecera, evento,
+auditoría y trabajo juntos, no sólo con la sesión propietaria de migraciones.
+Los permisos amplios que ya existen sobre los esquemas `security` y `settings`
+impiden tratar un ID de actor enviado por SQL, la pertenencia a un rol de la
+aplicación o un verificador SQL legible como prueba independiente de quién
+llama al procedimiento. La autorización de aplicación y la identidad SQL
+del publicador son controles distintos; los ensayos deben cubrir ambos.
+
+Diseño para 053, todavía no aplicado: un rol SQL exclusivo del trabajador,
+sin miembros precargados, puede ejecutar sólo las operaciones fijas de
+reserva, publicación y fallo v2. `portal_runtime` y `public` no reciben ese
+permiso. La configuración del trabajador deberá usar un principal separado;
+si no está disponible, no se usa el pool general ni el propietario como
+alternativa. El escritor verifica la concesión, el intento y el ordinal
+vigentes antes de publicar. La auditoría identifica al trabajador del sistema;
+el usuario que solicitó la actualización permanece como procedencia en la
+cola. La publicación correcta tiene que cerrar el trabajo en la misma
+transacción. No se modifican credenciales, integrantes de roles ni ajustes
+de Azure en este incremento de código.
+
 ## Incremento local: cierre de las mutaciones heredadas
 
 `catalogMasterOwnership.ts` centraliza el bloqueo de las mutaciones HTTP de
