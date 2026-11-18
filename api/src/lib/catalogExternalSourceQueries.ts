@@ -135,9 +135,18 @@ const pages = {
   ORDER BY Id ASC`,
 } as const;
 
+/** Shared with the transport: callers cannot introduce any other SQL text. */
+export function catalogExternalSelectSql(
+  contract: CatalogExternalContract, tag: CatalogExternalReadStatement["tag"],
+): string {
+  return tag === "schema" ? schemaStatement(contract) : pages[contract];
+}
+
 class Unavailable extends Error {
   constructor(readonly reason: UnavailableReason) { super(reason); }
 }
+
+export { Unavailable as CatalogExternalReadUnavailable };
 
 function rowWithKeys(value: unknown, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value) ||
@@ -228,7 +237,7 @@ export async function readCatalogExternalSource(
       if (session.consistency !== "verified") throw new Unavailable("consistency_unverified");
       const select = (tag: CatalogExternalReadStatement["tag"], sql: string, parameters: CatalogExternalReadStatement["parameters"]) =>
         bounded(statementSignal => session.select({ tag, sql, parameters, timeoutMs: statementTimeoutMs, signal: statementSignal }), statementTimeoutMs, signal);
-      const schema = await select("schema", schemaStatement(contract), {});
+      const schema = await select("schema", catalogExternalSelectSql(contract, "schema"), {});
       if (!Array.isArray(schema) || schema.length !== 1) throw new Unavailable("schema_unverified");
       let proof: Record<string, unknown>;
       try { proof = rowWithKeys(schema[0], ["compatible", "readOnly"]); }
@@ -241,7 +250,7 @@ export async function readCatalogExternalSource(
       while (!signal.aborted) {
         // The extra row is an existence probe when at the limit, not a record to publish.
         const limit = Math.min(pageSize, maxRows - pageRows.length + 1);
-        const rows = await select("page", pages[contract], { afterId, pageSize: limit });
+        const rows = await select("page", catalogExternalSelectSql(contract, "page"), { afterId, pageSize: limit });
         if (!Array.isArray(rows) || rows.length > limit) throw new Unavailable("invalid_rows");
         if (pageRows.length + rows.length > maxRows) throw new Unavailable("row_limit");
         for (const raw of rows) {

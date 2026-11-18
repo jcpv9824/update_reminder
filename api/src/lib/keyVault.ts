@@ -17,8 +17,8 @@ export async function setSecret(name: string, value: string): Promise<void> {
   await getClient().setSecret(name, value);
 }
 
-export async function getSecret(name: string): Promise<string> {
-  const r = await getClient().getSecret(name);
+export async function getSecret(name: string, signal?: AbortSignal): Promise<string> {
+  const r = await getClient().getSecret(name, signal ? { abortSignal: signal } : undefined);
   return r.value ?? "";
 }
 

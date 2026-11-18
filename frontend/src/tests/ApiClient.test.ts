@@ -79,6 +79,25 @@ describe("cliente API con sesión segura", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("no reenvía una lectura cancelada mientras se renovaba la sesión compartida", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(401, { error: "No autenticado." }))
+      .mockImplementationOnce(() => {
+        controller.abort();
+        return Promise.resolve(jsonResponse(200, { token: "access-nuevo" }));
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const client = await import("../api/client");
+
+    await expect(client.api.get("/catalog/customers", { signal: controller.signal }))
+      .rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][1]?.signal).toBe(controller.signal);
+    expect(fetchMock.mock.calls[1][1]?.signal).toBeUndefined();
+    expect(client.getToken()).toBe("access-nuevo");
+  });
+
   it("envía encabezados tipados de idempotencia y concurrencia", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { ok: true }));
     vi.stubGlobal("fetch", fetchMock);

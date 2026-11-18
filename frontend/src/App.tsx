@@ -7,7 +7,7 @@ import LoginPage from "./pages/LoginPage";
 import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import ResetPasswordPage from "./pages/ResetPasswordPage";
 import DashboardPage from "./pages/DashboardPage";
-import ClientesPage from "./pages/ClientesPage";
+import CatalogoClientesRoute from "./pages/CatalogoClientesRoute";
 import DominiosPage from "./pages/DominiosPage";
 import BasesDeDatosPage from "./pages/BasesDeDatosPage";
 import LicenciamientoPage from "./pages/LicenciamientoPage";
@@ -63,7 +63,7 @@ function Enrutador() {
           {/* Página inicial: Tareas, la única opción asignada o la bienvenida */}
           <Route index element={<InicioPage />} />
           <Route path="tareas" element={<Protegido permiso="updates.tasks.view" element={<TareasPage />} />} />
-          <Route path="clientes" element={<Protegido permiso="clients.clients.view" element={<ClientesPage />} />} />
+          <Route path="clientes" element={<Protegido permiso="clients.clients.view" element={<CatalogoClientesRoute />} />} />
           <Route path="dominios" element={<Protegido permiso="clients.domains.view" element={<DominiosPage />} />} />
           <Route path="bases-de-datos" element={<Protegido permiso="clients.databases.view" element={<BasesDeDatosPage />} />} />
           <Route path="licenciamiento" element={<Protegido permiso="clients.licensing.view" element={<LicenciamientoPage />} />} />

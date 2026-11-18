@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { Alerta, DialogoConfirmar, Modal } from "../components/Comunes";
+import ConexionesCatalogoSources, { type CatalogSourceItem } from "../components/ConexionesCatalogoSources";
 import { DEFAULT_ROLE_DEFINITIONS, type RoleDefinition } from "../permissionModel";
 import { hasPermissionForRoleIds } from "../permissionAccess";
 import type {
@@ -377,6 +378,17 @@ export default function ConexionesPage() {
           </table>
         </div>
       </section>
+
+      {import.meta.env.VITE_PORTAL_CATALOG_ADMIN_ENABLED === "true" && !auth.cargando && auth.usuario ? (
+        <ConexionesCatalogoSources
+          key={JSON.stringify([auth.usuario.id, [...roleIds].sort()])}
+          scopeKey={JSON.stringify([auth.usuario.id, [...roleIds].sort()])}
+          profiles={data.externalDatabases.map(({ id, displayName }) => ({ id, displayName }))}
+          load={(signal) => api.get<{ items: CatalogSourceItem[] }>(`${BASE}/catalog-sources`, { signal })}
+          canEdit={can("edit_database")}
+          bindDraft={(profileId, input) => api.put(`${BASE}/catalog-sources/profile/${encodeURIComponent(profileId)}`, input)}
+        />
+      ) : null}
 
       <Modal titulo={database?.id ? "Editar conexión SQL Server" : "Nueva conexión SQL Server"} abierto={Boolean(database)} onCerrar={() => setDatabase(null)}>
         {database ? (

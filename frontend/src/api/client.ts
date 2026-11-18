@@ -37,9 +37,11 @@ function devHeaders(): Record<string, string> {
 export type ApiRequestOptions = {
   headers?: Record<string, string>;
   credentials?: RequestCredentials;
+  signal?: AbortSignal;
 };
 
 async function execute(method: string, path: string, body?: unknown, options: ApiRequestOptions = {}): Promise<Response> {
+  options.signal?.throwIfAborted();
   const headers: Record<string, string> = {
     ...devHeaders(),
     ...options.headers,
@@ -56,6 +58,7 @@ async function execute(method: string, path: string, body?: unknown, options: Ap
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
     credentials: options.credentials ?? "include",
+    ...(options.signal ? { signal: options.signal } : {}),
   });
 }
 
@@ -113,9 +116,13 @@ export async function restoreSession(force = false): Promise<boolean> {
 
 async function authenticatedResponse(method: string, path: string, body?: unknown, options: ApiRequestOptions = {}): Promise<Response> {
   let response = await execute(method, path, body, options);
-  if (canRefreshRequest(response.status, path) && await restoreSession(true)) {
-    response = await execute(method, path, body, options);
+  options.signal?.throwIfAborted();
+  if (canRefreshRequest(response.status, path)) {
+    const restored = await restoreSession(true);
+    options.signal?.throwIfAborted();
+    if (restored) response = await execute(method, path, body, options);
   }
+  options.signal?.throwIfAborted();
   if (!response.ok) {
     throw await responseError(response);
   }

@@ -38,7 +38,11 @@ $expected = @(
   '027_integration_connections.sql',
   '028_company_logo_permissions.sql',
   '029_company_storage_labels.sql',
-  '030_object_storage_profiles.sql'
+  '030_object_storage_profiles.sql',
+  '031_catalog_source_bindings.sql',
+  '032_catalog_task_execution.sql',
+  '033_catalog_customer_snapshots.sql',
+  '034_catalog_source_access.sql'
 )
 
 $resolvedSqlDirectory = (Resolve-Path -LiteralPath $SqlDirectory).Path
