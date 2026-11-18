@@ -3,10 +3,11 @@ import sql from "mssql";
 import { writeSqlAuditLog } from "./auditSqlWriter";
 import type { CatalogRefreshPublication, CatalogRefreshSink } from "./catalogCustomerRefresh";
 import { normalizeCatalogSagInventoryEvidence } from "./catalogSagInventoryEvidence";
+import type { CatalogMatchKeyEvidence } from "./catalogMatchKeyEvidence";
 
 type Stamp = Parameters<CatalogRefreshSink["recordFailure"]>[0];
 export type CatalogPublicationOperator = Pick<Stamp, "environment" | "sourceId" | "bindingRevision" |
-  "profileRevision" | "matchKeyVersion"> & { id: string };
+  "profileRevision" | "matchKeyVersion"> & CatalogMatchKeyEvidence & { id: string };
 const maxRows = 100_000;
 const maxScopes = 512;
 const maxPayloadBytes = 16 * 1024 * 1024;
@@ -283,31 +284,36 @@ function bindStamp(request: sql.Request, stamp: Stamp): sql.Request {
     .input("observedAt", sql.DateTime2(3), stamp.observedAt);
 }
 
-/** Supply a separately authorized Portal SQL loader pool; never use the HTTP runtime or a source connection. */
+/** Portal SQL only. Every published revision has a bound operator and key enrollment. */
 export function createSqlCatalogCustomerSnapshotPublisher(
   pool: Pick<sql.ConnectionPool, "transaction">,
-  { freshnessMinutes = 30, operator }: { freshnessMinutes?: number; operator?: CatalogPublicationOperator } = {},
+  { freshnessMinutes = 30, operator }: { freshnessMinutes?: number; operator: CatalogPublicationOperator },
 ): CatalogRefreshSink {
   if (!Number.isInteger(freshnessMinutes) || freshnessMinutes < 1 || freshnessMinutes > 1440) {
     throw new Error("invalid_catalog_publication");
   }
-  if (operator && (!operator.id?.trim() || operator.id.length > 150 || !validStamp({ ...operator,
-    observedAt: new Date(), attemptOrdinal: "1" }))) throw new Error("invalid_catalog_publication");
+  if (!operator?.id?.trim() || operator.id.length > 150 ||
+    !Buffer.isBuffer(operator.vaultSecretVersion) || operator.vaultSecretVersion.length !== 16 ||
+    !Buffer.isBuffer(operator.keyVerifier) || operator.keyVerifier.length !== 32 || !validStamp({ ...operator,
+    observedAt: new Date(), attemptOrdinal: "1" })) throw new Error("invalid_catalog_publication");
   function assertOperatorScope(stamp: Stamp) {
-    if (operator && (operator.sourceId !== stamp.sourceId || operator.environment !== stamp.environment ||
+    if (operator.sourceId !== stamp.sourceId || operator.environment !== stamp.environment ||
       operator.bindingRevision !== stamp.bindingRevision || operator.profileRevision !== stamp.profileRevision ||
-      operator.matchKeyVersion !== stamp.matchKeyVersion)) throw new Error("invalid_catalog_publication");
+      operator.matchKeyVersion !== stamp.matchKeyVersion) throw new Error("invalid_catalog_publication");
   }
   async function transaction<T>(work: (request: sql.Request, current: sql.Transaction) => Promise<T>): Promise<T> {
     let current: sql.Transaction | undefined;
     try {
       current = pool.transaction();
       await current.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
-      if (operator) {
+      {
         const allowed = await current.request().input("actorId", sql.NVarChar(150), operator.id)
           .input("source", sql.UniqueIdentifier, operator.sourceId).input("environment", sql.VarChar(10), operator.environment)
           .input("binding", sql.VarBinary(8), Buffer.from(operator.bindingRevision, "hex"))
-          .input("profile", sql.VarBinary(8), Buffer.from(operator.profileRevision, "hex")).query<{ allowed: number }>(`
+          .input("profile", sql.VarBinary(8), Buffer.from(operator.profileRevision, "hex"))
+          .input("currentKeyVersion", sql.SmallInt, operator.matchKeyVersion)
+          .input("vaultSecretVersion", sql.VarBinary(16), operator.vaultSecretVersion)
+          .input("keyVerifier", sql.VarBinary(32), operator.keyVerifier).query<{ allowed: number }>(`
           SET NOCOUNT ON;
           DECLARE @lockCode int;
           DECLARE @resource nvarchar(255)=N'portal-sag:catalog-customer-publication:'+@environment;
@@ -324,6 +330,10 @@ export function createSqlCatalogCustomerSnapshotPublisher(
               WHERE b.source_id=@source AND b.portal_environment=@environment AND b.source_state='active'
                 AND b.row_version=@binding AND b.validated_profile_version=@profile AND b.validated_at IS NOT NULL
                 AND p.row_version=@profile AND p.active=1 AND p.status='active' AND p.encrypt_connection=1 AND p.password_configured=1
+            ) AND EXISTS (
+              SELECT 1 FROM settings.catalog_match_key_registry AS k
+              WHERE k.portal_environment=@environment AND k.match_key_version=@currentKeyVersion
+                AND k.vault_secret_version=@vaultSecretVersion AND k.key_verifier=@keyVerifier
             );`);
         if (allowed.recordset.length !== 1) throw new Error("catalog_publication_forbidden");
       }
@@ -364,7 +374,7 @@ export function createSqlCatalogCustomerSnapshotPublisher(
         if (result.recordset.length !== 1 || (status !== "published" && status !== "superseded")) {
           throw new Error("invalid_catalog_sql_result");
         }
-        if (operator && status === "published") {
+        if (status === "published") {
           await writeSqlAuditLog(current, {
             entityType: "catalog_source_binding", entityId: revision.sourceId, action: "catalog_source_refreshed",
             performedBy: operator.id, performedByEmail: "system",

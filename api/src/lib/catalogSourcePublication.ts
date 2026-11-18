@@ -5,6 +5,7 @@ import { loadCatalogSourceTransport } from "./catalogCustomerRefreshService";
 import { createSqlCatalogCustomerSnapshotPublisher, type CatalogPublicationOperator } from "./catalogCustomerSnapshotPublishSqlRepository";
 import { getSqlPool } from "./sql";
 import { getSecret } from "./keyVault";
+import { buildCatalogMatchKeyEvidence } from "./catalogMatchKeyEvidence";
 
 const deps = { readBindings: readSqlCatalogSourceBindings, getSecret, loadTransport: loadCatalogSourceTransport,
   async publisher(operator: CatalogPublicationOperator) { return createSqlCatalogCustomerSnapshotPublisher(await getSqlPool(), { operator }); } };
@@ -54,7 +55,8 @@ export async function publishSavedCatalogSource(input: { environment: CatalogEnv
   const matchKey = Buffer.from(secret, "hex");
   try {
     const sink = await io.publisher({ id: input.actorId, environment: input.environment, sourceId: source.id,
-      bindingRevision: source.bindingVersion, profileRevision: source.profileRevision, matchKeyVersion: cfg.keyVersion });
+      bindingRevision: source.bindingVersion, profileRevision: source.profileRevision, matchKeyVersion: cfg.keyVersion,
+      ...buildCatalogMatchKeyEvidence(input.environment, cfg.keyVersion, cfg.version, matchKey) });
     return await refreshCatalogCustomerSource({ binding: source, environment: input.environment, bindingRevision: source.bindingVersion,
       sink, matchKey, matchKeyVersion: cfg.keyVersion,
       sagPolicy, signal: deadline, transport: () => io.loadTransport(source, undefined, deadline) });

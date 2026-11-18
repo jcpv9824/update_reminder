@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { parseCatalogSagPolicy, publishSavedCatalogSource } from "../lib/catalogSourcePublication";
 import type { SqlCatalogSourceBinding } from "../lib/catalogSourceBindingsSqlRepository";
+import { buildCatalogMatchKeyEvidence } from "../lib/catalogMatchKeyEvidence";
 
 const mock = vi.hoisted(() => ({ refresh: vi.fn() }));
 vi.mock("../lib/catalogCustomerRefresh", () => ({ refreshCatalogCustomerSource: mock.refresh }));
@@ -28,7 +29,8 @@ describe("saved-source publication", () => {
     expect(await publishSavedCatalogSource(request, io, config)).toBe("published");
     expect(io.getSecret).toHaveBeenCalledExactlyOnceWith("test-key", expect.any(AbortSignal), config.PORTAL_CATALOG_MATCH_KEY_SECRET_VERSION);
     expect(io.publisher).toHaveBeenCalledExactlyOnceWith({ id: "operator", sourceId: source.id, environment: "qa",
-      bindingRevision: source.bindingVersion, profileRevision: source.profileRevision, matchKeyVersion: 2 });
+      bindingRevision: source.bindingVersion, profileRevision: source.profileRevision, matchKeyVersion: 2,
+      ...buildCatalogMatchKeyEvidence("qa", 2, config.PORTAL_CATALOG_MATCH_KEY_SECRET_VERSION, Buffer.from(key, "hex")) });
     expect(io.loadTransport).toHaveBeenCalledExactlyOnceWith(source, undefined, expect.any(AbortSignal));
     expect(mock.refresh.mock.calls[0][0].matchKey).toEqual(Buffer.alloc(32));
   });
@@ -52,5 +54,15 @@ describe("saved-source publication", () => {
     expect(parseCatalogSagPolicy(policy)).toEqual({ scopesByCountry: new Map([[1, "CO:NIT"]]), completeScopes: [] });
     expect(parseCatalogSagPolicy('[{"countryId":1,"issuerScope":"CO:NIT","complete":true}]')).toBeNull();
     expect(parseCatalogSagPolicy('[{"countryId":1,"issuerScope":"CO:NIT"},{"countryId":1,"issuerScope":"VE:RIF"}]')).toBeNull();
+  });
+
+  it("binds the verifier to the exact key bytes, vault version, numeric version and environment", () => {
+    const vault = "ab".repeat(16), bytes = Buffer.alloc(32, 1);
+    const original = buildCatalogMatchKeyEvidence("qa", 2, vault, bytes);
+    expect(buildCatalogMatchKeyEvidence("qa", 2, vault.toUpperCase(), bytes)).toEqual(original);
+    for (const alternative of [buildCatalogMatchKeyEvidence("production", 2, vault, bytes),
+      buildCatalogMatchKeyEvidence("qa", 3, vault, bytes), buildCatalogMatchKeyEvidence("qa", 2, "ac".repeat(16), bytes),
+      buildCatalogMatchKeyEvidence("qa", 2, vault, Buffer.alloc(32, 2))]) expect(alternative.keyVerifier).not.toEqual(original.keyVerifier);
+    expect(() => buildCatalogMatchKeyEvidence("qa", 2, vault, Buffer.alloc(31))).toThrow("invalid_catalog_match_key_evidence");
   });
 });

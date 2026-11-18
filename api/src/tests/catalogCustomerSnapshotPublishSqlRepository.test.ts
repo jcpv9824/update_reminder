@@ -18,43 +18,55 @@ const revision: CatalogRefreshPublication = {
   observedAt: observation, attemptOrdinal: "9007199254740993", role: "erp-customers", completeScopes: [],
   rows: [{ sourceRecordId: 54, issuerScope: "CO:NIT", matchToken: Buffer.alloc(32, 171), name: " Synthetic ERP ", activeCode: "S" }],
 };
+const operator = { ...revision, id: "operator", vaultSecretVersion: Buffer.alloc(16, 1), keyVerifier: Buffer.alloc(32, 2) };
 
 function setup() {
+  audit.mockClear();
   const input = vi.fn().mockReturnThis();
   const query = vi.fn().mockResolvedValue({ recordset: [{ result: "published" }] });
+  const authorize = vi.fn().mockResolvedValue({ recordset: [{ allowed: 1 }] });
   const begin = vi.fn().mockResolvedValue(undefined);
   const commit = vi.fn().mockResolvedValue(undefined);
   const rollback = vi.fn().mockResolvedValue(undefined);
-  const pool = { transaction: vi.fn(() => ({ request: () => ({ input, query }), begin, commit, rollback })) };
-  const sink = createSqlCatalogCustomerSnapshotPublisher(pool as unknown as Parameters<typeof createSqlCatalogCustomerSnapshotPublisher>[0]);
+  const pool = { transaction: vi.fn(() => ({ request: () => ({ input, query: (sql: string) =>
+    sql.includes("SELECT 1 AS allowed FROM security.users") ? authorize(sql) : query(sql) }), begin, commit, rollback })) };
+  const sink = createSqlCatalogCustomerSnapshotPublisher(pool as unknown as Parameters<typeof createSqlCatalogCustomerSnapshotPublisher>[0], { operator });
   const value = (name: string) => input.mock.calls.find(call => call[0] === name)?.[2];
-  return { sink, pool, input, query, begin, commit, rollback, value };
+  return { sink, pool, input, query, authorize, begin, commit, rollback, value };
 }
 
 describe("catalog customer snapshot SQL publisher", () => {
   it("binds operator work to the exact active source and rechecks authorization inside each transaction", async () => {
     const fake = setup();
-    const sink = createSqlCatalogCustomerSnapshotPublisher(fake.pool as unknown as Parameters<typeof createSqlCatalogCustomerSnapshotPublisher>[0],
-      { operator: { ...revision, id: "operator" } });
+    const sink = fake.sink;
     await expect(sink.publish({ ...revision, environment: "production" })).rejects.toThrow("invalid_catalog_publication");
     expect(fake.begin).not.toHaveBeenCalled();
-    fake.query.mockResolvedValueOnce({ recordset: [{ allowed: 1 }] }).mockResolvedValueOnce({ recordset: [{ attemptOrdinal: "1" }] });
+    fake.query.mockResolvedValueOnce({ recordset: [{ attemptOrdinal: "1" }] });
     await expect(sink.reserveAttempt()).resolves.toBe("1");
-    expect(fake.query.mock.calls[0][0]).toContain("r.role_id=N'super_admin'");
-    expect(fake.query.mock.calls[0][0]).toContain("b.validated_profile_version=@profile");
+    expect(fake.authorize.mock.calls[0][0]).toContain("r.role_id=N'super_admin'");
+    expect(fake.authorize.mock.calls[0][0]).toContain("b.validated_profile_version=@profile");
+    expect(fake.authorize.mock.calls[0][0]).toContain("k.vault_secret_version=@vaultSecretVersion AND k.key_verifier=@keyVerifier");
     expect(fake.value("source")).toBe(revision.sourceId);
-    fake.query.mockResolvedValueOnce({ recordset: [] });
+    expect(fake.value("keyVerifier")).toEqual(operator.keyVerifier);
+    fake.authorize.mockResolvedValueOnce({ recordset: [] });
     await expect(sink.publish(revision)).rejects.toThrow("catalog_publication_failed");
     expect(fake.rollback).toHaveBeenCalledOnce();
-    expect(fake.query).toHaveBeenCalledTimes(3);
+    expect(fake.query).toHaveBeenCalledTimes(1);
     expect(audit).not.toHaveBeenCalled();
-    fake.query.mockResolvedValueOnce({ recordset: [{ allowed: 1 }] });
     await expect(sink.publish(revision)).resolves.toBe("published");
     expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ performedBy: "operator",
       metadata: { environment: "qa", sourceRole: "erp-customers", status: "published" } }));
-    fake.query.mockResolvedValueOnce({ recordset: [] });
+    fake.authorize.mockResolvedValueOnce({ recordset: [] });
     await expect(sink.recordFailure(revision)).rejects.toThrow("catalog_publication_failed");
     expect(fake.rollback).toHaveBeenCalledTimes(2);
+  });
+
+  it("blocks ordinal reservation if the expected key enrollment is absent or mismatched", async () => {
+    const fake = setup();
+    fake.authorize.mockResolvedValueOnce({ recordset: [] });
+    await expect(fake.sink.reserveAttempt()).rejects.toThrow("catalog_publication_failed");
+    expect(fake.query).not.toHaveBeenCalled();
+    expect(fake.commit).not.toHaveBeenCalled();
   });
   it("commits only a sealed revision and sends protected ERP rows in fixed SQL parameters", async () => {
     const fake = setup();
