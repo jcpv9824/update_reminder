@@ -55,7 +55,7 @@ export function createCatalogExternalSqlTransport(target: CatalogSqlConnectionTa
 
   return {
     async withConsistentRead({ contract, timeoutMs, signal }, read) {
-      const discovery = contract === "sag_admin_v2";
+      const discovery = contract === "sag_admin_v2" || contract === "sag_admin_v2_targets";
       if (contract !== "erp_v1" && contract !== "sag_admin_v1" && !discovery) throw failure("contract_unapproved");
       if (!validMs(timeoutMs, MAX_TOTAL_MS)) throw failure("invalid_options");
       if (signal.aborted) throw failure("cancelled");

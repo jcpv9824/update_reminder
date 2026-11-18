@@ -1,5 +1,5 @@
 import sql from "mssql";
-import type { CatalogSagCompanyDiscoveryRecord } from "./catalogExternalSourceQueries";
+import type { CatalogSagCompanyDiscoveryRecord, CatalogSagCompanyTargetObservation } from "./catalogExternalSourceQueries";
 import type { CatalogMatchKeyEvidence } from "./catalogMatchKeyEvidence";
 import type { CatalogRefreshClaim } from "./catalogRefreshQueueSqlRepository";
 import { normalizeCatalogSagInventoryEvidence, type CatalogSagInventoryEvidence } from "./catalogSagInventoryEvidence";
@@ -32,10 +32,12 @@ export type CatalogSagV2FailureResult = Readonly<{ result: "failed"; jobStatus: 
 const procedures = {
   reserve: "settings.reserve_catalog_sag_v2_attempt",
   publish: "settings.publish_catalog_sag_v2_revision",
+  publishWithTargets: "settings.publish_catalog_sag_v2_with_targets",
   fail: "settings.fail_catalog_sag_v2_attempt",
 } as const;
 const maxRows = 100_000;
 const maxPayloadBytes = 16 * 1024 * 1024;
+const maxTargetsBytes = 24 * 1024 * 1024;
 const invalid = (): never => { throw new Error("invalid_catalog_sag_v2_publication"); };
 const failed = (): never => { throw new Error("catalog_sag_v2_publication_failed"); };
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -143,13 +145,53 @@ function preparePayload(value: unknown) {
         if (bytes > maxPayloadBytes) return invalid();
         entries.push(json);
       }
-      return `[${entries.join(",")}]`;
+      return { json: `[${entries.join(",")}]`, ids: seen };
     }
+    const customers = encodeRows(value.customers, value.customerCount, encodeCustomer, row => row.sourceRecordId);
+    const companies = encodeRows(value.companies, value.companyCount, encodeCompany, row => row.companyRecordId);
     return { customerCount: value.customerCount, companyCount: value.companyCount,
-      customers: encodeRows(value.customers, value.customerCount, encodeCustomer, row => row.sourceRecordId),
-      companies: encodeRows(value.companies, value.companyCount, encodeCompany, row => row.companyRecordId) };
+      customers: customers.json, companies: companies.json, companyIds: companies.ids };
   } catch { return invalid(); }
 }
+
+function prepareTargets(value: unknown, companyIds: ReadonlySet<number>): string {
+  try {
+    if (!Array.isArray(value) || value.length !== companyIds.size ||
+      Reflect.ownKeys(value).length !== value.length + 1) return invalid();
+    const entries: string[] = [];
+    let last = -Infinity, bytes = 4; // opening/closing brackets in nvarchar
+    for (let index = 0; index < value.length; index++) {
+      const entry = Object.getOwnPropertyDescriptor(value, index);
+      if (!entry?.enumerable || !Object.hasOwn(entry, "value")) return invalid();
+      const row: unknown = entry.value;
+      if (!exact(row, ["companyRecordId", "state", "locationToken"]) ||
+        !sqlInt(row.companyRecordId) || row.companyRecordId <= last || !companyIds.has(row.companyRecordId)) return invalid();
+      const { companyRecordId, state, locationToken } = row;
+      if (state === "candidate" ? typeof locationToken !== "string" || locationToken.length !== 64 || !/^[a-f0-9]{64}$/.test(locationToken)
+        : state !== "unverified" || locationToken !== null) return invalid();
+      last = companyRecordId;
+      const json = JSON.stringify({ companyRecordId, state, locationToken });
+      bytes += 2 * (json.length + (index === 0 ? 0 : 1));
+      if (bytes > maxTargetsBytes) return invalid();
+      entries.push(json);
+    }
+    return `[${entries.join(",")}]`;
+  } catch { return invalid(); }
+}
+
+function decodePublication(row: unknown): CatalogSagV2PublishResult {
+  if (!exact(row, ["result", "jobStatus"])) return failed();
+  if (row.result === "published" && row.jobStatus === "succeeded") return { result: row.result, jobStatus: row.jobStatus };
+  if (row.result === "superseded" && (row.jobStatus === "succeeded" || row.jobStatus === "cancelled")) {
+    return { result: row.result, jobStatus: row.jobStatus };
+  }
+  return failed();
+}
+
+const bindPublication = (request: sql.Request, attemptOrdinal: string, payload: ReturnType<typeof preparePayload>) =>
+  request.input("attemptOrdinal", sql.BigInt, BigInt(attemptOrdinal))
+    .input("customerCount", sql.Int, payload.customerCount).input("companyCount", sql.Int, payload.companyCount)
+    .input("customers", sql.NVarChar(sql.MAX), payload.customers).input("companies", sql.NVarChar(sql.MAX), payload.companies);
 
 /** The caller must supply the 053 worker principal pool. There is no ordinary-Portal fallback or runtime wiring. */
 export function createCatalogSagV2WorkerPublisher(pool: Pick<sql.ConnectionPool, "request">,
@@ -191,16 +233,15 @@ export function createCatalogSagV2WorkerPublisher(pool: Pick<sql.ConnectionPool,
     async publish(attemptOrdinal: string, publication: CatalogSagV2WorkerPublication): Promise<CatalogSagV2PublishResult> {
       if (!ordinal(attemptOrdinal)) return invalid();
       const payload = preparePayload(publication);
-      return rpc("publish", request => request.input("attemptOrdinal", sql.BigInt, BigInt(attemptOrdinal))
-        .input("customerCount", sql.Int, payload.customerCount).input("companyCount", sql.Int, payload.companyCount)
-        .input("customers", sql.NVarChar(sql.MAX), payload.customers).input("companies", sql.NVarChar(sql.MAX), payload.companies), row => {
-        if (!exact(row, ["result", "jobStatus"])) return failed();
-        if (row.result === "published" && row.jobStatus === "succeeded") return { result: row.result, jobStatus: row.jobStatus };
-        if (row.result === "superseded" && (row.jobStatus === "succeeded" || row.jobStatus === "cancelled")) {
-          return { result: row.result, jobStatus: row.jobStatus };
-        }
-        return failed();
-      });
+      return rpc("publish", request => bindPublication(request, attemptOrdinal, payload), decodePublication);
+    },
+    async publishWithTargets(attemptOrdinal: string, publication: CatalogSagV2WorkerPublication,
+      targets: readonly CatalogSagCompanyTargetObservation[]): Promise<CatalogSagV2PublishResult> {
+      if (!ordinal(attemptOrdinal)) return invalid();
+      const payload = preparePayload(publication);
+      const targetRows = prepareTargets(targets, payload.companyIds);
+      return rpc("publishWithTargets", request => bindPublication(request, attemptOrdinal, payload)
+        .input("targets", sql.NVarChar(sql.MAX), targetRows), decodePublication);
     },
     async recordFailure(attemptOrdinal: string): Promise<CatalogSagV2FailureResult> {
       if (!ordinal(attemptOrdinal)) return invalid();

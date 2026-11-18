@@ -2,6 +2,7 @@ import sql from "mssql";
 import { describe, expect, it, vi } from "vitest";
 import { createCatalogSagV2WorkerPublisher, type CatalogSagV2WorkerPublication } from "../lib/catalogSagV2WorkerPublisher";
 import type { CatalogRefreshClaim } from "../lib/catalogRefreshQueueSqlRepository";
+import type { CatalogSagCompanyTargetObservation } from "../lib/catalogExternalSourceQueries";
 
 const ordinal = "9007199254740993";
 const observedAt = new Date("2026-11-20T01:00:00.000Z");
@@ -14,6 +15,7 @@ const customer = { sourceRecordId: 1, issuer: "CO", documentType: "NIT", token: 
   domainCandidate: "tenant.example.invalid", environmentKind: "production" as const, licenseCodes: ["A", "S"],
   testStartedOn: null, productionStartedOn: "2026-11-18", demoStartedOn: null };
 const company = { companyRecordId: 1, customerRecordId: 999, displayName: "Synthetic", isAvailable: false };
+const observedTarget = { companyRecordId: 1, state: "candidate", locationToken: "af".repeat(32) } as const;
 const payload = (customers = [customer], companies = [company]): CatalogSagV2WorkerPublication => ({
   customerCount: customers.length, companyCount: companies.length, customers, companies,
 });
@@ -48,6 +50,64 @@ const constantPins = [
 ];
 
 describe("dedicated SAG v2 worker publication adapter", () => {
+  it("publishes the exact bounded Company observation set exclusively through the 055 RPC", async () => {
+    const io = fake(), publisher = io.publisher();
+    const second = Object.freeze({ ...company, companyRecordId: -2 });
+    const companies = Object.freeze([Object.freeze({ ...company }), second]);
+    const targets = Object.freeze([Object.freeze({ companyRecordId: -2, state: "unverified", locationToken: null } as const),
+      Object.freeze({ ...observedTarget })]);
+    const publication = Object.freeze({ ...payload(), companyCount: 2, companies });
+    io.execute.mockResolvedValueOnce(resultSet(success));
+    await expect(publisher.publishWithTargets(ordinal, publication, targets)).resolves.toEqual(success);
+    expect(io.execute).toHaveBeenCalledExactlyOnceWith("settings.publish_catalog_sag_v2_with_targets");
+    const inputs = io.requests[0].input.mock.calls;
+    expect(inputs.slice(0, 11)).toEqual(constantPins);
+    expect(inputs.slice(11)).toEqual([
+      ["attemptOrdinal", sql.BigInt, BigInt(ordinal)], ["customerCount", sql.Int, 1], ["companyCount", sql.Int, 2],
+      ["customers", sql.NVarChar(sql.MAX), JSON.stringify([{ ...customer, token: "ae".repeat(32), licenseCodes: "AS" }])],
+      ["companies", sql.NVarChar(sql.MAX), JSON.stringify(companies)],
+      ["targets", sql.NVarChar(sql.MAX), JSON.stringify(targets)],
+    ]);
+    expect(io.query).not.toHaveBeenCalled();
+    expect(io.transaction).not.toHaveBeenCalled();
+    io.execute.mockResolvedValueOnce(resultSet({ result: "superseded", jobStatus: "cancelled" }));
+    await expect(publisher.publishWithTargets(ordinal, payload([], []), [])).resolves.toEqual({ result: "superseded", jobStatus: "cancelled" });
+    expect(io.requests[1].input.mock.calls.at(-1)).toEqual(["targets", sql.NVarChar(sql.MAX), "[]"]);
+  });
+
+  it("rejects missing, extra, unordered or malformed observations without SQL or getter access", async () => {
+    const io = fake(), publisher = io.publisher();
+    const getter = vi.fn(() => "synthetic opaque field");
+    const accessor = Object.defineProperty({ ...observedTarget }, "locationToken", { get: getter, enumerable: true });
+    const arrayAccessor = Object.defineProperty([], "0", { get: getter, enumerable: true });
+    const extraOnArray = Object.assign([observedTarget], { rawLocation: "synthetic forbidden field" });
+    const other = { ...observedTarget, companyRecordId: 2 };
+    const asTargets = (value: unknown) => value as readonly CatalogSagCompanyTargetObservation[];
+    for (const bad of [undefined, [], Array(1), [accessor], arrayAccessor, extraOnArray, [other], [observedTarget, other],
+      [{ ...observedTarget, host: "synthetic forbidden field" }], [{ ...observedTarget, locationToken: null }],
+      [{ ...observedTarget, locationToken: "AF".repeat(32) }], [{ ...observedTarget, locationToken: "af".repeat(32) + "\n" }],
+      [{ ...observedTarget, locationToken: " " + "af".repeat(32) }], [{ ...observedTarget, state: "unverified" }],
+      [{ ...observedTarget, state: "verified" }], [{ ...observedTarget, companyRecordId: 2147483648 }]]) {
+      await expect(publisher.publishWithTargets(ordinal, payload(), asTargets(bad))).rejects.toThrow(invalid);
+    }
+    const two = payload([customer], [company, { ...company, companyRecordId: 2 }]);
+    for (const rows of [[other, observedTarget], [observedTarget, observedTarget]]) {
+      await expect(publisher.publishWithTargets(ordinal, two, rows)).rejects.toThrow(invalid);
+    }
+    expect(getter).not.toHaveBeenCalled();
+    expect(io.request).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back after an unconfirmed 055 write or accept contradictory replies", async () => {
+    const io = fake(), publisher = io.publisher();
+    io.execute.mockRejectedValueOnce(new Error("synthetic confidential diagnostic"))
+      .mockResolvedValueOnce(resultSet({ result: "published", jobStatus: "cancelled" }));
+    for (let i = 0; i < 2; i++) {
+      await expect(publisher.publishWithTargets(ordinal, payload(), [observedTarget])).rejects.toEqual(new Error(failed));
+    }
+    expect(io.execute.mock.calls).toEqual(Array.from({ length: 2 }, () => ["settings.publish_catalog_sag_v2_with_targets"]));
+    expect(io.query).not.toHaveBeenCalled();
+  });
   it("executes only the fixed RPCs with exact types and immutable pins, without owning a transaction", async () => {
     const io = fake();
     const pins = defaultClaim(), evidence = proof();

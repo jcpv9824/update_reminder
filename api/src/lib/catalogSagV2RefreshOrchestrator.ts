@@ -7,7 +7,7 @@ import type { CatalogSagV2WorkerPublication, createCatalogSagV2WorkerPublisher }
 import type { SqlCatalogSourceBinding } from "./catalogSourceBindingsSqlRepository";
 
 type Scope = Readonly<{ issuer: string; documentType: string }>;
-type Publisher = ReturnType<typeof createCatalogSagV2WorkerPublisher>;
+type Publisher = Pick<ReturnType<typeof createCatalogSagV2WorkerPublisher>, "reserveAttempt" | "publish" | "recordFailure">;
 export type CatalogSagV2RefreshInput = Readonly<{
   claim: CatalogRefreshClaim;
   matchKey: Buffer;

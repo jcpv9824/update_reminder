@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { catalogExternalSelectSql, readCatalogExternalSource, readCatalogSagDiscoveryV2, verifyCatalogExternalSource,
+import { catalogExternalSelectSql, readCatalogExternalSource, readCatalogSagDiscoveryV2, readCatalogSagDiscoveryV2WithTargets, verifyCatalogExternalSource,
   type CatalogExternalContract, type CatalogExternalReadStatement, type CatalogExternalSourceTransport } from "../lib/catalogExternalSourceQueries";
 
 const ok = [{ compatible: true, readOnly: true }];
@@ -27,6 +27,62 @@ function fake(replies: readonly unknown[][], consistency: "verified" | "unverifi
 
 describe("SAG Admin v2 metadata discovery", () => {
   afterEach(() => vi.useRealTimers());
+
+  const targetScope = { environment: "qa" as const, sourceId: "84ac4729-ae25-4a43-9e12-338efe4d14de",
+    matchKey: Buffer.alloc(32, 15), matchKeyVersion: 2 };
+  const locator = { targetState: "candidate", targetHost: "fixture.example.invalid", targetPort: 54100, targetDatabaseName: "Fixture" };
+
+  it("protects the target of every Company in the same snapshot without returning locations or writing legacy evidence", async () => {
+    const io = fake([ok, counts("1", "3"), [customer(1)], [
+      { ...company(7, 1), ...locator },
+      { ...company(8, 1), ...locator },
+      { ...company(9, 222, null), targetState: "unverified", targetHost: null, targetPort: null, targetDatabaseName: null },
+    ]]);
+    const result = await readCatalogSagDiscoveryV2WithTargets(io.transport, targetScope);
+    expect(result).toMatchObject({ status: "complete", companies: [company(7, 1), company(8, 1), company(9, 222, null)],
+      targetObservations: [
+        { companyRecordId: 7, state: "candidate", locationToken: expect.stringMatching(/^[a-f0-9]{64}$/) },
+        { companyRecordId: 8, state: "candidate", locationToken: expect.stringMatching(/^[a-f0-9]{64}$/) },
+        { companyRecordId: 9, state: "unverified", locationToken: null },
+      ] });
+    if (result.status !== "complete") throw new Error("expected receipt");
+    expect(result.targetObservations[0].locationToken).not.toEqual(result.targetObservations[1].locationToken);
+    expect(JSON.stringify(result)).not.toMatch(/fixture\.example\.invalid|targetDatabaseName|targetHost|targetPort|StringConnection/);
+    expect(io.started).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ contract: "sag_admin_v2_targets" }));
+    expect(io.select.mock.calls[0][0].sql).toContain("StringConnection");
+    expect(io.select.mock.calls.at(-1)?.[0].sql).toContain("sagTarget.databaseName AS targetDatabaseName");
+  });
+
+  it("fails without returning any rows on incomplete or unsanitized target lists", async () => {
+    for (const companyRows of [[company(1, null)], [{ ...company(1, null), ...locator, targetPort: "54100" }],
+      [{ ...company(1, null), ...locator, Password: "synthetic" }], []]) {
+      const io = fake([ok, counts("0", "1"), [], companyRows]);
+      expect(await readCatalogSagDiscoveryV2WithTargets(io.transport, targetScope)).toEqual(invalidRows);
+    }
+    const badKey = fake([]);
+    expect(await readCatalogSagDiscoveryV2WithTargets(badKey.transport, { ...targetScope, matchKey: Buffer.alloc(31) }))
+      .toEqual({ status: "unavailable", reason: "invalid_options" });
+    expect(badKey.started).not.toHaveBeenCalled();
+  });
+
+  it("binds a target observation to the pinned key, key version, source and environment", async () => {
+    const read = (scope: Parameters<typeof readCatalogSagDiscoveryV2WithTargets>[1]) =>
+      readCatalogSagDiscoveryV2WithTargets(fake([ok, counts("0", "1"), [], [{ ...company(1, null), ...locator }]]).transport, scope);
+    const token = async (scope: Parameters<typeof readCatalogSagDiscoveryV2WithTargets>[1]) => {
+      const result = await read(scope);
+      if (result.status !== "complete") throw new Error("expected receipt");
+      return result.targetObservations[0].locationToken;
+    };
+    const original = await token(targetScope);
+    for (const change of [{ environment: "production" as const }, { matchKeyVersion: 3 },
+      { sourceId: "94ac4729-ae25-4a43-9e12-338efe4d14de" }, { matchKey: Buffer.alloc(32, 14) }]) {
+      expect(await token({ ...targetScope, ...change })).not.toBe(original);
+    }
+    const key = Buffer.from(targetScope.matchKey);
+    const inflight = token({ ...targetScope, matchKey: key });
+    key.fill(14);
+    expect(await inflight).toBe(original);
+  });
 
   it("collects every Customer and Company with independent ID cursors and no join or enrichment", async () => {
     const io = fake([ok, counts("2", "3"), [customer(1), customer(3)], [],

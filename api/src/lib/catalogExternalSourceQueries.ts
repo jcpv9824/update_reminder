@@ -1,7 +1,11 @@
+import { createHmac } from "node:crypto";
+import { catalogSagLegacySqlTargetOuterApply, parseCatalogSagLegacySqlTargetEvidence } from "./catalogSagLegacySqlTargetProjection";
+import type { CatalogEnvironment } from "./catalogSourceConfiguration";
+
 /** Fixed, SELECT-only contracts. The transport owns TLS, credentials and target authorization. */
 export type CatalogExternalContract = "erp_v1" | "sag_admin_v1";
 /** Discovery is available only through its dedicated reader, not activation or v1 publication. */
-export type CatalogExternalTransportContract = CatalogExternalContract | "sag_admin_v2";
+export type CatalogExternalTransportContract = CatalogExternalContract | "sag_admin_v2" | "sag_admin_v2_targets";
 
 export interface CatalogErpSourceRecord {
   sourceRecordId: number;
@@ -72,8 +76,14 @@ type UnavailableReason = "invalid_options" | "contract_unapproved" | "schema_unv
 export type CatalogExternalReadResult<T> = { status: "complete"; records: readonly T[] } |
   { status: "unavailable"; reason: UnavailableReason };
 
-export type CatalogSagDiscoveryV2Result = { status: "complete"; customers: readonly CatalogSagSourceRecord[];
-  companies: readonly CatalogSagCompanyDiscoveryRecord[] } | { status: "unavailable"; reason: UnavailableReason };
+type DiscoveryResult<T> = { status: "complete"; customers: readonly CatalogSagSourceRecord[];
+  companies: readonly T[] } | { status: "unavailable"; reason: UnavailableReason };
+export type CatalogSagDiscoveryV2Result = DiscoveryResult<CatalogSagCompanyDiscoveryRecord>;
+export type CatalogSagCompanyTargetObservation = Readonly<{ companyRecordId: number; state: "candidate"; locationToken: string } |
+  { companyRecordId: number; state: "unverified"; locationToken: null }>;
+export type CatalogSagDiscoveryV2WithTargetsResult = (Extract<CatalogSagDiscoveryV2Result, { status: "complete" }> &
+  { targetObservations: readonly CatalogSagCompanyTargetObservation[] }) | Extract<CatalogSagDiscoveryV2Result, { status: "unavailable" }>;
+type TargetScope = Readonly<{ environment: CatalogEnvironment; sourceId: string; matchKey: Buffer; matchKeyVersion: number }>;
 
 const textTypes = [167, 175, 231, 239] as const;
 const sagCustomerFields = [
@@ -85,6 +95,13 @@ const sagCustomerFields = [
   ["dbo.Customers", "Url", textTypes],
   ["dbo.Customers", "FechasEnvironment", textTypes],
 ] as const;
+const sagDiscoveryFields = [
+  ...sagCustomerFields,
+  ["dbo.Companies", "Id", [56]],
+  ["dbo.Companies", "CustomerId", [56]],
+  ["dbo.Companies", "Name", textTypes],
+  ["dbo.Companies", "IsAvailable", [104]],
+] as const;
 const fields = {
   erp_v1: [
     ["dbo.clientes", "ka_nl_tercero", [56]],
@@ -94,13 +111,8 @@ const fields = {
     ["dbo.terceros", "sc_nombre", textTypes],
   ],
   sag_admin_v1: sagCustomerFields,
-  sag_admin_v2: [
-    ...sagCustomerFields,
-    ["dbo.Companies", "Id", [56]],
-    ["dbo.Companies", "CustomerId", [56]],
-    ["dbo.Companies", "Name", textTypes],
-    ["dbo.Companies", "IsAvailable", [104]],
-  ],
+  sag_admin_v2: sagDiscoveryFields,
+  sag_admin_v2_targets: [...sagDiscoveryFields, ["dbo.Companies", "StringConnection", textTypes]],
 } as const;
 
 // Only compiler-owned, closed identifiers reach this SQL builder.
@@ -220,13 +232,15 @@ const sagDiscoveryCounts = `SELECT
   CONVERT(varchar(20),(SELECT COUNT_BIG(*) FROM dbo.Customers)) AS customerCount,
   CONVERT(varchar(20),(SELECT COUNT_BIG(*) FROM dbo.Companies)) AS companyCount;`;
 
-const sagDiscoveryCompanyPage = `SELECT TOP (@pageSize)
+const sagDiscoveryCompanyPage = (targets: boolean) => `SELECT TOP (@pageSize)
   co.Id AS companyRecordId,
   co.CustomerId AS customerRecordId,
   CASE WHEN DATALENGTH(CONVERT(nvarchar(max),co.Name))<=1024
     THEN CONVERT(nvarchar(512),co.Name) END AS displayName,
-  co.IsAvailable AS isAvailable
-FROM dbo.Companies AS co
+  co.IsAvailable AS isAvailable${targets ? `,
+  sagTarget.status AS targetState,sagTarget.host AS targetHost,
+  sagTarget.port AS targetPort,sagTarget.databaseName AS targetDatabaseName` : ""}
+FROM dbo.Companies AS co${targets ? "\n" + catalogSagLegacySqlTargetOuterApply : ""}
 WHERE @afterId IS NULL OR co.Id > @afterId
 ORDER BY co.Id ASC`;
 
@@ -234,11 +248,11 @@ ORDER BY co.Id ASC`;
 export function catalogExternalSelectSql(
   contract: CatalogExternalTransportContract, tag: CatalogExternalReadStatement["tag"],
 ): string {
-  if (contract === "sag_admin_v2") {
+  if (contract === "sag_admin_v2" || contract === "sag_admin_v2_targets") {
     if (tag === "schema") return schemaStatement(contract);
     if (tag === "counts") return sagDiscoveryCounts;
     if (tag === "customerPage") return pages.sag_admin_v1;
-    if (tag === "companyPage") return sagDiscoveryCompanyPage;
+    if (tag === "companyPage") return sagDiscoveryCompanyPage(contract === "sag_admin_v2_targets");
   } else if (contract === "erp_v1" || contract === "sag_admin_v1") {
     if (tag === "schema") return schemaStatement(contract);
     if (tag === "page") return pages[contract];
@@ -432,6 +446,7 @@ function parseDiscoveryCount(value: unknown): bigint {
 }
 
 async function readExpectedDiscoveryPages<T>(session: CatalogExternalReadSession, signal: AbortSignal,
+  contract: "sag_admin_v2" | "sag_admin_v2_targets",
   tag: "customerPage" | "companyPage", count: number, pageSize: number, pageTimeoutMs: number,
   parse: (value: unknown) => T, idOf: (row: T) => number): Promise<T[]> {
   const records: T[] = [];
@@ -441,7 +456,7 @@ async function readExpectedDiscoveryPages<T>(session: CatalogExternalReadSession
     // Only a short final page with exactly the expected total proves EOF.
     const remaining = count - records.length;
     const limit = Math.min(pageSize, remaining + 1);
-    const rows = await selectBoundedStatement(session, "sag_admin_v2", tag, { afterId, pageSize: limit }, signal, pageTimeoutMs);
+    const rows = await selectBoundedStatement(session, contract, tag, { afterId, pageSize: limit }, signal, pageTimeoutMs);
     if (!Array.isArray(rows) || rows.length > limit || rows.length > remaining) throw new Unavailable("invalid_rows");
     for (const raw of rows) {
       const row = parse(raw);
@@ -458,17 +473,17 @@ async function readExpectedDiscoveryPages<T>(session: CatalogExternalReadSession
   throw new Unavailable("cancelled");
 }
 
-/** Discovery only. Returns one complete, protected input or no rows; never resolves a target or publishes a revision. */
-export async function readCatalogSagDiscoveryV2(transport: CatalogExternalSourceTransport,
-  options: CatalogExternalReadOptions = {}): Promise<CatalogSagDiscoveryV2Result> {
+async function readSagDiscovery<T>(transport: CatalogExternalSourceTransport, options: CatalogExternalReadOptions,
+  contract: "sag_admin_v2" | "sag_admin_v2_targets", parseCompany: (raw: unknown) => T, companyId: (row: T) => number,
+): Promise<DiscoveryResult<T>> {
   try {
     const pageSize = positiveInt(options.pageSize, 500, 1000);
     const maxRows = positiveInt(options.maxRows, 50_000, 100_000);
     const pageTimeoutMs = positiveInt(options.statementTimeoutMs, defaultPageTimeoutMs, 15_000);
     const totalTimeoutMs = positiveInt(options.totalTimeoutMs, 20_000, 120_000);
-    return await bounded(signal => transport.withConsistentRead({ contract: "sag_admin_v2", timeoutMs: totalTimeoutMs, signal }, async session => {
+    return await bounded(signal => transport.withConsistentRead({ contract, timeoutMs: totalTimeoutMs, signal }, async session => {
       if (session.consistency !== "verified") throw new Unavailable("consistency_unverified");
-      const schema = await selectBoundedStatement(session, "sag_admin_v2", "schema", {}, signal);
+      const schema = await selectBoundedStatement(session, contract, "schema", {}, signal);
       if (!Array.isArray(schema) || schema.length !== 1) throw new Unavailable("schema_unverified");
       let proof: Record<string, unknown>;
       try { proof = rowWithKeys(schema[0], ["compatible", "readOnly"]); }
@@ -476,20 +491,59 @@ export async function readCatalogSagDiscoveryV2(transport: CatalogExternalSource
       if (proof.compatible !== true) throw new Unavailable("schema_unverified");
       if (proof.readOnly !== true) throw new Unavailable("write_access");
 
-      const rows = await selectBoundedStatement(session, "sag_admin_v2", "counts", {}, signal);
+      const rows = await selectBoundedStatement(session, contract, "counts", {}, signal);
       if (!Array.isArray(rows) || rows.length !== 1) throw new Unavailable("invalid_rows");
       const row = rowWithKeys(rows[0], ["customerCount", "companyCount"]);
       const customerCount = parseDiscoveryCount(row.customerCount);
       const companyCount = parseDiscoveryCount(row.companyCount);
       if (customerCount + companyCount > BigInt(maxRows)) throw new Unavailable("row_limit");
 
-      const customers = await readExpectedDiscoveryPages(session, signal, "customerPage", Number(customerCount), pageSize,
+      const customers = await readExpectedDiscoveryPages(session, signal, contract, "customerPage", Number(customerCount), pageSize,
         pageTimeoutMs, parseSag, row => row.sourceRecordId);
-      const companies = await readExpectedDiscoveryPages(session, signal, "companyPage", Number(companyCount), pageSize,
-        pageTimeoutMs, parseSagCompany, row => row.companyRecordId);
+      const companies = await readExpectedDiscoveryPages(session, signal, contract, "companyPage", Number(companyCount), pageSize,
+        pageTimeoutMs, parseCompany, companyId);
       return { status: "complete" as const, customers, companies };
     }), totalTimeoutMs, options.signal);
   } catch (error) {
     return { status: "unavailable", reason: error instanceof Unavailable ? error.reason : "connection_failed" };
   }
+}
+
+/** Metadata-only v2 keeps its previous fixed projection and result shape. */
+export function readCatalogSagDiscoveryV2(transport: CatalogExternalSourceTransport,
+  options: CatalogExternalReadOptions = {}): Promise<CatalogSagDiscoveryV2Result> {
+  return readSagDiscovery(transport, options, "sag_admin_v2", parseSagCompany, row => row.companyRecordId);
+}
+
+/** One SNAPSHOT; the private location never leaves the observation parser. */
+export async function readCatalogSagDiscoveryV2WithTargets(transport: CatalogExternalSourceTransport,
+  scope: TargetScope, options: CatalogExternalReadOptions = {}): Promise<CatalogSagDiscoveryV2WithTargetsResult> {
+  if (!scope || (scope.environment !== "qa" && scope.environment !== "production") ||
+    typeof scope.sourceId !== "string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(scope.sourceId) ||
+    scope.sourceId === "00000000-0000-0000-0000-000000000000" || !Buffer.isBuffer(scope.matchKey) || scope.matchKey.length !== 32 ||
+    !Number.isInteger(scope.matchKeyVersion) || scope.matchKeyVersion < 1 || scope.matchKeyVersion > 32767) {
+    return { status: "unavailable", reason: "invalid_options" };
+  }
+  const environment = scope.environment, sourceId = scope.sourceId.toLowerCase(), version = scope.matchKeyVersion;
+  const key = Buffer.from(scope.matchKey);
+  try {
+    const result = await readSagDiscovery(transport, options, "sag_admin_v2_targets", raw => {
+      const row = rowWithKeys(raw, ["companyRecordId", "customerRecordId", "displayName", "isAvailable",
+        "targetState", "targetHost", "targetPort", "targetDatabaseName"]);
+      const company = parseSagCompany({ companyRecordId: row.companyRecordId, customerRecordId: row.customerRecordId,
+        displayName: row.displayName, isAvailable: row.isAvailable });
+      const evidence = parseCatalogSagLegacySqlTargetEvidence({ status: row.targetState, host: row.targetHost,
+        port: row.targetPort, databaseName: row.targetDatabaseName });
+      if (!evidence) throw new Unavailable("invalid_rows");
+      const target: CatalogSagCompanyTargetObservation = evidence.status === "unverified"
+        ? { companyRecordId: company.companyRecordId, state: "unverified", locationToken: null }
+        : { companyRecordId: company.companyRecordId, state: "candidate",
+          locationToken: createHmac("sha256", key).update(JSON.stringify(["portal-sag/company-location/v1",
+            environment, sourceId, version, company.companyRecordId, evidence.host, evidence.port, evidence.databaseName])).digest("hex") };
+      return { company, target };
+    }, row => row.company.companyRecordId);
+    if (result.status !== "complete") return result;
+    return { status: "complete", customers: result.customers, companies: result.companies.map(row => row.company),
+      targetObservations: result.companies.map(row => row.target) };
+  } finally { key.fill(0); }
 }

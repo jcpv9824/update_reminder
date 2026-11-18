@@ -182,6 +182,40 @@ aún restringe las nuevas aprobaciones al vínculo v1; se necesita una ruta
 aditiva de aprobación v2 y una correspondencia oficial antes de autorizar
 tareas por licenciamiento.
 
+El lector interno de destinos usa un contrato fijo separado y conserva la
+proyección v2 anterior. Lee clientes, asociaciones y observaciones en una
+sola transacción SNAPSHOT, con los conteos, el orden y el fin de ambas
+paginaciones verificados. Convierte inmediatamente cada candidato en una
+huella HMAC ligada a ambiente, fuente, versión de clave y Company. Un
+destino no interpretable conserva su Company sin huella. Dicha huella
+no acredita identidad física ni sustituye la aprobación de una conexión.
+
+El lector compilado pasó contra SAG Admin de sólo lectura en 2,259 s:
+86 clientes, 122 asociaciones, 98 candidatos y 24 no verificados, cada
+observación alineada con una única fila de Company. Sólo se imprimieron
+conteos. Pasaron 105 pruebas enfocadas y el build; tras añadir la regresión
+de aislamiento por clave/versión/ambiente/fuente, la suite de descubrimiento
+pasó 20/20. Falta el sellado atómico del almacenamiento y su integración con
+el publicador; esta prueba no escribe ni certifica destinos en QA.
+
+La 055 prepara dos tablas inmutables de observaciones y sellos por revisión,
+y un procedimiento dedicado que llama al publicador existente en la misma
+transacción. Sólo el resultado publicado adjunta su propio conjunto de
+Company; un resultado superado no modifica la revisión ganadora. Se
+comprobaron la sintaxis SQL 2019 del lote y sus cuatro módulos, y la
+aplicación/reaplicación con rollback en PortalSAGWeb-TEST: cuatro permisos
+EXECUTE en el rol dedicado, 16 denegaciones directas, tres triggers activos,
+y cero objetos nuevos después del rollback. El manifiesto conserva el hash
+del artefacto; el ejecutor de despliegue todavía no incluye 055. Primero
+deben coordinarse la admisión del cuarto RPC y el ensayo funcional de los
+resultados positivos, errores y recuperación por concesión.
+
+El adaptador para el nuevo RPC exige exactamente el mismo conjunto de
+Company en orden ascendente, un máximo de 24 MiB de observaciones y huellas
+canónicas o nulas según el estado. Ante una respuesta no confirmada no
+recurre al publicador anterior. Pasaron 10 pruebas del adaptador y TypeScript;
+el trabajador no llama todavía al cuarto RPC.
+
 ## Verificación de preparación del reporte (2026-11-18)
 
 El conjunto enfocado de conteo, perfiles, permisos de destinatarios y outbox
