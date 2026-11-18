@@ -33,6 +33,9 @@ describe("transactional catalog execution licensing proof", () => {
     expect(statement()).not.toContain(input.attachments[0].linkId);
     expect(statement()).not.toContain("${");
     expect(statement()).not.toMatch(/\b(?:INSERT|UPDATE|DELETE)\s+(?:core|settings|scheduling|workflow)\./i);
+    expect(statement()).toContain("r.attempt_ordinal=h.attempt_ordinal");
+    expect(statement()).toMatch(/'sag_admin_v2'\s+AND r.expected_sag_company_rows IS NOT NULL/);
+    expect(statement()).toMatch(/'sag_admin_v1'\s+AND r.expected_sag_company_rows IS NULL/);
     expect(statement().slice(statement().lastIndexOf("SELECT @deadline"))).toBe("SELECT @deadline AS validUntil WHERE @deadline>SYSUTCDATETIME();\n");
   });
 
@@ -125,7 +128,8 @@ describe("transactional catalog execution licensing proof", () => {
       "b.validated_at<=@now AND b.validated_profile_version=p.row_version",
       "p.active=1 AND p.status='active' AND p.encrypt_connection=1 AND p.password_configured=1",
       "h.attempt_status='succeeded' AND h.attempted_at<=@now", "r.binding_version=b.row_version AND r.profile_version=p.row_version",
-      "r.sealed_at<=@now AND r.observed_at<=@now AND r.verified_until>@now AND r.has_sag_inventory_evidence=1",
+      "r.sealed_at<=@now AND r.observed_at<=@now AND r.verified_until>@now",
+      "r.sealed_at IS NOT NULL AND r.has_sag_inventory_evidence=1",
       "IF (SELECT COUNT_BIG(*) FROM @sag)<>1 RETURN;",
     ]) expect(statement()).toContain(text);
   });

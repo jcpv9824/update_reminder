@@ -48,6 +48,9 @@ describe("SAG per-customer evidence read", () => {
     expect(statement).toContain("r.profile_version=p.row_version AND r.binding_version=b.row_version");
     expect(statement).toContain("h.attempt_status='succeeded' AND h.attempted_at<=@now AND r.verified_until>@now");
     expect(statement).toContain("FROM core.catalog_customer_revision_scopes AS s");
+    expect(statement).toMatch(/'sag_admin_v2'\s+AND r.expected_sag_company_rows IS NOT NULL/);
+    expect(statement).toContain("ELSE IF @itemCount>0 OR (@canProveAbsence=1 AND");
+    expect(statement).toContain("r.attempt_ordinal=h.attempt_ordinal");
     expect(statement).toContain("TOP (@itemLimit+1)");
     expect(statement.slice(statement.lastIndexOf("SELECT domain_candidate"))).not.toMatch(/customer_id|source_record_id,|document_number_token|@token|issuer/);
     expect(statement).not.toContain(scope.customerId);

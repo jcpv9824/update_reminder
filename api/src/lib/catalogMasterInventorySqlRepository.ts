@@ -2,6 +2,7 @@ import sql from "mssql";
 import { runSqlTransaction } from "./sqlTransaction";
 import type { CatalogEnvironment } from "./catalogSourceConfiguration";
 import type { CatalogMasterInventoryQuery, CatalogMasterInventoryResult, CatalogMasterInventoryRow } from "./catalogMasterInventoryHttp";
+import { catalogSagPositiveLicenseRevisionSql } from "./catalogSagPositiveLicenseSql";
 
 // Only the small allowlisted projection leaves SQL. Source/document lineage
 // stays in the database and a held relationship never becomes a public row.
@@ -39,7 +40,7 @@ JOIN core.catalog_customer_source_revisions r ON r.revision_key=h.revision_key A
 WHERE b.portal_environment=@environment AND b.source_state='active' AND b.validated_at<=@now
   AND ((b.source_role='erp-customers' AND b.contract_version='erp_v1'
     AND EXISTS(SELECT 1 FROM @allowed a WHERE a.source_key=b.catalog_source_key))
-    OR (@view='licenses' AND b.source_role='sag-admin' AND b.contract_version='sag_admin_v1' AND r.has_sag_inventory_evidence=1));
+    OR (@view='licenses' AND b.source_role='sag-admin' AND ${catalogSagPositiveLicenseRevisionSql}));
 
 IF (SELECT COUNT(*) FROM @heads WHERE source_role='erp-customers')<>(SELECT COUNT(*) FROM @allowed) SET @partial=1;
 IF NOT EXISTS(SELECT 1 FROM @heads WHERE source_role='erp-customers')

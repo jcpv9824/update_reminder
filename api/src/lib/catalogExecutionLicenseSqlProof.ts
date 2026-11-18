@@ -1,4 +1,5 @@
 import sql from "mssql";
+import { catalogSagPositiveLicenseRevisionSql } from "./catalogSagPositiveLicenseSql";
 
 export type CatalogExecutionLicenseProofInput = Readonly<{
   executionId: string | number;
@@ -42,12 +43,12 @@ JOIN core.catalog_customer_source_revisions r WITH (HOLDLOCK)
   ON r.revision_key=h.revision_key AND r.catalog_source_key=b.catalog_source_key AND r.source_role=b.source_role
 WHERE b.portal_environment=@portalEnvironment COLLATE Latin1_General_100_BIN2
   AND DATALENGTH(b.portal_environment)=DATALENGTH(@portalEnvironment)
-  AND b.source_role='sag-admin' AND b.source_state='active' AND b.contract_version='sag_admin_v1'
+  AND b.source_role='sag-admin' AND b.source_state='active' AND ${catalogSagPositiveLicenseRevisionSql}
   AND b.validated_at<=@now AND b.validated_profile_version=p.row_version
   AND p.active=1 AND p.status='active' AND p.encrypt_connection=1 AND p.password_configured=1
-  AND h.attempt_status='succeeded' AND h.attempted_at<=@now
+  AND h.attempt_status='succeeded' AND h.attempted_at<=@now AND r.attempt_ordinal=h.attempt_ordinal
   AND r.binding_version=b.row_version AND r.profile_version=p.row_version AND r.match_key_version=@matchKeyVersion
-  AND r.sealed_at<=@now AND r.observed_at<=@now AND r.verified_until>@now AND r.has_sag_inventory_evidence=1;
+  AND r.sealed_at<=@now AND r.observed_at<=@now AND r.verified_until>@now;
 IF (SELECT COUNT_BIG(*) FROM @sag)<>1 RETURN;
 
 DECLARE @eligible TABLE (ordinal int PRIMARY KEY,schedule_key bigint,match_mode varchar(10),

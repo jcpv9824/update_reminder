@@ -165,6 +165,23 @@ actor ausente rechazado, contrato ambiguo rechazado y versión exacta aceptada.
 Quedaron cero fixtures y cero transacciones. No se creó ni activó un vínculo
 real ni se cambió producción.
 
+Los lectores de licenciamiento admiten evidencia positiva de un SAG v2
+sellado, con el conteo de Companies de 052 y las versiones exactas del vínculo,
+perfil y cabecera. Una licencia vacía o un cliente sin coincidencia no prueba
+ausencia en v2. La cobertura de población y las reglas de cierre/corte no se
+ampliaron. El registro de una ejecución conserva los requisitos de destino y
+de aprobación de cada módulo para las versiones actuales. En QA, el
+predicado exacto pasó 10 casos en el motor SQL Server 2019. Pasaron también
+82 pruebas enfocadas de lectores y cercas.
+
+En una comprobación de sólo lectura, SAG Admin presentó 25 códigos
+reconocidos. QA tiene 20 módulos activos, ninguno con un código normalizado
+de una sola letra, y cero correspondencias antiguas o aprobaciones
+versionadas. No se infiere ninguna equivalencia. Además, el trigger de 041
+aún restringe las nuevas aprobaciones al vínculo v1; se necesita una ruta
+aditiva de aprobación v2 y una correspondencia oficial antes de autorizar
+tareas por licenciamiento.
+
 ## Verificación de preparación del reporte (2026-11-18)
 
 El conjunto enfocado de conteo, perfiles, permisos de destinatarios y outbox

@@ -3,6 +3,7 @@ import type { CatalogEnvironment } from "./catalogSourceConfiguration";
 import { normalizeCatalogSagInventoryEvidence, type CatalogSagInventoryEvidence } from "./catalogSagInventoryEvidence";
 import { getSqlPool } from "./sql";
 import type { CertifiedCatalogLicenseModule } from "./catalogLicenseMembership";
+import { catalogSagPositiveLicenseRevisionSql, catalogSagV1LicenseRevisionSql } from "./catalogSagPositiveLicenseSql";
 
 type ReadScope = Readonly<{
   customerId: string;
@@ -31,13 +32,16 @@ const readEvidence = `
     source_role varchar(15) NOT NULL,
     fresh bit NOT NULL,
     has_inventory bit NOT NULL,
+    can_prove_absence bit NOT NULL,
     observed_at datetime2(3) NOT NULL
   );
   -- Capture accepted, authorized pointers before inspecting immutable rows.
   INSERT INTO @heads
   SELECT r.revision_key,b.source_role,
-    CASE WHEN h.attempt_status='succeeded' AND h.attempted_at<=@now AND r.verified_until>@now THEN 1 ELSE 0 END,
-    r.has_sag_inventory_evidence,r.observed_at
+    CASE WHEN h.attempt_status='succeeded' AND h.attempted_at<=@now AND r.verified_until>@now
+      AND r.attempt_ordinal=h.attempt_ordinal THEN 1 ELSE 0 END,
+    r.has_sag_inventory_evidence,
+    CASE WHEN b.source_role='sag-admin' AND ${catalogSagV1LicenseRevisionSql} THEN 1 ELSE 0 END,r.observed_at
   FROM settings.catalog_source_bindings AS b
   JOIN settings.external_database_connections AS p
     ON p.external_database_connection_key=b.external_database_connection_key
@@ -48,12 +52,13 @@ const readEvidence = `
     AND b.validated_at IS NOT NULL AND b.validated_profile_version=p.row_version
     AND p.active=1 AND p.status='active' AND p.encrypt_connection=1 AND p.password_configured=1
     AND r.sealed_at IS NOT NULL AND r.sealed_at<=@now AND r.profile_version=p.row_version AND r.binding_version=b.row_version
-    AND r.match_key_version=@matchKeyVersion
-    AND (b.source_role='sag-admin' OR (b.source_role='erp-customers' AND EXISTS (
+    AND r.match_key_version=@matchKeyVersion AND r.observed_at<=@now
+    AND ((b.source_role='sag-admin' AND ${catalogSagPositiveLicenseRevisionSql})
+      OR (b.source_role='erp-customers' AND b.contract_version='erp_v1' AND EXISTS (
       SELECT 1 FROM OPENJSON(@allowedSourceIds) AS a WHERE TRY_CONVERT(uniqueidentifier,a.[value])=b.source_id)));
 
   DECLARE @state varchar(11), @verifiedAt datetime2(3), @sagObserved datetime2(3);
-  DECLARE @customerKey bigint, @sagKey bigint, @sagFresh bit, @hasInventory bit;
+  DECLARE @customerKey bigint, @sagKey bigint, @sagFresh bit, @hasInventory bit, @canProveAbsence bit;
   DECLARE @issuer char(2), @documentType varchar(32), @token binary(32), @erpFresh bit;
   DECLARE @members TABLE (
     issuer char(2) COLLATE Latin1_General_100_BIN2 NULL,
@@ -89,7 +94,7 @@ const readEvidence = `
     BEGIN
       SELECT TOP (1) @issuer=issuer,@documentType=document_type,@token=token FROM @members;
       SELECT @erpFresh=CASE WHEN EXISTS (SELECT 1 FROM @members WHERE fresh=1) THEN 1 ELSE 0 END;
-      SELECT @sagKey=revision_key,@sagObserved=observed_at,@sagFresh=fresh,@hasInventory=has_inventory
+      SELECT @sagKey=revision_key,@sagObserved=observed_at,@sagFresh=fresh,@hasInventory=has_inventory,@canProveAbsence=can_prove_absence
       FROM @heads WHERE source_role='sag-admin';
 
       IF @hasInventory=1 AND NOT EXISTS (
@@ -109,7 +114,8 @@ const readEvidence = `
       )
       BEGIN
         INSERT INTO @details
-        SELECT TOP (@itemLimit+1) d.source_record_id,d.domain_candidate,d.environment_kind,d.license_codes,
+        SELECT TOP (@itemLimit+1) d.source_record_id,d.domain_candidate,d.environment_kind,
+          CASE WHEN @canProveAbsence=0 THEN NULLIF(d.license_codes,'') ELSE d.license_codes END,
           d.test_started_on,d.production_started_on,d.demo_started_on
         FROM core.catalog_customer_revision_rows AS r
         JOIN core.catalog_sag_revision_evidence AS d
@@ -123,7 +129,7 @@ const readEvidence = `
         BEGIN
           IF @erpFresh=0 OR @sagFresh=0
             SET @state='stale';
-          ELSE IF @itemCount>0 OR (
+          ELSE IF @itemCount>0 OR (@canProveAbsence=1 AND
             EXISTS (SELECT 1 FROM core.catalog_customer_revision_scopes AS s
               WHERE s.revision_key=@sagKey AND s.issuer=@issuer AND s.document_type=@documentType)
             AND NOT EXISTS (SELECT 1 FROM core.catalog_customer_revision_rows AS r
