@@ -353,8 +353,11 @@ autenticada de Azure, `onboardCatalogQaOrigins` verificó ambos orígenes en
 solo lectura usando las contraseñas recuperadas del Vault. Confirmó en una
 transacción dos perfiles y dos vínculos en borrador (`erp_v1`,
 `sag_admin_v2`). Una consulta separada confirmó que no quedó ninguna fuente
-activa ni transacción abierta. `CO:NIT` es provisional para el primer ERP;
-confirmar el emisor antes de activar y no atribuirlo a SAG Admin. La
+activa ni transacción abierta al registrar los perfiles. El 19 de noviembre
+de 2026 el propietario confirmó `CO:NIT` y que `N_NIT` contiene NIT
+colombianos para el ERP inicial. Esta confirmación no atribuye un emisor
+a SAG Admin ni homologa identificadores del exterior. Incorporarlos queda
+para un cambio posterior con contrato y alcance propios. La
 corrección UTF-8 del intermediario conserva rutas con tildes; el primer
 intento falló antes de escribir y se verificó que no dejó filas.
 Al repetir la misma alta en la sesión real se obtuvieron cero inserciones
