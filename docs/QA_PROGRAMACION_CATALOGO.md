@@ -274,6 +274,14 @@ disponible no se presenta como borrado ni como cero usuarios. Falta el
 ensayo de los flujos completos con perfiles reales y medir el tiempo y
 los bloqueos SQL en programaciones amplias antes de habilitar en producción.
 
+El runtime `7086a89` pasó la suite completa del API (1.790/1.790,
+174 archivos) y el control SQL-only. Una lectura de QA encontró cero
+destinos físicos de base, cero identidades de instancia 054 y cero perfiles
+activos de conteo; no hay aún un flujo real que se pueda certificar allí con
+esas configuraciones. En Azure sólo se observó la Function App del Portal
+de producción y ningún slot para esa aplicación; no se creó ni cambió
+ningún recurso.
+
 ## Verificación de preparación del reporte (2026-11-18)
 
 El conjunto enfocado de conteo, perfiles, permisos de destinatarios y outbox

@@ -427,3 +427,10 @@ El perfil local de SAG Admin usa el Administrador de credenciales de Windows, no
 El inventario actual de Azure no tiene un API o frontend dedicado de QA. El workflow principal apunta al API de producción, así que no se usa como prueba de QA. La base `PortalSAGWeb-TEST` sí está disponible; al revisar, no tenía perfiles SQL guardados para certificar.
 
 Una consulta de solo lectura encontró 20 módulos activos en el maestro de licencias de QA, ninguno con un código de una letra compatible con el formato observado en SAG Admin. El detalle conserva los códigos observados; para asignarles nombres y usarlos como filtros de actualización hace falta una correspondencia verificada, no una unión por coincidencia aproximada de nombre.
+
+La consulta de sólo lectura posterior a 057 confirmó 25 códigos observados
+en SAG Admin v2 (A–Z, excepto T), cero mapeos y cero aprobaciones en QA.
+La cuenta del origen no ve tablas ni vistas con nombre de licencias o
+módulos en la inspección de metadatos. Esto no demuestra que el diccionario
+no exista: el dueño del catálogo debe facilitar una fuente autorizada o
+confirmar la correspondencia antes de activar los filtros.
