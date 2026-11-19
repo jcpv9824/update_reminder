@@ -35,8 +35,7 @@ WITH wanted AS (
   FROM OPENJSON(@requestedLinks)
 )
 SELECT w.ordinal, ready.target_status,
-  CASE WHEN ready.target_status='verified' THEN LOWER(CONVERT(char(36),t.target_id)) END AS physical_id${withPins ? `,
-  CASE WHEN ready.target_status='verified' THEN LOWER(CONVERT(char(36),l.link_id)) END AS physical_link_id` : ""}
+  CASE WHEN ready.target_status='verified' THEN LOWER(CONVERT(char(36),t.target_id)) END AS physical_id${withPins ? physicalLinkProjection : ""}
 FROM wanted w
 LEFT JOIN core.clients c ON c.source_id=w.client_id AND c.source_id COLLATE Latin1_General_100_BIN2=w.client_id COLLATE Latin1_General_100_BIN2
 LEFT JOIN core.domains d ON d.client_key=c.client_key AND d.source_id=w.domain_id
@@ -64,6 +63,8 @@ CROSS APPLY (VALUES (CASE
   ELSE 'unverifiable' END)) AS ready(target_status)
 ORDER BY w.ordinal;
 `.trim();
+const physicalLinkProjection = `,
+  CASE WHEN ready.target_status='verified' THEN LOWER(CONVERT(char(36),l.link_id)) END AS physical_link_id`;
 
 /** Internal. The caller must restrict requested links to a trusted, authorized catalogue selection. */
 export function readSqlCatalogPhysicalTargets(input: ReadInput): Promise<ResolvedTarget[]> {

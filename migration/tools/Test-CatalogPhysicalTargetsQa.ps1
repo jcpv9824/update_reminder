@@ -13,8 +13,8 @@ $route=(Get-Content -Raw -LiteralPath (Join-Path $root 'api/src/lib/catalogPhysi
 if($reader -notlike '*WITH wanted AS*' -or $route -notlike '*portal-sag:web-route:v1*'){
   throw 'Unable to locate the checked-in catalog target query.'
 }
-$reader=$reader.Replace('${catalogDomainRouteFingerprintSql}',$route)
-if($reader -match '(?im)^\s*(INSERT|UPDATE|DELETE|MERGE|ALTER|DROP|CREATE)\b'){
+$reader=$reader.Replace('${withPins ? physicalLinkProjection : ""}','').Replace('${catalogDomainRouteFingerprintSql}',$route)
+if($reader.Contains('${') -or $reader -match '(?im)^\s*(INSERT|UPDATE|DELETE|MERGE|ALTER|DROP|CREATE)\b'){
   throw 'The catalog target projection is not read-only.'
 }
 $literal=("DECLARE @probe nvarchar(max)=N'"+$reader.Replace("'","''")+"';")

@@ -320,6 +320,12 @@ una identidad de ejecución distinta. No se reutiliza la cuenta de migración, n
 la configuración de autenticación del servidor y no se amplían permisos
 de las fuentes ERP o SAG Admin.
 
+Con 031–059 instaladas, se repitieron los ensayos de destinos físicos y
+de corte histórico. El primero confirmó identidades web y SQL compartidas
+y que revertir una ruta o un perfil no reactiva una prueba retirada. El
+segundo pasó 16/16 (262 ms dentro de SQL). Los dos revirtieron sus datos
+sintéticos; no certifican latencia del API ni una programación real amplia.
+
 ## Verificación de preparación del reporte (2026-11-18)
 
 El conjunto enfocado de conteo, perfiles, permisos de destinatarios y outbox
