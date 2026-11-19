@@ -66,8 +66,12 @@ const PYA_DEFAULTS = {
   smtpPort: 587,
   smtpSecure: false,
   smtpUser: "info@pya.com.co",
-  frontendBaseUrl: "https://agreeable-wave-07469d50f.7.azurestaticapps.net",
 };
+
+function configuracionRecomendadaPya() {
+  return { ...PYA_DEFAULTS, frontendBaseUrl: window.location.origin };
+}
+
 const ADMIN_REMINDER_DEFAULTS: Settings["administrativeReminders"] = {
   sagWebVersionReminder: {
     enabled: false,
@@ -165,7 +169,7 @@ export default function AlertasCorreosPage() {
   useEffect(() => {
     if (data) {
       setForm({
-        ...PYA_DEFAULTS,
+        ...configuracionRecomendadaPya(),
         ...data,
         overdueAlertRecipientRoleIds: normalizarRolesDestinatarios(data.overdueAlertRecipientRoleIds ?? ["super_admin"]),
         overdueAlertCustomEmails: data.overdueAlertCustomEmails ?? data.customAdminAlertEmails ?? [],
@@ -228,7 +232,7 @@ export default function AlertasCorreosPage() {
   }
 
   function usarConfiguracionPya() {
-    setForm((f) => (f ? { ...f, ...PYA_DEFAULTS } : f));
+    setForm((f) => (f ? { ...f, ...configuracionRecomendadaPya() } : f));
     setSmtpPassword("");
     setCambiarPwd(false);
     setExito("Configuración recomendada de P&A cargada. Escriba la contraseña SMTP solo si desea cambiarla.");
@@ -296,7 +300,7 @@ export default function AlertasCorreosPage() {
 
   // Descarta cambios locales y vuelve a la configuración guardada.
   function cancelarSmtp() {
-    if (data) setForm({ ...PYA_DEFAULTS, ...data });
+    if (data) setForm({ ...configuracionRecomendadaPya(), ...data });
     setSmtpPassword("");
     setCambiarPwd(false);
     setError(null);

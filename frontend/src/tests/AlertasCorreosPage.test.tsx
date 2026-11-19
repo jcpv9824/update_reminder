@@ -109,14 +109,24 @@ describe("AlertasCorreosPage", () => {
   it("el botón de configuración recomendada de P&A llena los valores correctos sin contraseña", async () => {
     render_();
     await screen.findByRole("heading", { name: /Alertas y correos/i });
+    expect(screen.getByDisplayValue(settings.frontendBaseUrl)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Usar configuración recomendada de P&A/i }));
     expect(screen.getAllByDisplayValue("info@pya.com.co").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByDisplayValue("Portal SAG Web")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("https://agreeable-wave-07469d50f.7.azurestaticapps.net")).toBeInTheDocument();
+    expect(screen.getByDisplayValue(window.location.origin)).toBeInTheDocument();
+    expect(apiMock.put).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText(/Configuración SMTP avanzada/i));
     expect(screen.getByDisplayValue("smtp.office365.com")).toBeInTheDocument();
     expect(screen.getByDisplayValue("587")).toBeInTheDocument();
     expect(screen.queryByDisplayValue(/valor-prueba-no-real/i)).toBeNull();
+  });
+
+  it("sugiere el Portal de este ambiente cuando el servidor omite el enlace", async () => {
+    const { frontendBaseUrl: _existing, ...withoutLink } = settings;
+    mockSettings(withoutLink);
+    render_();
+    expect(await screen.findByDisplayValue(window.location.origin)).toBeInTheDocument();
+    expect(apiMock.put).not.toHaveBeenCalled();
   });
 
   it("permite enviar correo de prueba", async () => {
