@@ -320,6 +320,26 @@ una identidad de ejecución distinta. No se reutiliza la cuenta de migración, n
 la configuración de autenticación del servidor y no se amplían permisos
 de las fuentes ERP o SAG Admin.
 
+Para solicitarlo al DBA: crear o designar un login SQL independiente,
+mapearlo únicamente a `PortalSAGWeb-TEST` y asignarle el rol existente
+`portal_catalog_v2_publisher` (más `public`, sin roles adicionales). La
+identidad no es un usuario de los orígenes ERP/SAG Admin. El perfil del
+publicador local referencia una versión fija del secreto en Key Vault;
+no copiar la contraseña a Git ni al chat. La aplicación verifica los
+permisos efectivos del login antes de publicar.
+
+En `a7af033`, los perfiles externos entregados volvieron a pasar la sonda
+de origen: `erp_v1` y `sag_admin_v2` devolvieron `verified`. La sonda sólo
+certifica conectividad, TLS y el contrato de lectura del origen; no crea
+configuraciones oficiales ni publica revisiones de catálogo.
+
+Sobre ese mismo candidato pasaron las suites completas (API **1.879/1.879**,
+frontend **303/303**), la guarda SQL-only, TypeScript y ambos builds, y las
+auditorías de producción y completas de ambos paquetes. El build del
+frontend ejecutó TypeScript sin caché incremental y luego Vite, sin
+sobrescribir el `tsconfig.tsbuildinfo` preexistente. `origin/main` seguía
+en `a34aa15`, ancestro del candidato; no se hizo push ni despliegue.
+
 Con 031–059 instaladas, se repitieron los ensayos de destinos físicos y
 de corte histórico. El primero confirmó identidades web y SQL compartidas
 y que revertir una ruta o un perfil no reactiva una prueba retirada. El
