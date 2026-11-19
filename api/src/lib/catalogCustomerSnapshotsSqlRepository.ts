@@ -180,7 +180,9 @@ const readSnapshots = `
   );
   -- Capture all pointers before selecting from the sealed, immutable bodies.
   INSERT INTO @eligible
-  SELECT LOWER(CONVERT(char(36), b.source_id)), b.display_name, b.source_role,
+  SELECT LOWER(CONVERT(char(36), b.source_id)),
+    CASE WHEN b.source_role='erp-customers' THEN p.database_name ELSE b.display_name END,
+    b.source_role,
     CASE WHEN ready.snapshot_key IS NULL THEN 'unavailable'
          WHEN h.attempt_status='succeeded' AND h.attempted_at<=@now AND r.verified_until>@now THEN 'verified' ELSE 'stale' END,
     ready.snapshot_key,

@@ -1,0 +1,61 @@
+.catalogo-selector-fuentes {
+  position: relative;
+  max-inline-size: 100%;
+}
+
+.catalogo-fuentes-boton {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-inline-size: min(250px, 100%);
+}
+
+.catalogo-fuentes-resumen {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.catalogo-fuentes-panel {
+  position: absolute;
+  inset-block-start: calc(100% + 4px);
+  inset-inline-end: 0;
+  z-index: 10;
+  box-sizing: border-box;
+  inline-size: max-content;
+  max-inline-size: min(320px, calc(100vw - 48px));
+  max-block-size: 280px;
+  overflow: auto;
+  margin: 0;
+  padding: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-card);
+  box-shadow: 0 4px 12px #0002;
+}
+
+.catalogo-fuentes-panel .catalogo-fuentes-opcion {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.catalogo-fuentes-opcion input {
+  flex: none;
+  width: auto;
+  margin: 0;
+}
+
+.catalogo-sag-sin-filtro {
+  margin-block: 8px 12px;
+}
+
+@media (max-width: 720px) {
+  .catalogo-fuentes-panel {
+    inset-inline-start: 0;
+    inset-inline-end: auto;
+  }
+}

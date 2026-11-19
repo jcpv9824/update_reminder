@@ -24,7 +24,7 @@ const token = makeCatalogDocumentNumberToken(testKey, "qa", documentNumber);
 const scope: CatalogCustomerSnapshotsReadScope = { environment: "qa", matchKeyVersion: 1, allowedSourceIds: new Set([erpId]) };
 
 const headers: CatalogSnapshotHeaderRow[] = [
-  { source_id: erpId, source_role: "erp-customers", display_name: "ERP QA", revision_state: "verified", observed_at: date,
+  { source_id: erpId, source_role: "erp-customers", display_name: "ERP_QA_Catalog", revision_state: "verified", observed_at: date,
     expected_rows: 1, expected_scopes: 0 },
   { source_id: sagId, source_role: "sag-admin", display_name: "SAG QA", revision_state: "verified", observed_at: date,
     expected_rows: 1, expected_scopes: 1 },
@@ -43,8 +43,11 @@ describe("customer catalog published snapshots", () => {
     const page = buildCatalogCustomerDirectory(input);
     expect(page.items).toHaveLength(1);
     expect(page.items[0]).toMatchObject({ id: publicId, name: "Cliente ERP", state: "active", web: "in_web" });
+    expect(page.sources).toEqual([{ sourceId: erpId, label: "ERP_QA_Catalog", revisionState: "verified", verifiedAt: date.toISOString() }]);
+    expect(page.items[0].sources).toEqual([expect.objectContaining({ sourceId: erpId, label: "ERP_QA_Catalog" })]);
     expect(JSON.stringify(input)).not.toContain(documentNumber);
     expect(JSON.stringify(page)).not.toMatch(/hmac:|SAG QA/);
+    expect(JSON.stringify(page)).not.toContain(sagId);
   });
 
   it("does not certify an absence when the matching number is unresolved or a SAG row is unidentifiable", () => {
@@ -93,6 +96,9 @@ describe("customer catalog published snapshots", () => {
     ]);
     const statement = sqlMocks.query.mock.calls[0][0];
     expect(statement).toMatch(/INSERT INTO @eligible/);
+    expect(statement).toMatch(/CASE WHEN b\.source_role='erp-customers' THEN p\.database_name ELSE b\.display_name END/);
+    expect(statement).toMatch(/b\.source_role='sag-admin' OR \(b\.source_role='erp-customers'\s+AND EXISTS \(SELECT 1 FROM OPENJSON\(@allowedSourceIds\)/);
+    expect(statement).not.toMatch(/p\.(?:server_host|server_port|login_name|password_secret_name)\b/);
     expect(statement).toMatch(/r\.match_key_version=@matchKeyVersion/);
     expect(statement).toMatch(/r\.binding_version=b\.row_version/);
     expect(statement).toMatch(/r\.profile_version=p\.row_version/);

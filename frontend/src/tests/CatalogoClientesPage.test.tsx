@@ -38,6 +38,8 @@ function renderPage(load: CargarCatalogoClientes, loadDetail?: CargarDetalleClie
     </QueryClientProvider>
   );
 }
+const selectorFuentes = () => screen.getByRole("button", { name: /^Fuentes:/ });
+const verSinSAG = "Ver clientes sin filtrar por presencia en SAG Web";
 
 describe("catálogo de clientes multiempresa", () => {
   it("consulta por defecto todas las fuentes autorizadas, activos y en SAG Web, sin acciones de escritura", async () => {
@@ -48,6 +50,9 @@ describe("catálogo de clientes multiempresa", () => {
     const table = screen.getByRole("table", { name: "Clientes del catálogo" });
     expect(within(table).getByText("Colombia")).toBeInTheDocument();
     expect(load).toHaveBeenCalledWith({ state: "active", web: "in_web", page: 1, pageSize: 25 }, expect.any(AbortSignal));
+    expect(selectorFuentes()).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("checkbox", { name: "Todas las fuentes autorizadas" })).toBeNull();
+    fireEvent.click(selectorFuentes());
     expect(screen.getByRole("checkbox", { name: "Todas las fuentes autorizadas" })).toBeChecked();
     expect(screen.queryByRole("button", { name: /crear|nuevo|editar|eliminar|administrar fuentes/i })).toBeNull();
     expect(screen.queryByText(cliente.id)).toBeNull();
@@ -59,6 +64,7 @@ describe("catálogo de clientes multiempresa", () => {
     renderPage(load);
     await screen.findByText(cliente.name);
 
+    fireEvent.click(selectorFuentes());
     fireEvent.click(screen.getByRole("checkbox", { name: "Panamá" }));
     await waitFor(() => expect(load).toHaveBeenLastCalledWith(
       expect.objectContaining({ sourceIds: ["co", "us"], state: "active", web: "in_web" }), expect.any(AbortSignal)));
@@ -133,6 +139,7 @@ describe("catálogo de clientes multiempresa", () => {
       <QueryClientProvider client={client}><CatalogoClientesPage scopeKey="primer-alcance" load={load} /></QueryClientProvider>,
     );
     await screen.findByText(cliente.name);
+    fireEvent.click(selectorFuentes());
     expect(screen.getByRole("checkbox", { name: "Colombia" })).toBeInTheDocument();
     rerender(
       <QueryClientProvider client={client}>
@@ -142,6 +149,81 @@ describe("catálogo de clientes multiempresa", () => {
     expect(screen.queryByText(cliente.name)).toBeNull();
     expect(screen.queryByRole("checkbox", { name: "Colombia" })).toBeNull();
     expect(screen.getByRole("status")).toHaveTextContent("Cargando clientes");
+  });
+
+  it("cierra el selector con Escape, devuelve el foco y no consulta al dejar todas las fuentes desmarcadas", async () => {
+    const load = vi.fn<CargarCatalogoClientes>().mockResolvedValue(initial);
+    renderPage(load);
+    await screen.findByText(cliente.name);
+    const trigger = selectorFuentes();
+    fireEvent.click(trigger);
+    const todas = screen.getByRole("checkbox", { name: "Todas las fuentes autorizadas" });
+    todas.focus();
+    fireEvent.keyDown(todas, { key: "Escape" });
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Todas las fuentes autorizadas" }));
+    expect(await screen.findByText(/Selecciona al menos una fuente/)).toBeInTheDocument();
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("checkbox", { name: "Colombia" })).not.toBeChecked();
+  });
+
+  it("desambigua nombres de BD repetidos sin cambiar los IDs de filtros", async () => {
+    const load = vi.fn<CargarCatalogoClientes>().mockResolvedValue({
+      ...initial, sources: [{ ...colombia, label: "ERP_Main" }, { ...estadosUnidos, label: "ERP_Main" }],
+    });
+    renderPage(load);
+    await screen.findByText(cliente.name);
+    fireEvent.click(selectorFuentes());
+    expect(screen.getByRole("checkbox", { name: "ERP_Main (1)" })).toBeChecked();
+    fireEvent.click(screen.getByRole("checkbox", { name: "ERP_Main (2)" }));
+    await waitFor(() => expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ sourceIds: ["co"] }), expect.any(AbortSignal)));
+    expect(selectorFuentes()).toHaveAccessibleName("Fuentes: ERP_Main (1)");
+  });
+
+  it("solo amplía el filtro SAG Web con la acción explícita y conserva búsqueda, estado y fuentes", async () => {
+    const load = vi.fn<CargarCatalogoClientes>().mockImplementation(async query => ({
+      ...initial, sag: { state: "unavailable", verifiedAt: null }, partial: true,
+      items: query.web === "all" ? [{ ...cliente, web: "unverified" }] : [], total: query.web === "all" ? 1 : 0,
+    }));
+    renderPage(load);
+    expect(await screen.findByRole("button", { name: verSinSAG })).toBeInTheDocument();
+    expect(load.mock.calls[0][0]).toMatchObject({ web: "in_web", state: "active" });
+    fireEvent.click(selectorFuentes());
+    fireEvent.click(screen.getByRole("checkbox", { name: "Estados Unidos" }));
+    fireEvent.change(screen.getByLabelText("Buscar por nombre oficial"), { target: { value: "Comercial" } });
+    fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
+    fireEvent.click(await screen.findByRole("button", { name: verSinSAG }));
+    await screen.findByText(cliente.name);
+    expect(load).toHaveBeenLastCalledWith(
+      { sourceIds: ["co"], state: "active", search: "Comercial", web: "all", page: 1, pageSize: 25 }, expect.any(AbortSignal));
+    expect(screen.queryByRole("button", { name: verSinSAG })).toBeNull();
+    expect(within(screen.getByRole("table")).getByText("No verificado")).toBeInTheDocument();
+  });
+
+  it.each([
+    { sag: initial.sag, sources: initial.sources, total: 0 },
+    { sag: { state: "stale", verifiedAt: null } as const, sources: [], total: 0 },
+    { sag: { state: "stale", verifiedAt: null } as const, sources: initial.sources, total: 0 },
+    { sag: { state: "unavailable", verifiedAt: null } as const, sources: initial.sources, total: 2 },
+    { sag: { state: "unavailable", verifiedAt: null } as const, sources: initial.sources, total: 0, page: 2 },
+  ])("no ofrece ampliar sin evidencia de estado incompleto, fuentes visibles y cero resultados (%#)", async caso => {
+    const load = vi.fn<CargarCatalogoClientes>().mockResolvedValue({ ...initial, ...caso, partial: true, items: [] });
+    renderPage(load);
+    await screen.findByRole("table");
+    expect(screen.queryByRole("button", { name: verSinSAG })).toBeNull();
+  });
+
+  it("no sugiere ampliar la presencia SAG Web para clientes inactivos", async () => {
+    const load = vi.fn<CargarCatalogoClientes>().mockResolvedValue({
+      ...initial, partial: true, sag: { state: "unavailable", verifiedAt: null }, items: [], total: 0,
+    });
+    renderPage(load);
+    expect(await screen.findByRole("button", { name: verSinSAG })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Estado del cliente"), { target: { value: "inactive" } });
+    await screen.findByRole("table");
+    expect(screen.queryByRole("button", { name: verSinSAG })).toBeNull();
   });
 
   it("consulta el indicador autorizado solo al abrirlo y muestra dominios sin enlaces ni destinos", async () => {

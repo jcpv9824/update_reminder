@@ -1,8 +1,9 @@
-import { useEffect, useId, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient, type QueryFilters } from "@tanstack/react-query";
 import { Paginacion } from "../components/Comunes";
 import CatalogoClienteIndicadores, { type CargadoresIndicadores } from "../components/CatalogoClienteIndicadores";
 import { catalogRefreshMessages, useCatalogRefresh, type CatalogRefreshService } from "../hooks/useCatalogRefresh";
+import "./CatalogoClientesPage.css";
 
 type Estado = "active" | "inactive" | "unverified";
 type Presencia = "in_web" | "not_in_web" | "unverified";
@@ -125,6 +126,8 @@ function CatalogoClientesContenido({ scopeKey, load, loadDetail, indicadores, re
   const [filtros, setFiltros] = useState<CatalogoClientesQuery>(FILTROS_INICIALES);
   const [busqueda, setBusqueda] = useState("");
   const [ultimaListaFuentes, setUltimaListaFuentes] = useState<readonly FuenteCatalogoCliente[]>([]);
+  const [fuentesAbiertas, setFuentesAbiertas] = useState(false);
+  const botonFuentes = useRef<HTMLButtonElement>(null);
   const [detalleAbierto, setDetalleAbierto] = useState<string | null>(null);
   const sinFuentes = filtros.sourceIds?.length === 0;
   const alcancesIndicadores = new Set([true, false].flatMap(dominios => [true, false].map(licencias =>
@@ -146,6 +149,7 @@ function CatalogoClientesContenido({ scopeKey, load, loadDetail, indicadores, re
     },
     onAccessDenied: () => {
       setUltimaListaFuentes([]);
+      setFuentesAbiertas(false);
       setDetalleAbierto(null);
       queryClient.removeQueries(consultas);
     },
@@ -159,13 +163,28 @@ function CatalogoClientesContenido({ scopeKey, load, loadDetail, indicadores, re
     retry: false,
     gcTime: 0,
   });
-  const pagina = sinFuentes || accesoDenegado || (!refreshService && consulta.isError) ? undefined : consulta.data;
+  const pagina = sinFuentes || accesoDenegado || consulta.isError ? undefined : consulta.data;
   const nuevasFuentes = pagina?.sources;
   useEffect(() => {
-    if (nuevasFuentes) setUltimaListaFuentes(nuevasFuentes);
-  }, [nuevasFuentes]);
-  const fuentes = accesoDenegado || (!refreshService && consulta.isError) ? [] : nuevasFuentes ?? ultimaListaFuentes;
+    if (accesoDenegado || consulta.isError) setUltimaListaFuentes([]);
+    else if (nuevasFuentes) setUltimaListaFuentes(nuevasFuentes);
+  }, [accesoDenegado, consulta.isError, nuevasFuentes]);
+  const fuentes = accesoDenegado || consulta.isError ? [] : nuevasFuentes ?? ultimaListaFuentes;
   const todas = filtros.sourceIds === undefined;
+  const conteoEtiquetas = new Map<string, number>();
+  const ordinalEtiquetas = new Map<string, number>();
+  for (const fuente of fuentes) conteoEtiquetas.set(fuente.label, (conteoEtiquetas.get(fuente.label) ?? 0) + 1);
+  const opcionesFuentes = fuentes.map(fuente => {
+    const ordinal = (ordinalEtiquetas.get(fuente.label) ?? 0) + 1;
+    ordinalEtiquetas.set(fuente.label, ordinal);
+    return { ...fuente, opcion: (conteoEtiquetas.get(fuente.label) ?? 0) > 1 ? `${fuente.label} (${ordinal})` : fuente.label };
+  });
+  const elegidas = opcionesFuentes.filter(fuente => filtros.sourceIds?.includes(fuente.sourceId));
+  const resumenFuentes = todas ? "Todas" : elegidas.length === 0 ? "Ninguna" :
+    elegidas.length === 1 ? elegidas[0].opcion : `${elegidas.length} seleccionadas`;
+  const puedeVerSinSAG = filtros.state === "active" && filtros.web === "in_web" && filtros.page === 1 &&
+    pagina?.page === 1 && pagina.total === 0 && pagina.sag.state === "unavailable"
+    && pagina.sources.some(fuente => todas || filtros.sourceIds?.includes(fuente.sourceId));
   const avisoActualizacion = catalogRefreshMessages[actualizacion.state];
 
   function vigilarAcceso<T>(cargar?: (id: string, signal: AbortSignal) => Promise<T>) {
@@ -246,22 +265,38 @@ function CatalogoClientesContenido({ scopeKey, load, loadDetail, indicadores, re
             <option value="all">Todos</option>
           </select>
         </div>
-        <fieldset>
-          <legend>Fuentes</legend>
-          <div className="campo">
-            <label htmlFor={`${id}-todas`}>Todas las fuentes autorizadas</label>
-            <input id={`${id}-todas`} type="checkbox" checked={todas}
-              onChange={event => cambiar({ sourceIds: event.target.checked ? undefined : [] })} />
+        {!accesoDenegado && (
+          <div className="catalogo-selector-fuentes"
+            onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFuentesAbiertas(false); }}
+            onKeyDown={event => {
+              if (event.key !== "Escape" || !fuentesAbiertas) return;
+              event.preventDefault();
+              event.stopPropagation();
+              setFuentesAbiertas(false);
+              botonFuentes.current?.focus();
+            }}>
+            <button ref={botonFuentes} type="button" className="secundario catalogo-fuentes-boton"
+              aria-expanded={fuentesAbiertas} aria-controls={`${id}-fuentes`}
+              onClick={() => setFuentesAbiertas(abiertas => !abiertas)}>
+              <span className="catalogo-fuentes-resumen">Fuentes: {resumenFuentes}</span> <span aria-hidden="true">▾</span>
+            </button>
+            <fieldset id={`${id}-fuentes`} className="catalogo-fuentes-panel" hidden={!fuentesAbiertas}>
+              <legend className="sr-only">Fuentes autorizadas</legend>
+              <label className="catalogo-fuentes-opcion">
+                <input type="checkbox" checked={todas}
+                  onChange={event => cambiar({ sourceIds: event.target.checked ? undefined : [] })} />
+                Todas las fuentes autorizadas
+              </label>
+              {opcionesFuentes.map(fuente => (
+                <label className="catalogo-fuentes-opcion" key={fuente.sourceId}>
+                  <input type="checkbox" checked={todas || !!filtros.sourceIds?.includes(fuente.sourceId)}
+                    onChange={event => cambiarFuente(fuente.sourceId, event.target.checked)} />
+                  {fuente.opcion}
+                </label>
+              ))}
+            </fieldset>
           </div>
-          {fuentes.map((fuente, i) => (
-            <div className="campo" key={fuente.sourceId}>
-              <label htmlFor={`${id}-fuente-${i}`}>{fuente.label}</label>
-              <input id={`${id}-fuente-${i}`} type="checkbox"
-                checked={todas || !!filtros.sourceIds?.includes(fuente.sourceId)}
-                onChange={event => cambiarFuente(fuente.sourceId, event.target.checked)} />
-            </div>
-          ))}
-        </fieldset>
+        )}
       </form>
 
       {sinFuentes && <p className="texto-ayuda" role="status">Selecciona al menos una fuente para consultar el catálogo.</p>}
@@ -287,6 +322,13 @@ function CatalogoClientesContenido({ scopeKey, load, loadDetail, indicadores, re
                   <UltimaVerificacion value={fuente.verifiedAt} />.</p>
               ))}
             </div>
+          )}
+          {puedeVerSinSAG && (
+            <p className="catalogo-sag-sin-filtro">
+              <button type="button" className="secundario" onClick={() => cambiar({ web: "all" })}>
+                Ver clientes sin filtrar por presencia en SAG Web
+              </button>
+            </p>
           )}
           <div className="tabla-contenedor">
             <table aria-label="Clientes del catálogo">

@@ -107,6 +107,7 @@ describe("actualización automática de Clientes", () => {
     expect(post).toHaveBeenLastCalledWith("/catalog/refresh", {}, { signal: expect.any(AbortSignal) });
     expect(post.mock.calls[0][2].signal.aborted).toBe(true);
 
+    fireEvent.click(screen.getByRole("button", { name: /^Fuentes:/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Empresa B" }));
     await waitFor(() => expect(post).toHaveBeenCalledTimes(3));
     expect(post).toHaveBeenLastCalledWith("/catalog/refresh", { sourceIds: [fuenteA.sourceId] }, { signal: expect.any(AbortSignal) });
@@ -158,6 +159,7 @@ describe("actualización automática de Clientes", () => {
     expect(await screen.findByRole("alert", {}, { timeout: 5_000 })).toHaveTextContent(/acceso al catálogo/i);
     expect(screen.queryByText(cliente.name)).not.toBeInTheDocument();
     expect(screen.queryByText("sensible.example")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Fuentes:/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "Empresa A" })).not.toBeInTheDocument();
     expect(screen.queryByText(/detalle interno/)).not.toBeInTheDocument();
     expect(queryClient.getQueriesData({ queryKey: ["catalogo-clientes"] }).filter(([, data]) => data !== undefined))
