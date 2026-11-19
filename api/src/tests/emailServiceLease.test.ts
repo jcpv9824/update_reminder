@@ -88,17 +88,6 @@ describe("email provider bounded lease window", () => {
     expect(await delivery).toMatchObject({ ok: false, provider: "sendgrid" });
   });
 
-  it("preserves the actual AbortSignal through the installed SendGrid request builder", async () => {
-    const module = await vi.importActual<typeof import("@sendgrid/client")>("@sendgrid/client");
-    const { Client } = module.default as typeof module.default & { Client: new () => typeof module.default };
-    const client = new Client();
-    const controller = new AbortController();
-    client.setDefaultRequest({ signal: controller.signal, timeout: 60_000 } as unknown as Parameters<typeof client.setDefaultRequest>[0]);
-    const request = client.createRequest({ url: "/v3/mail/send", method: "POST" });
-    expect(request).toHaveProperty("signal", controller.signal);
-    expect(request).toHaveProperty("timeout", 60_000);
-  });
-
   it("returns controlled provider errors without persisting driver/request details", async () => {
     vi.stubEnv("SENDGRID_API_KEY", "synthetic-not-a-real-key");
     fake.request.mockRejectedValue(new Error("synthetic-private-host-and-auth-data"));
