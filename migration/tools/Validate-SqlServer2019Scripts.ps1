@@ -64,7 +64,8 @@ $expected = @(
   '053_catalog_sag_v2_publication.sql',
   '054_catalog_sql_target_instance_identity.sql',
   '055_catalog_sag_target_observations.sql',
-  '056_catalog_sag_target_link_proof.sql'
+  '056_catalog_sag_target_link_proof.sql',
+  '057_catalog_sag_target_runtime_gate.sql'
 )
 
 $resolvedSqlDirectory = (Resolve-Path -LiteralPath $SqlDirectory).Path
