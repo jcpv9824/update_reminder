@@ -256,6 +256,31 @@ export const catalogRefreshWorkerPublicationSqlBatches = { authorize: authorizeW
   reserve: reserveWorkerAttemptBatch, recheckLease: recheckWorkerLeaseBatch, publish: publishBatch,
   publishWithSagaEvidence: publishWithSagaEvidenceBatch, recordFailure: failureBatch } as const;
 
+const authorizeManualBatch = `
+          SET NOCOUNT ON;
+          DECLARE @lockCode int;
+          DECLARE @resource nvarchar(255)=N'portal-sag:catalog-customer-publication:'+@environment;
+          EXEC @lockCode=sys.sp_getapplock @Resource=@resource,@LockMode='Exclusive',@LockOwner='Transaction',@LockTimeout=5000;
+          IF @lockCode<0 THROW 53320, N'Catalog publication lock unavailable.', 1;
+          SELECT 1 AS allowed FROM security.users AS u
+          JOIN security.user_roles AS ur ON ur.user_key=u.user_key
+          JOIN security.roles AS r ON r.role_id=ur.role_id AND r.active=1
+          WHERE u.active=1 AND u.source_id=@actorId
+            AND u.source_id COLLATE Latin1_General_100_BIN2=@actorId COLLATE Latin1_General_100_BIN2
+            AND r.role_id=N'super_admin' AND EXISTS (
+              SELECT 1 FROM settings.catalog_source_bindings AS b
+              JOIN settings.external_database_connections AS p ON p.external_database_connection_key=b.external_database_connection_key
+              WHERE b.source_id=@source AND b.portal_environment=@environment AND b.source_state='active'
+                AND b.row_version=@binding AND b.validated_profile_version=@profile AND b.validated_at IS NOT NULL
+                AND p.row_version=@profile AND p.active=1 AND p.status='active' AND p.encrypt_connection=1 AND p.password_configured=1
+            ) AND EXISTS (
+              SELECT 1 FROM settings.catalog_match_key_registry AS k
+              WHERE k.portal_environment=@environment AND k.match_key_version=@currentKeyVersion
+                AND k.vault_secret_version=@vaultSecretVersion AND k.key_verifier=@keyVerifier
+            );`;
+export const catalogManualPublicationSqlBatches = { authorize: authorizeManualBatch,reserve:reserveAttemptBatch,
+  publish:publishBatch,recordFailure:failureBatch } as const;
+
 function validStamp(stamp: Stamp): boolean {
   return ["qa", "production"].includes(stamp.environment) && uuid.test(stamp.sourceId) &&
     version.test(stamp.bindingRevision) && version.test(stamp.profileRevision) && validOrdinal(stamp.attemptOrdinal) &&
@@ -271,7 +296,7 @@ function splitScope(scope: string | null) {
   return { issuer, documentType };
 }
 
-function validateAndSerialize(revision: CatalogRefreshPublication): { rows: string; scopes: string; inventory: string | null } {
+export function validateAndSerializeCatalogPublication(revision: CatalogRefreshPublication): { rows: string; scopes: string; inventory: string | null } {
   const includesInventory = revision.includesSagInventory === true;
   if (!validStamp(revision) || !["erp-customers", "sag-admin"].includes(revision.role) ||
       revision.rows.length > maxRows || revision.completeScopes.length > maxScopes ||
@@ -377,28 +402,7 @@ export function createSqlCatalogCustomerSnapshotPublisher(
           .input("profile", sql.VarBinary(8), Buffer.from(operator.profileRevision, "hex"))
           .input("currentKeyVersion", sql.SmallInt, operator.matchKeyVersion)
           .input("vaultSecretVersion", sql.VarBinary(16), operator.vaultSecretVersion)
-          .input("keyVerifier", sql.VarBinary(32), operator.keyVerifier).query<{ allowed: number }>(`
-          SET NOCOUNT ON;
-          DECLARE @lockCode int;
-          DECLARE @resource nvarchar(255)=N'portal-sag:catalog-customer-publication:'+@environment;
-          EXEC @lockCode=sys.sp_getapplock @Resource=@resource,@LockMode='Exclusive',@LockOwner='Transaction',@LockTimeout=5000;
-          IF @lockCode<0 THROW 53320, N'Catalog publication lock unavailable.', 1;
-          SELECT 1 AS allowed FROM security.users AS u
-          JOIN security.user_roles AS ur ON ur.user_key=u.user_key
-          JOIN security.roles AS r ON r.role_id=ur.role_id AND r.active=1
-          WHERE u.active=1 AND u.source_id=@actorId
-            AND u.source_id COLLATE Latin1_General_100_BIN2=@actorId COLLATE Latin1_General_100_BIN2
-            AND r.role_id=N'super_admin' AND EXISTS (
-              SELECT 1 FROM settings.catalog_source_bindings AS b
-              JOIN settings.external_database_connections AS p ON p.external_database_connection_key=b.external_database_connection_key
-              WHERE b.source_id=@source AND b.portal_environment=@environment AND b.source_state='active'
-                AND b.row_version=@binding AND b.validated_profile_version=@profile AND b.validated_at IS NOT NULL
-                AND p.row_version=@profile AND p.active=1 AND p.status='active' AND p.encrypt_connection=1 AND p.password_configured=1
-            ) AND EXISTS (
-              SELECT 1 FROM settings.catalog_match_key_registry AS k
-              WHERE k.portal_environment=@environment AND k.match_key_version=@currentKeyVersion
-                AND k.vault_secret_version=@vaultSecretVersion AND k.key_verifier=@keyVerifier
-            );`);
+          .input("keyVerifier", sql.VarBinary(32), operator.keyVerifier).query<{ allowed: number }>(authorizeManualBatch);
         if (allowed.recordset.length !== 1) throw new Error("catalog_publication_forbidden");
       }
       const result = await work(current.request(), current);
@@ -426,7 +430,7 @@ export function createSqlCatalogCustomerSnapshotPublisher(
     },
     async publish(revision) {
       assertOperatorScope(revision);
-      const payload = validateAndSerialize(revision);
+      const payload = validateAndSerializeCatalogPublication(revision);
       return transaction(async (request, current) => {
         const bound = bindStamp(request, revision)
           .input("sourceRole", sql.VarChar(15), revision.role)

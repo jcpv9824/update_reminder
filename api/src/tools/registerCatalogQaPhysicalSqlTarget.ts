@@ -280,11 +280,14 @@ export async function registerCatalogQaPhysicalSqlTarget(approved: unknown, io: 
   }
 }
 
-function broker(sessionDirectory: string, scriptPath: string) {
-  return async (statement: string, mode: Mode): Promise<unknown> => new Promise((done, fail) => {
+function broker(sessionDirectory: string, scriptPath: string, catalogPayloadSupported: boolean) {
+  return async (statement: string, mode: Mode, catalogPayload?: string): Promise<unknown> => new Promise((done, fail) => {
+    if(catalogPayload!==undefined && (!catalogPayloadSupported || mode!=="write")) { fail(stableError()); return; }
     const command = "$ErrorActionPreference='Stop';[Console]::InputEncoding=[System.Text.UTF8Encoding]::new($false);" +
       "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);$r=[Console]::In.ReadToEnd()|ConvertFrom-Json;" +
-      "& $env:PORTAL_QA_036_BROKER -SessionDirectory $r.sessionDirectory -Sql $r.statement -Mode $r.mode -TimeoutSeconds 20 -MaxRows 1";
+      "$p=@{SessionDirectory=$r.sessionDirectory;Sql=$r.statement;Mode=$r.mode;TimeoutSeconds=20;MaxRows=1};" +
+      "if($r.PSObject.Properties.Match('catalogPayload').Count -eq 1){$p.CatalogPayload=$r.catalogPayload};" +
+      "& $env:PORTAL_QA_036_BROKER @p";
     const child = spawn("pwsh", ["-NoProfile", "-NonInteractive", "-Command", command], {
       shell: false, windowsHide: true, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot,
         WINDIR: process.env.WINDIR, TEMP: process.env.TEMP, TMP: process.env.TMP, PORTAL_QA_036_BROKER: scriptPath },
@@ -310,11 +313,11 @@ function broker(sessionDirectory: string, scriptPath: string) {
         done(set.rows[0]);
       } catch { reject(); }
     });
-    child.stdin.end(JSON.stringify({ sessionDirectory, statement, mode }));
+    child.stdin.end(JSON.stringify({ sessionDirectory, statement, mode, catalogPayload }));
   });
 }
 
-export async function readQaCatalogOperatorInput() {
+export async function readQaCatalogOperatorInput(requireCatalogPayload = false) {
   const argv = process.argv.slice(2);
   if (process.env.PORTAL_SAG_ENVIRONMENT !== "qa" || argv.length !== 3 || argv[0] !== "--session-directory" ||
     !argv[1] || argv[2] !== "--apply") throw stableError();
@@ -322,6 +325,8 @@ export async function readQaCatalogOperatorInput() {
   const descriptor = JSON.parse(await readFile(resolve(sessionDirectory,"active.json"), "utf8"));
   if (descriptor?.environment !== "qa" || descriptor.database !== "PortalSAGWeb-TEST" || descriptor.fullControl !== true ||
     descriptor.accessLevel !== "full-control" || descriptor.sessionAuthorized !== true || descriptor.approvalMode !== "session") throw stableError();
+  const catalogPayloadSupported = descriptor.qaCatalogPayloadV1 === true;
+  if (requireCatalogPayload && !catalogPayloadSupported) throw stableError();
   let input = "";
   process.stdin.setEncoding("utf8");
   for await (const chunk of process.stdin) {
@@ -329,8 +334,8 @@ export async function readQaCatalogOperatorInput() {
     if (input.length > 8192) throw stableError();
   }
   const root = resolve(__dirname, "../../../..");
-  return { input: JSON.parse(input) as unknown,
-    broker: broker(sessionDirectory, resolve(root, "migration/connect-sql-server/Invoke-PortalSAGWeb-EphemeralRequest.ps1")),
+  return { input: JSON.parse(input) as unknown, catalogPayloadSupported,
+    broker: broker(sessionDirectory, resolve(root, "migration/connect-sql-server/Invoke-PortalSAGWeb-EphemeralRequest.ps1"), catalogPayloadSupported),
     auditSource: () => readFile(resolve(root, "api/src/lib/auditSqlWriter.ts"), "utf8"),
   };
 }

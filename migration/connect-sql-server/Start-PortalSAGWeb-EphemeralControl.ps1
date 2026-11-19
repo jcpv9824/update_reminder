@@ -30,9 +30,11 @@ function Invoke-SqlBatches {
     [System.Data.SqlClient.SqlConnection]$Connection,
     [string[]]$Batches,
     [int]$TimeoutSeconds,
-    [int]$MaxRows
+    [int]$MaxRows,
+    [string]$CatalogPayload
   )
 
+  $typedCatalog = $PSBoundParameters.ContainsKey('CatalogPayload')
   $allResultSets = @()
   $recordsAffected = 0
   $batchNumber = 0
@@ -41,9 +43,14 @@ function Invoke-SqlBatches {
     if ([string]::IsNullOrWhiteSpace($batch)) { continue }
     $command = $Connection.CreateCommand()
     $reader = $null
+    $parameter = $null
     try {
       $command.CommandTimeout = $TimeoutSeconds
       $command.CommandText = $batch
+      if ($typedCatalog) {
+        $parameter = $command.Parameters.Add('@catalogPayload', [System.Data.SqlDbType]::NVarChar, -1)
+        $parameter.Value = $CatalogPayload
+      }
       $reader = $command.ExecuteReader()
       $resultNumber = 0
       do {
@@ -53,10 +60,24 @@ function Invoke-SqlBatches {
           for ($columnIndex = 0; $columnIndex -lt $reader.FieldCount; $columnIndex++) {
             $columns += $reader.GetName($columnIndex)
           }
+          if ($typedCatalog -and ($allResultSets.Count -ne 0 -or ($columns -join ',') -cne 'published,row_count' -or
+              $reader.GetFieldType(0) -notin @([byte],[int16],[int32],[int64]) -or
+              $reader.GetFieldType(1) -notin @([byte],[int16],[int32],[int64]))) {
+            throw 'Unexpected QA catalog result shape.'
+          }
           $rows = @()
           $totalRows = 0
           while ($reader.Read()) {
             $totalRows++
+            if ($typedCatalog) {
+              if ($totalRows -ne 1 -or $reader.IsDBNull(0)) { throw 'Unexpected QA catalog result count.' }
+              $published = [long]$reader.GetValue(0)
+              $rowCount = if ($reader.IsDBNull(1)) { $null } else { [long]$reader.GetValue(1) }
+              if (($published -eq 0 -and $null -ne $rowCount) -or
+                  ($published -eq 1 -and ($null -eq $rowCount -or $rowCount -lt 0)) -or $published -notin @(0,1)) {
+                throw 'Unexpected QA catalog result values.'
+              }
+            }
             if ($rows.Count -ge $MaxRows) { continue }
             $row = [ordered]@{}
             for ($columnIndex = 0; $columnIndex -lt $reader.FieldCount; $columnIndex++) {
@@ -74,10 +95,14 @@ function Invoke-SqlBatches {
           }
         }
       } while ($reader.NextResult())
+      if ($typedCatalog -and ($allResultSets.Count -ne 1 -or $allResultSets[0].totalRows -ne 1)) {
+        throw 'Unexpected QA catalog result count.'
+      }
       if ($reader.RecordsAffected -gt 0) { $recordsAffected += $reader.RecordsAffected }
     }
     finally {
       if ($null -ne $reader) { $reader.Dispose() }
+      if ($null -ne $parameter) { $parameter.Value = [DBNull]::Value }
       $command.Dispose()
     }
   }
@@ -429,6 +454,8 @@ WHERE d.database_id=DB_ID();
     approvalMode = 'session'
     startedAtUtc = [DateTime]::UtcNow.ToString('O')
   }
+  $qaCatalogPayloadV1 = $Environment -ceq 'qa' -and $connectedDatabase -ceq 'PortalSAGWeb-TEST' -and $accessLevel -ceq 'full-control'
+  if ($qaCatalogPayloadV1) { $descriptor['qaCatalogPayloadV1'] = $true }
   [IO.File]::WriteAllText(
     $descriptorPath,
     (($descriptor | ConvertTo-Json -Depth 4) + [Environment]::NewLine),
@@ -446,6 +473,12 @@ WHERE d.database_id=DB_ID();
     $pipe = New-CurrentUserPipe $pipeName
     $streamReader = $null
     $streamWriter = $null
+    # Treat unknown/malformed wire input as sensitive before it can be parsed.
+    $quietRequestError = $true
+    $catalogRequest = $false
+    $catalogPayload = $null
+    $request = $null
+    $line = $null
     try {
       $pipe.WaitForConnection()
       $streamReader = [IO.StreamReader]::new($pipe, [Text.UTF8Encoding]::new($false), $false, 65536, $true)
@@ -453,17 +486,23 @@ WHERE d.database_id=DB_ID();
       $streamWriter.AutoFlush = $true
       $line = $streamReader.ReadLine()
       if ([string]::IsNullOrWhiteSpace($line)) { continue }
-      $request = $line | ConvertFrom-Json
+      $request = $line | ConvertFrom-Json -NoEnumerate
+      if ($request -isnot [pscustomobject]) { throw 'Unsupported SQL session request.' }
+      $catalogRequest = $request.action -ceq 'executeCatalogQa'
+      $hasCatalogPayload = $request.PSObject.Properties.Name -contains 'catalogPayload'
+      $quietRequestError = $catalogRequest -or $hasCatalogPayload
       $requestId = [string]$request.requestId
       if ($requestId -notmatch '^[a-f0-9]{12}$') { throw 'Invalid request identifier.' }
 
-      if ($request.action -eq 'close') {
+      if ($request.action -eq 'close' -and !$hasCatalogPayload) {
         $streamWriter.WriteLine((@{ success=$true; requestId=$requestId; closed=$true } | ConvertTo-Json -Compress))
         $keepRunning = $false
         continue
       }
 
-      if ($request.action -ne 'execute') { throw 'Unsupported request action.' }
+      if ((!$catalogRequest -and $request.action -ne 'execute') -or ($hasCatalogPayload -and !$catalogRequest)) {
+        throw 'Unsupported request action.'
+      }
       $mode = [string]$request.mode
       if ($mode -notin @('read','write')) { throw 'Request mode must be read or write.' }
       if ($accessLevel -eq 'qa-readonly' -and $mode -eq 'write') {
@@ -474,6 +513,23 @@ WHERE d.database_id=DB_ID();
       $batches = @($request.batches | ForEach-Object { [string]$_ })
       if ($batches.Count -eq 0 -or ($batches -join '').Length -eq 0) { throw 'No SQL batch was supplied.' }
       if (($batches -join '').Length -gt 5MB) { throw 'Request exceeds the 5 MB SQL limit.' }
+      if ($catalogRequest) {
+        $properties = @($request.PSObject.Properties.Name)
+        $expectedFields = @('version','requestId','action','mode','timeoutSeconds','maxRows','batches','catalogPayload')
+        if (!$qaCatalogPayloadV1 -or $connectedDatabase -cne 'PortalSAGWeb-TEST' -or $mode -cne 'write' -or
+            ($request.version -isnot [long] -and $request.version -isnot [int]) -or $request.version -ne 1 -or
+            ($request.maxRows -isnot [long] -and $request.maxRows -isnot [int]) -or $request.maxRows -ne 1 -or
+            $request.batches -isnot [array] -or $batches.Count -ne 1 -or $request.batches[0] -isnot [string] -or
+            $properties.Count -ne $expectedFields.Count -or
+            @($expectedFields | Where-Object { $_ -cnotin $properties }).Count -ne 0 -or
+            $request.catalogPayload -isnot [string] -or [string]::IsNullOrWhiteSpace($request.catalogPayload) -or
+            [Text.Encoding]::Unicode.GetByteCount($request.catalogPayload) -gt 16MB -or
+            !$batches[0].StartsWith('/* portal-sag-catalog-qa-payload:v1 */', [StringComparison]::Ordinal) -or
+            $batches[0] -cnotmatch '(?<![A-Za-z0-9_@])@catalogPayload(?![A-Za-z0-9_])') {
+          throw 'QA catalog request rejected.'
+        }
+        $catalogPayload = $request.catalogPayload
+      }
 
       $sha = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($batches -join "`nGO`n")))
       $requestHash = [Convert]::ToHexString($sha).ToLowerInvariant()
@@ -493,7 +549,12 @@ WHERE d.database_id=DB_ID();
       }
 
       try {
-        $execution = Invoke-SqlBatches -Connection $connection -Batches $batches -TimeoutSeconds $timeoutSeconds -MaxRows $maxRows
+        if ($catalogRequest) {
+          if ($connection.Database -cne 'PortalSAGWeb-TEST') { throw 'QA catalog request rejected.' }
+          $execution = Invoke-SqlBatches -Connection $connection -Batches $batches -TimeoutSeconds $timeoutSeconds -MaxRows 1 -CatalogPayload $catalogPayload
+        } else {
+          $execution = Invoke-SqlBatches -Connection $connection -Batches $batches -TimeoutSeconds $timeoutSeconds -MaxRows $maxRows
+        }
         $response = [ordered]@{
           success = $true
           requestId = $requestId
@@ -506,21 +567,24 @@ WHERE d.database_id=DB_ID();
         Write-Host "Request $requestId completed." -ForegroundColor Green
       }
       catch {
-        $safeMessage = $_.Exception.Message
+        $safeMessage = if ($quietRequestError) { 'QA catalog request failed.' } else { $_.Exception.Message }
         if ($safeMessage.Length -gt 1500) { $safeMessage = $safeMessage.Substring(0,1500) }
         $streamWriter.WriteLine((@{ success=$false; requestId=$requestId; error=$safeMessage } | ConvertTo-Json -Compress))
         Write-Host "Request $requestId failed: $safeMessage" -ForegroundColor Red
       }
     }
     catch {
+      $safeMessage = if ($quietRequestError) { 'SQL session request rejected.' } else { $_.Exception.Message }
       if ($null -ne $streamWriter) {
-        $safeMessage = $_.Exception.Message
         if ($safeMessage.Length -gt 1500) { $safeMessage = $safeMessage.Substring(0,1500) }
         try { $streamWriter.WriteLine((@{ success=$false; error=$safeMessage } | ConvertTo-Json -Compress)) } catch {}
       }
-      Write-Host "Session request error: $($_.Exception.Message)" -ForegroundColor Red
+      Write-Host "Session request error: $safeMessage" -ForegroundColor Red
     }
     finally {
+      $catalogPayload = $null
+      $line = $null
+      $request = $null
       if ($null -ne $streamReader) { $streamReader.Dispose() }
       if ($null -ne $streamWriter) { $streamWriter.Dispose() }
       $pipe.Dispose()

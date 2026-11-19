@@ -3,6 +3,10 @@ param(
   [Parameter(ParameterSetName='Inline',Mandatory=$true)]
   [string]$Sql,
 
+  # Pass an already materialized in-process variable, never a literal command argument.
+  [Parameter(ParameterSetName='Inline')]
+  [string]$CatalogPayload,
+
   [Parameter(ParameterSetName='File',Mandatory=$true)]
   [string]$SqlFile,
 
@@ -28,6 +32,7 @@ param(
 )
 
 $ErrorActionPreference='Stop'
+$typedCatalog = $PSBoundParameters.ContainsKey('CatalogPayload')
 if ([string]::IsNullOrWhiteSpace($SessionDirectory)) {
   $SessionDirectory=Join-Path $PSScriptRoot '..\work\sql-session'
 }
@@ -53,6 +58,20 @@ if (-not $validTarget -or
     $descriptor.sessionAuthorized -ne $true -or
     $descriptor.approvalMode -ne 'session') {
   throw 'The active session is not an authorized PortalSAGWeb database session.'
+}
+if ($typedCatalog) {
+  if ($descriptorEnvironment -cne 'qa' -or $descriptor.database -cne 'PortalSAGWeb-TEST' -or
+      $descriptor.accessLevel -cne 'full-control' -or $descriptor.qaCatalogPayloadV1 -isnot [bool] -or
+      $descriptor.qaCatalogPayloadV1 -ne $true) {
+    throw 'The active QA session does not support typed catalog publication.'
+  }
+  if ($Mode -cne 'write' -or ($PSBoundParameters.ContainsKey('MaxRows') -and $MaxRows -ne 1) -or
+      [string]::IsNullOrWhiteSpace($CatalogPayload) -or [Text.Encoding]::Unicode.GetByteCount($CatalogPayload) -gt 16MB -or
+      !$Sql.StartsWith('/* portal-sag-catalog-qa-payload:v1 */', [StringComparison]::Ordinal) -or
+      $Sql -cnotmatch '(?<![A-Za-z0-9_@])@catalogPayload(?![A-Za-z0-9_])') {
+    throw 'Invalid typed QA catalog publication request.'
+  }
+  $MaxRows = 1
 }
 $sessionProcess=Get-Process -Id ([int]$descriptor.processId) -ErrorAction SilentlyContinue
 if ($null -eq $sessionProcess -or $sessionProcess.ProcessName -ne 'pwsh') {
@@ -90,12 +109,13 @@ else {
   $request=[ordered]@{
     version=1
     requestId=$requestId
-    action='execute'
+    action=$(if ($typedCatalog) { 'executeCatalogQa' } else { 'execute' })
     mode=$Mode
     timeoutSeconds=$TimeoutSeconds
     maxRows=$MaxRows
     batches=$batches
   }
+  if ($typedCatalog) { $request['catalogPayload'] = $CatalogPayload }
 }
 
 $pipe=[System.IO.Pipes.NamedPipeClientStream]::new(
@@ -118,7 +138,15 @@ try {
   if ($response.success -ne $true) { throw ([string]$response.error) }
   $response | ConvertTo-Json -Depth 12
 }
+catch {
+  if ($typedCatalog) { throw 'Typed QA catalog publication failed.' }
+  throw
+}
 finally {
+  if ($typedCatalog) {
+    $CatalogPayload=$null
+    $request=$null
+  }
   if ($null -ne $reader) { $reader.Dispose() }
   if ($null -ne $writer) { $writer.Dispose() }
   $pipe.Dispose()
