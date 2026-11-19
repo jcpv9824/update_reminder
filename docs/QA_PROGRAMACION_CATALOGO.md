@@ -368,6 +368,16 @@ La lectura independiente confirmó un ERP activo, SAG Admin en borrador,
 cero revisiones publicadas y cero transacciones abiertas. El ensayo
 histórico aislado exige cero fuentes activas y ya no se ejecuta sobre
 este estado sin un ambiente de ensayo aparte; no se desactivó el ERP.
+
+Con el intermediario tipado de `2e41095` se validó primero una muestra
+sintética Unicode, sin escritura. Luego se publicó la primera revisión
+real del ERP. SQL encontró el puntero en estado exitoso, revisión sellada,
+**3.516 de 3.516 filas**, **2.220 activas**, 3.516 identificadores `CO:NIT`
+tokenizados y una auditoría de publicación. La entrada se envió mediante
+`nvarchar(max)` de ADO, fuera del texto SQL. No se verificó telemetría de
+nivel servidor con el usuario de QA; esta prueba no afirma que herramientas
+privilegiadas configuradas para capturar parámetros no puedan verlos. SAG
+Admin siguió en borrador y no se cambió producción.
 Al repetir la misma alta en la sesión real se obtuvieron cero inserciones
 de perfiles y cero de vínculos. Pasaron 27 pruebas enfocadas, análisis
 T-SQL 150, TypeScript y el build del API.
