@@ -55,6 +55,21 @@ beforeEach(() => {
 });
 
 describe("external catalog SQL transport", () => {
+  it("permits a 30s budget only for the exact ERP permission/schema statement", async () => {
+    fakes.query.mockResolvedValue(proof);
+    const transport = createCatalogExternalSqlTransport(target);
+    await transport.withConsistentRead({ ...runOptions, timeoutMs: 45_000 }, async session => {
+      await expect(session.select(statement("schema", { timeoutMs: 30_000, sql: "SELECT 1" }))).rejects.toThrow(/^contract_unapproved$/);
+      await expect(session.select(statement("schema", { timeoutMs: 30_000 }))).resolves.toEqual(proof.recordset);
+      await expect(session.select(statement("page", { timeoutMs: 15_001 }))).rejects.toThrow(/^invalid_options$/);
+    });
+    expect(fakes.config).toHaveBeenLastCalledWith(expect.objectContaining({ requestTimeout: 30_000 }));
+    await expect(transport.withConsistentRead({ ...v2Options, timeoutMs: 45_000 }, async session => {
+      await expect(session.select(v2Statement("schema", { timeoutMs: 15_001 }))).rejects.toThrow(/^invalid_options$/);
+    })).rejects.toThrow(/^consistency_unverified$/);
+    expect(fakes.config).toHaveBeenLastCalledWith(expect.objectContaining({ requestTimeout: 15_000 }));
+    expect(fakes.query).toHaveBeenCalledTimes(1);
+  });
   it("runs v2 schema, counts and separate pages in one strictly encrypted SNAPSHOT transaction", async () => {
     fakes.query.mockResolvedValueOnce(proof).mockResolvedValueOnce(emptyCounts)
       .mockResolvedValueOnce({ recordset: [] }).mockResolvedValueOnce({ recordset: [] });

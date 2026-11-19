@@ -2,6 +2,7 @@ import { connect, type Socket } from "node:net";
 import sql from "mssql";
 import {
   CatalogExternalReadUnavailable,
+  catalogExternalSchemaTimeoutMs,
   catalogExternalSelectSql,
   type CatalogExternalReadSession,
   type CatalogExternalSourceTransport,
@@ -96,7 +97,7 @@ export function createCatalogExternalSqlTransport(target: CatalogSqlConnectionTa
         pool = new sql.ConnectionPool({
           server, port, database, user: username, password,
           connectionTimeout: Math.min(timeoutMs, 10_000),
-          requestTimeout: Math.min(timeoutMs, MAX_STATEMENT_MS),
+          requestTimeout: Math.min(timeoutMs, catalogExternalSchemaTimeoutMs(contract)),
           pool: { min: 0, max: 1, idleTimeoutMillis: 1000, acquireTimeoutMillis: Math.min(timeoutMs, 10_000) },
           options: {
             encrypt: true, trustServerCertificate: false, serverName: server,
@@ -123,8 +124,9 @@ export function createCatalogExternalSqlTransport(target: CatalogSqlConnectionTa
             lifetime.signal.throwIfAborted();
             if (closed || active) throw failure("consistency_unverified");
             if (statement.signal.aborted) { stop("cancelled"); throw failure("cancelled"); }
-            if (!validMs(statement.timeoutMs, MAX_STATEMENT_MS)) throw failure("invalid_options");
             const { tag, parameters } = statement;
+            const ceiling = tag === "schema" ? catalogExternalSchemaTimeoutMs(contract) : MAX_STATEMENT_MS;
+            if (!validMs(statement.timeoutMs, ceiling)) throw failure("invalid_options");
             const fixedSql = catalogExternalSelectSql(contract, tag);
             if (statement.sql !== fixedSql) throw failure("contract_unapproved");
             const isPage = tag === "page" || tag === "customerPage" || tag === "companyPage";

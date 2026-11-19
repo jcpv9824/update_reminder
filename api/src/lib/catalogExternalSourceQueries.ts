@@ -342,14 +342,18 @@ async function bounded<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs: 
   }
 }
 
-const schemaTimeoutMs = 15_000;
+// The ERP effective-permissions walk can take >20s on the certified origin.
+// Keep a distinct ceiling for that fixed statement; page and SAG budgets stay unchanged.
+export const catalogExternalSchemaTimeoutMs = (contract: CatalogExternalTransportContract) =>
+  contract === "erp_v1" ? 30_000 : 15_000;
+const erpTotalTimeoutMs = 45_000;
 const defaultPageTimeoutMs = 4_000;
 const verificationTimeoutMs = 30_000;
 
 function selectBoundedStatement(session: CatalogExternalReadSession, contract: CatalogExternalTransportContract,
   tag: CatalogExternalReadStatement["tag"], parameters: CatalogExternalReadStatement["parameters"],
   parent: AbortSignal, pageTimeoutMs = defaultPageTimeoutMs) {
-  const timeoutMs = tag === "schema" ? schemaTimeoutMs : pageTimeoutMs;
+  const timeoutMs = tag === "schema" ? catalogExternalSchemaTimeoutMs(contract) : pageTimeoutMs;
   // Permission metadata can take longer than a page; the parent deadline still caps both.
   return bounded(signal => session.select({ tag, sql: catalogExternalSelectSql(contract, tag), parameters, timeoutMs, signal }),
     timeoutMs, parent);
@@ -360,9 +364,10 @@ export async function verifyCatalogExternalSource(
   transport: CatalogExternalSourceTransport, contract: CatalogExternalContract, signal?: AbortSignal,
 ): Promise<"verified" | "not_read_only" | "unavailable"> {
   if (contract !== "erp_v1" && contract !== "sag_admin_v1") return "unavailable";
+  const totalTimeoutMs = contract === "erp_v1" ? erpTotalTimeoutMs : verificationTimeoutMs;
   try {
     return await bounded(parent => transport.withConsistentRead({
-      contract, timeoutMs: verificationTimeoutMs, signal: parent,
+      contract, timeoutMs: totalTimeoutMs, signal: parent,
     }, async session => {
       if (session.consistency !== "verified") throw new Unavailable("consistency_unverified");
       const schema = await selectBoundedStatement(session, contract, "schema", {}, parent);
@@ -377,7 +382,7 @@ export async function verifyCatalogExternalSource(
         else parseSag(row);
       }
       return "verified" as const;
-    }), verificationTimeoutMs, signal);
+    }), totalTimeoutMs, signal);
   } catch (error) {
     return error instanceof Unavailable && error.reason === "write_access" ? "not_read_only" : "unavailable";
   }
@@ -394,7 +399,7 @@ export async function readCatalogExternalSource(
     const pageSize = positiveInt(options.pageSize, 500, 1000);
     const maxRows = positiveInt(options.maxRows, 50_000, 100_000);
     const pageTimeoutMs = positiveInt(options.statementTimeoutMs, defaultPageTimeoutMs, 15_000);
-    const totalTimeoutMs = positiveInt(options.totalTimeoutMs, 20_000, 120_000);
+    const totalTimeoutMs = positiveInt(options.totalTimeoutMs, contract === "erp_v1" ? erpTotalTimeoutMs : 20_000, 120_000);
     const records = await bounded(signal => transport.withConsistentRead({ contract, timeoutMs: totalTimeoutMs, signal }, async session => {
       if (session.consistency !== "verified") throw new Unavailable("consistency_unverified");
       const schema = await selectBoundedStatement(session, contract, "schema", {}, signal);

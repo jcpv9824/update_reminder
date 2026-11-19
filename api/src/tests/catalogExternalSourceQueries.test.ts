@@ -59,7 +59,7 @@ describe("catalog verified external contracts", () => {
     expect(requests[1].sql).toMatch(/FROM dbo\.clientes AS c\s+LEFT JOIN dbo\.terceros AS t ON t\.ka_nl_tercero = c\.ka_nl_tercero/);
     expect(requests[1].sql).toMatch(/TOP \(@pageSize\)[\s\S]*> @afterId[\s\S]*ORDER BY c\.ka_nl_tercero ASC/);
     expect(requests.map(request => request.parameters)).toEqual([{}, { afterId: null, pageSize: 2 }, { afterId: 10, pageSize: 2 }]);
-    expect(requests.map(request => request.timeoutMs)).toEqual([15_000, 4000, 4000]);
+    expect(requests.map(request => request.timeoutMs)).toEqual([30_000, 4000, 4000]);
     expect(requests.every(request => request.sql.startsWith("SELECT"))).toBe(true);
   });
 
@@ -168,11 +168,11 @@ describe("catalog verified external contracts", () => {
   });
 });
 
-const delayedSchema = () => new Promise<readonly unknown[]>(resolve => setTimeout(() => resolve(validSchema), 10_631));
+const delayedSchema = () => new Promise<readonly unknown[]>(resolve => setTimeout(() => resolve(validSchema), 22_393));
 const hangs = () => new Promise<readonly unknown[]>(() => {});
 const executionModes = [
-  ["verification", 30_000, 26_500, "verified", "unavailable"],
-  ["refresh", 20_000, 16_500, { status: "complete", records: [erpRow(1)] }, { status: "unavailable", reason: "timeout" }],
+  ["verification", 45_000, 21_500, "verified", "unavailable"],
+  ["refresh", 45_000, 21_500, { status: "complete", records: [erpRow(1)] }, { status: "unavailable", reason: "timeout" }],
 ] as const;
 
 describe("external schema and page budgets", () => {
@@ -184,21 +184,21 @@ describe("external schema and page budgets", () => {
       ? verifyCatalogExternalSource(transport, "erp_v1", signal)
       : readCatalogExternalSource(transport, "erp_v1", { signal });
 
-    it("accepts the observed 10,631ms schema check without relaxing the page or permissions check", async () => {
+    it("accepts the observed 22,393ms ERP schema check without relaxing the page or permissions check", async () => {
       const { transport, withConsistentRead, select } = fake(() => [erpRow(1)], { schema: delayedSchema });
       const pending = run(transport);
-      await vi.advanceTimersByTimeAsync(10_631);
+      await vi.advanceTimersByTimeAsync(22_393);
       expect(await pending).toEqual(complete);
       expect(withConsistentRead).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ timeoutMs: totalMs }));
       expect(select.mock.calls.map(([statement]) => [statement.tag, statement.timeoutMs]))
-        .toEqual([["schema", 15_000], ["page", 4000]]);
+        .toEqual([["schema", 30_000], ["page", 4000]]);
     });
 
-    it("cancels a stalled schema after 15 seconds and never reads a page", async () => {
+    it("cancels a stalled ERP schema after 30 seconds and never reads a page", async () => {
       const { transport, select } = fake(() => [erpRow(1)], { schema: hangs });
       const done = vi.fn();
       const pending = run(transport).then(value => { done(); return value; });
-      await vi.advanceTimersByTimeAsync(14_999);
+      await vi.advanceTimersByTimeAsync(29_999);
       expect(done).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       expect(await pending).toEqual(timeout);
@@ -215,7 +215,7 @@ describe("external schema and page budgets", () => {
       await vi.advanceTimersByTimeAsync(1);
       expect(await pending).toEqual(timeout);
       expect(select.mock.calls.map(([statement]) => [statement.tag, statement.timeoutMs]))
-        .toEqual([["schema", 15_000], ["page", 4000]]);
+        .toEqual([["schema", 30_000], ["page", 4000]]);
       expect(select.mock.calls[1][0].signal.aborted).toBe(true);
     });
 
@@ -245,10 +245,10 @@ describe("external schema and page budgets", () => {
   it("applies a statement timeout override to pages only, not the schema", async () => {
     const { transport, select } = fake(hangs, { schema: delayedSchema });
     const pending = readCatalogExternalSource(transport, "erp_v1", { statementTimeoutMs: 25 });
-    await vi.advanceTimersByTimeAsync(10_656);
+    await vi.advanceTimersByTimeAsync(22_418);
     expect(await pending).toEqual({ status: "unavailable", reason: "timeout" });
     expect(select.mock.calls.map(([statement]) => [statement.tag, statement.timeoutMs]))
-      .toEqual([["schema", 15_000], ["page", 25]]);
+      .toEqual([["schema", 30_000], ["page", 25]]);
     expect(select.mock.calls[1][0].signal.aborted).toBe(true);
   });
 });
