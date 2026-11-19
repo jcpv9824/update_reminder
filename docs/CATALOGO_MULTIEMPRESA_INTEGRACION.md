@@ -416,7 +416,7 @@ sólo emitió conteos y tiempos; no publicó revisiones ni activó fuentes.
 Los antecedentes siguientes corresponden a perfiles anteriores y no describen
 los permisos de las nuevas cuentas de sólo lectura.
 
-Después de compilar el API, ejecutar desde `api/`: `node scripts/verify-catalog-origin.cjs <archivo-env-fuera-del-repo> <erp_v1|sag_admin_v1>`. El comando sólo devuelve el contrato y el estado; no copia el archivo, no publica datos ni modifica la configuración. El servidor debe ser un hostname con puerto numérico opcional (`servidor,puerto` o variable separada). Las credenciales nunca se pasan por argumentos.
+Después de compilar el API, ejecutar desde `api/`: `node scripts/verify-catalog-origin.cjs <archivo-env-fuera-del-repo> <erp_v1|sag_admin_v1|sag_admin_v2>`. Para un vínculo SAG Admin nuevo, usar `sag_admin_v2`: valida en una sola lectura SNAPSHOT tanto el inventario como la proyección de destinos, sin leer contraseñas de compañías ni requerir el publicador. El comando sólo devuelve el contrato y el estado; no copia el archivo, no publica datos ni modifica la configuración. El servidor debe ser un hostname con puerto numérico opcional (`servidor,puerto` o variable separada). Las credenciales nunca se pasan por argumentos.
 
 Si el perfil local especifica una instancia, el puerto debe ser explícito: `servidor\INSTANCIA,puerto` o `servidor,puerto\INSTANCIA` para el formato local anterior. El transporte solo conecta al hostname y puerto dados, sin SQL Browser ni redirecciones. Después de validar TLS comprueba la instancia en la misma transacción de solo lectura antes de consultar el esquema o la proyección. Un puerto contradictorio, un cambio de destino o una instancia inesperada termina el preflight sin leer datos de clientes.
 

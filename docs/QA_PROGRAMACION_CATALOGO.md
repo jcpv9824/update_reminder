@@ -248,9 +248,14 @@ En PortalSAGWeb-TEST (SQL Server 2019, nivel 150) se ensayó instalar la 056
 dentro de una transacción. El módulo compiló, devolvió NULL para un destino
 inexistente y rechazó la ejecución directa como miembro ordinario de
 `portal_runtime`. Se revirtió todo: cero módulos, usuarios temporales o
-transacciones residuales. La 056 está en el manifiesto y el analizador, pero
-no en el ejecutor de despliegue. Falta el ensayo de una correspondencia
-válida y conectar la comprobación con tareas y reportes.
+transacciones residuales. El ensayo reproducible
+`migration/tools/Test-CatalogSagTargetLinkProofQa.ps1` pasó 13/13 en QA
+con cero datos de prueba residuales. Incluye el vínculo exacto con NIT
+agrupado, el vencimiento mínimo y los rechazos por revisión sin sello,
+huella, ambiente, perfil o instancia de reporte incorrectos. La 056 está
+en el manifiesto y el analizador, pero no en el ejecutor de despliegue.
+Falta conectar la comprobación con tareas y reportes y probar los flujos
+completos.
 
 ## Verificación de preparación del reporte (2026-11-18)
 
