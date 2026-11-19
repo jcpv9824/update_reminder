@@ -312,6 +312,14 @@ No se aplicó ninguna de estas migraciones en producción. El candidato contiene
 el `origin/main` comprobado (`a34aa15`), incluida la recuperación de SeaweedFS;
 no se hizo push en esta etapa.
 
+La sesión de migración de QA no puede gestionar logins del servidor.
+`PortalSAGWeb-TEST` no usa contención y la autenticación contenida está
+desactivada. Para el ensayo del API local, el DBA debe proporcionar un
+login dedicado para el publicador con usuario sólo en QA; el API debe usar
+una identidad de ejecución distinta. No se reutiliza la cuenta de migración, no se cambia
+la configuración de autenticación del servidor y no se amplían permisos
+de las fuentes ERP o SAG Admin.
+
 ## Verificación de preparación del reporte (2026-11-18)
 
 El conjunto enfocado de conteo, perfiles, permisos de destinatarios y outbox
