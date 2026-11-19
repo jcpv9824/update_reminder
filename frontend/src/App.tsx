@@ -1,4 +1,5 @@
-import { Routes, Route, Navigate } from "react-router-dom";
+import { lazy, Suspense } from "react";
+import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api/client";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
@@ -28,7 +29,23 @@ import LogoCompaniaPage from "./pages/LogoCompaniaPage";
 import InicioPage from "./pages/InicioPage";
 import { DEFAULT_ROLE_DEFINITIONS, type RoleDefinition } from "./permissionModel";
 import { hasPermissionForRoleIds } from "./permissionAccess";
-import { GUIDE_BUILDER_UI_ENABLED } from "./featureFlags";
+import { GUIDE_BUILDER_UI_ENABLED, WHATS_NEW_PROTOTYPE_ENABLED, WHATS_NEW_ENABLED } from "./featureFlags";
+
+const DevPreview = import.meta.env.DEV ? lazy(() => import("./pages/queHayDeNuevo/DevPreview")) : null;
+// Literal Vite checks let the compiler discard these dynamic imports altogether when off.
+const LiveWhatsNew = import.meta.env.VITE_WHATS_NEW_ENABLED === "true" ? lazy(() => import("./pages/queHayDeNuevo/LivePages").then(m => ({ default: m.LiveWhatsNewPage }))) : null;
+const LiveConfig = import.meta.env.VITE_WHATS_NEW_ENABLED === "true" ? lazy(() => import("./pages/queHayDeNuevo/LivePages").then(m => ({ default: m.LiveConfigPage }))) : null;
+const LivePublic = import.meta.env.VITE_WHATS_NEW_ENABLED === "true" ? lazy(() => import("./pages/queHayDeNuevo/LivePages").then(m => ({ default: m.LivePublicPage }))) : null;
+const LiveReport = import.meta.env.VITE_WHATS_NEW_ENABLED === "true" ? lazy(() => import("./pages/queHayDeNuevo/LivePages").then(m => ({ default: m.LiveReportPage }))) : null;
+function Live({ children }: { children: JSX.Element }) { return <Suspense fallback={<div role="status">Cargando...</div>}>{children}</Suspense>; }
+function Preview({ kind }: { kind: "internal" | "config" | "public" }) { return DevPreview ? <Live><DevPreview kind={kind} /></Live> : null; }
+function ReportSession() {
+  const auth = useAuth(); const location = useLocation();
+  if (auth.cargando || !LiveReport) return null;
+  // The report is deliberately not guarded by an option permission, area or recipient ACL.
+  if (!auth.usuario) return <Navigate to="/login" state={{ returnTo: location.pathname }} replace />;
+  return <Live><LiveReport /></Live>;
+}
 
 function Protegido({ permiso, permisos, element }: { permiso?: string; permisos?: string[]; element: JSX.Element }) {
   const auth = useAuth();
@@ -49,14 +66,23 @@ function Protegido({ permiso, permisos, element }: { permiso?: string; permisos?
 
 function Enrutador() {
   const auth = useAuth();
+  const location = useLocation();
+  const requestedReturn = location.state?.returnTo;
+  const reportReturn = WHATS_NEW_ENABLED && typeof requestedReturn === "string" && /^\/actualizaciones\/que-hay-de-nuevo\/reportes\/[A-Za-z0-9_-]+$/.test(requestedReturn) ? requestedReturn : "/";
   if (auth.cargando) return <div className="cargando">Cargando aplicación...</div>;
 
   return (
     <Routes>
-      <Route path="/login" element={auth.usuario ? <Navigate to="/" replace /> : <LoginPage />} />
+      <Route path="/login" element={auth.usuario ? <Navigate to={reportReturn} replace /> : <LoginPage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/formatos-impresion" element={<FormatosImpresionPublicPage />} />
+      {/* La página pública y el reporte histórico no usan el menú autenticado. */}
+      {LivePublic && <Route path="/novedades" element={<Live><LivePublic /></Live>} />}
+      {LiveReport && <Route path="/actualizaciones/que-hay-de-nuevo/reportes/:id" element={<ReportSession />} />}
+      {WHATS_NEW_PROTOTYPE_ENABLED && <Route path="/__dev/que-hay-de-nuevo/*" element={<Preview kind="internal" />} />}
+      {WHATS_NEW_PROTOTYPE_ENABLED && <Route path="/__dev/configuracion-que-hay-de-nuevo" element={<Preview kind="config" />} />}
+      {WHATS_NEW_PROTOTYPE_ENABLED && <Route path="/__dev/novedades" element={<Preview kind="public" />} />}
       {!auth.usuario ? (
         <Route path="*" element={<Navigate to="/login" replace />} />
       ) : (
@@ -70,6 +96,12 @@ function Enrutador() {
           <Route path="licenciamiento" element={<Protegido permiso="clients.licensing.view" element={<CatalogoInventarioRoute vista="licenses" legado={<LicenciamientoPage />} />} />} />
           <Route path="frecuencias" element={<Protegido permiso="updates.schedules.view" element={<FrecuenciasPage />} />} />
           <Route path="admin/formatos-impresion" element={<Protegido permiso="configuration.print_formats.view" element={<FormatosImpresionAdminPage />} />} />
+          {LiveWhatsNew && (
+            <Route path="actualizaciones/que-hay-de-nuevo/*" element={<Protegido permiso="updates.whats_new.view" element={<Live><LiveWhatsNew /></Live>} />} />
+          )}
+          {LiveConfig && (
+            <Route path="configuracion/que-hay-de-nuevo" element={<Protegido permiso="configuration.whats_new.view" element={<Live><LiveConfig /></Live>} />} />
+          )}
           <Route path="admin/descargas-publicas" element={<Protegido permiso="implementation.public_downloads.view" element={<DescargasPublicasAdminPage />} />} />
           <Route path="admin/archivos-publicos" element={<Protegido permiso="implementation.public_files.view" element={<ArchivosPublicosAdminPage />} />} />
           <Route path="implementacion/logo-compania" element={<Protegido permiso="implementation.company_logo.view" element={<LogoCompaniaPage />} />} />

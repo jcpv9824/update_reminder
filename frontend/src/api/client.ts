@@ -167,6 +167,7 @@ export const api = {
   post: <T>(path: string, body?: unknown, options?: ApiRequestOptions) => request<T>("POST", path, body, options),
   postTaskPassword,
   put: <T>(path: string, body?: unknown, options?: ApiRequestOptions) => request<T>("PUT", path, body, options),
+  patch: <T>(path: string, body?: unknown, options?: ApiRequestOptions) => request<T>("PATCH", path, body, options),
   del: <T>(path: string, options?: ApiRequestOptions) => request<T>("DELETE", path, undefined, options),
   getText: async (path: string, options: ApiRequestOptions = {}) => (
     await authenticatedResponse("GET", path, undefined, { credentials: "omit", ...options })

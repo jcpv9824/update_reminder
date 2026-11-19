@@ -29,3 +29,8 @@ migration/sql/056_catalog_sag_target_link_proof.sql text eol=lf
 migration/sql/057_catalog_sag_target_runtime_gate.sql text eol=lf
 migration/sql/058_catalog_sql_target_instance_enrollment.sql text eol=lf
 migration/sql/059_catalog_sag_v2_license_approval.sql text eol=lf
+# Preserve reviewed hashes for these unapplied feature migrations only.
+migration/sql/060_user_business_areas.sql text eol=lf
+migration/sql/061_whats_new_configuration_and_permissions.sql text eol=lf
+migration/sql/062_whats_new_entries_and_testing.sql text eol=lf
+migration/sql/063_whats_new_reports_outbox.sql text eol=lf

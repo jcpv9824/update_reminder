@@ -8,6 +8,14 @@ function jsonResponse(status: number, body: unknown): Response {
 }
 
 describe("cliente API con sesión segura", () => {
+  it("PATCH conserva sesión, CSRF y If-Match para el checklist", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = await import("../api/client");
+    client.setToken("access-vigente");
+    await client.api.patch("/whats-new/rounds/r/checklist", { items: [{ itemNo: 1, checked: true }] }, { headers: { "If-Match": '"etag"' } });
+    expect(fetchMock).toHaveBeenCalledWith("/api/whats-new/rounds/r/checklist", expect.objectContaining({ method: "PATCH", credentials: "include", headers: expect.objectContaining({ Authorization: "Bearer access-vigente", "X-Requested-With": "XMLHttpRequest", "If-Match": '"etag"' }) }));
+  });
   beforeEach(() => {
     vi.resetModules();
     vi.restoreAllMocks();

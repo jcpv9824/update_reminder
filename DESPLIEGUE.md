@@ -120,6 +120,24 @@ Para un aprovisionamiento nuevo puede usar `scripts/desplegar-azure.ps1`. El scr
 
 El workflow de Static Web Apps debe ejecutar las pruebas y el build antes de publicar. La variable `VITE_API_BASE_URL` debe apuntar a la Function App productiva.
 
+### «Qué hay de nuevo»: inclusión sin activación
+
+La compilación productiva fija `VITE_WHATS_NEW_ENABLED=false` y
+`VITE_WHATS_NEW_PROTOTYPE=false`. El API considera desactivado el módulo
+cuando `WHATS_NEW_ENABLED` está ausente o no es `true`. No cambie App
+Settings ni habilite estas opciones como parte de una publicación que
+solo incluye el código. Antes de publicar, compruebe que el API de
+producción no tiene la opción activa y que el ZIP y los chunks del
+frontend no contienen el prototipo ni datos simulados.
+
+Las migraciones del módulo se autorizan por separado. Verifique el
+historial del destino, el SHA-256 del candidato, el respaldo y el ensayo
+de aplicar, repetir y revertir en QA antes de cualquier cambio en
+producción. Una activación posterior requiere pruebas QA con la opción
+habilitada y aprobación explícita. La integración no habilita cargas
+a SeaweedFS, envío de reportes ni el selector real de clientes del
+módulo: solo la vista previa HTML está disponible en la prueba habilitada.
+
 ## Comprobaciones posteriores
 
 1. `GET /api/portal-runtime-status` devuelve `200` con:

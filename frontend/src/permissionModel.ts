@@ -81,6 +81,7 @@ export const PERMISSION_CATALOG: PermissionModule[] = [
     options: [
       option("tasks", "Tareas", "updates.tasks", [ACTIONS.view, { id: "start", label: "Iniciar" }, { id: "complete", label: "Completar" }, { id: "block", label: "Bloquear" }, { id: "resolve_block", label: "Resolver Bloqueo" }, { id: "fail", label: "Marcar Fallida" }, { id: "cancel", label: "Cancelar" }, { id: "reopen", label: "Reabrir" }, { id: "view_database_connection", label: "Ver Conexión de Base" }, { id: "copy_database_connection_part", label: "Copiar Conexión de Base" }, { id: "reveal_database_password", label: "Revelar Contraseña de Base" }]),
       option("schedules", "Programar Actualizaciones", "updates.schedules", [ACTIONS.view, ACTIONS.create, ACTIONS.edit, ACTIONS.delete, ACTIONS.deactivate, ACTIONS.reactivate, { id: "preview_scope", label: "Previsualizar Alcance" }, { id: "generate_tasks", label: "Generar Tareas" }]),
+      option("whats_new", "Qué hay de nuevo", "updates.whats_new", [ACTIONS.view, { id: "author", label: "Crear y editar entradas" }, { id: "test", label: "Probar entradas" }, { id: "publish_client", label: "Publicar a clientes" }, { id: "report", label: "Enviar reportes" }, { id: "view_all", label: "Ver todas (lectura)" }]),
     ],
   },
   {
@@ -100,6 +101,7 @@ export const PERMISSION_CATALOG: PermissionModule[] = [
       option("users", "Usuarios", "configuration.users", [ACTIONS.view, ACTIONS.create, ACTIONS.edit, ACTIONS.deactivate, ACTIONS.reactivate, { id: "reset_password", label: "Restablecer Contraseña" }, { id: "resend_credentials", label: "Reenviar Credenciales" }, { id: "assign_roles", label: "Asignar Roles" }]),
       option("roles", "Roles", "configuration.roles", [ACTIONS.view, ACTIONS.create, ACTIONS.edit, ACTIONS.delete, ACTIONS.deactivate, ACTIONS.reactivate, { id: "manage_permissions", label: "Gestionar Permisos" }, { id: "manage_task_visibility", label: "Gestionar Visibilidad de Tareas" }]),
       option("print_formats", "Formatos de Impresión", "configuration.print_formats", [ACTIONS.view, { id: "create_source", label: "Crear Fuente" }, { id: "edit_source", label: "Editar Fuente" }, { id: "delete_source", label: "Eliminar Fuente" }, { id: "create_format", label: "Crear Formato" }, { id: "edit_format", label: "Editar Formato" }, { id: "delete_format", label: "Eliminar Formato" }, { id: "replace_pdf", label: "Reemplazar PDF" }]),
+      option("whats_new", "Qué hay de nuevo", "configuration.whats_new", [ACTIONS.view, { id: "manage", label: "Administrar" }]),
       option("integrations", "Conexiones", "configuration.integrations", [
         ACTIONS.view,
         { id: "edit_object_storage", label: "Configurar Almacenamiento" },
