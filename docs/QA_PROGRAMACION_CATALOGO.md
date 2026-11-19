@@ -413,6 +413,11 @@ para la misma identidad con nueva revisión. Una prueba retirada no se reactiva.
 Este camino no publica el catálogo ni certifica el reporte de usuarios.
 Pasaron 39 pruebas enfocadas, TypeScript y el análisis SQL Server 2019
 de los lotes generados. No se ejecutó el alta contra una base real.
+En `0bed3d4`, el build completo del API pasó. El comando compilado, con
+sesión QA activa, actor sintético inexistente, registro de rutas vacío y
+sin Key Vault, devolvió únicamente `unavailable` (salida 1). La sesión
+confirmó cero transacciones abiertas y cero auditorías de ese intento.
+Es una prueba negativa del lanzador; no prueba un alta ni una renovación.
 
 ## Verificación de preparación del reporte (2026-11-18)
 
