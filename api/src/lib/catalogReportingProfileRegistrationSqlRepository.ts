@@ -169,18 +169,23 @@ export const REGISTER_CATALOG_REPORTING_PROFILE_SQL = `
     (SELECT LOWER(CONVERT(char(36),profile_id)) FROM @previous) AS replaced_profile_id
   FROM @newProfile AS p;`;
 
-export async function registerSqlCatalogReportingProfile(input: CatalogReportingProfileRegistration): Promise<CatalogReportingProfileRegistrationResult> {
+function prepareRegistration(input: CatalogReportingProfileRegistration) {
   const contract = bindCountContract(input?.evidence);
   if (!input || !contract || (input.portalEnvironment !== "qa" && input.portalEnvironment !== "production") ||
       !uuid(input.targetId) || !uuid(input.trustedInstanceId) || !uuid(input.proofId) || !id(input.connectionId) || !id(input.actor?.id) ||
       !binary(input.profileVersion, 8) || !binary(input.identityFingerprint, 32) || !date(input.verifiedAt) || !date(input.validUntil) ||
-      input.validUntil <= input.verifiedAt) return { status: "conflict", reason: "invalid-proof" };
+      input.validUntil <= input.verifiedAt) return null;
 
-  const proof = { environment: input.portalEnvironment, targetId: input.targetId, connectionId: input.connectionId,
+  return { environment: input.portalEnvironment, targetId: input.targetId, connectionId: input.connectionId,
     profileVersion: Buffer.from(input.profileVersion), instanceId: input.trustedInstanceId,
     identityFingerprint: Buffer.from(input.identityFingerprint), proofId: input.proofId,
-    verifiedAt: new Date(input.verifiedAt), validUntil: new Date(input.validUntil), actor: input.actor.id };
-  return runSqlTransaction<CatalogReportingProfileRegistrationResult>(async transaction => {
+    verifiedAt: new Date(input.verifiedAt), validUntil: new Date(input.validUntil), actor: input.actor.id, contract };
+}
+
+async function registerPrepared(transaction: sql.Transaction, proof: NonNullable<ReturnType<typeof prepareRegistration>>):
+  Promise<CatalogReportingProfileRegistrationResult> {
+  const { contract } = proof;
+  try {
     const { recordset } = await new sql.Request(transaction)
       .input("environment", sql.VarChar(10), proof.environment).input("targetId", sql.UniqueIdentifier, proof.targetId)
       .input("connectionId", sql.NVarChar(150), proof.connectionId).input("profileVersion", sql.VarBinary(8), proof.profileVersion)
@@ -206,5 +211,27 @@ export async function registerSqlCatalogReportingProfile(input: CatalogReporting
       performedBy: proof.actor, performedByEmail: "",
     });
     return { status: "registered", reportingProfileId: row.profile_id };
-  }).catch(() => { throw new Error("catalog_reporting_profile_registration_failed"); });
+  } finally {
+    proof.profileVersion.fill(0);
+    proof.identityFingerprint.fill(0);
+  }
+}
+
+export async function registerSqlCatalogReportingProfile(input: CatalogReportingProfileRegistration): Promise<CatalogReportingProfileRegistrationResult> {
+  const proof = prepareRegistration(input);
+  if (!proof) return { status: "conflict", reason: "invalid-proof" };
+  return runSqlTransaction(transaction => registerPrepared(transaction, proof))
+    .catch(() => { throw new Error("catalog_reporting_profile_registration_failed"); });
+}
+
+/** SQL never opens a second transaction. Caller must roll back on conflict or error when composing writes. */
+export async function registerSqlCatalogReportingProfileInTransaction(transaction: sql.Transaction,
+  input: CatalogReportingProfileRegistration): Promise<CatalogReportingProfileRegistrationResult> {
+  try {
+    const proof = prepareRegistration(input);
+    if (!proof) return { status: "conflict", reason: "invalid-proof" };
+    return await registerPrepared(transaction, proof);
+  } catch {
+    throw new Error("catalog_reporting_profile_registration_failed");
+  }
 }

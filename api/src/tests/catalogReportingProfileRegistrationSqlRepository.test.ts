@@ -6,7 +6,8 @@ vi.mock("mssql", () => ({ default: {
     inputs: Record<string, unknown> = {};
     constructor(readonly tx: object) {}
     input(name: string, _type: unknown, value: unknown) { this.inputs[name] = value; return this; }
-    query(statement: string) { return mock.query(this.tx, statement, this.inputs); }
+    query(statement: string) { return mock.query(this.tx, statement, Object.fromEntries(Object.entries(this.inputs)
+      .map(([key, value]) => [key, Buffer.isBuffer(value) ? Buffer.from(value) : value]))); }
   },
   VarChar: vi.fn(), NVarChar: vi.fn(), VarBinary: vi.fn(), DateTime2: vi.fn(), UniqueIdentifier: Symbol(), Bit: Symbol(),
 } }));
@@ -18,6 +19,7 @@ vi.mock("../lib/sqlTransaction", () => ({ runSqlTransaction: async (work: (tx: o
 } }));
 
 import { REGISTER_CATALOG_REPORTING_PROFILE_SQL, registerSqlCatalogReportingProfile,
+  registerSqlCatalogReportingProfileInTransaction,
   type CatalogReportingProfileRegistration } from "../lib/catalogReportingProfileRegistrationSqlRepository";
 
 const guid = (n: number) => `00000000-0000-0000-0000-00000000000${n}`;
@@ -30,6 +32,26 @@ const respond = (...recordset: object[]) => mock.query.mockResolvedValueOnce({ r
 beforeEach(() => { vi.resetAllMocks(); });
 
 describe("catalog reporting profile registration", () => {
+  it("uses the supplied operator transaction without opening or committing another transaction", async () => {
+    respond(registered);
+    const tx = { operator: true } as unknown as Parameters<typeof registerSqlCatalogReportingProfileInTransaction>[0];
+    await expect(registerSqlCatalogReportingProfileInTransaction(tx, base)).resolves
+      .toEqual({ status: "registered", reportingProfileId: guid(4) });
+    expect(mock.query.mock.calls[0]?.[0]).toBe(tx);
+    expect(mock.audit.mock.calls[0]?.[0]).toBe(tx);
+    expect(mock.begin).not.toHaveBeenCalled();
+    expect(mock.commit).not.toHaveBeenCalled();
+    expect(mock.rollback).not.toHaveBeenCalled();
+  });
+
+  it("does not swallow an audited write failure in an operator-owned transaction", async () => {
+    respond(registered);
+    mock.audit.mockRejectedValueOnce(new Error("fixture diagnostic"));
+    const tx = mock.tx as unknown as Parameters<typeof registerSqlCatalogReportingProfileInTransaction>[0];
+    await expect(registerSqlCatalogReportingProfileInTransaction(tx, base)).rejects
+      .toThrow(/^catalog_reporting_profile_registration_failed$/);
+    expect(mock.commit).not.toHaveBeenCalled();
+  });
   it("uses an opaque profile identifier and transaction-bound audit without target or profile evidence", async () => {
     respond(registered);
     await expect(registerSqlCatalogReportingProfile(base)).resolves.toEqual({ status: "registered", reportingProfileId: guid(4) });
