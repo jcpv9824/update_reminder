@@ -50,6 +50,29 @@ const constantPins = [
 ];
 
 describe("dedicated SAG v2 worker publication adapter", () => {
+  it("owner mode binds the same typed claims only to reserve, with-target publication and failure wrappers", async () => {
+    const io = fake(); const publisher = createCatalogSagV2WorkerPublisher(io.pool, { claim, keyProof: proof() }, "portal-owner");
+    io.execute.mockResolvedValueOnce(resultSet({ attemptOrdinal: ordinal, observedAt }))
+      .mockResolvedValueOnce(resultSet(success)).mockResolvedValueOnce(resultSet({ result: "failed", jobStatus: "retry" }));
+    await expect(publisher.reserveAttempt()).resolves.toEqual({ attemptOrdinal: ordinal, observedAt });
+    await expect(publisher.publishWithTargets(ordinal, payload(), [observedTarget])).resolves.toEqual(success);
+    await expect(publisher.recordFailure(ordinal)).resolves.toEqual({ result: "failed", jobStatus: "retry" });
+    expect(io.execute.mock.calls).toEqual([["settings.reserve_catalog_sag_v2_owner_attempt"],
+      ["settings.publish_catalog_sag_v2_owner_with_targets"], ["settings.fail_catalog_sag_v2_owner_attempt"]]);
+    for (const request of io.requests) expect(request.input.mock.calls.slice(0, 11)).toEqual(constantPins);
+    await expect(publisher.publish(ordinal, payload())).rejects.toThrow(invalid);
+    expect(io.request).toHaveBeenCalledTimes(3); expect(io.query).not.toHaveBeenCalled(); expect(io.transaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid internal mode and never retries owner publication via legacy or dedicated RPC", async () => {
+    const io = fake();
+    expect(() => createCatalogSagV2WorkerPublisher(io.pool, { claim, keyProof: proof() }, "owner" as never)).toThrow(invalid);
+    expect(io.request).not.toHaveBeenCalled();
+    const publisher = createCatalogSagV2WorkerPublisher(io.pool, { claim, keyProof: proof() }, "portal-owner");
+    io.execute.mockRejectedValue(new Error("synthetic private driver detail"));
+    await expect(publisher.publishWithTargets(ordinal, payload(), [observedTarget])).rejects.toEqual(new Error(failed));
+    expect(io.execute.mock.calls).toEqual([["settings.publish_catalog_sag_v2_owner_with_targets"]]);
+  });
   it("publishes the exact bounded Company observation set exclusively through the 055 RPC", async () => {
     const io = fake(), publisher = io.publisher();
     const second = Object.freeze({ ...company, companyRecordId: -2 });

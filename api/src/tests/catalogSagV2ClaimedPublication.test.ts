@@ -39,7 +39,7 @@ function environment(): NodeJS.ProcessEnv {
   };
 }
 
-function harness() {
+function harness(owner = false) {
   const events: string[] = [];
   const calls: { procedure: string; parameters: Record<string, unknown> }[] = [];
   const rows: Partial<Record<CatalogExternalReadStatement["tag"], readonly unknown[]>> = {
@@ -70,9 +70,9 @@ function harness() {
   });
   const execute = vi.fn(async (procedure: string, parameters: Record<string, unknown>) => {
     calls.push({ procedure, parameters }); events.push(procedure);
-    if (procedure === reserveRpc) return { recordsets: [[{ attemptOrdinal: "54", observedAt: new Date("2026-11-17T20:00:00Z") }]] };
-    if (procedure === publishRpc) return { recordsets: [[{ result: "published", jobStatus: "succeeded" }]] };
-    if (procedure === failureRpc) return { recordsets: [[{ result: "failed", jobStatus: "retry" }]] };
+    if (procedure === (owner ? "settings.reserve_catalog_sag_v2_owner_attempt" : reserveRpc)) return { recordsets: [[{ attemptOrdinal: "54", observedAt: new Date("2026-11-17T20:00:00Z") }]] };
+    if (procedure === (owner ? "settings.publish_catalog_sag_v2_owner_with_targets" : publishRpc)) return { recordsets: [[{ result: "published", jobStatus: "succeeded" }]] };
+    if (procedure === (owner ? "settings.fail_catalog_sag_v2_owner_attempt" : failureRpc)) return { recordsets: [[{ result: "failed", jobStatus: "retry" }]] };
     throw privateError();
   });
   const request = vi.fn(() => {
@@ -89,9 +89,27 @@ function harness() {
 }
 
 describe("claimed SAG v2 publication service", () => {
+  it("routes explicit owner-mode claims through fixed owner RPCs while the SAG transport remains SELECT-only", async () => {
+    const h = harness(true); h.env.PORTAL_CATALOG_SAG_V2_PUBLISHER_MODE = "portal-owner";
+    const result = await publishClaimedCatalogSagV2(claim, h.io, h.env);
+    expect(result.outcome).toBe("published");
+    expect(h.calls.map(c => c.procedure)).toEqual(["settings.reserve_catalog_sag_v2_owner_attempt", "settings.publish_catalog_sag_v2_owner_with_targets"]);
+    expect(h.events.filter(e => e === "snapshot")).toHaveLength(1);
+    expect(h.select).toHaveBeenCalled();
+  });
+
+  it("owner publication never weakens the external SAG read-only proof", async () => {
+    const h = harness(true); h.env.PORTAL_CATALOG_SAG_V2_PUBLISHER_MODE = "portal-owner";
+    h.rows.schema = [{ compatible: true, readOnly: false }];
+    await publishClaimedCatalogSagV2(claim, h.io, h.env);
+    expect(h.calls.map(c => c.procedure)).toEqual(["settings.reserve_catalog_sag_v2_owner_attempt", "settings.fail_catalog_sag_v2_owner_attempt"]);
+    expect(h.select.mock.calls.map(c => c[0].tag)).toEqual(["schema"]);
+  });
+
   it("requires explicit server feature configuration and has no I/O when disabled or invalid", async () => {
     for (const patch of [
       { PORTAL_CATALOG_SAG_V2_ENABLED: undefined }, { PORTAL_CATALOG_SAG_V2_ENABLED: "false" },
+      { PORTAL_CATALOG_SAG_V2_PUBLISHER_MODE: "portal-owner " }, { PORTAL_CATALOG_SAG_V2_PUBLISHER_MODE: "dedicated" },
       { PORTAL_CATALOG_READ_ENABLED: "false" }, { PORTAL_CATALOG_AUTOMATION_ENABLED: undefined },
       { PORTAL_SAG_ENVIRONMENT: "test" }, { PORTAL_CATALOG_MATCH_KEY_VERSION: "02" },
       { PORTAL_CATALOG_MATCH_KEY_SECRET_NAME: "https://vault.invalid/" }, { PORTAL_CATALOG_MATCH_KEY_SECRET_VERSION: "latest" },

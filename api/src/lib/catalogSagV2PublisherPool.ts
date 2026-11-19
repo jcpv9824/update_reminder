@@ -3,6 +3,7 @@ import sql from "mssql";
 import type { CatalogEnvironment } from "./catalogSourceConfiguration";
 import { getSecret } from "./keyVault";
 import { createGuardedSqlConnector, type SocketConnector } from "./outboundGuard";
+import { CATALOG_SAG_V2_OWNER_PROCEDURES, readCatalogSagV2PublisherMode } from "./catalogSagV2PublisherMode";
 
 const missing = () => new Error("catalog_sag_v2_publisher_unavailable");
 const namespace = "PORTAL_CATALOG_SAG_V2_PUBLISHER_";
@@ -19,9 +20,15 @@ function portNumber(port: string | undefined): number | undefined | null {
 }
 
 type Settings = Readonly<{ environment: CatalogEnvironment; database: "PortalSAGWeb" | "PortalSAGWeb-TEST";
-  server: string; port: number; username: string; secretName: string; secretVersion: string }>;
+  server: string; port: number } & ({ mode: "dedicated"; username: string; secretName: string; secretVersion: string }
+    | { mode: "portal-owner"; username: "SAGWebDev" })>;
+
+const validPassword = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 512 &&
+  !/[\r\n\u0000]/.test(value) && !!value.trim() && !value.startsWith("@Microsoft.KeyVault(");
 
 export function readCatalogSagV2PublisherPoolSettings(env: NodeJS.ProcessEnv): Settings | null {
+  const mode = readCatalogSagV2PublisherMode(env);
+  if (!mode) return null;
   const environment = env.PORTAL_SAG_ENVIRONMENT;
   if (environment !== "qa" && environment !== "production") return null;
   const database = environment === "qa" ? "PortalSAGWeb-TEST" : "PortalSAGWeb";
@@ -35,6 +42,14 @@ export function readCatalogSagV2PublisherPoolSettings(env: NodeJS.ProcessEnv): S
   const port = inline ?? separate;
   if (port === undefined) return null;
 
+  if (mode === "portal-owner") {
+    // Never place the resolved credential in Settings: callers serialize Settings
+    // as pool/policy comparison keys. Mixed dedicated credentials are ambiguous.
+    if (env.SQL_USERNAME !== "SAGWebDev" || !validPassword(env.SQL_PASSWORD) ||
+      Object.keys(env).some(key => key.startsWith(namespace) && key !== namespace + "MODE" && env[key] !== undefined)) return null;
+    return Object.freeze({ mode, environment, database, server, port, username: "SAGWebDev" });
+  }
+
   const username = env[namespace + "USERNAME"];
   const secretName = env[namespace + "PASSWORD_SECRET_NAME"];
   const secretVersion = env[namespace + "PASSWORD_SECRET_VERSION"];
@@ -42,8 +57,38 @@ export function readCatalogSagV2PublisherPoolSettings(env: NodeJS.ProcessEnv): S
     /^(?:sa|dbo|guest|public)$/i.test(username) || username.toLowerCase() === env.SQL_USERNAME?.trim().toLowerCase() ||
     typeof secretName !== "string" || !/^[a-z0-9-]{1,127}$/i.test(secretName) || all.test(secretName) ||
     typeof secretVersion !== "string" || secretVersion.length !== 32 || !/^[a-f0-9]{32}$/i.test(secretVersion)) return null;
-  return Object.freeze({ environment, database, server, port, username, secretName, secretVersion });
+  return Object.freeze({ mode, environment, database, server, port, username, secretName, secretVersion });
 }
+
+// The owner exception is explicit, not a weaker retry of dedicated readiness.
+// No grants, impersonation or data writes occur here. SQL wrappers repeat the
+// owner identity checks and enforce the exact claim inside their transaction.
+export const CATALOG_SAG_V2_OWNER_PUBLISHER_READINESS_SQL = `
+SELECT CAST(CASE WHEN
+    DB_NAME() COLLATE Latin1_General_100_BIN2 = @expectedDatabase COLLATE Latin1_General_100_BIN2
+    AND DATALENGTH(DB_NAME()) = DATALENGTH(@expectedDatabase)
+    AND @expectedLogin COLLATE Latin1_General_100_BIN2 = N'SAGWebDev'
+    AND DATALENGTH(@expectedLogin) = DATALENGTH(N'SAGWebDev')
+    AND USER_NAME() COLLATE Latin1_General_100_BIN2 = @expectedLogin COLLATE Latin1_General_100_BIN2
+    AND DATALENGTH(USER_NAME()) = DATALENGTH(@expectedLogin)
+    AND ORIGINAL_LOGIN() COLLATE Latin1_General_100_BIN2 = @expectedLogin COLLATE Latin1_General_100_BIN2
+    AND SUSER_SNAME() COLLATE Latin1_General_100_BIN2 = @expectedLogin COLLATE Latin1_General_100_BIN2
+    AND DATALENGTH(ORIGINAL_LOGIN()) = DATALENGTH(@expectedLogin)
+    AND DATALENGTH(SUSER_SNAME()) = DATALENGTH(@expectedLogin)
+    AND CAST(SERVERPROPERTY(N'ProductMajorVersion') AS int) = 15
+    AND d.compatibility_level = 150 AND d.is_read_only = 0
+    AND d.collation_name COLLATE Latin1_General_100_BIN2 = N'Modern_Spanish_CI_AS'
+    AND IS_SRVROLEMEMBER(N'sysadmin') = 0
+    AND IS_ROLEMEMBER(N'db_owner') = 1
+    AND HAS_PERMS_BY_NAME(DB_NAME(), N'DATABASE', N'CONTROL') = 1
+    AND OBJECT_ID(N'settings.reserve_catalog_sag_v2_owner_attempt', N'P') IS NOT NULL
+    AND OBJECT_ID(N'settings.publish_catalog_sag_v2_owner_with_targets', N'P') IS NOT NULL
+    AND OBJECT_ID(N'settings.fail_catalog_sag_v2_owner_attempt', N'P') IS NOT NULL
+    AND HAS_PERMS_BY_NAME(N'settings.reserve_catalog_sag_v2_owner_attempt', N'OBJECT', N'EXECUTE') = 1
+    AND HAS_PERMS_BY_NAME(N'settings.publish_catalog_sag_v2_owner_with_targets', N'OBJECT', N'EXECUTE') = 1
+    AND HAS_PERMS_BY_NAME(N'settings.fail_catalog_sag_v2_owner_attempt', N'OBJECT', N'EXECUTE') = 1
+  THEN 1 ELSE 0 END AS bit) AS ready
+FROM sys.databases AS d WHERE d.database_id = DB_ID();`;
 
 // Check effective permissions under this connection, not role grants viewed from an administrative pool.
 // Metadata is visible for securables over which the caller has permissions. For named private
@@ -169,6 +214,8 @@ export function createCatalogSagV2PublisherPoolLoader(env: NodeJS.ProcessEnv, io
   let settings: Settings | null = null;
   try { settings = readCatalogSagV2PublisherPoolSettings(env); } catch { /* Controlled rejection below. */ }
   const pinned = settings;
+  // Secret stays only in this private closure and the driver's in-memory config.
+  const ownerPassword = pinned?.mode === "portal-owner" ? env.SQL_PASSWORD : undefined;
   let current: Attempt | undefined;
   let closed = false;
 
@@ -191,9 +238,10 @@ export function createCatalogSagV2PublisherPoolLoader(env: NodeJS.ProcessEnv, io
 
   async function open(attempt: Attempt, config: Settings): Promise<Pool> {
     const lifetime = attempt.controller.signal;
-    const { server, port, database, username, secretName, secretVersion } = config;
+    const { server, port, database, username } = config;
     try {
-      const password = await timed(5_000, lifetime, signal => io.getSecret(secretName, signal, secretVersion));
+      const password = config.mode === "portal-owner" ? ownerPassword :
+        await timed(5_000, lifetime, signal => io.getSecret(config.secretName, signal, config.secretVersion));
       if (lifetime.aborted || typeof password !== "string" || !password || password.length > 512 ||
         /[\r\n\u0000]/.test(password) || !password.trim()) throw missing();
       const connector: SocketConnector = async (options, lookup, driverSignal) => {
@@ -228,14 +276,33 @@ export function createCatalogSagV2PublisherPoolLoader(env: NodeJS.ProcessEnv, io
           .input("expectedLogin", sql.NVarChar(128), username);
         const cancel = () => { try { req.cancel(); } catch { /* sockets are closed on failure */ } };
         signal.addEventListener("abort", cancel, { once: true });
-        try { return await req.query(CATALOG_SAG_V2_PUBLISHER_READINESS_SQL); }
+        try { return await req.query(config.mode === "portal-owner" ? CATALOG_SAG_V2_OWNER_PUBLISHER_READINESS_SQL : CATALOG_SAG_V2_PUBLISHER_READINESS_SQL); }
         finally { signal.removeEventListener("abort", cancel); }
       });
       if (!exactReady(ready) || lifetime.aborted || current !== attempt || closed) throw missing();
+      const assertCurrent = () => { if (closed || current !== attempt || lifetime.aborted) throw missing(); };
       return Object.freeze({ request() {
         try {
-          if (closed || current !== attempt || lifetime.aborted) throw missing();
-          return pool.request();
+          assertCurrent();
+          const request = pool.request();
+          if (config.mode !== "portal-owner") return request;
+          // Do not expose query/batch/transaction/output or the native request's
+          // parent pool to an owner-mode consumer. Only fixed wrapper RPCs exist.
+          const allowed: readonly string[] = Object.values(CATALOG_SAG_V2_OWNER_PROCEDURES);
+          const facade = Object.freeze({
+            input(...args: Parameters<sql.Request["input"]>): sql.Request {
+              try { assertCurrent(); request.input(...args); return facade as unknown as sql.Request; } catch { throw missing(); }
+            },
+            async execute(procedure: string) {
+              try {
+                assertCurrent();
+                if (!allowed.includes(procedure)) throw missing();
+                return await request.execute(procedure);
+              } catch { throw missing(); }
+            },
+            cancel() { try { request.cancel(); } catch { throw missing(); } },
+          });
+          return facade as unknown as sql.Request;
         } catch { throw missing(); }
       } });
     } catch {

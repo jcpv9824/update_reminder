@@ -3,6 +3,7 @@ import type { CatalogSagCompanyDiscoveryRecord, CatalogSagCompanyTargetObservati
 import type { CatalogMatchKeyEvidence } from "./catalogMatchKeyEvidence";
 import type { CatalogRefreshClaim } from "./catalogRefreshQueueSqlRepository";
 import { normalizeCatalogSagInventoryEvidence, type CatalogSagInventoryEvidence } from "./catalogSagInventoryEvidence";
+import { CATALOG_SAG_V2_OWNER_PROCEDURES, type CatalogSagV2PublisherMode } from "./catalogSagV2PublisherMode";
 
 export type CatalogSagV2ProtectedCustomer = Readonly<{
   sourceRecordId: number;
@@ -193,12 +194,13 @@ const bindPublication = (request: sql.Request, attemptOrdinal: string, payload: 
     .input("customerCount", sql.Int, payload.customerCount).input("companyCount", sql.Int, payload.companyCount)
     .input("customers", sql.NVarChar(sql.MAX), payload.customers).input("companies", sql.NVarChar(sql.MAX), payload.companies);
 
-/** The caller must supply the 053 worker principal pool. There is no ordinary-Portal fallback or runtime wiring. */
+/** Caller supplies the readiness-checked isolated pool for the explicit mode;
+ * no ordinary-Portal pool, SQL text or fallback is accepted. */
 export function createCatalogSagV2WorkerPublisher(pool: Pick<sql.ConnectionPool, "request">,
-  options: Readonly<{ claim: CatalogRefreshClaim; keyProof: CatalogMatchKeyEvidence }>) {
+  options: Readonly<{ claim: CatalogRefreshClaim; keyProof: CatalogMatchKeyEvidence }>, mode: CatalogSagV2PublisherMode = "dedicated") {
   const pins = (() => {
     try {
-      if (typeof pool?.request !== "function") return invalid();
+      if (typeof pool?.request !== "function" || (mode !== "dedicated" && mode !== "portal-owner")) return invalid();
       return checkedPins(options);
     } catch { return invalid(); }
   })();
@@ -206,6 +208,8 @@ export function createCatalogSagV2WorkerPublisher(pool: Pick<sql.ConnectionPool,
   async function rpc<T>(operation: keyof typeof procedures, bind: (request: sql.Request) => sql.Request,
     decode: (row: unknown) => T): Promise<T> {
     try {
+      if (mode === "portal-owner" && operation === "publish") return invalid();
+      const procedure = mode === "portal-owner" ? CATALOG_SAG_V2_OWNER_PROCEDURES[operation as keyof typeof CATALOG_SAG_V2_OWNER_PROCEDURES] : procedures[operation];
       const request = pool.request().input("environment", sql.VarChar(32), pins.environment)
         .input("sourceId", sql.UniqueIdentifier, pins.sourceId).input("jobId", sql.UniqueIdentifier, pins.jobId)
         .input("workerId", sql.UniqueIdentifier, pins.workerId).input("leaseToken", sql.UniqueIdentifier, pins.leaseToken)
@@ -214,7 +218,7 @@ export function createCatalogSagV2WorkerPublisher(pool: Pick<sql.ConnectionPool,
         .input("vaultSecretVersion", sql.VarBinary(64), Buffer.from(pins.vaultSecretVersion))
         .input("keyVerifier", sql.VarBinary(64), Buffer.from(pins.keyVerifier));
       // The procedure owns its transaction; its only valid result is emitted after its SQL COMMIT.
-      const result = await bind(request).execute<unknown>(procedures[operation]);
+      const result = await bind(request).execute<unknown>(procedure);
       if (!Array.isArray(result.recordsets) || result.recordsets.length !== 1 ||
         !Array.isArray(result.recordsets[0]) || result.recordsets[0].length !== 1) return failed();
       return decode(result.recordsets[0][0]);
@@ -231,6 +235,7 @@ export function createCatalogSagV2WorkerPublisher(pool: Pick<sql.ConnectionPool,
       });
     },
     async publish(attemptOrdinal: string, publication: CatalogSagV2WorkerPublication): Promise<CatalogSagV2PublishResult> {
+      if (mode === "portal-owner") return invalid();
       if (!ordinal(attemptOrdinal)) return invalid();
       const payload = preparePayload(publication);
       return rpc("publish", request => bindPublication(request, attemptOrdinal, payload), decodePublication);

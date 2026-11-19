@@ -6,12 +6,15 @@ import { createCatalogSagV2WorkerPublisher } from "./catalogSagV2WorkerPublisher
 import type { SqlCatalogSourceBinding } from "./catalogSourceBindingsSqlRepository";
 import type { CatalogEnvironment } from "./catalogSourceConfiguration";
 import { parseCatalogSagPolicy, readCatalogRefreshConfiguration } from "./catalogSourcePublication";
+import { readCatalogSagV2PublisherMode } from "./catalogSagV2PublisherMode";
 
 export type CatalogSagV2ClaimedPublicationIO = Readonly<{
   /** Safe Portal metadata only. Implementations can use the supplied exact source filter. */
   readBindings(environment: CatalogEnvironment, signal: AbortSignal, sourceId: string): Promise<readonly SqlCatalogSourceBinding[]>;
   /** No unversioned or latest-secret call is allowed. */
   getSecret(name: string, signal: AbortSignal, exactVersion: string): Promise<string>;
+  /** Historical method name: isolated, readiness-checked pool for the explicit
+   * publisher mode. Never the ordinary Portal pool or the external SAG pool. */
   getDedicatedPool(environment: CatalogEnvironment): Promise<Pick<sql.ConnectionPool, "request">>;
   loadTransport(binding: SqlCatalogSourceBinding, signal: AbortSignal): Promise<CatalogExternalSourceTransport>;
 }>;
@@ -46,6 +49,8 @@ function frozenClaim(value: CatalogRefreshClaim): CatalogRefreshClaim | null {
 
 function readConfiguration(environment: NodeJS.ProcessEnv) {
   if (environment.PORTAL_CATALOG_SAG_V2_ENABLED?.trim() !== "true") return null;
+  const mode = readCatalogSagV2PublisherMode(environment);
+  if (!mode) return null;
   const values = Object.freeze({
     PORTAL_CATALOG_READ_ENABLED: environment.PORTAL_CATALOG_READ_ENABLED,
     PORTAL_CATALOG_AUTOMATION_ENABLED: environment.PORTAL_CATALOG_AUTOMATION_ENABLED,
@@ -66,7 +71,7 @@ function readConfiguration(environment: NodeJS.ProcessEnv) {
     const [issuer, documentType] = scope.split(":");
     scopes.set(countryId, Object.freeze({ issuer, documentType }));
   }
-  return Object.freeze({ environment: configuration.environment, keyVersion: configuration.matchKeyVersion, name, version, scopes });
+  return Object.freeze({ environment: configuration.environment, keyVersion: configuration.matchKeyVersion, name, version, scopes, mode });
 }
 
 /** Bound read-side work even when an injected provider ignores cancellation. Never race an RPC write. */
@@ -145,7 +150,7 @@ export async function publishClaimedCatalogSagV2(serverClaim: CatalogRefreshClai
     return await runCatalogSagV2Refresh({ claim, matchKey, vaultSecretVersion: config.version, scopesByCountry: config.scopes, signal: deadline }, {
       readPinnedSource: (pinned, phaseSignal) => readCurrentBinding(pinned, io, phaseSignal, profileId),
       loadTransport: (binding, phaseSignal) => io.loadTransport(binding, phaseSignal),
-      publisherFor: (pinned, keyProof) => createCatalogSagV2WorkerPublisher(pool, { claim: pinned, keyProof }),
+      publisherFor: (pinned, keyProof) => createCatalogSagV2WorkerPublisher(pool, { claim: pinned, keyProof }, config.mode),
     });
   } catch { return signal?.aborted ? cancelled : unconfirmed; }
   finally { matchKey?.fill(0); }

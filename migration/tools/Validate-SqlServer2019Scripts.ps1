@@ -67,7 +67,8 @@ $expected = @(
   '056_catalog_sag_target_link_proof.sql',
   '057_catalog_sag_target_runtime_gate.sql',
   '058_catalog_sql_target_instance_enrollment.sql',
-  '059_catalog_sag_v2_license_approval.sql'
+  '059_catalog_sag_v2_license_approval.sql',
+  '064_catalog_sag_owner_publisher.sql'
 )
 
 $resolvedSqlDirectory = (Resolve-Path -LiteralPath $SqlDirectory).Path
@@ -100,6 +101,27 @@ foreach ($name in $expected) {
   }
 
   if ($parseErrors.Count -eq 0) {
+    if ($name -ceq '064_catalog_sag_owner_publisher.sql') {
+      # The outer parser sees these fixed module definitions only as string
+      # literals; independently parse each batch that SQL Server will compile.
+      $moduleText=[System.IO.File]::ReadAllText($path)
+      $modules=[regex]::Matches($moduleText,"EXEC sys\.sp_executesql N'((?:[^']|'')*)';")
+      if($modules.Count -ne 4){
+        throw 'Expected exactly four fixed module definitions in migration 064.'
+      }
+      foreach($module in $modules){
+        $moduleReader=[System.IO.StringReader]::new($module.Groups[1].Value.Replace("''","'"))
+        try {
+          $moduleErrors=$null
+          $null=$parser.Parse($moduleReader,[ref]$moduleErrors)
+        } finally {
+          $moduleReader.Dispose()
+        }
+        if($moduleErrors.Count){
+          throw "Invalid nested SQL Server 2019 module in migration 064: $($moduleErrors[0].Message)"
+        }
+      }
+    }
     Write-Host "PASS $name" -ForegroundColor Green
     continue
   }

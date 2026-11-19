@@ -9,7 +9,7 @@ vi.mock("../lib/catalogSourceBindingsSqlRepository", async original => ({
   ...await original<typeof import("../lib/catalogSourceBindingsSqlRepository")>(), readSqlCatalogSourceBindingForClaim: f.binding,
 }));
 
-import { prepareCatalogSagV2Publication } from "../lib/catalogSagV2PublicationRuntime";
+import { catalogSagV2ConfigurationPin, prepareCatalogSagV2Publication } from "../lib/catalogSagV2PublicationRuntime";
 import type { CatalogRefreshClaim } from "../lib/catalogRefreshQueueSqlRepository";
 import { readCatalogRefreshConfiguration } from "../lib/catalogSourcePublication";
 
@@ -56,5 +56,32 @@ describe("SAG v2 runtime preparation", () => {
     expect(await handle?.publish(claim, changed)).toEqual({ outcome: "ineligible", queue: "untouched" });
     expect(f.publish).toHaveBeenCalledOnce();
     expect(close).not.toHaveBeenCalled();
+  });
+
+  it("prepares owner-mode activation through the alternate pool without a credential in configuration keys", async () => {
+    const owner = { ...settings, PORTAL_CATALOG_SAG_V2_PUBLISHER_MODE: "portal-owner", SQL_USERNAME: "SAGWebDev",
+      SQL_PASSWORD: "synthetic-owner-password", PORTAL_CATALOG_SAG_V2_PUBLISHER_USERNAME: undefined,
+      PORTAL_CATALOG_SAG_V2_PUBLISHER_PASSWORD_SECRET_NAME: undefined, PORTAL_CATALOG_SAG_V2_PUBLISHER_PASSWORD_SECRET_VERSION: undefined };
+    const changed = { ...owner, SQL_PASSWORD: "synthetic-rotated-password" };
+    expect(readCatalogRefreshConfiguration(owner)?.includeSagV2).toBe(true);
+    expect(catalogSagV2ConfigurationPin(owner)).not.toContain(owner.SQL_PASSWORD);
+    expect(catalogSagV2ConfigurationPin(owner)).toEqual(catalogSagV2ConfigurationPin(changed));
+    expect(catalogSagV2ConfigurationPin({ ...owner, PORTAL_CATALOG_SAG_V2_PUBLISHER_MODE: "portal-owner " })).toBeNull();
+    const pool = { request: vi.fn() }; const close = vi.fn();
+    const get = vi.fn().mockRejectedValueOnce(new Error("synthetic owner unavailable")).mockResolvedValue(pool);
+    f.make.mockReturnValue({ get, close });
+    expect(await prepareCatalogSagV2Publication(owner)).toBeNull();
+    const handle = await prepareCatalogSagV2Publication(owner);
+    expect(handle?.isCurrent(owner)).toBe(true); expect(handle?.isCurrent(settings)).toBe(false);
+    expect(handle?.isCurrent(changed)).toBe(false);
+    expect(await prepareCatalogSagV2Publication(changed)).toBeNull();
+    expect(get).toHaveBeenCalledTimes(2); expect(close).not.toHaveBeenCalled();
+    f.publish.mockImplementation(async (_claim, io, suppliedEnv) => {
+      expect(suppliedEnv.PORTAL_CATALOG_SAG_V2_PUBLISHER_MODE).toBe("portal-owner");
+      await expect(io.getDedicatedPool("qa")).resolves.toBe(pool);
+      return { outcome: "unconfirmed", queue: "lease-recovery" };
+    });
+    await handle?.publish({ environment: "qa" } as CatalogRefreshClaim, owner);
+    expect(await handle?.publish({ environment: "qa" } as CatalogRefreshClaim, changed)).toEqual({ outcome: "ineligible", queue: "untouched" });
   });
 });

@@ -14,7 +14,10 @@ export type PreparedCatalogSagV2Publication = Readonly<{
 
 // Environment changes in Azure restart the host. Never retire another tick's
 // in-flight writer as a side effect of seeing a changed flag or configuration.
-const loaders = new Map<string, ReturnType<typeof createCatalogSagV2PublisherPoolLoader>>();
+const loaders = new Map<string, Readonly<{
+  loader: ReturnType<typeof createCatalogSagV2PublisherPoolLoader>;
+  credentialMatches(env: NodeJS.ProcessEnv): boolean;
+}>>();
 
 function pins(env: NodeJS.ProcessEnv) {
   const queue = readCatalogRefreshConfiguration(env);
@@ -30,19 +33,26 @@ function pins(env: NodeJS.ProcessEnv) {
 /** Internal comparison token only; never include this value in HTTP or telemetry. */
 export const catalogSagV2ConfigurationPin = (env: NodeJS.ProcessEnv) => pins(env)?.policyKey ?? null;
 
-/** Ready means checked on the dedicated connection, not just configured. */
+/** Ready means checked on the isolated connection for the selected mode, not just configured. */
 export async function prepareCatalogSagV2Publication(env: NodeJS.ProcessEnv): Promise<PreparedCatalogSagV2Publication | null> {
   const initial = pins(env);
   if (!initial) return null;
-  let loader = loaders.get(initial.poolKey);
-  if (!loader) {
+  let entry = loaders.get(initial.poolKey);
+  if (!entry) {
     if (loaders.size >= 2) return null;
-    loader = createCatalogSagV2PublisherPoolLoader(env);
-    loaders.set(initial.poolKey, loader);
+    // Never serialize or hash the owner credential into a cache/policy key.
+    // Rotation requires host restart; until then reject drift without retiring
+    // another in-flight tick or silently reusing its old authenticated pool.
+    const ownerPassword = initial.pool.mode === "portal-owner" ? env.SQL_PASSWORD : undefined;
+    entry = Object.freeze({ loader: createCatalogSagV2PublisherPoolLoader(env),
+      credentialMatches: (current: NodeJS.ProcessEnv) => initial.pool.mode !== "portal-owner" || current.SQL_PASSWORD === ownerPassword });
+    loaders.set(initial.poolKey, entry);
   }
-  const isCurrent = (current: NodeJS.ProcessEnv) => pins(current)?.policyKey === initial.policyKey;
+  const selected = entry;
+  const isCurrent = (current: NodeJS.ProcessEnv) => pins(current)?.policyKey === initial.policyKey && selected.credentialMatches(current);
   try {
-    const pool = await loader.get();
+    if (!isCurrent(env)) return null;
+    const pool = await selected.loader.get();
     if (!isCurrent(env)) return null;
     return Object.freeze({ isCurrent,
       async publish(claim: CatalogRefreshClaim, current: NodeJS.ProcessEnv): Promise<CatalogSagV2RefreshOutcome> {

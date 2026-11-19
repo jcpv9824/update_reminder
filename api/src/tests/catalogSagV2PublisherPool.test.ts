@@ -1,7 +1,8 @@
 import type sql from "mssql";
 import { describe, expect, it, vi } from "vitest";
 import {
-  CATALOG_SAG_V2_PUBLISHER_READINESS_SQL, createCatalogSagV2PublisherPoolLoader, readCatalogSagV2PublisherPoolSettings,
+  CATALOG_SAG_V2_PUBLISHER_READINESS_SQL, CATALOG_SAG_V2_OWNER_PUBLISHER_READINESS_SQL,
+  createCatalogSagV2PublisherPoolLoader, readCatalogSagV2PublisherPoolSettings,
 } from "../lib/catalogSagV2PublisherPool";
 import type { SocketConnector } from "../lib/outboundGuard";
 
@@ -20,6 +21,9 @@ const env = () => ({
 const unavailable = "catalog_sag_v2_publisher_unavailable";
 const classified = () => new Error("synthetic-driver-sensitive-text");
 const ready = { recordsets: [[{ ready: true }]] };
+const ownerEnv = (): NodeJS.ProcessEnv => ({ PORTAL_SAG_ENVIRONMENT: "qa", SQL_SERVER_HOST: server + ",1433",
+  SQL_DATABASE: "PortalSAGWeb-TEST", SQL_USERNAME: "SAGWebDev", SQL_PASSWORD: "synthetic-owner-password",
+  PORTAL_CATALOG_SAG_V2_PUBLISHER_MODE: "portal-owner" });
 
 function fakePool(reply: unknown = ready) {
   let report!: (error: unknown) => void;
@@ -27,12 +31,13 @@ function fakePool(reply: unknown = ready) {
   const connect = vi.fn(async () => {});
   const cancel = vi.fn();
   const query = vi.fn(async (_text: string) => reply);
+  const execute = vi.fn(async (_procedure: string) => ({ recordsets: [[{ result: "published", jobStatus: "succeeded" }]] }));
   const input = vi.fn();
-  const req = { input, query, cancel };
+  const req = { input, query, cancel, execute };
   input.mockReturnValue(req);
   const request = vi.fn(() => req as unknown as sql.Request);
   const on = vi.fn((_event: "error", handle: (error: unknown) => void) => { report = handle; });
-  return { close, connect, cancel, input, on, query, request, error: () => report(classified()) };
+  return { close, connect, cancel, input, on, query, execute, request, error: () => report(classified()) };
 }
 
 function fakeIO(pool = fakePool()) {
@@ -43,6 +48,75 @@ function fakeIO(pool = fakePool()) {
 }
 
 describe("SAG v2 separate SQL publisher connection", () => {
+  it("enables owner reuse only by exact explicit mode without serializing its password", () => {
+    const source = ownerEnv();
+    const settings = readCatalogSagV2PublisherPoolSettings(source);
+    expect(settings).toEqual({ mode: "portal-owner", environment: "qa", database: "PortalSAGWeb-TEST", server, port: 1433, username: "SAGWebDev" });
+    expect(JSON.stringify(settings)).not.toContain(source.SQL_PASSWORD!);
+    for (const mode of ["", "dedicated", "owner", "PORTAL-OWNER", "portal-owner ", " portal-owner", "portal-owner\n"]) {
+      expect(readCatalogSagV2PublisherPoolSettings({ ...source, PORTAL_CATALOG_SAG_V2_PUBLISHER_MODE: mode })).toBeNull();
+      expect(readCatalogSagV2PublisherPoolSettings({ ...env(), PORTAL_CATALOG_SAG_V2_PUBLISHER_MODE: mode })).toBeNull();
+    }
+    expect(readCatalogSagV2PublisherPoolSettings({ ...source, PORTAL_CATALOG_SAG_V2_PUBLISHER_MODE: undefined })).toBeNull();
+  });
+
+  it("rejects ambiguous credentials, nonexact owner identities and invalid deployment pins before I/O", async () => {
+    for (const patch of [
+      { SQL_USERNAME: "sagwebdev" }, { SQL_USERNAME: "SAGWebDev " }, { SQL_USERNAME: "sa" }, { SQL_USERNAME: undefined },
+      { SQL_PASSWORD: undefined }, { SQL_PASSWORD: "" }, { SQL_PASSWORD: "  " }, { SQL_PASSWORD: "bad\nvalue" },
+      { SQL_PASSWORD: "@Microsoft.KeyVault(SecretUri=https://fixture.invalid/)" },
+      { PORTAL_CATALOG_SAG_V2_PUBLISHER_USERNAME: username }, { PORTAL_CATALOG_SAG_V2_PUBLISHER_PASSWORD_SECRET_NAME: secretName },
+      { PORTAL_CATALOG_SAG_V2_PUBLISHER_PASSWORD_SECRET_VERSION: version }, { PORTAL_CATALOG_SAG_V2_PUBLISHER_PASSWORD: password },
+      { SQL_DATABASE: "PortalSAGWeb" }, { PORTAL_SAG_ENVIRONMENT: "prod" }, { SQL_SERVER_PORT: "2000" },
+    ]) {
+      const h = fakeIO(); const loader = createCatalogSagV2PublisherPoolLoader({ ...ownerEnv(), ...patch }, h.io);
+      await expect(loader.get()).rejects.toThrow(unavailable);
+      expect(h.io.newPool).not.toHaveBeenCalled(); expect(h.io.getSecret).not.toHaveBeenCalled();
+    }
+  });
+
+  it("opens a separate strict TLS owner pool and permits only the three owner wrapper RPCs", async () => {
+    const h = fakeIO(); const source = ownerEnv(); const loader = createCatalogSagV2PublisherPoolLoader(source, h.io);
+    source.SQL_PASSWORD = "later-synthetic-password";
+    const sink = await loader.get();
+    expect(h.io.getSecret).not.toHaveBeenCalled();
+    expect(h.io.newPool.mock.calls[0][0]).toMatchObject({ user: "SAGWebDev", password: "synthetic-owner-password",
+      options: { encrypt: true, trustServerCertificate: false, fallbackToDefaultDb: false, connector: expect.any(Function) } });
+    expect(h.pool.query).toHaveBeenCalledExactlyOnceWith(CATALOG_SAG_V2_OWNER_PUBLISHER_READINESS_SQL);
+    const req = sink.request();
+    expect(Object.keys(req).sort()).toEqual(["cancel", "execute", "input"]);
+    expect(req.input("environment", "qa")).toBe(req);
+    for (const procedure of ["settings.reserve_catalog_sag_v2_owner_attempt", "settings.publish_catalog_sag_v2_owner_with_targets", "settings.fail_catalog_sag_v2_owner_attempt"]) {
+      await req.execute(procedure);
+    }
+    expect(h.pool.execute).toHaveBeenCalledTimes(3);
+    for (const procedure of ["settings.publish_catalog_sag_v2_revision", "settings.publish_catalog_sag_v2_with_targets", "dbo.other", "settings.publish_catalog_sag_v2_owner_with_targets "]) {
+      await expect(req.execute(procedure)).rejects.toThrow(unavailable);
+    }
+    expect(h.pool.execute).toHaveBeenCalledTimes(3);
+    await loader.close();
+    await expect(req.execute("settings.reserve_catalog_sag_v2_owner_attempt")).rejects.toThrow(unavailable);
+  });
+
+  it("fails closed on owner readiness rejection without attempting dedicated fallback", async () => {
+    const h = fakeIO(fakePool({ recordsets: [[{ ready: false }]] }));
+    const loader = createCatalogSagV2PublisherPoolLoader(ownerEnv(), h.io);
+    await expect(loader.get()).rejects.toEqual(new Error(unavailable));
+    expect(h.pool.close).toHaveBeenCalledOnce(); expect(h.io.newPool).toHaveBeenCalledOnce();
+    expect(h.io.getSecret).not.toHaveBeenCalled(); expect(h.pool.execute).not.toHaveBeenCalled();
+  });
+
+  it("owner readiness preserves exact SQL identity, version, database and existing owner authority", () => {
+    const text = CATALOG_SAG_V2_OWNER_PUBLISHER_READINESS_SQL;
+    expect(text).toMatch(/^\s*SELECT/i);
+    for (const token of ["@expectedDatabase", "@expectedLogin", "ORIGINAL_LOGIN()", "SUSER_SNAME()", "USER_NAME()", "DATALENGTH", "Latin1_General_100_BIN2",
+      "ProductMajorVersion", "150", "Modern_Spanish_CI_AS", "IS_SRVROLEMEMBER(N'sysadmin') = 0", "IS_ROLEMEMBER(N'db_owner') = 1", "N'CONTROL') = 1", "N'SAGWebDev'"]) expect(text).toContain(token);
+    for (const procedure of ["reserve_catalog_sag_v2_owner_attempt", "publish_catalog_sag_v2_owner_with_targets", "fail_catalog_sag_v2_owner_attempt"]) {
+      expect(text).toContain(`OBJECT_ID(N'settings.${procedure}', N'P') IS NOT NULL`);
+      expect(text).toContain(`HAS_PERMS_BY_NAME(N'settings.${procedure}', N'OBJECT', N'EXECUTE') = 1`);
+    }
+    expect(text).not.toMatch(/;\s*(?:EXEC|CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|GRANT|REVOKE)\b/i);
+  });
   it("requires a matching exact deployment environment and database with explicit nonconflicting TCP port", () => {
     expect(readCatalogSagV2PublisherPoolSettings(env())).toMatchObject({ environment: "qa", database: "PortalSAGWeb-TEST", server, port: 1433 });
     expect(readCatalogSagV2PublisherPoolSettings({ ...env(), PORTAL_SAG_ENVIRONMENT: "production", SQL_DATABASE: "PortalSAGWeb",

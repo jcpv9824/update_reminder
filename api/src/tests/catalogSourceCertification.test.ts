@@ -64,6 +64,23 @@ describe("catalog source certification service", () => {
     expect(io.activate).toHaveBeenCalledExactlyOnceWith(v2, expect.objectContaining({ contractVersion: "sag_admin_v2" }), actor);
   });
 
+  it("owner activation requires alternate publisher readiness and still rejects writable source evidence", async () => {
+    const owner = { ...env, PORTAL_CATALOG_SAG_V2_PUBLISHER_MODE: "portal-owner", SQL_USERNAME: "SAGWebDev",
+      SQL_PASSWORD: "synthetic-owner-password", PORTAL_CATALOG_SAG_V2_PUBLISHER_USERNAME: undefined,
+      PORTAL_CATALOG_SAG_V2_PUBLISHER_PASSWORD_SECRET_NAME: undefined, PORTAL_CATALOG_SAG_V2_PUBLISHER_PASSWORD_SECRET_VERSION: undefined };
+    const io = mocks(); io.readBindings.mockResolvedValue([v2]);
+    const request = { ...args, authorizeActivation: async () => true };
+    io.discover.mockResolvedValueOnce("not_read_only");
+    expect(await certifySavedCatalogSource(request, io, owner)).toBe("not_read_only");
+    expect(io.publisherReady).not.toHaveBeenCalled(); expect(io.activate).not.toHaveBeenCalled();
+    io.publisherReady.mockResolvedValueOnce(false);
+    expect(await certifySavedCatalogSource(request, io, owner)).toBe("unavailable");
+    expect(io.activate).not.toHaveBeenCalled();
+    expect(await certifySavedCatalogSource(request, io, owner)).toBe("activated");
+    expect(io.publisherReady).toHaveBeenLastCalledWith(owner);
+    expect(io.activate).toHaveBeenCalledOnce(); expect(io.verify).not.toHaveBeenCalled();
+  });
+
   it("does not activate from an earlier v2 configuration after the probe", async () => {
     const io = mocks();
     const changing = { ...env };

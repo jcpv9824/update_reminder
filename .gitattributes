@@ -29,3 +29,4 @@ migration/sql/056_catalog_sag_target_link_proof.sql text eol=lf
 migration/sql/057_catalog_sag_target_runtime_gate.sql text eol=lf
 migration/sql/058_catalog_sql_target_instance_enrollment.sql text eol=lf
 migration/sql/059_catalog_sag_v2_license_approval.sql text eol=lf
+migration/sql/064_catalog_sag_owner_publisher.sql text eol=lf
