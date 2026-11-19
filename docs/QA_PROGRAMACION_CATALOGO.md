@@ -360,6 +360,14 @@ a SAG Admin ni homologa identificadores del exterior. Incorporarlos queda
 para un cambio posterior con contrato y alcance propios. La
 corrección UTF-8 del intermediario conserva rutas con tildes; el primer
 intento falló antes de escribir y se verificó que no dejó filas.
+
+Tras reabrir la misma sesión SQL de QA, se verificó nuevamente el ERP
+desde el Vault y se activó exclusivamente el vínculo `erp_v1` / `CO:NIT`
+con su versión vigente del perfil y la auditoría en la misma transacción.
+La lectura independiente confirmó un ERP activo, SAG Admin en borrador,
+cero revisiones publicadas y cero transacciones abiertas. El ensayo
+histórico aislado exige cero fuentes activas y ya no se ejecuta sobre
+este estado sin un ambiente de ensayo aparte; no se desactivó el ERP.
 Al repetir la misma alta en la sesión real se obtuvieron cero inserciones
 de perfiles y cero de vínculos. Pasaron 27 pruebas enfocadas, análisis
 T-SQL 150, TypeScript y el build del API.
