@@ -258,9 +258,12 @@ El mismo ensayo con `-RuntimeGate` pasó 16 comprobaciones adicionales de
 la 057 con roles sintéticos en SQL Server 2019: acceso acotado del Portal,
 negación de la 056 directa y de las tablas de custodia, separación del
 publicador, candidatos exactos, vínculo físico ajeno e instancia de reporte.
-El rollback dejó cero datos o usuarios de prueba. Las dos migraciones están
-en el manifiesto y el analizador; el ensayo no las deja instaladas ni modifica
-el ejecutor de despliegue.
+El rollback dejó cero datos o usuarios de prueba. Después del ensayo, el
+ejecutor con `-Environment qa -IncludeCatalog` instaló 056 y 057, con
+`PASS` en ambas, y verificó las 27 migraciones del catálogo (031–057).
+Una consulta independiente confirmó ambos hashes y cero observaciones,
+fuentes activas, miembros del rol publicador o transacciones abiertas.
+No se instaló ninguna migración en producción.
 
 Cuando SAG v2 está habilitado, la programación de bases requiere una prueba
 vigente de la 057 para cada vínculo autorizado y conserva el menor
