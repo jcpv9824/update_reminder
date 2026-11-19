@@ -288,9 +288,21 @@ lectura, identidad y conteo que el reporte; descarta la cifra y mantiene el
 GUID sólo en memoria para verificar la huella. Pasaron 25 pruebas y
 TypeScript. Un ensayo de instalación con rollback en PortalSAGWeb-TEST
 confirmó que el módulo es privado, rechaza una prueba ausente y no deja
-objetos o transacciones residuales. Falta probar la inscripción válida y
+objetos o transacciones residuales. El ensayo funcional pasó 17/17: una
+inscripción, dos repeticiones que no modifican la prueba o fecha original
+y los rechazos de identidad, permisos, versión o vigencia, sin datos de
+prueba después del rollback. El adaptador SQL no escoge la identidad que
+ejecuta la inscripción ni abre la conexión principal del Portal. Falta
 autorizar el llamador interno y los perfiles reales. No se instaló 058 en
 ninguna base ni se concede acceso directo al rol del Portal.
+
+La 059 conserva las aprobaciones manuales inmutables y reconoce los dos
+contratos exactos SAG. Un ensayo en QA aceptó v1 y v2, rechazó un lote con
+una versión obsoleta y restauró el trigger anterior sin aprobaciones
+residuales. No precarga módulos ni equivalencias. El ensayo de ejecución
+de licencias pasó 16/16 con dos filas ERP que comparten exactamente el mismo
+documento y cliente agrupado: la fila aprobada sigue siendo la única
+referencia. La suite enfocada correspondiente pasó 84/84 y TypeScript.
 
 ## Verificación de preparación del reporte (2026-11-18)
 

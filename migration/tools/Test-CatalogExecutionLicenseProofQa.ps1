@@ -12,8 +12,16 @@ if($descriptor.database -cne 'PortalSAGWeb-TEST' -or ($descriptor.environment -a
 $root=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
 $proof=(Get-Content -Raw -LiteralPath (Join-Path $root 'api/src/lib/catalogExecutionLicenseSqlProof.ts')).Split([char]96) |
   Where-Object { $_ -match '^\s*SET NOCOUNT ON;' } | Select-Object -First 1
+$licenseSource=Get-Content -Raw -LiteralPath (Join-Path $root 'api/src/lib/catalogSagPositiveLicenseSql.ts')
+$template=[regex]::Escape([string][char]96)
+$v1=[regex]::Match($licenseSource,"(?s)export const catalogSagV1LicenseRevisionSql = ${template}([^${template}]+)${template};")
+$positive=[regex]::Match($licenseSource,"(?s)export const catalogSagPositiveLicenseRevisionSql = ${template}([^${template}]+)${template};")
+if($proof -and $v1.Success -and $positive.Success){
+  $proof=$proof.Replace('${catalogSagPositiveLicenseRevisionSql}',
+    $positive.Groups[1].Value.Replace('${catalogSagV1LicenseRevisionSql}',$v1.Groups[1].Value))
+}
 if(!$proof -or $proof -match '(?im)^\s*(UPDATE|DELETE|MERGE|ALTER|DROP|CREATE|EXEC(?:UTE)?)\b' -or
-   $proof -match '(?im)^\s*INSERT\s+[^@]'){
+   $proof -match '(?im)^\s*INSERT\s+[^@]' -or $proof.Contains('${')){
   throw 'Expected the actual licensing proof with no persistent writes.'
 }
 $literal="DECLARE @proof nvarchar(max)=N'"+$proof.Replace("'","''")+"';"
@@ -83,7 +91,7 @@ BEGIN TRY
   SET @customer=SCOPE_IDENTITY();
   INSERT core.catalog_customer_source_revisions(catalog_source_key,source_role,binding_version,profile_version,
     match_key_version,attempt_ordinal,expected_rows,expected_scopes,observed_at,verified_until,has_sag_inventory_evidence)
-    VALUES(@erp,'erp-customers',@erpBinding,@erpProfile,@version,@attempt,1,0,@stamp,@erpEnd,0);
+    VALUES(@erp,'erp-customers',@erpBinding,@erpProfile,@version,@attempt,2,0,@stamp,@erpEnd,0);
   SET @erpRevision=SCOPE_IDENTITY();
   INSERT core.catalog_customer_source_revisions(catalog_source_key,source_role,binding_version,profile_version,
     match_key_version,attempt_ordinal,expected_rows,expected_scopes,observed_at,verified_until,has_sag_inventory_evidence)
@@ -92,6 +100,7 @@ BEGIN TRY
   INSERT core.catalog_customer_revision_rows(revision_key,source_role,source_record_id,catalog_customer_key,official_name,
     active_code,issuer,document_type,document_number_token)
     VALUES(@erpRevision,'erp-customers',1,@customer,N'Fixture','S','CO','NIT',@token),
+      (@erpRevision,'erp-customers',3,@customer,N'Grouped ERP duplicate','S','CO','NIT',@token),
       (@sagRevision,'sag-admin',2,NULL,NULL,NULL,'CO','NIT',@token);
   INSERT core.catalog_sag_revision_evidence(revision_key,source_record_id,domain_candidate,environment_kind,license_codes)
     VALUES(@sagRevision,2,@hostname,'test','A');

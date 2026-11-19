@@ -50,6 +50,15 @@ describe("transactional catalog execution licensing proof", () => {
     await expect(revalidateSqlCatalogExecutionLicenses(transaction, input)).rejects.toEqual(new Error("catalog_execution_license_proof_unavailable"));
   });
 
+  it("keeps the exact pinned ERP row and rejects conflicting identities, not duplicate rows of the same identity", async () => {
+    await expect(revalidateSqlCatalogExecutionLicenses(transaction, input)).resolves.toEqual(deadline);
+    const sqlText = statement();
+    expect(sqlText).toContain("other_erp.source_record_id<>erp.source_record_id");
+    expect(sqlText).toMatch(/other_erp\.catalog_customer_key=erp\.catalog_customer_key\s+AND \(other_erp\.issuer IS NULL/);
+    expect(sqlText).toMatch(/other_erp\.catalog_customer_key<>erp\.catalog_customer_key\s+AND other_erp\.issuer=erp\.issuer/);
+    expect(sqlText).toContain("DATALENGTH(other_erp.document_type)<>DATALENGTH(erp.document_type)");
+  });
+
   it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "01", "9223372036854775808", "1\n", "bad"])
     ("denies malformed execution ID %j before SQL", async executionId => {
       expect(await revalidateSqlCatalogExecutionLicenses(transaction, { ...input, executionId })).toBeNull();

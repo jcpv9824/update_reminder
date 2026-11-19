@@ -148,10 +148,19 @@ WHERE b.portal_environment=@portalEnvironment COLLATE Latin1_General_100_BIN2
   AND h.attempt_status='succeeded' AND h.attempted_at<=@now
   AND bridge.binding_version=b.row_version AND bridge.profile_version=p.row_version
   AND erp.issuer IS NOT NULL AND erp.document_type IS NOT NULL AND erp.document_number_token IS NOT NULL
+  -- Distinct source rows may describe the same grouped customer. Only a
+  -- conflicting document or owner invalidates the exact approved ERP row.
   AND NOT EXISTS (SELECT 1 FROM core.catalog_customer_revision_rows other_erp WITH (HOLDLOCK)
     WHERE other_erp.revision_key=r.revision_key AND other_erp.source_record_id<>erp.source_record_id
-      AND (other_erp.catalog_customer_key=erp.catalog_customer_key OR (other_erp.issuer=erp.issuer
-        AND other_erp.document_type=erp.document_type AND other_erp.document_number_token=erp.document_number_token)))
+      AND ((other_erp.catalog_customer_key=erp.catalog_customer_key
+        AND (other_erp.issuer IS NULL OR other_erp.document_type IS NULL OR other_erp.document_number_token IS NULL
+          OR other_erp.issuer<>erp.issuer OR other_erp.document_type<>erp.document_type
+          OR DATALENGTH(other_erp.document_type)<>DATALENGTH(erp.document_type)
+          OR other_erp.document_number_token<>erp.document_number_token))
+        OR (other_erp.catalog_customer_key<>erp.catalog_customer_key
+          AND other_erp.issuer=erp.issuer AND other_erp.document_type=erp.document_type
+          AND DATALENGTH(other_erp.document_type)=DATALENGTH(erp.document_type)
+          AND other_erp.document_number_token=erp.document_number_token)))
   AND LEFT(d.domain_name,8) COLLATE Latin1_General_100_BIN2=N'https://'
   AND DATALENGTH(d.domain_name)=2*LEN(d.domain_name)
   AND LEN(host.hostname) BETWEEN 3 AND 253
