@@ -293,8 +293,8 @@ inscripción, dos repeticiones que no modifican la prueba o fecha original
 y los rechazos de identidad, permisos, versión o vigencia, sin datos de
 prueba después del rollback. El adaptador SQL no escoge la identidad que
 ejecuta la inscripción ni abre la conexión principal del Portal. Falta
-autorizar el llamador interno y los perfiles reales. No se instaló 058 en
-ninguna base ni se concede acceso directo al rol del Portal.
+autorizar el llamador interno y los perfiles reales. No se concede acceso
+directo al rol del Portal.
 
 La 059 conserva las aprobaciones manuales inmutables y reconoce los dos
 contratos exactos SAG. Un ensayo en QA aceptó v1 y v2, rechazó un lote con
@@ -303,6 +303,14 @@ residuales. No precarga módulos ni equivalencias. El ensayo de ejecución
 de licencias pasó 16/16 con dos filas ERP que comparten exactamente el mismo
 documento y cliente agrupado: la fila aprobada sigue siendo la única
 referencia. La suite enfocada correspondiente pasó 84/84 y TypeScript.
+
+Después de los ensayos, el ejecutor `-Environment qa -IncludeCatalog`
+instaló 058 y 059 y verificó las 29 migraciones del catálogo (031–059).
+Una consulta independiente confirmó sus dos hashes y cero fuentes activas,
+miembros del publicador, inscripciones, aprobaciones o transacciones abiertas.
+No se aplicó ninguna de estas migraciones en producción. El candidato contiene
+el `origin/main` comprobado (`a34aa15`), incluida la recuperación de SeaweedFS;
+no se hizo push en esta etapa.
 
 ## Verificación de preparación del reporte (2026-11-18)
 
