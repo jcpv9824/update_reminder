@@ -30,7 +30,8 @@ vi.mock("mssql", () => ({ default: {
   ISOLATION_LEVEL: { READ_COMMITTED: Symbol.for("ReadCommitted") },
 } }));
 
-import { createCatalogActiveUserSqlReader, type CertifiedCatalogActiveUserSqlTarget } from "../lib/catalogActiveUserSqlReader";
+import { createCatalogActiveUserSqlEnrollmentProbe, createCatalogActiveUserSqlReader,
+  type CertifiedCatalogActiveUserSqlTarget } from "../lib/catalogActiveUserSqlReader";
 import { fingerprintCatalogSqlTarget } from "../lib/catalogPhysicalTargetIdentity";
 import { CATALOG_SQL_TARGET_IDENTITY_SELECT } from "../lib/catalogSqlTargetIdentityReader";
 
@@ -55,6 +56,8 @@ const table: CertifiedCatalogActiveUserSqlTarget = {
 };
 const run = (target: CertifiedCatalogActiveUserSqlTarget | null, signal = new AbortController().signal) =>
   createCatalogActiveUserSqlReader(async () => target)(reference, signal);
+const enroll = (target: CertifiedCatalogActiveUserSqlTarget | null, signal = new AbortController().signal) =>
+  createCatalogActiveUserSqlEnrollmentProbe(async () => target)(reference, signal);
 const observedIdentity = { recordset: [{ databaseName: view.connection.database, databaseGuid }] };
 const proof = { recordset: [{ certified: true }] };
 const withIdentity = () => fakes.query.mockResolvedValueOnce(observedIdentity);
@@ -211,5 +214,73 @@ describe("guarded SQL reader for certified active-user counts", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("server-only enrollment probe for a reviewed reporting target", () => {
+  it("returns only the canonical GUID after one valid count and cleans up the same guarded TLS session", async () => {
+    fakes.query.mockResolvedValueOnce({ recordset: [{ databaseName: view.connection.database, databaseGuid: databaseGuid.toUpperCase() }] })
+      .mockResolvedValueOnce(proof).mockResolvedValueOnce({ recordset: [{ activeUsers: "16" }] });
+    await expect(enroll(view)).resolves.toEqual({ databaseGuid });
+    expect(fakes.pool).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      options: expect.objectContaining({ encrypt: true, trustServerCertificate: false, connector: expect.any(Function) }),
+    }));
+    expect(fakes.query).toHaveBeenCalledTimes(3);
+    expect(fakes.query.mock.calls[0][0]).toBe(CATALOG_SQL_TARGET_IDENTITY_SELECT);
+    expect(fakes.query.mock.calls[0][1]).toBe(fakes.query.mock.calls[1][1]);
+    expect(fakes.query.mock.calls[0][1]).toBe(fakes.query.mock.calls[2][1]);
+    expect(fakes.rollback).toHaveBeenCalledOnce();
+    expect(fakes.close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the ordinary report result number-only with the same checks and cleanup", async () => {
+    withIdentity().mockResolvedValueOnce(proof).mockResolvedValueOnce({ recordset: [{ activeUsers: "16" }] });
+    await expect(run(view)).resolves.toBe(16);
+    expect(fakes.query).toHaveBeenCalledTimes(3);
+    expect(fakes.rollback).toHaveBeenCalledOnce();
+    expect(fakes.close).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a target not certified read-only by the schema/permission probe", async () => {
+    withIdentity().mockResolvedValueOnce({ recordset: [{ certified: false }] });
+    await expect(enroll(view)).rejects.toMatchObject({ reason: "schema_unverified" });
+    expect(fakes.query).toHaveBeenCalledTimes(2);
+    expect(fakes.query.mock.calls[1][0]).toContain("HAS_PERMS_BY_NAME(N'dbo.v_portal_usuarios_activos', 'OBJECT', 'UPDATE') = 0");
+    expect(fakes.rollback).toHaveBeenCalledOnce();
+    expect(fakes.close).toHaveBeenCalledOnce();
+  });
+
+  it("does not enroll a different GUID or an exact GUID with padding", async () => {
+    fakes.query
+      .mockResolvedValueOnce({ recordset: [{ databaseName: view.connection.database, databaseGuid: instanceId }] })
+      .mockResolvedValueOnce({ recordset: [{ databaseName: view.connection.database, databaseGuid: databaseGuid + "\n" }] });
+    for (let i = 0; i < 2; i++) await expect(enroll(view)).rejects.toMatchObject({ reason: "identity_unverified" });
+    expect(fakes.query.mock.calls.map(([statement]) => statement)).toEqual([
+      CATALOG_SQL_TARGET_IDENTITY_SELECT, CATALOG_SQL_TARGET_IDENTITY_SELECT,
+    ]);
+    expect(fakes.rollback).toHaveBeenCalledTimes(2);
+    expect(fakes.close).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed if a reported count has padding or contains uncertified status values", async () => {
+    withIdentity().mockResolvedValueOnce(proof).mockResolvedValueOnce({ recordset: [{ activeUsers: "5\n" }] });
+    await expect(enroll(view)).rejects.toMatchObject({ reason: "invalid_count" });
+    withIdentity().mockResolvedValueOnce(proof).mockResolvedValueOnce({ recordset: [{ activeUsers: "7", unknownStatuses: "1" }] });
+    await expect(enroll(table)).rejects.toMatchObject({ reason: "invalid_count" });
+    expect(fakes.rollback).toHaveBeenCalledTimes(2);
+    expect(fakes.close).toHaveBeenCalledTimes(2);
+  });
+
+  it("cancels either projection and closes its pool without releasing a result", async () => {
+    for (const probe of [run, enroll]) {
+      const abort = new AbortController();
+      withIdentity().mockResolvedValueOnce(proof).mockImplementationOnce(() => {
+        abort.abort();
+        return new Promise(() => {});
+      });
+      await expect(probe(view, abort.signal)).rejects.toMatchObject({ reason: "cancelled" });
+    }
+    expect(fakes.cancel).toHaveBeenCalledTimes(2);
+    expect(fakes.close).toHaveBeenCalledTimes(2);
   });
 });

@@ -282,6 +282,16 @@ esas configuraciones. En Azure sólo se observó la Function App del Portal
 de producción y ningún slot para esa aplicación; no se creó ni cambió
 ningún recurso.
 
+La 058 prepara el escritor privado e inmutable de identidad SQL. La sonda
+de inscripción usa la misma sesión TLS y los mismos controles de sólo
+lectura, identidad y conteo que el reporte; descarta la cifra y mantiene el
+GUID sólo en memoria para verificar la huella. Pasaron 25 pruebas y
+TypeScript. Un ensayo de instalación con rollback en PortalSAGWeb-TEST
+confirmó que el módulo es privado, rechaza una prueba ausente y no deja
+objetos o transacciones residuales. Falta probar la inscripción válida y
+autorizar el llamador interno y los perfiles reales. No se instaló 058 en
+ninguna base ni se concede acceso directo al rol del Portal.
+
 ## Verificación de preparación del reporte (2026-11-18)
 
 El conjunto enfocado de conteo, perfiles, permisos de destinatarios y outbox

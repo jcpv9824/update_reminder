@@ -30,6 +30,11 @@ export type ResolveCertifiedCatalogActiveUserSqlTarget = (
   signal: AbortSignal,
 ) => Promise<CertifiedCatalogActiveUserSqlTarget | null>;
 
+type CatalogActiveUserSqlEnrollmentProbe = (
+  reference: CatalogActiveUserTarget, signal: AbortSignal,
+) => Promise<Readonly<{ databaseGuid: string }>>;
+type ReaderOptions = Readonly<{ timeoutMs?: number }>;
+
 type Binding = Readonly<{ name: string; type: "text" | "bit_code"; value: string | number }>;
 type SelectPlan = { proof: string; proofBindings: readonly Binding[]; count: string; countBindings: readonly Binding[]; tableCount: boolean };
 type Failure = "cancelled" | "timeout" | "uncertified" | "identity_unverified" | "schema_unverified" | "invalid_count" | "connection_failed";
@@ -148,25 +153,53 @@ function compile(evidence: CatalogActiveUserContract, database: string): SelectP
 }
 
 function onlyRow(value: unknown, keys: readonly string[]): Record<string, unknown> | null {
-  if (!Array.isArray(value) || value.length !== 1 || !value[0] || typeof value[0] !== "object" ||
-      Object.keys(value[0]).length !== keys.length || keys.some(key => !Object.hasOwn(value[0], key))) return null;
-  return value[0] as Record<string, unknown>;
+  if (!Array.isArray(value) || value.length !== 1) return null;
+  const item = Object.getOwnPropertyDescriptor(value, "0");
+  if (!item?.enumerable || !Object.hasOwn(item, "value")) return null;
+  const row: unknown = item.value;
+  if (!row || typeof row !== "object" || Reflect.ownKeys(row).length !== keys.length) return null;
+  const prototype = Object.getPrototypeOf(row);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  const data = Object.create(null) as Record<string, unknown>;
+  for (const key of keys) {
+    const field = Object.getOwnPropertyDescriptor(row, key);
+    if (!field?.enumerable || !Object.hasOwn(field, "value")) return null;
+    data[key] = field.value;
+  }
+  return data;
 }
 
 function parseCount(value: unknown): number | null {
   // Tedious can return SQL bigint as a decimal string.
-  const count = typeof value === "string" && /^(?:0|[1-9]\d{0,15})$/.test(value) ? Number(value) : value;
+  const count = typeof value === "string" && /^(?:0|[1-9]\d{0,15})(?![\s\S])/.test(value) ? Number(value) : value;
   return typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? count : null;
 }
 
 export function createCatalogActiveUserSqlReader(
   resolveCertifiedTarget: ResolveCertifiedCatalogActiveUserSqlTarget,
-  options: Readonly<{ timeoutMs?: number }> = {},
+  options: ReaderOptions = {},
 ): CatalogActiveUserCountReader {
+  return createProbe(resolveCertifiedTarget, options, "count");
+}
+
+/** Private enrollment result: keep it in memory for the vetted 058 caller, never in a report or audit. */
+export function createCatalogActiveUserSqlEnrollmentProbe(
+  resolveCertifiedTarget: ResolveCertifiedCatalogActiveUserSqlTarget,
+  options: ReaderOptions = {},
+): CatalogActiveUserSqlEnrollmentProbe {
+  return createProbe(resolveCertifiedTarget, options, "enrollment");
+}
+
+function createProbe(resolveCertifiedTarget: ResolveCertifiedCatalogActiveUserSqlTarget, options: ReaderOptions,
+  mode: "count"): CatalogActiveUserCountReader;
+function createProbe(resolveCertifiedTarget: ResolveCertifiedCatalogActiveUserSqlTarget, options: ReaderOptions,
+  mode: "enrollment"): CatalogActiveUserSqlEnrollmentProbe;
+function createProbe(resolveCertifiedTarget: ResolveCertifiedCatalogActiveUserSqlTarget, options: ReaderOptions,
+  mode: "count" | "enrollment") {
   const timeout = options.timeoutMs ?? 8_000;
   if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 30_000) throw failure("uncertified");
 
-  return async (reference, parentSignal) => {
+  return async (reference: CatalogActiveUserTarget, parentSignal: AbortSignal) => {
     if (parentSignal.aborted) throw failure("cancelled");
     const lifetime = new AbortController();
     const sockets = new Set<Socket>();
@@ -239,8 +272,10 @@ export function createCatalogActiveUserSqlReader(
         finally { active = undefined; }
       };
       try {
-        const identityRows = await select(CATALOG_SQL_TARGET_IDENTITY_SELECT, []);
-        const observedFingerprint = fingerprintCatalogSqlTargetRows(identityRows, instanceId, database);
+        const identity = onlyRow(await select(CATALOG_SQL_TARGET_IDENTITY_SELECT, []), ["databaseName", "databaseGuid"]);
+        const databaseGuid = identity?.databaseGuid;
+        if (typeof databaseGuid !== "string" || databaseGuid.length !== 36) throw failure("identity_unverified");
+        const observedFingerprint = fingerprintCatalogSqlTargetRows([identity], instanceId, database);
         if (!observedFingerprint || !timingSafeEqual(observedFingerprint, expectedFingerprint)) {
           throw failure("identity_unverified");
         }
@@ -250,7 +285,8 @@ export function createCatalogActiveUserSqlReader(
           plan.tableCount ? ["activeUsers", "unknownStatuses"] : ["activeUsers"]);
         const count = parseCount(aggregate?.activeUsers);
         if (count === null || (plan.tableCount && parseCount(aggregate?.unknownStatuses) !== 0)) throw failure("invalid_count");
-        return count;
+        lifetime.signal.throwIfAborted();
+        return mode === "count" ? count : { databaseGuid: databaseGuid.toLowerCase() };
       } finally {
         if (!lifetime.signal.aborted) await transaction.rollback();
       }

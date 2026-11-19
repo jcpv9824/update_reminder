@@ -27,3 +27,4 @@ migration/sql/054_catalog_sql_target_instance_identity.sql text eol=lf
 migration/sql/055_catalog_sag_target_observations.sql text eol=lf
 migration/sql/056_catalog_sag_target_link_proof.sql text eol=lf
 migration/sql/057_catalog_sag_target_runtime_gate.sql text eol=lf
+migration/sql/058_catalog_sql_target_instance_enrollment.sql text eol=lf
