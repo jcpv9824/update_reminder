@@ -84,7 +84,8 @@ BEGIN TRY
     AND r.catalog_source_key=b.catalog_source_key AND r.source_role=b.source_role AND r.attempt_ordinal=h.attempt_ordinal
     AND r.binding_version=@bindingVersion AND r.profile_version=@erpProfileVersion AND r.observed_at<=@now
     AND r.sealed_at<=@now AND r.verified_until>@now
-  JOIN settings.catalog_match_key_registry k WITH (HOLDLOCK) ON k.portal_environment=b.portal_environment
+  JOIN settings.catalog_match_key_registry k WITH (HOLDLOCK)
+    ON k.portal_environment=b.portal_environment COLLATE Latin1_General_100_BIN2
     AND k.match_key_version=r.match_key_version AND k.enrolled_at<=@now
   JOIN core.catalog_customer_revision_rows rr WITH (HOLDLOCK) ON rr.revision_key=r.revision_key
     AND rr.source_record_id=@erpRecordId AND rr.active_code='S'

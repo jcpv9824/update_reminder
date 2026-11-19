@@ -350,7 +350,15 @@ con un actor sintético inexistente fue rechazada en QA. El predicado de
 identidad ERP pasó **8/8** casos sintéticos en una consulta de solo lectura:
 aceptó el duplicado exacto del mismo cliente y rechazó identidades incompletas
 o en conflicto. No se usó `-Apply` ni se registraron vínculos reales.
-Falta el ensayo con reversión del bloque de escritura.
+
+El ensayo `Test-CatalogOperationalLinksQa.ps1 -OperatorWriter` usa el
+bloque SQL exacto con una transacción controlada por QA. Detectó el error
+468 al comparar las intercalaciones del registro de claves y la fuente ERP;
+el escritor ahora usa la intercalación binaria del registro. El reintento
+pasó **5/5**: vista previa sin escrituras, alta, reintento sin duplicados,
+versión obsoleta e identidad ambigua. El ensayo anterior pasó **8/8**.
+Ambos dejaron cero filas sintéticas y no ejecutaron `COMMIT` ni el lanzador
+de publicación. Estas pruebas no sustituyen la aprobación de vínculos reales.
 
 ## Verificación de preparación del reporte (2026-11-18)
 
