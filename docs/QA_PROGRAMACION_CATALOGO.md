@@ -380,6 +380,40 @@ versión obsoleta e identidad ambigua. El ensayo anterior pasó **8/8**.
 Ambos dejaron cero filas sintéticas y no ejecutaron `COMMIT` ni el lanzador
 de publicación. Estas pruebas no sustituyen la aprobación de vínculos reales.
 
+### Primer alta de destino SQL real en QA (036)
+
+La consulta de preparación de `PortalSAGWeb-TEST` encontró **10** bases de
+prueba con perfil operativo activo y **0** perfiles TLS activos guardados
+en Conexiones. No hubo ningún par elegible. Seleccionar una base de QA y
+registrar en Conexiones su perfil dedicado de lectura de metadatos; no
+reutilizar las cuentas de las fuentes ERP o SAG Admin. Debe coincidir el
+servidor, puerto y catálogo exactos del perfil operativo, y la ruta debe
+estar en el registro aprobado `PORTAL_CATALOG_SQL_INSTANCE_ROUTES` de QA.
+
+El DBA debe verificar los permisos efectivos de esa cuenta y aprobar el
+acceso de solo lectura al catálogo y al GUID de esa base. El operador debe
+cotejar la constancia con el actor autorizado, IDs de cliente/dominio/base
+y de Conexiones, ambas versiones `ROWVERSION` y el UUID de instancia.
+Preparar por el canal autorizado una referencia no secreta y sus fechas UTC
+(`reviewedAt`, `validUntil`, con vigencia máxima de 24 h). El comando
+verifica que `principalRouteSha256` sea el SHA-256 UTF-8 en hexadecimal
+minúscula del JSON compacto de `["portal-sag:qa-036-metadata:v1", host,
+puertoNumérico, catálogo, usuario]`, en ese orden y sin normalizar valores.
+La huella es un vínculo con la constancia, no prueba de autorización; no
+incluir la contraseña, rutas ni datos de clientes en el ticket o en Git.
+
+Con el API compilado, `PORTAL_SAG_ENVIRONMENT=qa` y una sesión efímera
+autorizada, el operador puede usar
+`node api/dist/src/tools/registerCatalogQaPhysicalSqlTarget.js --session-directory <sesión-QA> --apply`.
+El JSON con los 13 campos exactos que declara `approvalKeys` se entrega por
+entrada estándar; el proceso resuelve la contraseña de Key Vault en memoria.
+El comando sólo muestra estado e IDs opacos. Usa TLS y el GUID, sin acceder
+a `usuarios`. Una prueba vigente no se reescribe; una vencida sólo se renueva
+para la misma identidad con nueva revisión. Una prueba retirada no se reactiva.
+Este camino no publica el catálogo ni certifica el reporte de usuarios.
+Pasaron 39 pruebas enfocadas, TypeScript y el análisis SQL Server 2019
+de los lotes generados. No se ejecutó el alta contra una base real.
+
 ## Verificación de preparación del reporte (2026-11-18)
 
 El conjunto enfocado de conteo, perfiles, permisos de destinatarios y outbox
