@@ -11,9 +11,12 @@ import type { SqlCatalogSourceBinding } from "./catalogSourceBindingsSqlReposito
 import type { CatalogRefreshSink } from "./catalogCustomerRefresh";
 import { readCatalogSagV2PublisherPoolSettings } from "./catalogSagV2PublisherPool";
 import { catalogClientsReadEnabled } from "./catalogReadScope";
+import { createSqlCatalogErpOwnerPublisher, type CatalogErpOwnerOperator } from "./catalogErpOwnerPublisher";
 
 const deps = { readBindings: readSqlCatalogSourceBindings, getSecret, loadTransport: loadCatalogSourceTransport,
-  async publisher(operator: CatalogPublicationOperator) { return createSqlCatalogCustomerSnapshotPublisher(await getSqlPool(), { operator }); } };
+  async publisher(operator: CatalogPublicationOperator) { return createSqlCatalogCustomerSnapshotPublisher(await getSqlPool(), { operator }); },
+  async erpOwnerPublisher(operator: CatalogErpOwnerOperator) { return createSqlCatalogErpOwnerPublisher(await getSqlPool(), operator); } };
+type PublicationDependencies = Omit<typeof deps, "erpOwnerPublisher"> & Partial<Pick<typeof deps, "erpOwnerPublisher">>;
 
 function keyConfig(values: NodeJS.ProcessEnv) {
   const keyVersion = values.PORTAL_CATALOG_MATCH_KEY_VERSION?.trim() ?? "";
@@ -62,7 +65,7 @@ export function parseCatalogSagPolicy(raw: string | undefined): CatalogSagIdenti
 
 /** Exact source only. No user-controlled profile, host, key, mapping, or environment override. */
 export async function publishSavedCatalogSource(input: { environment: CatalogEnvironment; sourceId: string; actorId: string },
-  io = deps, values: NodeJS.ProcessEnv = process.env) {
+  io: PublicationDependencies = deps, values: NodeJS.ProcessEnv = process.env) {
   if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(input.sourceId) ||
     !["qa", "production"].includes(input.environment) || !input.actorId.trim()) return "ineligible" as const;
   const source = (await io.readBindings(input.environment)).find(row => row.environment === input.environment &&
@@ -81,7 +84,7 @@ type OperatorPin = CatalogRefreshClaim & { kind: "worker" } | Omit<Extract<Catal
 type PublicationOutcome = Awaited<ReturnType<typeof publishSource>> | "stale";
 
 /** Server-owned claim only. A job never uses credentials or an identity supplied by its requester. */
-export async function publishClaimedCatalogSource(claim: CatalogRefreshClaim, io = deps,
+export async function publishClaimedCatalogSource(claim: CatalogRefreshClaim, io: PublicationDependencies = deps,
   values: NodeJS.ProcessEnv = process.env): Promise<PublicationOutcome> {
   const config = readCatalogRefreshConfiguration(values);
   const cfg = keyConfig(values);
@@ -94,11 +97,23 @@ export async function publishClaimedCatalogSource(claim: CatalogRefreshClaim, io
   if (!source) return "stale";
   const sagPolicy = source.role === "sag-admin" ? parseCatalogSagPolicy(values.PORTAL_CATALOG_SAG_ISSUER_MAP) : undefined;
   if (sagPolicy === null) return "stale";
+  if (source.role === "erp-customers" && values.PORTAL_CATALOG_ERP_PUBLISHER_MODE !== undefined) {
+    const owner = io.erpOwnerPublisher;
+    // Only the exact deployment opt-in permits this path. Neither a malformed
+    // setting nor a missing/rejected 065 RPC may fall back to direct SQL.
+    if (values.PORTAL_CATALOG_ERP_PUBLISHER_MODE !== "portal-owner" || !owner) return "not_configured";
+    return publishSource(source, { ...claim, sourceId: source.id, kind: "worker" }, cfg, sagPolicy, {
+      ...io, async publisher(operator) {
+        if (operator.kind !== "worker") throw new Error("invalid_catalog_erp_owner_publication");
+        return owner(operator);
+      },
+    }, lookup);
+  }
   return publishSource(source, { ...claim, sourceId: source.id, kind: "worker" }, cfg, sagPolicy, io, lookup);
 }
 
 async function publishSource(source: SqlCatalogSourceBinding, operator: OperatorPin, cfg: NonNullable<ReturnType<typeof keyConfig>>,
-  sagPolicy: CatalogSagIdentityPolicy | undefined, io: typeof deps, recheck?: () => Promise<SqlCatalogSourceBinding | undefined>) {
+  sagPolicy: CatalogSagIdentityPolicy | undefined, io: PublicationDependencies, recheck?: () => Promise<SqlCatalogSourceBinding | undefined>) {
   const deadline = AbortSignal.timeout(40_000);
   const secret = await io.getSecret(cfg.name, AbortSignal.any([deadline, AbortSignal.timeout(5_000)]), cfg.version);
   if (!/^[a-f0-9]{64}$/i.test(secret) || deadline.aborted) return "not_configured" as const;

@@ -19,7 +19,8 @@ const claim = { ...request, actorId: undefined, bindingRevision: source.bindingV
 function setup(rows: SqlCatalogSourceBinding[]) {
   mock.refresh.mockReset();
   return { readBindings: vi.fn().mockResolvedValue(rows), getSecret: vi.fn().mockResolvedValue(key),
-    loadTransport: vi.fn().mockResolvedValue({}), publisher: vi.fn().mockResolvedValue({}) };
+    loadTransport: vi.fn().mockResolvedValue({}), publisher: vi.fn().mockResolvedValue({}),
+    erpOwnerPublisher: vi.fn().mockResolvedValue({}) };
 }
 describe("saved-source publication", () => {
   it("admits Clients-only read configuration only with independent automation and preserves owner readiness requirements", () => {
@@ -44,6 +45,46 @@ describe("saved-source publication", () => {
     expect(await publishClaimedCatalogSource(job, io, { ...automation, PORTAL_CATALOG_READ_ENABLED: "false",
       PORTAL_CATALOG_CLIENTS_READ_ENABLED: "true" })).toBe("published");
     expect(io.publisher).toHaveBeenCalledOnce(); expect(io.loadTransport).toHaveBeenCalledOnce();
+    expect(io.erpOwnerPublisher).not.toHaveBeenCalled();
+  });
+  it("routes only the exact owner opt-in ERP worker through the controlled publisher", async () => {
+    const io = setup([source]);
+    const sink = { reserveAttempt: vi.fn().mockResolvedValue("912"), publish: vi.fn(), recordFailure: vi.fn() };
+    io.erpOwnerPublisher.mockResolvedValue(sink);
+    mock.refresh.mockImplementationOnce(async options => { await options.sink.reserveAttempt(); await options.transport(); return "published"; });
+    const { actorId: _, ...job } = claim;
+    const owner = { ...automation, PORTAL_CATALOG_ERP_PUBLISHER_MODE: "portal-owner" };
+    expect(await publishClaimedCatalogSource(job, io, owner)).toBe("published");
+    expect(io.erpOwnerPublisher).toHaveBeenCalledExactlyOnceWith({ ...job, kind: "worker",
+      ...buildCatalogMatchKeyEvidence("qa", 2, config.PORTAL_CATALOG_MATCH_KEY_SECRET_VERSION, Buffer.from(key, "hex")) });
+    expect(sink.reserveAttempt.mock.invocationCallOrder[0]).toBeLessThan(io.loadTransport.mock.invocationCallOrder[0]);
+    expect(io.publisher).not.toHaveBeenCalled();
+
+    mock.refresh.mockResolvedValueOnce("published");
+    expect(await publishSavedCatalogSource(request, io, owner)).toBe("published");
+    expect(io.publisher).toHaveBeenCalledOnce();
+    expect(io.erpOwnerPublisher).toHaveBeenCalledOnce();
+
+    const sag = setup([{ ...source, role: "sag-admin", contractVersion: "sag_admin_v1", issuerScope: undefined }]);
+    mock.refresh.mockResolvedValueOnce("published");
+    expect(await publishClaimedCatalogSource(job, sag, { ...owner,
+      PORTAL_CATALOG_SAG_ISSUER_MAP: '[{"countryId":1,"issuerScope":"CO:NIT"}]' })).toBe("published");
+    expect(sag.publisher).toHaveBeenCalledOnce();
+    expect(sag.erpOwnerPublisher).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for an invalid mode, absent owner adapter, or rejected ERP owner RPC", async () => {
+    const io = setup([source]);
+    const { actorId: _, ...job } = claim;
+    const owner = { ...automation, PORTAL_CATALOG_ERP_PUBLISHER_MODE: "portal-owner" };
+    expect(await publishClaimedCatalogSource(job, io, { ...owner, PORTAL_CATALOG_ERP_PUBLISHER_MODE: "unexpected" })).toBe("not_configured");
+    expect(await publishClaimedCatalogSource(job, { ...io, erpOwnerPublisher: undefined }, owner)).toBe("not_configured");
+    expect(io.getSecret).not.toHaveBeenCalled();
+    io.erpOwnerPublisher.mockRejectedValueOnce(new Error("catalog_erp_owner_publication_failed"));
+    await expect(publishClaimedCatalogSource(job, io, owner)).rejects.toThrow(/^catalog_erp_owner_publication_failed$/);
+    expect(mock.refresh).not.toHaveBeenCalled();
+    expect(io.publisher).not.toHaveBeenCalled();
+    expect(io.loadTransport).not.toHaveBeenCalled();
   });
   it("builds an isolated worker publisher without a human actor and checks binding before the credential pipeline", async () => {
     const io = setup([source]);

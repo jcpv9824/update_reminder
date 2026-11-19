@@ -7,12 +7,17 @@ param(
 
   [switch]$IncludeCatalog,
 
-  [switch]$IncludeCatalogOwnerPublisher
+  [switch]$IncludeCatalogOwnerPublisher,
+
+  [switch]$IncludeCatalogErpOwnerPublisher
 )
 
 $ErrorActionPreference='Stop'
 if($IncludeCatalogOwnerPublisher -and -not $IncludeCatalog){
   throw 'The optional owner publisher requires -IncludeCatalog as well.'
+}
+if($IncludeCatalogErpOwnerPublisher -and -not ($IncludeCatalog -and $IncludeCatalogOwnerPublisher)){
+  throw 'The ERP owner publisher requires both -IncludeCatalog and -IncludeCatalogOwnerPublisher.'
 }
 $repoMigrationRoot=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $sqlDirectory=Join-Path $repoMigrationRoot 'sql'
@@ -111,6 +116,9 @@ if($IncludeCatalog){
   )
   if($IncludeCatalogOwnerPublisher){
     $migrations += @{version='064';name='064_catalog_sag_owner_publisher.sql'}
+  }
+  if($IncludeCatalogErpOwnerPublisher){
+    $migrations += @{version='065';name='065_catalog_erp_owner_publisher.sql'}
   }
   # Check the entire selected package before submitting its first write.
   foreach($entry in $migrations){
@@ -664,5 +672,37 @@ SELECT CASE WHEN EXISTS(SELECT 1 FROM migration.schema_migrations WHERE migratio
       throw 'Optional owner publisher migration post-verification failed.'
     }
     Write-Host "$expectedDatabase optional owner publisher migration 064 is applied and verified." -ForegroundColor Green
+  }
+
+  if($IncludeCatalogErpOwnerPublisher){
+    $erpOwnerVerificationSql=@'
+DECLARE @delegate int=DATABASE_PRINCIPAL_ID(N'portal_catalog_erp_owner_delegate');
+SELECT CASE WHEN EXISTS(SELECT 1 FROM migration.schema_migrations WHERE migration_version='065' AND succeeded=1)
+  AND EXISTS(SELECT 1 FROM sys.database_principals WHERE principal_id=@delegate AND type='S' AND authentication_type=0)
+  AND NOT EXISTS(SELECT 1 FROM sys.database_role_members WHERE member_principal_id=@delegate)
+  AND NOT EXISTS(SELECT 1 FROM sys.schemas WHERE principal_id=@delegate)
+  AND NOT EXISTS(SELECT 1 FROM sys.objects WHERE principal_id=@delegate)
+  AND NOT EXISTS(SELECT 1 FROM sys.database_principals WHERE owning_principal_id=@delegate)
+  AND NOT EXISTS(SELECT 1 FROM sys.database_permissions WHERE grantor_principal_id=@delegate
+    OR (grantee_principal_id=@delegate AND NOT (class=0 AND major_id=0 AND minor_id=0
+        AND state='G' AND permission_name='CONNECT' AND grantor_principal_id=DATABASE_PRINCIPAL_ID(N'dbo'))))
+  AND EXISTS(SELECT 1 FROM sys.sql_modules WHERE object_id=OBJECT_ID(N'settings.catalog_erp_owner_dispatch_internal',N'P')
+    AND execute_as_principal_id=@delegate)
+  AND (SELECT COUNT(*) FROM sys.sql_modules WHERE execute_as_principal_id IS NULL AND object_id IN (
+    OBJECT_ID(N'settings.reserve_catalog_erp_owner_attempt',N'P'),
+    OBJECT_ID(N'settings.publish_catalog_erp_owner',N'P'),
+    OBJECT_ID(N'settings.fail_catalog_erp_owner_attempt',N'P')))=3
+  AND NOT EXISTS(SELECT 1 FROM sys.database_permissions WHERE class=1 AND major_id IN (
+    OBJECT_ID(N'settings.catalog_erp_owner_dispatch_internal',N'P'),
+    OBJECT_ID(N'settings.reserve_catalog_erp_owner_attempt',N'P'),
+    OBJECT_ID(N'settings.publish_catalog_erp_owner',N'P'),
+    OBJECT_ID(N'settings.fail_catalog_erp_owner_attempt',N'P')))
+  THEN 1 ELSE 0 END AS erp_owner_publisher_ready;
+'@
+    $erpOwnerVerification=Invoke-SessionSql -Sql $erpOwnerVerificationSql -Mode read -TimeoutSeconds 120 -MaxRows 5
+    if($erpOwnerVerification.resultSets[0].rows[0].erp_owner_publisher_ready -ne 1){
+      throw 'Optional ERP owner publisher migration post-verification failed.'
+    }
+    Write-Host "$expectedDatabase optional ERP owner publisher migration 065 is applied and verified." -ForegroundColor Green
   }
 }
