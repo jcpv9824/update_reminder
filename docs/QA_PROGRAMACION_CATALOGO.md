@@ -361,6 +361,13 @@ Al repetir la misma alta en la sesión real se obtuvieron cero inserciones
 de perfiles y cero de vínculos. Pasaron 27 pruebas enfocadas, análisis
 T-SQL 150, TypeScript y el build del API.
 
+Con ambos orígenes todavía en borrador y antes de la primera revisión,
+se creó la clave de cotejo independiente de QA en ese Vault y se inscribió
+la versión numérica `1` en `PortalSAGWeb-TEST`. Se usó el bloqueo de
+publicación de la 038. SQL confirmó una inscripción exacta y cero fuentes
+activas. SQL conserva sólo la referencia de versión y el verificador, no
+la clave. La inscripción no activa ni publica orígenes.
+
 Sobre ese mismo candidato pasaron las suites completas (API **1.879/1.879**,
 frontend **303/303**), la guarda SQL-only, TypeScript y ambos builds, y las
 auditorías de producción y completas de ambos paquetes. El build del
