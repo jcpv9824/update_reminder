@@ -237,6 +237,21 @@ transacción ambiental (SQL 55309). El rollback quitó el principal y su
 membresía, sin transacciones abiertas. La prueba no demuestra el COMMIT
 independiente de una publicación válida.
 
+La 056 define una comprobación SQL interna de una base concreta. Une el
+vínculo ERP vigente, la identidad documental del Customer padre exacto, el
+perfil físico activo y versionado, y la huella Company sellada en 055. No
+confunde registros ERP distintos del mismo cliente con identidades
+contradictorias. No concede acceso directo, no devuelve huellas y, para el
+reporte, no sustituye la aprobación del perfil de conteo.
+
+En PortalSAGWeb-TEST (SQL Server 2019, nivel 150) se ensayó instalar la 056
+dentro de una transacción. El módulo compiló, devolvió NULL para un destino
+inexistente y rechazó la ejecución directa como miembro ordinario de
+`portal_runtime`. Se revirtió todo: cero módulos, usuarios temporales o
+transacciones residuales. La 056 está en el manifiesto y el analizador, pero
+no en el ejecutor de despliegue. Falta el ensayo de una correspondencia
+válida y conectar la comprobación con tareas y reportes.
+
 ## Verificación de preparación del reporte (2026-11-18)
 
 El conjunto enfocado de conteo, perfiles, permisos de destinatarios y outbox

@@ -25,3 +25,4 @@ migration/sql/052_catalog_sag_company_evidence.sql text eol=lf
 migration/sql/053_catalog_sag_v2_publication.sql text eol=lf
 migration/sql/054_catalog_sql_target_instance_identity.sql text eol=lf
 migration/sql/055_catalog_sag_target_observations.sql text eol=lf
+migration/sql/056_catalog_sag_target_link_proof.sql text eol=lf
