@@ -29,6 +29,19 @@ describe("catalog refresh HTTP boundary", () => {
     expect(io.enqueue).toHaveBeenCalledTimes(1);
   });
 
+  it("accepts canonical SQL sequential GUIDs for the same scoped refresh and rejects duplicates", async () => {
+    const sequentialGuid = "af40b217-caae-ed11-9f7e-112233445566";
+    const { io, handle } = setup();
+    expect((await handle(post({ sourceIds: [sequentialGuid.toUpperCase()] }), "request")).status).toBe(202);
+    expect(io.enqueue).toHaveBeenCalledExactlyOnceWith({ ...config, actorId: "real-actor", sourceIds: [sequentialGuid] });
+    expect((await handle(get(`?sourceIds=${sequentialGuid}`), "status")).status).toBe(200);
+    expect(io.status).toHaveBeenCalledExactlyOnceWith({ ...config, actorId: "real-actor", sourceIds: [sequentialGuid] });
+    expect((await handle(post({ sourceIds: [sequentialGuid, sequentialGuid.toUpperCase()] }), "request")).status).toBe(400);
+    expect((await handle(post({ sourceIds: ["00000000-0000-0000-0000-000000000000"] }), "request")).status).toBe(400);
+    expect((await handle(post({ sourceIds: [sequentialGuid + "\n"] }), "request")).status).toBe(400);
+    expect(io.enqueue).toHaveBeenCalledTimes(1);
+  });
+
   it("passes authorized status scope for revalidation, never enqueues on GET, and hides unauthorized requests", async () => {
     const { io, handle } = setup();
     const updatedAt = "2026-11-18T00:00:00Z";

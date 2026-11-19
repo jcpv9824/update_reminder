@@ -14,6 +14,7 @@ import type { CatalogEnvironment } from "../lib/catalogSourceConfiguration";
 import { certifySavedCatalogSource } from "../lib/catalogSourceCertification";
 import { enforceRequestRateLimit, RATE_LIMIT_POLICIES } from "../lib/rateLimit";
 import { publishSavedCatalogSource, readCatalogRefreshConfiguration } from "../lib/catalogSourcePublication";
+import { catalogSourceIdSchema } from "../lib/catalogSourceId";
 
 const PROFILE_ID = z.string().min(1).max(150).refine(value => value.trim() === value && !/\p{Cc}/u.test(value));
 const DRAFT = z.discriminatedUnion("role", [
@@ -86,7 +87,7 @@ function sourceCertification(action: "verify" | "activate") {
       const roles = await loadRoleDefinitions();
       if (!canManageIntegration(actor, "test_database", roles)
         || (action === "activate" && !canManageIntegration(actor, "edit_database", roles))) return forbidden();
-      const sourceId = z.uuid().safeParse(req.params.sourceId);
+      const sourceId = catalogSourceIdSchema.safeParse(req.params.sourceId);
       if (!sourceId.success) return badRequest("La fuente de catálogo no es válida.");
       let body: unknown;
       try { body = await req.json(); } catch { return badRequest("El cuerpo JSON no es válido."); }
@@ -136,7 +137,7 @@ app.http("catalogSourceRefresh", {
       if (!actor || !actor.roles.includes("super_admin")) return forbidden();
       const roles = (await loadRoleDefinitions()).filter(role => role.active !== false);
       if (!(["view", "test_database", "edit_database"] as const).every(action => canManageIntegration(actor, action, roles))) return forbidden();
-      const sourceId = z.uuid().safeParse(req.params.sourceId);
+      const sourceId = catalogSourceIdSchema.safeParse(req.params.sourceId);
       if (!sourceId.success) return badRequest("La fuente de catálogo no es válida.");
       if (!z.object({}).strict().safeParse(await req.json().catch(() => null)).success) return badRequest("La solicitud no admite parámetros.");
       const environment = configuredCatalogEnvironment();

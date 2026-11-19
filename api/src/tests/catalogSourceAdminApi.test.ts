@@ -49,8 +49,8 @@ const binding: SqlCatalogSourceBinding = {
   bindingVersion: "fake-binding-revision", contractVersion: "erp_v1",
 };
 
-const request = (body: unknown = null, profileId = "profile-test") => ({
-  params: { profileId, sourceId },
+const request = (body: unknown = null, profileId = "profile-test", requestedSourceId = sourceId) => ({
+  params: { profileId, sourceId: requestedSourceId },
   // The route must ignore any environment offered by the caller.
   query: new URLSearchParams({ environment: "production" }),
   json: vi.fn(async () => body),
@@ -168,6 +168,25 @@ describe("catalog source draft management routes", () => {
     expect(stubs.certify).not.toHaveBeenCalled();
     stubs.certify.mockResolvedValueOnce("activated");
     expect((await stubs.routes.get(activateRoute)!(request({}))).jsonBody).toEqual({ status: "activated" });
+  });
+
+  it("round-trips canonical SQL sequential GUIDs through verify, activate and refresh without widening authority", async () => {
+    const sequentialGuid = "af40b217-caae-ed11-9f7e-112233445566";
+    const req = request({}, "profile-test", sequentialGuid);
+    stubs.certify.mockResolvedValueOnce("verified").mockResolvedValueOnce("activated");
+    expect((await stubs.routes.get(verifyRoute)!(req)).status).toBe(200);
+    expect((await stubs.routes.get(activateRoute)!(req)).status).toBe(200);
+    expect(stubs.certify).toHaveBeenCalledWith(expect.objectContaining({ sourceId: sequentialGuid, actor, environment: "qa" }));
+    vi.stubEnv("PORTAL_CATALOG_SOURCE_REFRESH_ENABLED", "true");
+    stubs.loadUserProfile.mockResolvedValue({ ...actor, roles: ["super_admin"] });
+    stubs.publish.mockResolvedValueOnce("published");
+    expect((await stubs.routes.get(refreshRoute)!(req)).status).toBe(200);
+    expect(stubs.publish).toHaveBeenCalledWith({ environment: "qa", sourceId: sequentialGuid, actorId: actor.id });
+    stubs.certify.mockClear();
+    expect((await stubs.routes.get(verifyRoute)!(request({}, "profile-test", "not-a-guid"))).status).toBe(400);
+    stubs.canManageIntegration.mockReturnValue(false);
+    expect((await stubs.routes.get(activateRoute)!(req)).status).toBe(403);
+    expect(stubs.certify).not.toHaveBeenCalled();
   });
 
   it("rate limits probes and does not infer production when the environment is missing", async () => {

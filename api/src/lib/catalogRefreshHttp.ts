@@ -2,8 +2,9 @@ import type { HttpRequest, HttpResponseInit } from "@azure/functions";
 import { z } from "zod";
 import { badRequest, forbidden, notFound, ok, unauthorized } from "./http";
 import type { CatalogRefreshScope, CatalogRefreshSettings, CatalogRefreshStatus } from "./catalogRefreshQueueSqlRepository";
+import { catalogSourceIdSchema } from "./catalogSourceId";
 
-const sourceIdsSchema = z.array(z.uuid().transform(value => value.toLowerCase())).max(50)
+const sourceIdsSchema = z.array(catalogSourceIdSchema).max(50)
   .refine(values => new Set(values).size === values.length);
 const requestSchema = z.object({ sourceIds: sourceIdsSchema.optional() }).strict();
 type Method = "request" | "status";
