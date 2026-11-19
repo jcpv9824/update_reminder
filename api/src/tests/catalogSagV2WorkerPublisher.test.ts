@@ -219,24 +219,36 @@ describe("dedicated SAG v2 worker publication adapter", () => {
     expect(io.request).not.toHaveBeenCalled();
   });
 
-  it("applies the combined row count and UTF-16 byte bound before RPC", async () => {
+  it.each(["combined row count", "one array over byte cap", "one array above 8 MiB", "combined arrays over byte cap"] as const)(
+    "applies the publication boundary independently: %s", async boundary => {
     const io = fake(), publisher = io.publisher();
-    await expect(publisher.publish(ordinal, { customerCount: 60000, companyCount: 40001,
-      customers: Array(60000), companies: Array(40001) })).rejects.toThrow(invalid);
-    const companies = Array.from({ length: 16000 }, (_, i) => ({ ...company, companyRecordId: i + 1, displayName: "x".repeat(512) }));
-    await expect(publisher.publish(ordinal, { customerCount: 0, companyCount: companies.length, customers: [], companies }))
-      .rejects.toThrow(invalid);
+    if (boundary === "combined row count") {
+      await expect(publisher.publish(ordinal, { customerCount: 60000, companyCount: 40001,
+        customers: Array(60000), companies: Array(40001) })).rejects.toThrow(invalid);
+    } else {
+      const companies = Array.from({ length: 16000 }, (_, i) => ({ ...company, companyRecordId: i + 1, displayName: "x".repeat(512) }));
+      if (boundary === "one array over byte cap") {
+        await expect(publisher.publish(ordinal, { customerCount: 0, companyCount: companies.length, customers: [], companies }))
+          .rejects.toThrow(invalid);
+      } else {
+        const under = companies.slice(0, 9500);
+        if (boundary === "one array above 8 MiB") {
+          io.execute.mockResolvedValueOnce(resultSet(success));
+          await expect(publisher.publish(ordinal, { customerCount: 0, companyCount: under.length, customers: [], companies: under }))
+            .resolves.toEqual(success);
+          const boundBytes = Buffer.byteLength(io.requests[0].input.mock.calls[15][2], "utf16le");
+          expect(boundBytes).toBeGreaterThan(8 * 1024 * 1024); // no separate 8 MiB cap per array
+          expect(io.request).toHaveBeenCalledOnce();
+          expect(io.execute).toHaveBeenCalledExactlyOnceWith("settings.publish_catalog_sag_v2_revision");
+          return;
+        }
+        const customers = Array.from({ length: 12000 }, (_, i) => ({ ...customer, sourceRecordId: i + 1 }));
+        await expect(publisher.publish(ordinal, { customerCount: customers.length, companyCount: under.length, customers, companies: under }))
+          .rejects.toThrow(invalid);
+      }
+    }
     expect(io.request).not.toHaveBeenCalled();
-    const under = companies.slice(0, 9500);
-    io.execute.mockResolvedValueOnce(resultSet(success));
-    await expect(publisher.publish(ordinal, { customerCount: 0, companyCount: under.length, customers: [], companies: under }))
-      .resolves.toEqual(success);
-    const boundBytes = Buffer.byteLength(io.requests[0].input.mock.calls[15][2], "utf16le");
-    expect(boundBytes).toBeGreaterThan(8 * 1024 * 1024); // no separate 8 MiB cap per array
-    const customers = Array.from({ length: 12000 }, (_, i) => ({ ...customer, sourceRecordId: i + 1 }));
-    await expect(publisher.publish(ordinal, { customerCount: customers.length, companyCount: under.length, customers, companies: under }))
-      .rejects.toThrow(invalid);
-    expect(io.request).toHaveBeenCalledOnce();
+    expect(io.execute).not.toHaveBeenCalled();
   });
 
   it("preserves the full bigint range and rejects invalid ordinals before RPC", async () => {
