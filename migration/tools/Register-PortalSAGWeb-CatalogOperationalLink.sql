@@ -160,8 +160,19 @@ BEGIN TRY
     END;
     INSERT core.catalog_operational_link_approvals(link_key,binding_version,profile_version,revision_key,approval_reference,approved_by)
       VALUES(@link,@bindingVersion,@erpProfileVersion,@erpRevisionId,@approvalReference,@actorId);
-    IF NOT EXISTS(SELECT 1 FROM core.catalog_operational_link_evidence WHERE link_id=@linkId AND evidence_state='verified'
-      AND revision_key=@erpRevisionId AND binding_version=@bindingVersion AND profile_version=@erpProfileVersion)
+    -- Approval custody stamps datetime2(3). The read model uses a scale-7
+    -- clock, which can briefly be earlier than a just-rounded approval stamp.
+    -- The locked live evidence above and the stamp trigger certify the row;
+    -- verify the exact persisted approval against its own clock precision.
+    DECLARE @approvalClock datetime2(3)=CONVERT(datetime2(3),SYSUTCDATETIME());
+    IF NOT EXISTS(SELECT 1 FROM core.catalog_operational_link_approvals a WITH (HOLDLOCK)
+      JOIN core.catalog_operational_links l WITH (HOLDLOCK) ON l.link_key=a.link_key AND l.link_id=@linkId
+      WHERE a.link_key=@link AND a.revision_key=@erpRevisionId
+        AND a.binding_version=@bindingVersion AND a.profile_version=@erpProfileVersion
+        AND a.approval_reference=@approvalReference
+        AND a.approved_by COLLATE Latin1_General_100_BIN2=@actorId COLLATE Latin1_General_100_BIN2
+        AND DATALENGTH(a.approved_by)=DATALENGTH(@actorId)
+        AND a.approved_at BETWEEN l.registered_at AND @approvalClock)
       THROW 54260,N'Operational link request rejected.',1;
   END;
   SET @now=SYSUTCDATETIME();

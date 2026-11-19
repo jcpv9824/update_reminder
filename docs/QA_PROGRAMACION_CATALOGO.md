@@ -312,21 +312,18 @@ No se aplicó ninguna de estas migraciones en producción. El candidato contiene
 el `origin/main` comprobado (`a34aa15`), incluida la recuperación de SeaweedFS;
 no se hizo push en esta etapa.
 
-La sesión de migración de QA no puede gestionar logins del servidor.
-`PortalSAGWeb-TEST` no usa contención y la autenticación contenida está
-desactivada. Para el ensayo del API local, el DBA debe proporcionar un
-login dedicado para el publicador con usuario sólo en QA; el API debe usar
-una identidad de ejecución distinta. No se reutiliza la cuenta de migración, no se cambia
-la configuración de autenticación del servidor y no se amplían permisos
-de las fuentes ERP o SAG Admin.
+La sesión efímera autorizada existente de QA sirve para los ensayos de
+operador y de SQL en `PortalSAGWeb-TEST`; no requieren crear otro login.
+No se cambia la configuración de autenticación del servidor ni se amplían
+los permisos de las fuentes ERP o SAG Admin.
 
-Para solicitarlo al DBA: crear o designar un login SQL independiente,
-mapearlo únicamente a `PortalSAGWeb-TEST` y asignarle el rol existente
-`portal_catalog_v2_publisher` (más `public`, sin roles adicionales). La
-identidad no es un usuario de los orígenes ERP/SAG Admin. El perfil del
-publicador local referencia una versión fija del secreto en Key Vault;
-no copiar la contraseña a Git ni al chat. La aplicación verifica los
-permisos efectivos del login antes de publicar.
+Por separado, el publicador **automático** implementado exige que su
+identidad cumpla el contrato de `portal_catalog_v2_publisher`. La sesión
+efímera existente no lo cumple; no se debe instalar su contraseña de
+migración en el API ni desactivar esa comprobación para simular una prueba.
+La reutilización de una identidad ya provisionada o de la sesión para una
+ejecución supervisada debe distinguirse de certificar el trabajador
+automático. No copiar contraseñas a Git ni al chat.
 
 En `a7af033`, los perfiles externos entregados volvieron a pasar la sonda
 de origen: `erp_v1` y `sag_admin_v2` devolvieron `verified`. La sonda sólo
@@ -379,6 +376,14 @@ pasó **5/5**: vista previa sin escrituras, alta, reintento sin duplicados,
 versión obsoleta e identidad ambigua. El ensayo anterior pasó **8/8**.
 Ambos dejaron cero filas sintéticas y no ejecutaron `COMMIT` ni el lanzador
 de publicación. Estas pruebas no sustituyen la aprobación de vínculos reales.
+
+Un reensayo con la misma sesión encontró un falso rechazo al consultar
+inmediatamente la vista: SQL podía redondear el sello recién guardado a
+un milisegundo posterior al reloj que usa la vista. El comando ahora
+comprueba la fila persistida exacta con la misma precisión del sello y no
+espera antes de confirmar. Los ensayos esperan de forma acotada únicamente
+para comprobar la vista. Pasaron 75/75 casos del escritor y 80/80 de la
+prueba base, todos con reversión y cero residuos, sin crear otro login.
 
 ### Primer alta de destino SQL real en QA (036)
 

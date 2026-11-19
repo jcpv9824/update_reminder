@@ -26,6 +26,7 @@ DECLARE @binding binary(8),@profile binary(8),@revision bigint,@keyVersion small
 DECLARE @fixtureVaultVersion binary(16)=CONVERT(binary(16),NEWID()),@passed int=0;
 DECLARE @scenario int=1,@expectedError int,@retiredInsertRejections int=0;
 DECLARE @future datetime2(3)=DATEADD(day,1,@stamp),@registerStart datetime2(3),@registerEnd datetime2(3);
+DECLARE @legacyViewStamp datetime2(3),@legacyViewDeadline datetime2(7);
 DECLARE @otherClient bigint,@retiredOwner bigint;
 -- Reserve a fixture-only range without advancing the live attempt sequence.
 DECLARE @attempt bigint=9223372036854770000+ABS(CONVERT(bigint,CHECKSUM(NEWID())))%5000;
@@ -135,6 +136,15 @@ BEGIN TRY
   INSERT core.catalog_operational_link_approvals(link_key,binding_version,profile_version,revision_key,approval_reference,approved_by)
     VALUES(@domainLink,@binding,@profile,@revision,'QA-OPLINK-01',@actor),
       (@databaseLink,@binding,@profile,@revision,'QA-OPLINK-01',@actor);
+  -- A stored scale-3 stamp may briefly lead the unchanged scale-7 view clock.
+  SELECT @legacyViewStamp=MAX(approved_at) FROM core.catalog_operational_link_approvals
+    WHERE link_key IN (@domainLink,@databaseLink) AND binding_version=@binding AND profile_version=@profile AND revision_key=@revision;
+  SET @legacyViewDeadline=DATEADD(millisecond,250,SYSUTCDATETIME());
+  WHILE @legacyViewStamp>SYSUTCDATETIME()
+  BEGIN
+    IF SYSUTCDATETIME()>=@legacyViewDeadline THROW 54285,N'QA view clock did not reach the approval stamp.',1;
+    WAITFOR DELAY '00:00:00.005';
+  END;
   IF (SELECT COUNT(*) FROM core.catalog_operational_link_evidence
     WHERE link_id IN (@domainId,@databaseId) AND evidence_state='verified')<>2
     THROW 54285,N'Exact approved operational links were not accepted.',1;
@@ -153,6 +163,13 @@ BEGIN TRY
   UPDATE core.catalog_customer_source_revisions SET sealed_at=@checkedAt WHERE revision_key=@revision;
   UPDATE settings.catalog_customer_revision_heads
     SET revision_key=@revision,attempt_status='succeeded',attempted_at=@checkedAt,attempt_ordinal=@attempt WHERE catalog_source_key=@source;
+  -- The same view compares the new head and seal stamps at scale 7.
+  SET @legacyViewDeadline=DATEADD(millisecond,250,SYSUTCDATETIME());
+  WHILE @checkedAt>SYSUTCDATETIME()
+  BEGIN
+    IF SYSUTCDATETIME()>=@legacyViewDeadline THROW 54286,N'QA view clock did not reach the revision stamp.',1;
+    WAITFOR DELAY '00:00:00.005';
+  END;
   IF NOT EXISTS(SELECT 1 FROM core.catalog_operational_link_evidence WHERE link_id=@databaseId AND evidence_state='verified')
     OR EXISTS(SELECT 1 FROM core.catalog_operational_link_evidence WHERE link_id=@domainId AND evidence_state='verified')
     THROW 54286,N'An ordinary revision roll lost the stable link or accepted an inactive record.',1;
@@ -190,6 +207,14 @@ BEGIN TRY
   INSERT core.catalog_operational_link_approvals(link_key,binding_version,profile_version,revision_key,approval_reference,approved_by)
     VALUES(@domainLink,@binding,@profile,@revision,'QA-OPLINK-02',@actor),
       (@databaseLink,@binding,@profile,@revision,'QA-OPLINK-02',@actor);
+  SELECT @legacyViewStamp=MAX(approved_at) FROM core.catalog_operational_link_approvals
+    WHERE link_key IN (@domainLink,@databaseLink) AND binding_version=@binding AND profile_version=@profile AND revision_key=@revision;
+  SET @legacyViewDeadline=DATEADD(millisecond,250,SYSUTCDATETIME());
+  WHILE @legacyViewStamp>SYSUTCDATETIME()
+  BEGIN
+    IF SYSUTCDATETIME()>=@legacyViewDeadline THROW 54289,N'QA view clock did not reach the refreshed approval stamp.',1;
+    WAITFOR DELAY '00:00:00.005';
+  END;
   IF (SELECT COUNT(*) FROM core.catalog_operational_link_evidence
     WHERE link_id IN (@domainId,@databaseId) AND evidence_state='verified')<>2
     THROW 54289,N'Fresh approval did not restore the same logical link IDs.',1;
@@ -277,7 +302,7 @@ if ($OperatorWriter) {
   $operator=[Text.UTF8Encoding]::new($false,$true).GetString([IO.File]::ReadAllBytes($operatorPath))
   $operator=$operator.Replace(([string][char]13+[char]10),[string][char]10)
   $operatorSha=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($operator)))
-  if ($operator.Contains([char]13) -or $operatorSha -cne '3BEBC343F57480E609499EC57EDD523FF62B64ADDF21E31622B384965876C889') {
+  if ($operator.Contains([char]13) -or $operatorSha -cne '0A8FE6F954CC5EAF15341850FBFA37FCEDEEEAE23333BB35DF6186D3EFFAC967') {
     throw 'Operator SQL is not the exact reviewed LF candidate.'
   }
   $firstToken='  DECLARE @now datetime2(3)=SYSUTCDATETIME(),@lock int,'
@@ -504,7 +529,17 @@ BEGIN TRY
       SELECT @originalApprovalStamp=approved_at FROM core.catalog_operational_link_approvals
       WHERE link_key=@originalLink AND binding_version=@bindingVersion AND profile_version=@erpVersion
         AND revision_key=@originalRevision AND approval_reference=@approvalRef AND approved_by=@actor;
-      IF @originalOwner IS NULL OR @originalLink IS NULL OR @originalApprovalStamp IS NULL OR NOT EXISTS(
+      IF @originalOwner IS NULL OR @originalLink IS NULL OR @originalApprovalStamp IS NULL
+        THROW 54276,N'Expected exact persisted owner, link and approval.',1;
+      -- Only the QA read-model assertion waits for the unchanged scale-7
+      -- view clock. The writer is tested without any delay.
+      DECLARE @viewClockDeadline datetime2(7)=DATEADD(millisecond,250,SYSUTCDATETIME());
+      WHILE @originalApprovalStamp>SYSUTCDATETIME()
+      BEGIN
+        IF SYSUTCDATETIME()>=@viewClockDeadline THROW 54276,N'QA view clock did not reach the approval stamp.',1;
+        WAITFOR DELAY '00:00:00.005';
+      END;
+      IF NOT EXISTS(
         SELECT 1 FROM core.catalog_operational_link_evidence WHERE link_id=@originalLinkId AND evidence_state='verified'
           AND revision_key=@originalRevision AND binding_version=@bindingVersion AND profile_version=@erpVersion)
         THROW 54276,N'Expected exact verified owner, link and approval.',1;
