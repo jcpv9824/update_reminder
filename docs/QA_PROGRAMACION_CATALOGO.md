@@ -326,6 +326,18 @@ y que revertir una ruta o un perfil no reactiva una prueba retirada. El
 segundo pasó 16/16 (262 ms dentro de SQL). Los dos revirtieron sus datos
 sintéticos; no certifican latencia del API ni una programación real amplia.
 
+### Alta combinada de identidad y perfil de conteo en SQL de QA
+
+`Test-CatalogSqlTargetInstanceEnrollmentQa.ps1 -RuntimeReporting`, ejecutado
+contra la sesión autorizada de `PortalSAGWeb-TEST`, pasó **2/2**. Usa la 058
+instalada y ejecuta las sentencias de registro y auditoría extraídas del
+código del API. Una versión de perfil obsoleta produjo `reference-changed`
+y la reversión quitó la inscripción de identidad. El caso válido mostró
+una inscripción, un perfil y una auditoría sin datos de conexión dentro de
+la misma transacción. La reversión final dejó cero filas sintéticas y
+conservó la historia y la definición de la 058. No abrió conexiones a
+bases externas ni invocó el operador del API; esas pruebas siguen aparte.
+
 ## Verificación de preparación del reporte (2026-11-18)
 
 El conjunto enfocado de conteo, perfiles, permisos de destinatarios y outbox
