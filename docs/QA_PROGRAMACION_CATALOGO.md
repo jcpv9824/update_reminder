@@ -340,6 +340,27 @@ de identidades ni una equivalencia de licencias. Sólo salieron agregados;
 no se guardaron filas, identificadores, huellas ni credenciales, ni se
 publicó una revisión en QA.
 
+El propietario autorizó crear el Vault separado `erpupdsch4645-qa-kv`
+en `portal-sag-qa-rg` (East US 2, Standard). Se verificaron las dos
+credenciales existentes de solo lectura en ese Vault, sin copiar valores
+al Portal SQL ni modificar los orígenes. El almacén usa RBAC, protección
+contra purga y red denegada por defecto con una sola excepción para el
+equipo operador. No se modificaron el Vault ni la configuración del API
+de producción.
+
+Con la sesión de QA existente y el operador que coincide con la identidad
+autenticada de Azure, `onboardCatalogQaOrigins` verificó ambos orígenes en
+solo lectura usando las contraseñas recuperadas del Vault. Confirmó en una
+transacción dos perfiles y dos vínculos en borrador (`erp_v1`,
+`sag_admin_v2`). Una consulta separada confirmó que no quedó ninguna fuente
+activa ni transacción abierta. `CO:NIT` es provisional para el primer ERP;
+confirmar el emisor antes de activar y no atribuirlo a SAG Admin. La
+corrección UTF-8 del intermediario conserva rutas con tildes; el primer
+intento falló antes de escribir y se verificó que no dejó filas.
+Al repetir la misma alta en la sesión real se obtuvieron cero inserciones
+de perfiles y cero de vínculos. Pasaron 27 pruebas enfocadas, análisis
+T-SQL 150, TypeScript y el build del API.
+
 Sobre ese mismo candidato pasaron las suites completas (API **1.879/1.879**,
 frontend **303/303**), la guarda SQL-only, TypeScript y ambos builds, y las
 auditorías de producción y completas de ambos paquetes. El build del

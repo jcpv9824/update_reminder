@@ -282,7 +282,8 @@ export async function registerCatalogQaPhysicalSqlTarget(approved: unknown, io: 
 
 function broker(sessionDirectory: string, scriptPath: string) {
   return async (statement: string, mode: Mode): Promise<unknown> => new Promise((done, fail) => {
-    const command = "$ErrorActionPreference='Stop';$r=[Console]::In.ReadToEnd()|ConvertFrom-Json;" +
+    const command = "$ErrorActionPreference='Stop';[Console]::InputEncoding=[System.Text.UTF8Encoding]::new($false);" +
+      "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);$r=[Console]::In.ReadToEnd()|ConvertFrom-Json;" +
       "& $env:PORTAL_QA_036_BROKER -SessionDirectory $r.sessionDirectory -Sql $r.statement -Mode $r.mode -TimeoutSeconds 20 -MaxRows 1";
     const child = spawn("pwsh", ["-NoProfile", "-NonInteractive", "-Command", command], {
       shell: false, windowsHide: true, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot,
