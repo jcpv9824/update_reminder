@@ -10,6 +10,7 @@ import { readSqlCatalogMasterInventory } from "../lib/catalogMasterInventorySqlR
 import { canViewClients, canViewDatabases, canViewDomains, canViewLicensingOption } from "../lib/managementAccess";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import type { CatalogEnvironment } from "../lib/catalogSourceConfiguration";
+import { catalogClientsReadEnabled } from "../lib/catalogReadScope";
 
 function environment(): CatalogEnvironment {
   const configured = process.env.PORTAL_SAG_ENVIRONMENT?.trim();
@@ -27,7 +28,7 @@ function matchKeyVersion(): number {
 }
 
 const directory = createCatalogDirectoryHttp({
-  enabled: () => process.env.PORTAL_CATALOG_READ_ENABLED?.trim() === "true",
+  enabled: catalogClientsReadEnabled,
   authorize: async request => {
     try {
       const actor = await loadUserProfile(await requireUser(request));

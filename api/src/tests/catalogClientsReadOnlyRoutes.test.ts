@@ -29,10 +29,13 @@ describe("customer catalog ownership at HTTP boundary", () => {
     fakes.read.mockResolvedValue([]);
     fakes.create.mockResolvedValue({ id: "example" });
     vi.stubEnv("PORTAL_CATALOG_READ_ENABLED", "true");
+    vi.stubEnv("PORTAL_CATALOG_CLIENTS_READ_ENABLED", undefined);
   });
   afterEach(() => vi.unstubAllEnvs());
 
-  it("blocks every direct legacy mutation even for an administrator when the catalog owns clients", async () => {
+  it.each(["full", "clients-only"])("blocks every direct legacy mutation even for an administrator in %s scope", async scope => {
+    vi.stubEnv("PORTAL_CATALOG_READ_ENABLED", scope === "full" ? "true" : "false");
+    vi.stubEnv("PORTAL_CATALOG_CLIENTS_READ_ENABLED", scope === "clients-only" ? "true" : undefined);
     for (const action of ["Create", "Update", "Delete", "Deactivate", "Reactivate"]) {
       const req = request();
       const response = await fakes.handlers.get(`clients${action}`)!(req);
@@ -43,6 +46,8 @@ describe("customer catalog ownership at HTTP boundary", () => {
     expect(fakes.update).not.toHaveBeenCalled();
     expect(fakes.remove).not.toHaveBeenCalled();
     expect(fakes.read).not.toHaveBeenCalled();
+    expect((await fakes.handlers.get("clientsList")!(request())).status).toBe(200);
+    expect(fakes.read).toHaveBeenCalledOnce();
   });
 
   it("retains authorized legacy reads for dependents and legacy writes when the feature is off", async () => {

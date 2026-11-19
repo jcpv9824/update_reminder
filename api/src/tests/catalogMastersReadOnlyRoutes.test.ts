@@ -135,8 +135,10 @@ describe("catalog ownership of legacy masters", () => {
       for (const io of targetAndSideEffectIo) expect(io).not.toHaveBeenCalled();
     });
 
-    it.each([undefined, "false"])("retains the legacy writer when the flag is %s", async flag => {
-      vi.stubEnv("PORTAL_CATALOG_READ_ENABLED", flag);
+    it.each([{ full: undefined, clients: undefined }, { full: "false", clients: undefined }, { full: "false", clients: "true" }])(
+      "retains the legacy writer outside full catalog ownership: %j", async flags => {
+      vi.stubEnv("PORTAL_CATALOG_READ_ENABLED", flags.full);
+      vi.stubEnv("PORTAL_CATALOG_CLIENTS_READ_ENABLED", flags.clients);
       fakes.roles.mockResolvedValue([role(`clients.${permission}`, "clients.licensing.deactivate")]);
       expect((await invoke(route, request(body))).status).toBe(legacyStatus);
       expect(writer).toHaveBeenCalledOnce();

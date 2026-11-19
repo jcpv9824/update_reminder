@@ -18,6 +18,27 @@ const licenciasPath = `${detallePath}/licenses`;
 
 describe("indicadores de Clientes en la ruta", () => {
   afterEach(() => { vi.unstubAllEnvs(); get.mockReset(); post.mockReset(); });
+  it("activa solo la vista de Clientes y no solicita indicadores ni refrescos", async () => {
+    vi.stubEnv("VITE_PORTAL_CATALOG_READ_ENABLED", "false");
+    vi.stubEnv("VITE_PORTAL_CATALOG_CLIENTS_READ_ENABLED", "true");
+    vi.stubEnv("VITE_PORTAL_CATALOG_AUTOMATION_ENABLED", "false");
+    get.mockImplementation(async (path: string) => {
+      if (path === detallePath) return cliente;
+      if (path.startsWith("/catalog/customers?")) return { items: [cliente], sources: [],
+        sag: { state: "verified", verifiedAt: null }, partial: false, total: 1, page: 1, pageSize: 25 };
+      throw new Error(`Solicitud inesperada en modo Clientes: ${path}`);
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={queryClient}><CatalogoClientesRoute /></QueryClientProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: `Ver fuentes de ${cliente.name}` }));
+    await waitFor(() => expect(get).toHaveBeenCalledWith(detallePath, { signal: expect.any(AbortSignal) }));
+    expect(get.mock.calls.map(([path]) => path)).toEqual([
+      "/catalog/customers?state=active&web=in_web&page=1&pageSize=25", detallePath,
+    ]);
+    expect(screen.queryByRole("button", { name: /Ver (dominios|licencias) observad/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Crear|Nuevo|Editar|Eliminar/i })).not.toBeInTheDocument();
+    expect(post).not.toHaveBeenCalled();
+  });
   it.each([
     ["clients.domains.view", "Ver dominios observados", dominiosPath, "Ver licencias observadas", licenciasPath],
     ["clients.licensing.view", "Ver licencias observadas", licenciasPath, "Ver dominios observados", dominiosPath],

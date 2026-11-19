@@ -23,6 +23,7 @@ describe("catalog refresh registered routes", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.stubEnv("PORTAL_CATALOG_READ_ENABLED", "true");
+    vi.stubEnv("PORTAL_CATALOG_CLIENTS_READ_ENABLED", undefined);
     vi.stubEnv("PORTAL_CATALOG_AUTOMATION_ENABLED", "true");
     vi.stubEnv("PORTAL_SAG_ENVIRONMENT", "qa");
     vi.stubEnv("PORTAL_CATALOG_MATCH_KEY_VERSION", "2");
@@ -35,6 +36,26 @@ describe("catalog refresh registered routes", () => {
     hooks.limit.mockResolvedValue(null);
   });
   afterEach(() => vi.unstubAllEnvs());
+
+  it("does not enqueue or authorize refresh from the Clients read flag alone", async () => {
+    vi.stubEnv("PORTAL_CATALOG_READ_ENABLED", "false"); vi.stubEnv("PORTAL_CATALOG_CLIENTS_READ_ENABLED", "true");
+    vi.stubEnv("PORTAL_CATALOG_AUTOMATION_ENABLED", undefined);
+    for (const route of routes()) expect((await route.handler(request)).status).toBe(404);
+    expect(hooks.auth).not.toHaveBeenCalled(); expect(hooks.enqueue).not.toHaveBeenCalled(); expect(hooks.status).not.toHaveBeenCalled();
+  });
+
+  it.each(["clients.clients.view", "clients.domains.view", "clients.databases.view", "clients.licensing.view"])(
+    "Clients-only refresh evaluates %s without widening option access", async permission => {
+      vi.stubEnv("PORTAL_CATALOG_READ_ENABLED", "false"); vi.stubEnv("PORTAL_CATALOG_CLIENTS_READ_ENABLED", "true");
+      hooks.roles.mockResolvedValue([role(permission)]);
+      const allowed = permission === "clients.clients.view";
+      const [post, get] = routes();
+      expect((await post.handler(request)).status).toBe(allowed ? 202 : 403);
+      expect((await get.handler(request)).status).toBe(allowed ? 200 : 403);
+      expect(hooks.enqueue).toHaveBeenCalledTimes(allowed ? 1 : 0);
+      expect(hooks.status).toHaveBeenCalledTimes(allowed ? 1 : 0);
+      expect(hooks.limit).toHaveBeenCalledTimes(allowed ? 2 : 0);
+    });
 
   it.each(["clients.clients.view", "clients.databases.view", "clients.domains.view", "clients.licensing.view"])(
     "allows %s to queue and to poll under the persisted identity", async permission => {

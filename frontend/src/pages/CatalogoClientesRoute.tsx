@@ -37,18 +37,19 @@ async function loadDetail(id: string, signal: AbortSignal): Promise<ResumenCatal
 
 export default function CatalogoClientesRoute() {
   const auth = useAuth();
-  const catalogoHabilitado = import.meta.env.VITE_PORTAL_CATALOG_READ_ENABLED === "true";
+  const catalogoCompletoHabilitado = import.meta.env.VITE_PORTAL_CATALOG_READ_ENABLED === "true";
+  const catalogoHabilitado = catalogoCompletoHabilitado || import.meta.env.VITE_PORTAL_CATALOG_CLIENTS_READ_ENABLED === "true";
   const consultaRoles = useQuery({
     queryKey: ["roles"],
     queryFn: () => api.get<RoleDefinition[]>("/roles"),
-    enabled: catalogoHabilitado && !auth.cargando && !!auth.usuario,
+    enabled: catalogoCompletoHabilitado && !auth.cargando && !!auth.usuario,
   });
   if (!catalogoHabilitado) return <ClientesPage />;
   if (auth.cargando || !auth.usuario) return null;
   // Unknown permissions do not enable optional indicator queries.
   const roles = consultaRoles.isSuccess && Array.isArray(consultaRoles.data) ? consultaRoles.data : [];
-  const verDominios = hasPermissionForRoleIds(auth.usuario.roles, "clients.domains.view", roles);
-  const verLicencias = hasPermissionForRoleIds(auth.usuario.roles, "clients.licensing.view", roles);
+  const verDominios = catalogoCompletoHabilitado && hasPermissionForRoleIds(auth.usuario.roles, "clients.domains.view", roles);
+  const verLicencias = catalogoCompletoHabilitado && hasPermissionForRoleIds(auth.usuario.roles, "clients.licensing.view", roles);
   const indicadores: CargadoresIndicadores = {
     dominios: verDominios ? (id, signal) => api.get<IndicadorDominiosCliente>(`/catalog/customers/${encodeURIComponent(id)}/domains`, { signal }) : undefined,
     licencias: verLicencias ? (id, signal) => api.get<IndicadorLicenciasCliente>(`/catalog/customers/${encodeURIComponent(id)}/licenses`, { signal }) : undefined,

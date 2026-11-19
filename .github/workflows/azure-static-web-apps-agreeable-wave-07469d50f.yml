@@ -51,7 +51,7 @@ jobs:
         working-directory: frontend
         env:
           VITE_GUIDE_BUILDER_ENABLED: "true"
-        run: npm test && npm run build
+        run: npm test && VITE_PORTAL_CATALOG_CLIENTS_READ_ENABLED=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }} npm run build
 
   build_and_deploy_job:
     needs: quality_gate
@@ -90,7 +90,7 @@ jobs:
           app_location: "./frontend" # App source code path
           api_location: "" # Api source code path - optional
           output_location: "dist" # Built app content directory - optional
-          app_build_command: "VITE_API_BASE_URL=https://erpupdsch4645-api.azurewebsites.net/api VITE_GUIDE_BUILDER_ENABLED=true npm run build"
+          app_build_command: "VITE_API_BASE_URL=https://erpupdsch4645-api.azurewebsites.net/api VITE_GUIDE_BUILDER_ENABLED=true VITE_PORTAL_CATALOG_CLIENTS_READ_ENABLED=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }} npm run build"
           github_id_token: ${{ steps.idtoken.outputs.result }}
           ###### End of Repository/Build Configurations ######
 

@@ -10,6 +10,7 @@ import type { CatalogRefreshClaim, CatalogRefreshSettings } from "./catalogRefre
 import type { SqlCatalogSourceBinding } from "./catalogSourceBindingsSqlRepository";
 import type { CatalogRefreshSink } from "./catalogCustomerRefresh";
 import { readCatalogSagV2PublisherPoolSettings } from "./catalogSagV2PublisherPool";
+import { catalogClientsReadEnabled } from "./catalogReadScope";
 
 const deps = { readBindings: readSqlCatalogSourceBindings, getSecret, loadTransport: loadCatalogSourceTransport,
   async publisher(operator: CatalogPublicationOperator) { return createSqlCatalogCustomerSnapshotPublisher(await getSqlPool(), { operator }); } };
@@ -24,7 +25,7 @@ function keyConfig(values: NodeJS.ProcessEnv) {
 }
 
 export function catalogRefreshEnabled(values: NodeJS.ProcessEnv = process.env): boolean {
-  return values.PORTAL_CATALOG_AUTOMATION_ENABLED?.trim() === "true" && values.PORTAL_CATALOG_READ_ENABLED?.trim() === "true";
+  return values.PORTAL_CATALOG_AUTOMATION_ENABLED?.trim() === "true" && catalogClientsReadEnabled(values);
 }
 
 export function readCatalogRefreshConfiguration(values: NodeJS.ProcessEnv = process.env): CatalogRefreshSettings | null {

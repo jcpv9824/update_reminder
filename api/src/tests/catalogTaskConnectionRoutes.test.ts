@@ -24,6 +24,16 @@ describe("catalog database access routes", () => {
   });
   afterEach(() => vi.unstubAllEnvs());
 
+  it("does not switch database credential routes when only Clients read is enabled", async () => {
+    vi.stubEnv("PORTAL_CATALOG_READ_ENABLED", "false"); vi.stubEnv("PORTAL_CATALOG_CLIENTS_READ_ENABLED", "true");
+    stubs.unscopedPermissions.mockResolvedValue([]); stubs.restrictedDb.mockResolvedValue(null);
+    for (const [name, body] of [["databasesAccessInfo", {}], ["databasesCopyAccessPart", { part: "initialCatalog" }],
+      ["databasesRevealPassword", {}]] as const) {
+      expect((await stubs.routes.get(name)!(request(body))).status).toBe(404);
+    }
+    expect(stubs.restrictedDb).toHaveBeenCalledTimes(3); expect(stubs.read).not.toHaveBeenCalled();
+  });
+
   it("cannot use global super-admin metadata permissions to bypass a missing or denied task", async () => {
     const view = stubs.routes.get("databasesAccessInfo")!;
     expect((await view(request({}))).status).toBe(403);

@@ -89,6 +89,14 @@ function harness(owner = false) {
 }
 
 describe("claimed SAG v2 publication service", () => {
+  it("forwards Clients-only admission to the owner publisher without requiring the full inventory scope", async () => {
+    const h = harness(true);
+    Object.assign(h.env, { PORTAL_CATALOG_SAG_V2_PUBLISHER_MODE: "portal-owner",
+      PORTAL_CATALOG_READ_ENABLED: "false", PORTAL_CATALOG_CLIENTS_READ_ENABLED: "true" });
+    expect(await publishClaimedCatalogSagV2(claim, h.io, h.env)).toMatchObject({ outcome: "published" });
+    expect(h.calls.map(c => c.procedure)).toEqual(["settings.reserve_catalog_sag_v2_owner_attempt", "settings.publish_catalog_sag_v2_owner_with_targets"]);
+    expect(h.events.filter(e => e === "snapshot")).toHaveLength(1);
+  });
   it("routes explicit owner-mode claims through fixed owner RPCs while the SAG transport remains SELECT-only", async () => {
     const h = harness(true); h.env.PORTAL_CATALOG_SAG_V2_PUBLISHER_MODE = "portal-owner";
     const result = await publishClaimedCatalogSagV2(claim, h.io, h.env);

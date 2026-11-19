@@ -73,6 +73,7 @@ describe("Vistas independientes del catálogo", () => {
 
   it.each(routes)("%s conserva su fuente heredada con la opción desactivada", async (path, _label, _view, permission, legacy) => {
     vi.stubEnv("VITE_PORTAL_CATALOG_READ_ENABLED", "false");
+    vi.stubEnv("VITE_PORTAL_CATALOG_CLIENTS_READ_ENABLED", "true");
     vi.stubEnv("VITE_PORTAL_CATALOG_AUTOMATION_ENABLED", "true");
     mockRequests(permission, () => { throw new Error("No debe consultar el catálogo"); });
     renderRoute(path);

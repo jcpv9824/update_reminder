@@ -28,6 +28,23 @@ const mocks = () => {
 };
 
 describe("durable catalog refresh tick", () => {
+  it("refreshes only catalog sources in Clients-only scope even with pre-existing task/cutoff settings", async () => {
+    const io = mocks();
+    io.claim.mockResolvedValueOnce([legacy(1), sagV2(2)]).mockResolvedValueOnce([]);
+    io.publishSagV2.mockResolvedValue({ outcome: "published", queue: "settled", jobStatus: "succeeded" });
+    const result = await runCatalogRefreshTick(io, { ...sagConfig, PORTAL_CATALOG_READ_ENABLED: "false",
+      PORTAL_CATALOG_CLIENTS_READ_ENABLED: "true", PORTAL_CATALOG_CUTOFF_ENABLED: "true" });
+    expect(result).toMatchObject({ claimed: 2, published: 2, generation: "skipped", cutoff: "skipped" });
+    expect(io.enqueueDue).toHaveBeenCalledOnce(); expect(io.publish).toHaveBeenCalledOnce(); expect(io.publishSagV2).toHaveBeenCalledOnce();
+    expect(io.generate).not.toHaveBeenCalled(); expect(io.cutoff).not.toHaveBeenCalled();
+  });
+
+  it("does not run a worker from the Clients-only read flag without explicit automation", async () => {
+    const io = mocks();
+    expect(await runCatalogRefreshTick(io, { ...sagConfig, PORTAL_CATALOG_READ_ENABLED: "false",
+      PORTAL_CATALOG_CLIENTS_READ_ENABLED: "true", PORTAL_CATALOG_AUTOMATION_ENABLED: undefined })).toBeNull();
+    for (const fn of [io.enqueueDue, io.claim, io.publish, io.prepareSagV2, io.generate, io.cutoff]) expect(fn).not.toHaveBeenCalled();
+  });
   it.each([{ PORTAL_CATALOG_AUTOMATION_ENABLED: undefined }, { PORTAL_CATALOG_READ_ENABLED: "false" },
     { PORTAL_SAG_ENVIRONMENT: undefined }, { PORTAL_CATALOG_MATCH_KEY_SECRET_VERSION: undefined }])(
     "does not perform job, publisher or generation IO when disabled or misconfigured", async override => {

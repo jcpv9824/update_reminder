@@ -5,6 +5,7 @@ import { catalogRefreshEnabled, readCatalogRefreshConfiguration, publishClaimedC
 import { enqueueDueCatalogRefreshSources, claimCatalogRefreshJobs, completeCatalogRefreshClaim,
   type CatalogRefreshClaim, type CatalogRefreshWork } from "./catalogRefreshQueueSqlRepository";
 import { prepareCatalogSagV2Publication, type PreparedCatalogSagV2Publication } from "./catalogSagV2PublicationRuntime";
+import { catalogFullReadEnabled } from "./catalogReadScope";
 
 const bogotaDay = new Intl.DateTimeFormat("sv-SE", { timeZone: "America/Bogota", year: "numeric", month: "2-digit", day: "2-digit" });
 const utcNextMidnightInBogota = (day: string) => Date.parse(day) + (24 + 5) * 60 * 60 * 1000;
@@ -72,7 +73,9 @@ export async function runCatalogRefreshTick(io: CatalogRefreshWorkerIO = depende
     generation: "skipped" as "skipped" | "evaluated" | "unverified" | "cutoff" | "failed",
     cutoff: "skipped" as "skipped" | "evaluated" | "failed", generationErrors: 0, unverifiedDays: 0, cutoffErrors: 0, closureErrors: 0 };
   let catalogGeneration = false;
-  try { catalogGeneration = getTaskGenerationMode(env) === "catalog"; }
+  // Clients-only admission may refresh sources, never reconcile task days or
+  // execute cutoff sweeps, even if old task settings remain in the environment.
+  try { catalogGeneration = catalogFullReadEnabled(env) && getTaskGenerationMode(env) === "catalog"; }
   catch { stats.generation = "failed"; stats.generationErrors++; }
   async function reconcileDay(date: string) {
     try {

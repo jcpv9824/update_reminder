@@ -20,6 +20,7 @@ import { readSqlClients, readSqlClientTree } from "../lib/clientsSqlRepository";
 import { createSqlClient, updateSqlClient } from "../lib/clientsSqlWriteRepository";
 import { deleteSqlCoreCascade } from "../lib/coreCascadeSqlRepository";
 import type { ClientRecord } from "../types/models";
+import { catalogClientsReadEnabled } from "../lib/catalogReadScope";
 
 const ClientSchema = z.object({
   externalId: z.string().max(100).optional(),
@@ -47,7 +48,7 @@ async function readClient(id: string): Promise<ClientRecord | null> {
 // Preserve legacy reads for dependent modules, but no client mutation may
 // bypass read-only catalog ownership by calling an older API directly.
 function catalogOwnsClients(): boolean {
-  return process.env.PORTAL_CATALOG_READ_ENABLED?.trim() === "true";
+  return catalogClientsReadEnabled();
 }
 const readOnlyClientResponse = () => conflict("El catálogo de clientes es de solo lectura.");
 
