@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import FormatosImpresionAdminPage from "../pages/FormatosImpresionAdminPage";
@@ -211,6 +211,46 @@ describe("FormatosImpresionAdminPage", () => {
     expect(apiMock.post).not.toHaveBeenCalled();
   });
 
+  it("impide guardar mientras se lee el PDF y solo envía el último archivo seleccionado", async () => {
+    const pendientes: FileReader[] = [];
+    const lector = vi.spyOn(FileReader.prototype, "readAsDataURL").mockImplementation(function (this: FileReader) {
+      pendientes.push(this);
+    });
+    function completar(reader: FileReader, base64: string) {
+      Object.defineProperty(reader, "result", { value: `data:application/pdf;base64,${base64}` });
+      reader.dispatchEvent(new Event("load"));
+    }
+    try {
+      apiMock.post.mockResolvedValue({ id: "formato_nuevo" });
+      renderWithQuery(<FormatosImpresionAdminPage />);
+      fireEvent.click(await screen.findByRole("button", { name: "Formatos" }));
+      fireEvent.click(screen.getByRole("button", { name: "Nuevo formato" }));
+      fireEvent.change(field("Nombre del formato *"), { target: { value: "Formato nuevo" } });
+      fireEvent.change(field("Descripción *"), { target: { value: "Descripción" } });
+      const input = screen.getByLabelText("PDF *");
+      const guardar = screen.getByRole("button", { name: "Guardar" });
+      fireEvent.change(input, { target: { files: [new File(["%PDF-1.4\n"], "primero.pdf", { type: "application/pdf" })] } });
+      expect(guardar).toBeDisabled();
+      expect(screen.getByRole("status")).toHaveTextContent("Leyendo PDF");
+      fireEvent.click(guardar);
+      expect(apiMock.post).not.toHaveBeenCalled();
+      expect(screen.queryByText("Debe cargar un PDF.")).not.toBeInTheDocument();
+
+      fireEvent.change(input, { target: { files: [new File(["%PDF-1.7\n"], "ultimo.pdf", { type: "application/pdf" })] } });
+      await act(async () => completar(pendientes[1], "JVBERi0xLjcK"));
+      await act(async () => completar(pendientes[0], "JVBERi0xLjQK"));
+      expect(screen.getByText("PDF seleccionado: ultimo.pdf")).toBeInTheDocument();
+      expect(guardar).toBeEnabled();
+      fireEvent.click(guardar);
+      await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith(
+        "/catalogo-formatos/admin/formatos-impresion",
+        expect.objectContaining({ pdfNombreOriginal: "ultimo.pdf", pdfBase64: "JVBERi0xLjcK" })
+      ));
+    } finally {
+      lector.mockRestore();
+    }
+  });
+
   it("permite asociar más de un tipo de fuente al crear un formato", async () => {
     apiMock.post.mockResolvedValue({ id: "formato_compartido" });
     renderWithQuery(<FormatosImpresionAdminPage />);
@@ -221,6 +261,7 @@ describe("FormatosImpresionAdminPage", () => {
     await userEvent.type(field("Descripción *"), "Disponible para factura y remisión");
     const pdf = new File(["%PDF-1.4\n"], "compartido.pdf", { type: "application/pdf" });
     await userEvent.upload(screen.getByLabelText("PDF *"), pdf);
+    await screen.findByText("PDF seleccionado: compartido.pdf");
     fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
 
     await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith(
@@ -240,6 +281,7 @@ describe("FormatosImpresionAdminPage", () => {
     await userEvent.type(field("Descripción *"), "Validación del error del servidor");
     const pdf = new File(["%PDF-1.4\n"], "error.pdf", { type: "application/pdf" });
     await userEvent.upload(screen.getByLabelText("PDF *"), pdf);
+    await within(modal).findByText("PDF seleccionado: error.pdf");
     fireEvent.click(within(modal).getByRole("button", { name: "Guardar" }));
 
     expect(await within(modal).findByText(serverMessage)).toBeInTheDocument();
