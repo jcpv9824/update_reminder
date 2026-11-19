@@ -338,6 +338,20 @@ la misma transacción. La reversión final dejó cero filas sintéticas y
 conservó la historia y la definición de la 058. No abrió conexiones a
 bases externas ni invocó el operador del API; esas pruebas siguen aparte.
 
+### Operación de vínculos de catálogo (042)
+
+`Register-PortalSAGWeb-CatalogOperationalLink.ps1` usa por defecto una vista
+previa sin escrituras y exige una sesión efímera autorizada del ambiente
+indicado. El alta comprueba en la misma transacción las versiones del
+destino físico y el registro ERP vigente. El identificador del actor y la
+referencia enlazan la operación con una aprobación externa; no la sustituyen.
+El ensayo offline del contrato y SQL Server 2019 pasó. Una vista previa
+con un actor sintético inexistente fue rechazada en QA. El predicado de
+identidad ERP pasó **8/8** casos sintéticos en una consulta de solo lectura:
+aceptó el duplicado exacto del mismo cliente y rechazó identidades incompletas
+o en conflicto. No se usó `-Apply` ni se registraron vínculos reales.
+Falta el ensayo con reversión del bloque de escritura.
+
 ## Verificación de preparación del reporte (2026-11-18)
 
 El conjunto enfocado de conteo, perfiles, permisos de destinatarios y outbox
