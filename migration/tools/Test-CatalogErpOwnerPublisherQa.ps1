@@ -38,12 +38,13 @@ INSERT @expectedModules(name) VALUES
   (N'publish_catalog_erp_owner'), (N'fail_catalog_erp_owner_attempt');
 DECLARE @roles table(role_id int NOT NULL,member_id int NOT NULL);
 DECLARE @acl table(class tinyint NOT NULL,major_id int NOT NULL,minor_id int NOT NULL,
-  grantee int NOT NULL,grantor int NOT NULL,permission_type char(4) NOT NULL,state char(1) NOT NULL);
+  grantee int NOT NULL,grantor int NOT NULL,permission_type char(4) COLLATE Latin1_General_100_BIN2 NOT NULL,
+  state char(1) COLLATE Latin1_General_100_BIN2 NOT NULL);
 DECLARE @principals table(id int NOT NULL, name sysname COLLATE Latin1_General_100_BIN2 NOT NULL,
-  kind char(1) NOT NULL, owning_id int NULL, sid varbinary(85) NULL, authentication_type int NULL,
+  kind char(1) COLLATE Latin1_General_100_BIN2 NOT NULL, owning_id int NULL, sid varbinary(85) NULL, authentication_type int NULL,
   default_schema sysname COLLATE Latin1_General_100_BIN2 NULL);
 DECLARE @objects table(id int NOT NULL,schema_id int NOT NULL,name sysname COLLATE Latin1_General_100_BIN2 NOT NULL,
-  kind char(2) NOT NULL, owner_id int NULL, execute_as_id int NULL, definition_hash varbinary(32) NULL);
+  kind char(2) COLLATE Latin1_General_100_BIN2 NOT NULL, owner_id int NULL, execute_as_id int NULL, definition_hash varbinary(32) NULL);
 DECLARE @schemas table(id int NOT NULL,name sysname COLLATE Latin1_General_100_BIN2 NOT NULL,owner_id int NOT NULL);
 DECLARE @sequence table(id int NOT NULL,current_value bigint NULL,last_used_value bigint NULL);
 DECLARE @firstModules table(id int NOT NULL, definition_hash varbinary(32) NULL);
@@ -84,16 +85,18 @@ $checks = @'
   IF EXISTS(SELECT * FROM @roles EXCEPT SELECT role_principal_id,member_principal_id FROM sys.database_role_members)
     OR EXISTS(SELECT role_principal_id,member_principal_id FROM sys.database_role_members EXCEPT SELECT * FROM @roles)
     THROW 56574,N'Existing database role memberships changed.',1;
-  IF EXISTS(SELECT * FROM @acl EXCEPT SELECT class,major_id,minor_id,grantee_principal_id,grantor_principal_id,[type],state FROM sys.database_permissions)
-    OR EXISTS(SELECT class,major_id,minor_id,grantee_principal_id,grantor_principal_id,[type],state
+  IF EXISTS(SELECT * FROM @acl EXCEPT SELECT class,major_id,minor_id,grantee_principal_id,grantor_principal_id,
+      [type] COLLATE Latin1_General_100_BIN2,state COLLATE Latin1_General_100_BIN2 FROM sys.database_permissions)
+    OR EXISTS(SELECT class,major_id,minor_id,grantee_principal_id,grantor_principal_id,
+      [type] COLLATE Latin1_General_100_BIN2,state COLLATE Latin1_General_100_BIN2
       FROM sys.database_permissions WHERE NOT (@delegate IS NOT NULL AND grantee_principal_id=@delegate
         AND class=0 AND major_id=0 AND minor_id=0 AND state='G' AND permission_name=N'CONNECT'
         AND grantor_principal_id=DATABASE_PRINCIPAL_ID(N'dbo'))
       EXCEPT SELECT * FROM @acl)
     THROW 56575,N'An unapproved database permission changed.',1;
-  IF EXISTS(SELECT * FROM @principals EXCEPT SELECT principal_id,name COLLATE Latin1_General_100_BIN2,[type],
+  IF EXISTS(SELECT * FROM @principals EXCEPT SELECT principal_id,name COLLATE Latin1_General_100_BIN2,[type] COLLATE Latin1_General_100_BIN2,
       owning_principal_id,sid,authentication_type,default_schema_name COLLATE Latin1_General_100_BIN2 FROM sys.database_principals)
-    OR EXISTS(SELECT principal_id,name COLLATE Latin1_General_100_BIN2,[type],owning_principal_id,sid,
+    OR EXISTS(SELECT principal_id,name COLLATE Latin1_General_100_BIN2,[type] COLLATE Latin1_General_100_BIN2,owning_principal_id,sid,
       authentication_type,default_schema_name COLLATE Latin1_General_100_BIN2 FROM sys.database_principals
       WHERE @delegate IS NULL OR principal_id<>@delegate EXCEPT SELECT * FROM @principals)
     THROW 56576,N'An existing database principal changed.',1;
@@ -101,9 +104,9 @@ $checks = @'
     OR EXISTS(SELECT schema_id,name COLLATE Latin1_General_100_BIN2,principal_id FROM sys.schemas EXCEPT SELECT * FROM @schemas)
     THROW 56577,N'Existing database schema ownership changed.',1;
   IF EXISTS(SELECT * FROM @objects EXCEPT SELECT o.object_id,o.schema_id,o.name COLLATE Latin1_General_100_BIN2,
-      o.[type],o.principal_id,m.execute_as_principal_id,HASHBYTES('SHA2_256',CONVERT(varbinary(max),m.definition))
+      o.[type] COLLATE Latin1_General_100_BIN2,o.principal_id,m.execute_as_principal_id,HASHBYTES('SHA2_256',CONVERT(varbinary(max),m.definition))
       FROM sys.objects o LEFT JOIN sys.sql_modules m ON m.object_id=o.object_id WHERE o.is_ms_shipped=0)
-    OR EXISTS(SELECT o.object_id,o.schema_id,o.name COLLATE Latin1_General_100_BIN2,o.[type],o.principal_id,
+    OR EXISTS(SELECT o.object_id,o.schema_id,o.name COLLATE Latin1_General_100_BIN2,o.[type] COLLATE Latin1_General_100_BIN2,o.principal_id,
       m.execute_as_principal_id,HASHBYTES('SHA2_256',CONVERT(varbinary(max),m.definition))
       FROM sys.objects o LEFT JOIN sys.sql_modules m ON m.object_id=o.object_id WHERE o.is_ms_shipped=0
        AND NOT (@delegate IS NOT NULL AND o.schema_id=@settingsSchema AND o.[type]='P'
@@ -150,7 +153,9 @@ $rollback = @'
   END;
   ROLLBACK TRANSACTION;
   SET @delegate=NULL;
-  IF @@TRANCOUNT<>0 OR XACT_STATE()<>0 OR DATABASE_PRINCIPAL_ID(N'portal_catalog_erp_owner_delegate') IS NOT NULL
+  -- The catalog metadata statement can have an internal read transaction.
+  -- @@TRANCOUNT counts explicit user transactions, not that internal state.
+  IF @@TRANCOUNT<>0 OR XACT_STATE()=-1 OR DATABASE_PRINCIPAL_ID(N'portal_catalog_erp_owner_delegate') IS NOT NULL
      OR EXISTS(SELECT 1 FROM sys.objects o JOIN @expectedModules m ON m.name=o.name COLLATE Latin1_General_100_BIN2
        WHERE o.schema_id=@settingsSchema)
      THROW 56582,N'065 rehearsal left residue.',1;
@@ -159,7 +164,7 @@ $finish = @'
   SELECT @phase AS applied_passes,4 AS expected_procedures,1 AS acl_preserved,1 AS sequence_unchanged,0 AS remaining_objects;
 END TRY
 BEGIN CATCH
-  IF XACT_STATE()<>0 ROLLBACK TRANSACTION;
+  IF @@TRANCOUNT>0 ROLLBACK TRANSACTION;
   SELECT ERROR_NUMBER() AS error_number,ERROR_LINE() AS error_line,@phase AS applied_passes;
 END CATCH;
 '@
@@ -194,7 +199,22 @@ $invoke = Join-Path $root 'migration\connect-sql-server\Invoke-PortalSAGWeb-Ephe
 try {
   $response = (& $invoke -SessionDirectory $session -Sql $sql -Mode write -TimeoutSeconds 120 -MaxRows 1) |
     ConvertFrom-Json -Depth 14
-} catch { throw '065 QA rehearsal failed before a sanitized result was received.' }
+} catch {
+  $message = $_.Exception.Message
+  $category = switch -Regex ($message) {
+    'collation conflict' { 'sql-collation'; break }
+    'Invalid column name' { 'sql-metadata-column'; break }
+    'Invalid object name' { 'sql-metadata-object'; break }
+    'Incorrect syntax|Must declare|not a recognized built-in function' { 'sql-compile'; break }
+    'Cannot insert the value NULL' { 'sql-nullability'; break }
+    'cannot be converted|Arithmetic overflow|conversion failed' { 'sql-metadata-type'; break }
+    'Deadlock|Timeout|timed out' { 'timeout-or-lock'; break }
+    'permission.*denied|does not have permission' { 'sql-permission'; break }
+    'active session|ephemeral SQL session|No SQL batch|Pipe' { 'controller'; break }
+    default { 'unclassified' }
+  }
+  throw "065 QA rehearsal failed before a sanitized result (category: $category)."
+}
 $sets = @($response.resultSets)
 $row = if ($sets.Count -eq 1 -and @($sets[0].rows).Count -eq 1) { $sets[0].rows[0] } else { $null }
 if (!$response.success -or $row.applied_passes -ne 2 -or $row.expected_procedures -ne 4 -or
