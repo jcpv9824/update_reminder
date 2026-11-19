@@ -313,7 +313,7 @@ function broker(sessionDirectory: string, scriptPath: string) {
   });
 }
 
-async function main() {
+export async function readQaCatalogOperatorInput() {
   const argv = process.argv.slice(2);
   if (process.env.PORTAL_SAG_ENVIRONMENT !== "qa" || argv.length !== 3 || argv[0] !== "--session-directory" ||
     !argv[1] || argv[2] !== "--apply") throw stableError();
@@ -328,12 +328,20 @@ async function main() {
     if (input.length > 8192) throw stableError();
   }
   const root = resolve(__dirname, "../../../..");
-  return registerCatalogQaPhysicalSqlTarget(JSON.parse(input), {
+  return { input: JSON.parse(input) as unknown,
     broker: broker(sessionDirectory, resolve(root, "migration/connect-sql-server/Invoke-PortalSAGWeb-EphemeralRequest.ps1")),
+    auditSource: () => readFile(resolve(root, "api/src/lib/auditSqlWriter.ts"), "utf8"),
+  };
+}
+
+async function main() {
+  const { input, broker, auditSource } = await readQaCatalogOperatorInput();
+  return registerCatalogQaPhysicalSqlTarget(input, {
+    broker,
     secret: getSecret,
     identity: readCatalogSqlTargetIdentity,
     routes: () => process.env.PORTAL_CATALOG_SQL_INSTANCE_ROUTES,
-    auditSource: () => readFile(resolve(root, "api/src/lib/auditSqlWriter.ts"), "utf8"),
+    auditSource,
   });
 }
 

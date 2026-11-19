@@ -110,16 +110,30 @@ function snapshot(value: VerifiedReportingEnrollmentSnapshot | null, scope: Repo
   };
 }
 
-/** No pool, runtime role, caller-selected route, or raw proof result crosses this boundary. */
-export async function enrollCatalogReportingProfile(input: unknown, operator: CatalogReportingProfileEnrollmentOperator,
-  signal?: AbortSignal): Promise<Result> {
+type AuthorizedReader = (scope: ReportingEnrollmentScope, signal: AbortSignal, transaction?: sql.Transaction) =>
+  Promise<VerifiedReportingEnrollmentSnapshot | null>;
+type Prepared = Readonly<{
+  scope: ReportingEnrollmentScope; checked: NonNullable<ReturnType<typeof snapshot>>;
+  instance: string; databaseGuid: string; enrollmentProofId: string; reportingProofId: string;
+  verifiedAtMs: number; enrollmentExpiryMs: number; reportingExpiryMs: number;
+  lifetime: AbortSignal; deadlineMs: number;
+  confirm: (signal: AbortSignal, transaction?: sql.Transaction) => Promise<boolean>; fresh: () => boolean;
+}>;
+
+/** Internal callback only: no pool, password, count or raw proof return to consumers of the operation. */
+export async function withVerifiedReportingProfileEnrollment(input: unknown, readAuthorized: AuthorizedReader,
+  consume: (proof: Prepared) => Promise<Extract<Result, { status: "registered" }>>,
+  signal?: AbortSignal, timeoutMs = 15_000): Promise<Result> {
   try {
     const scope = validateScope(input);
     if (!scope) return unavailable;
-    const lifetime = signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000);
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 45_000) return unavailable;
+    const deadlineMs = Date.now() + timeoutMs;
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const lifetime = signal ? AbortSignal.any([signal, timeout]) : timeout;
     const read = async (active: AbortSignal, transaction?: sql.Transaction) => {
-      if (active.aborted || await operator.authorize(scope, active, transaction) !== true || active.aborted) return null;
-      const verified = await operator.readVerified(scope, active, transaction);
+      if (active.aborted) return null;
+      const verified = await readAuthorized(scope, active, transaction);
       return active.aborted ? null : snapshot(verified, scope);
     };
     const checked = await read(lifetime);
@@ -159,7 +173,28 @@ export async function enrollCatalogReportingProfile(input: unknown, operator: Ca
     const enrollmentExpiryMs = Math.min(verifiedAtMs + 300_000, checked.physicalUntilMs);
     if (enrollmentExpiryMs <= verifiedAtMs) return unavailable;
     const reportingExpiryMs = Math.min(verifiedAtMs + 24 * 60 * 60_000, checked.physicalUntilMs);
-    const registered = await operator.runSerializable<Extract<Result, { status: "registered" }>>(async transaction => {
+    const fresh = () => !lifetime.aborted && route() === instance && Date.now() < Math.min(enrollmentExpiryMs,deadlineMs);
+    const registered = await consume({ scope, checked, instance, databaseGuid, enrollmentProofId, reportingProofId,
+      verifiedAtMs, enrollmentExpiryMs, reportingExpiryMs, lifetime, deadlineMs, confirm, fresh });
+    const result = ownData(registered, ["status", "reportingProfileId"]);
+    return result?.status === "registered" && guid(result.reportingProfileId)
+      ? { status: "registered", reportingProfileId: result.reportingProfileId } : unavailable;
+  } catch {
+    // Includes audit errors, SQL conflicts and transport diagnostics without returning sensitive data.
+    return unavailable;
+  }
+}
+
+/** No pool, runtime role, caller-selected route, or raw proof result crosses this boundary. */
+export function enrollCatalogReportingProfile(input: unknown, operator: CatalogReportingProfileEnrollmentOperator,
+  signal?: AbortSignal): Promise<Result> {
+  return withVerifiedReportingProfileEnrollment(input, async (scope, active, transaction) => {
+    if (await operator.authorize(scope, active, transaction) !== true || active.aborted) return null;
+    return operator.readVerified(scope, active, transaction);
+  }, ({ scope, checked, instance, databaseGuid, enrollmentProofId, reportingProofId,
+    verifiedAtMs, enrollmentExpiryMs, reportingExpiryMs, lifetime, confirm, fresh }) =>
+    operator.runSerializable(async transaction => {
+      const { connection } = checked;
       if (!(await confirm(lifetime, transaction)) || Date.now() >= enrollmentExpiryMs) return rollback();
       const enrolled = await enrollCatalogSqlTargetInstanceInTransaction(transaction, {
         environment: scope.portalEnvironment, actorId: scope.actorId, physicalLinkId: scope.physicalLinkId,
@@ -181,15 +216,7 @@ export async function enrollCatalogReportingProfile(input: unknown, operator: Ca
         !(await confirm(lifetime, transaction))) return rollback();
       const { recordset } = await transaction.request().input("verifiedAt", sql.DateTime2(3), new Date(verifiedAtMs))
         .input("validUntil", sql.DateTime2(3), new Date(enrollmentExpiryMs)).query<{ current: boolean }>(clockSql);
-      if (lifetime.aborted || route() !== instance || Date.now() >= enrollmentExpiryMs ||
-        recordset.length !== 1 || ownData(recordset[0], ["current"])?.current !== true) return rollback();
+      if (!fresh() || recordset.length !== 1 || ownData(recordset[0], ["current"])?.current !== true) return rollback();
       return { status: "registered", reportingProfileId: profile.reportingProfileId };
-    });
-    const result = ownData(registered, ["status", "reportingProfileId"]);
-    return result?.status === "registered" && guid(result.reportingProfileId)
-      ? { status: "registered", reportingProfileId: result.reportingProfileId } : unavailable;
-  } catch {
-    // Includes audit errors, SQL conflicts and transport diagnostics without returning sensitive data.
-    return unavailable;
-  }
+    }), signal);
 }

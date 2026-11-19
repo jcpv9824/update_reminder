@@ -419,6 +419,28 @@ sin Key Vault, devolvió únicamente `unavailable` (salida 1). La sesión
 confirmó cero transacciones abiertas y cero auditorías de ese intento.
 Es una prueba negativa del lanzador; no prueba un alta ni una renovación.
 
+### Alta del perfil de conteo en QA (058 y 037)
+
+Con el vínculo 036 vigente y un perfil guardado de solo lectura autorizado
+para el conteo, el operador de QA usa
+`node api/dist/src/tools/enrollCatalogQaReportingProfile.js --session-directory <sesión-QA> --apply`.
+La aprobación entregada por entrada estándar fija el actor, destino y
+vínculo, perfil de Conexiones, las dos versiones, instancia y contrato de
+conteo (vista agregada aprobada o `dbo.usuarios` certificado). La etiqueta
+de aprobación no autentica al usuario ni da acceso a la base por sí sola.
+La contraseña se resuelve en memoria desde Key Vault; el intermediario
+SQL no recibe la contraseña ni el conteo. Tras verificar el perfil de
+destino, un solo lote registra identidad, perfil y auditoría o revierte todo.
+La salida correcta contiene únicamente el estado y el UUID del perfil.
+
+El intermediario real de QA preservó una sola transacción dentro de
+`INSERT … EXEC`. Su conversión JSON normalizaba fechas ISO con ceros
+finales; la proyección ahora usa `UTC:` seguido de la fecha con tres
+decimales. En la sesión QA se verificó el paso exacto de `.000`, `.037` y
+`.100` con la etiqueta. Esa sonda usó valores sintéticos y no hizo altas.
+Pasaron **93/93** pruebas enfocadas, ambos análisis T-SQL 150 y TypeScript.
+No se configuró ni certificó un perfil real con este comando.
+
 ## Verificación de preparación del reporte (2026-11-18)
 
 El conjunto enfocado de conteo, perfiles, permisos de destinatarios y outbox

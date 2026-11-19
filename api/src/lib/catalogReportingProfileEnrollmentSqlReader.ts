@@ -109,7 +109,7 @@ function parseScope(input: ReportingEnrollmentScope): ReportingEnrollmentScope |
   return Object.freeze({ portalEnvironment, actorId, physicalLinkId, physicalTargetId, reportConnectionId });
 }
 
-function parseContract(input: CatalogActiveUserContract): CatalogActiveUserContract | null {
+export function parseCatalogReportingEnrollmentContract(input: unknown): CatalogActiveUserContract | null {
   const aggregate = ownData(input, ["contract"]);
   if (aggregate?.contract === "approved_aggregate_view_v1") {
     return Object.freeze({ contract: "approved_aggregate_view_v1" });
@@ -130,7 +130,7 @@ function parseContract(input: CatalogActiveUserContract): CatalogActiveUserContr
   return null;
 }
 
-function parseRow(raw: unknown, scope: ReportingEnrollmentScope, evidence: CatalogActiveUserContract): VerifiedReportingEnrollmentSnapshot | null {
+export function decodeCatalogReportingEnrollmentRow(raw: unknown, scope: ReportingEnrollmentScope, evidence: CatalogActiveUserContract): VerifiedReportingEnrollmentSnapshot | null {
   const row = ownData(raw, rowKeys);
   if (!row || row.portalEnvironment !== scope.portalEnvironment || row.actorId !== scope.actorId ||
     row.reportConnectionId !== scope.reportConnectionId ||
@@ -162,7 +162,7 @@ export async function readCatalogReportingProfileEnrollmentInTransaction(
 ): Promise<VerifiedReportingEnrollmentSnapshot | null> {
   try {
     const scope = parseScope(requestedScope);
-    const evidence = parseContract(reviewedEvidence);
+    const evidence = parseCatalogReportingEnrollmentContract(reviewedEvidence);
     if (!scope || !evidence || signal?.aborted) return null;
     const request = transaction.request();
     request.input("portalEnvironment", sql.VarChar(32), scope.portalEnvironment);
@@ -173,7 +173,7 @@ export async function readCatalogReportingProfileEnrollmentInTransaction(
     const result = await request.query<unknown>(READ_CATALOG_REPORTING_PROFILE_ENROLLMENT_SQL);
     if (signal?.aborted || !Array.isArray(result.recordsets) || result.recordsets.length !== 1 ||
       !Array.isArray(result.recordset) || result.recordsets[0] !== result.recordset || result.recordset.length !== 1) return null;
-    return parseRow(result.recordset[0], scope, evidence);
+    return decodeCatalogReportingEnrollmentRow(result.recordset[0], scope, evidence);
   } catch {
     // Unavailable without exposing SQL/provider errors or any profile data.
     return null;

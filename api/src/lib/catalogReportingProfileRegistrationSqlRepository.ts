@@ -35,7 +35,7 @@ const date = (v: unknown): v is Date => v instanceof Date && Number.isFinite(v.v
 const hasExactKeys = (value: object, expected: readonly string[]): boolean => Reflect.ownKeys(value).length === expected.length
   && expected.every(key => Object.hasOwn(value, key));
 
-function bindCountContract(evidence: CatalogActiveUserContract) {
+export function bindReportingCountContract(evidence: CatalogActiveUserContract) {
   if (!evidence || typeof evidence !== "object") return null;
   if (evidence.contract === "approved_aggregate_view_v1" && hasExactKeys(evidence, ["contract"])) {
     return { contract: evidence.contract, column: null, storage: null, bit: null, active: null, inactive: null };
@@ -170,7 +170,7 @@ export const REGISTER_CATALOG_REPORTING_PROFILE_SQL = `
   FROM @newProfile AS p;`;
 
 function prepareRegistration(input: CatalogReportingProfileRegistration) {
-  const contract = bindCountContract(input?.evidence);
+  const contract = bindReportingCountContract(input?.evidence);
   if (!input || !contract || (input.portalEnvironment !== "qa" && input.portalEnvironment !== "production") ||
       !uuid(input.targetId) || !uuid(input.trustedInstanceId) || !uuid(input.proofId) || !id(input.connectionId) || !id(input.actor?.id) ||
       !binary(input.profileVersion, 8) || !binary(input.identityFingerprint, 32) || !date(input.verifiedAt) || !date(input.validUntil) ||
