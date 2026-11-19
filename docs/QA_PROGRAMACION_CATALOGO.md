@@ -330,6 +330,16 @@ de origen: `erp_v1` y `sag_admin_v2` devolvieron `verified`. La sonda sólo
 certifica conectividad, TLS y el contrato de lectura del origen; no crea
 configuraciones oficiales ni publica revisiones de catálogo.
 
+Después de `a10d280`, una lectura completa de cada origen con los perfiles
+existentes devolvió 3.516 filas ERP (2.220 activas), y 86 clientes y 122
+compañías en SAG Admin. Los 122 registros tenían un padre en el origen.
+La proyección devolvió 98 ubicaciones candidatas y 24 sin verificar, y se
+observaron 25 códigos de licencia. Se contaron 63 documentos normalizados
+presentes en ambas fuentes con una clave efímera; no es un cruce aprobado
+de identidades ni una equivalencia de licencias. Sólo salieron agregados;
+no se guardaron filas, identificadores, huellas ni credenciales, ni se
+publicó una revisión en QA.
+
 Sobre ese mismo candidato pasaron las suites completas (API **1.879/1.879**,
 frontend **303/303**), la guarda SQL-only, TypeScript y ambos builds, y las
 auditorías de producción y completas de ambos paquetes. El build del
