@@ -99,6 +99,27 @@ function collectOneTimeScheduleObservations(rules: readonly CatalogScheduleRule[
   };
 }
 
+/** Candidates for I/O only; the planner still owns holds, filters, and grouping. */
+function selectedSagDatabases(rules: readonly CatalogScheduleRule[], inventory: CatalogScheduleDay["inventory"]) {
+  const databaseRules = rules.filter(({ scope }) => scope.kind === "database").map(({ scope }) => ({
+    scope, include: scope.linkIds === undefined ? null : new Set(scope.linkIds), exclude: new Set(scope.excludedLinkIds),
+  }));
+  const selected = new Set<string>();
+  if (databaseRules.length === 0) return selected;
+  for (const { link } of inventory) {
+    if (link.kind !== "database" || link.state !== "active") continue;
+    if (databaseRules.some(({ scope, include, exclude }) =>
+      (scope.customerId === undefined || scope.customerId === link.customerId) &&
+      (scope.domainId === undefined || scope.domainId === link.domainId) &&
+      (scope.environment === undefined || scope.environment === link.environment) &&
+      (include === null || include.has(link.linkId)) && !exclude.has(link.linkId) &&
+      (!scope.modules || (link.moduleIds !== null && (scope.modules.mode === "all"
+        ? scope.modules.ids.every(module => link.moduleIds!.includes(module))
+        : scope.modules.ids.some(module => link.moduleIds!.includes(module))))))) selected.add(link.linkId);
+  }
+  return selected;
+}
+
 /**
  * Runs one Bogotá business date using the full trusted roster, not browser-provided targets.
  * Legacy task cleanup and schedule completion are deliberately not part of registration.
@@ -108,17 +129,6 @@ export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io?:
     || input.inventory.length > 5000 || input.rules.length > 5000) throw new Error("invalid_catalog_schedule_day");
   if (input.checkedAt >= input.cutoffAt) return { status: "cutoff" };
   if (!input.revision.complete) return { status: "unverified" };
-  if (!io && input.revision.id.startsWith(catalogPopulationRevisionPrefix)) {
-    if (!input.populationFence || input.populationFence.scope.portalEnvironment !== input.portalEnvironment ||
-      new Set(input.manualScheduleIds).size !== input.populationFence.manualIntents.size ||
-      input.manualScheduleIds?.some(id => !input.populationFence!.manualIntents.has(id))) {
-      return { status: "unverified" };
-    }
-    const result = await runSqlCatalogScheduleDayTransaction({
-      ...input.populationFence, date: input.date, cutoffAt: input.cutoffAt, revisionId: input.revision.id,
-    }, scoped => generateCatalogScheduleDay(input, scoped), recordSqlCatalogOnceObservationsInTransaction);
-    return result.status === "committed" ? result.value : { status: result.status };
-  }
   const { resolve, register } = io ?? dependencies;
   const observeOneTimeSchedules = io?.observeOneTimeSchedules;
   const selectedManual = new Set(input.manualScheduleIds);
@@ -148,6 +158,20 @@ export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io?:
     activeRules.push(rule);
   }
   if (foundManual.size !== selectedManual.size) throw new Error("invalid_catalog_manual_schedule");
+  if (!io && input.revision.id.startsWith(catalogPopulationRevisionPrefix)) {
+    if (!input.populationFence || input.populationFence.scope.portalEnvironment !== input.portalEnvironment ||
+      new Set(input.manualScheduleIds).size !== input.populationFence.manualIntents.size ||
+      input.manualScheduleIds?.some(id => !input.populationFence!.manualIntents.has(id))) {
+      return { status: "unverified" };
+    }
+    const result = await runSqlCatalogScheduleDayTransaction({
+      ...input.populationFence, date: input.date, cutoffAt: input.cutoffAt, revisionId: input.revision.id,
+      ...(input.matchKeyVersion === undefined ? {} : { matchKeyVersion: input.matchKeyVersion }),
+      ...(process.env.PORTAL_CATALOG_SAG_V2_ENABLED?.trim() === "true"
+        ? { sagDatabaseLinkIds: selectedSagDatabases(activeRules, input.inventory) } : {}),
+    }, scoped => generateCatalogScheduleDay(input, scoped), recordSqlCatalogOnceObservationsInTransaction);
+    return result.status === "committed" ? result.value : { status: result.status };
+  }
   const result: DayResult & { status: "evaluated" } = { status: "evaluated", registered: 0, existing: 0, held: 0, conflicts: 0 };
   if (!activeRules.length) return result;
   const inventory = new Map(input.inventory.map(record => [record.link.linkId, record]));

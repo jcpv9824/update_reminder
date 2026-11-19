@@ -3,7 +3,10 @@ import { lockCatalogTaskDay } from "./catalogExecutionCoexistenceSql";
 import { readSqlCatalogManualDayIntentsInTransaction } from "./catalogManualDayIntentSqlRepository";
 import { catalogRegistrationConflictReason, registerSqlCatalogTaskExecutionInTransaction,
   type CatalogExecutionRegistration, type CatalogExecutionRegistrationResult } from "./catalogExecutionRegistrationSqlRepository";
-import { readSqlCatalogPhysicalTargets, readSqlCatalogPhysicalTargetsInTransaction } from "./catalogPhysicalTargetSqlRepository";
+import { readSqlCatalogPhysicalTargets, readSqlCatalogPhysicalTargetsInTransaction,
+  readSqlCatalogPhysicalTargetPinsInTransaction } from "./catalogPhysicalTargetSqlRepository";
+import { verifyCatalogSagTargetRuntimeProof } from "./catalogSagTargetRuntimeSqlRepository";
+import { loadCatalogSagTargetProofKey } from "./catalogSagTargetProofKey";
 import type { CatalogInventoryProofScope } from "./catalogScheduleInventory";
 import type { CatalogOneTimeScheduleObservation } from "./catalogScheduleDay";
 import { readSqlCatalogSchedulePopulationCoverageInTransaction } from "./catalogSchedulePopulationCoverage";
@@ -13,6 +16,9 @@ import { runSqlTransaction } from "./sqlTransaction";
 export type CatalogScheduleDayTransactionContext = Readonly<{
   date: string; cutoffAt: Date; revisionId: string; scope: CatalogInventoryProofScope;
   roster: ReadonlyMap<string, string>; manualIntents: ReadonlyMap<string, string>;
+  matchKeyVersion?: number;
+  /** Internally derived from the due and authorized rules, never supplied by a request. */
+  sagDatabaseLinkIds?: ReadonlySet<string>;
 }>;
 type TransactionIo = {
   resolve: typeof readSqlCatalogPhysicalTargets;
@@ -23,6 +29,15 @@ type OneTimeObserver = (transaction: sql.Transaction, context: CatalogScheduleDa
   items: readonly CatalogOneTimeScheduleObservation[], validUntil: Date) => Promise<void>;
 type Stop = "cutoff" | "unverified";
 type Result<T> = { status: "committed"; value: T } | { status: Stop };
+type LinkRequest = Parameters<TransactionIo["resolve"]>[0]["links"][number];
+type Target = Awaited<ReturnType<TransactionIo["resolve"]>>[number];
+type CoveredLink = CatalogInventoryProofScope["links"][number];
+type CoveredDatabase = Pick<Extract<CoveredLink, { kind: "database" }>,
+  "linkId" | "customerId" | "domainId" | "databaseId" | "environment">;
+const held: Target = Object.freeze({ status: "unverifiable" });
+const sameDatabaseLink = (left: LinkRequest, right: CoveredDatabase): boolean =>
+  left.kind === "database" && left.linkId === right.linkId && left.customerId === right.customerId &&
+  left.domainId === right.domainId && left.databaseId === right.databaseId && left.environment === right.environment;
 class DayStop extends Error { constructor(readonly status: Stop) { super(status); } }
 const stop = (status: Stop): never => { throw new DayStop(status); };
 const clockSql = `
@@ -48,7 +63,21 @@ export async function runSqlCatalogScheduleDayTransaction<T>(context: CatalogSch
   if (date !== scope.date || !(cutoffAt instanceof Date) || !Number.isFinite(cutoffAt.valueOf()) || roster.size > 5000) {
     return { status: "unverified" };
   }
+  const requireSagProof = process.env.PORTAL_CATALOG_SAG_V2_ENABLED?.trim() === "true";
+  const { matchKeyVersion } = context;
+  const eligible = new Map<string, CoveredDatabase>();
+  let key: Buffer | null = null;
   try {
+    if (requireSagProof) {
+      if (scope.links.length > 5000 || (context.sagDatabaseLinkIds?.size ?? 0) > 5000) return stop("unverified");
+      for (const link of scope.links) {
+        if (link.kind !== "database" || link.evidence.state !== "verified" || !context.sagDatabaseLinkIds?.has(link.linkId)) continue;
+        if (eligible.has(link.linkId)) return stop("unverified");
+        const { linkId, customerId, domainId, databaseId, environment } = link;
+        eligible.set(linkId, { linkId, customerId, domainId, databaseId, environment });
+      }
+      if (eligible.size) key = await loadCatalogSagTargetProofKey(scope.portalEnvironment, matchKeyVersion, process.env, cutoffAt.getTime());
+    }
     return await runSqlTransaction(async transaction => {
       // Other task writers already acquire this lock before relation locks.
       // A batch that spans both kinds always acquires them in the same order.
@@ -69,15 +98,77 @@ export async function runSqlCatalogScheduleDayTransaction<T>(context: CatalogSch
       if (currentIntents.size !== manualIntents.size ||
         [...currentIntents].some(([id, version]) => manualIntents.get(id) !== version)) return stop("unverified");
       await checkClock(transaction, cutoffAt, deadline);
+      const resolvedDatabases = new Map<string, Target>();
+      const scopedResolve: TransactionIo["resolve"] = async input => {
+        if (input.portalEnvironment !== scope.portalEnvironment) return stop("unverified");
+        if (!requireSagProof) return readSqlCatalogPhysicalTargetsInTransaction(transaction, input);
+        if (input.links.length > 5000 || observed) return stop("unverified");
+        const domains = input.links.filter(link => link.kind === "domain");
+        const domainTargets = domains.length ? await readSqlCatalogPhysicalTargetsInTransaction(transaction, {
+          portalEnvironment: scope.portalEnvironment, links: domains,
+        }) : [];
+        if (domainTargets.length !== domains.length) return stop("unverified");
+
+        if (key && matchKeyVersion !== undefined) {
+          const unresolved = new Map<string, CoveredDatabase>();
+          for (const link of input.links) {
+            const approved = link.linkId === undefined ? undefined : eligible.get(link.linkId);
+            if (approved && sameDatabaseLink(link, approved) && !resolvedDatabases.has(approved.linkId)) {
+              unresolved.set(approved.linkId, approved);
+            }
+          }
+          const links = [...unresolved.values()].map(({ linkId, customerId, domainId, databaseId, environment }) =>
+            ({ kind: "database" as const, linkId, customerId, domainId, databaseId, environment }));
+          const targets = links.length ? await readSqlCatalogPhysicalTargetPinsInTransaction(transaction, {
+            portalEnvironment: scope.portalEnvironment, links,
+          }) : [];
+          if (targets.length !== links.length) return stop("unverified");
+          for (const [index, target] of targets.entries()) {
+            // The SQL clock still fences commit. Also stop issuing proof RPCs
+            // if a large exact selection has already crossed the local cutoff.
+            if (Date.now() >= cutoffAt.getTime()) return stop("cutoff");
+            const { linkId } = links[index];
+            if (target.status === "verified") {
+              const proof = await verifyCatalogSagTargetRuntimeProof(transaction, {
+                environment: scope.portalEnvironment, purpose: "task", operationalLinkId: linkId,
+                physicalLinkId: target.physicalLinkId, physicalTargetId: target.id, matchKeyVersion, reportInstanceId: null,
+              }, key);
+              if (proof?.targetId === target.id && proof.validUntil instanceof Date &&
+                proof.validUntil.getTime() > Date.now()) {
+                if (proof.validUntil < deadline) deadline = proof.validUntil;
+                resolvedDatabases.set(linkId, { status: "verified", id: proof.targetId });
+                continue;
+              }
+            }
+            // A missing physical or SAG row is not certified deletion.
+            resolvedDatabases.set(linkId, held);
+          }
+        }
+        let domainIndex = 0;
+        return input.links.map(link => {
+          if (link.kind === "domain") return domainTargets[domainIndex++];
+          const approved = link.linkId === undefined ? undefined : eligible.get(link.linkId);
+          return approved && sameDatabaseLink(link, approved) ? resolvedDatabases.get(approved.linkId) ?? held : held;
+        });
+      };
       const value = await work({
-        resolve: input => input.portalEnvironment === scope.portalEnvironment
-          ? readSqlCatalogPhysicalTargetsInTransaction(transaction, input) : stop("unverified"),
+        resolve: scopedResolve,
         register: async registration => {
           if (registration.portalEnvironment !== scope.portalEnvironment || registration.task.taskDate !== date ||
               registration.group.occurrenceId !== date || registration.group.revisionId !== revisionId ||
               registration.cutoffAt.valueOf() !== cutoffAt.valueOf() ||
               [...registration.scheduleVersions].some(([id, version]) => roster.get(id) !== version)) return stop("unverified");
           if (observed) return stop("unverified");
+          if (requireSagProof && (registration.group.kind === "database" || registration.task.targetType === "database")) {
+            if (registration.group.kind !== "database" || registration.task.targetType !== "database" ||
+              registration.matchKeyVersion !== matchKeyVersion || registration.group.sources.length === 0 ||
+              registration.group.sources.some(({ link }) => {
+                const approved = eligible.get(link.linkId);
+                const resolved = resolvedDatabases.get(link.linkId);
+                return !approved || !sameDatabaseLink(link, approved) || resolved?.status !== "verified" ||
+                  resolved.id !== registration.group.targetId;
+              })) return stop("unverified");
+          }
           const verifyOneTimeExpectation = observe !== undefined && [...registration.scheduleVersions.keys()].some(id => oneTime.has(id));
           const { outcome, validUntil } = await registerSqlCatalogTaskExecutionInTransaction(transaction, registration, {
             replayMode: "certified-day", ...(verifyOneTimeExpectation ? { verifyOneTimeExpectation: true as const } : {}),
@@ -127,5 +218,7 @@ export async function runSqlCatalogScheduleDayTransaction<T>(context: CatalogSch
     const reason = catalogRegistrationConflictReason(error);
     if (reason) return { status: reason === "cutoff-passed" ? "cutoff" : "unverified" };
     throw error;
+  } finally {
+    key?.fill(0);
   }
 }

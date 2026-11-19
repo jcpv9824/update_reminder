@@ -6,6 +6,8 @@ import { planCatalogTaskTargets, type CatalogTaskLink } from "./catalogTaskTarge
 import { getSqlPool } from "./sql";
 
 type RequestedLink = Readonly<{
+  /** Internal logical correspondence for callers that also require the SAG proof. Not part of the 036 lookup. */
+  linkId?: string;
   customerId: string;
   domainId: string;
   environment: Environment;

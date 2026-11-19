@@ -252,10 +252,24 @@ transacciones residuales. El ensayo reproducible
 `migration/tools/Test-CatalogSagTargetLinkProofQa.ps1` pasó 13/13 en QA
 con cero datos de prueba residuales. Incluye el vínculo exacto con NIT
 agrupado, el vencimiento mínimo y los rechazos por revisión sin sello,
-huella, ambiente, perfil o instancia de reporte incorrectos. La 056 está
-en el manifiesto y el analizador, pero no en el ejecutor de despliegue.
-Falta conectar la comprobación con tareas y reportes y probar los flujos
-completos.
+huella, ambiente, perfil o instancia de reporte incorrectos.
+
+El mismo ensayo con `-RuntimeGate` pasó 16 comprobaciones adicionales de
+la 057 con roles sintéticos en SQL Server 2019: acceso acotado del Portal,
+negación de la 056 directa y de las tablas de custodia, separación del
+publicador, candidatos exactos, vínculo físico ajeno e instancia de reporte.
+El rollback dejó cero datos o usuarios de prueba. Las dos migraciones están
+en el manifiesto y el analizador; el ensayo no las deja instaladas ni modifica
+el ejecutor de despliegue.
+
+Cuando SAG v2 está habilitado, la programación de bases requiere una prueba
+vigente de la 057 para cada vínculo autorizado y conserva el menor
+vencimiento hasta el commit. No se altera la resolución de dominios.
+El reporte comprueba la misma prueba y el perfil de conteo independiente
+antes de abrir una conexión remota y después del conteo. Una prueba no
+disponible no se presenta como borrado ni como cero usuarios. Falta el
+ensayo de los flujos completos con perfiles reales y medir el tiempo y
+los bloqueos SQL en programaciones amplias antes de habilitar en producción.
 
 ## Verificación de preparación del reporte (2026-11-18)
 

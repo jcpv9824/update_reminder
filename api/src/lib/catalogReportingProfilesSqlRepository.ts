@@ -56,17 +56,29 @@ function map(row: ReportingProfileRow): SqlCatalogReportingProfile {
   };
 }
 
-/** Service only: safe metadata for already-resolved database IDs; never expose this projection in HTTP or email. */
-export async function readSqlCatalogReportingProfiles(input: {
+type ReportingProfilesScope = {
   portalEnvironment: CatalogEnvironment; physicalIds: ReadonlySet<string>;
-}): Promise<ReadonlyMap<string, SqlCatalogReportingProfile>> {
+};
+
+/** Service only: safe metadata for already-resolved database IDs; never expose this projection in HTTP or email. */
+export function readSqlCatalogReportingProfiles(input: ReportingProfilesScope): Promise<ReadonlyMap<string, SqlCatalogReportingProfile>> {
+  return readProfiles(input, async () => (await getSqlPool()).request());
+}
+
+export function readSqlCatalogReportingProfilesInTransaction(transaction: sql.Transaction, input: ReportingProfilesScope):
+  Promise<ReadonlyMap<string, SqlCatalogReportingProfile>> {
+  return readProfiles(input, () => transaction.request());
+}
+
+async function readProfiles(input: ReportingProfilesScope,
+  request: () => sql.Request | Promise<sql.Request>,
+): Promise<ReadonlyMap<string, SqlCatalogReportingProfile>> {
   if (!["qa", "production"].includes(input.portalEnvironment) || input.physicalIds.size > 5000
     || [...input.physicalIds].some(id => !opaqueId.test(id))) fail();
   if (!input.physicalIds.size) return new Map();
   try {
     const ids = new Set([...input.physicalIds].map(id => id.toLowerCase()));
-    const pool = await getSqlPool();
-    const result = await pool.request().input("env", sql.VarChar(10), input.portalEnvironment)
+    const result = await (await request()).input("env", sql.VarChar(10), input.portalEnvironment)
       .input("ids", sql.NVarChar(sql.MAX), JSON.stringify([...ids]))
       .query<ReportingProfileRow>(`
         DECLARE @now datetime2(3)=SYSUTCDATETIME();

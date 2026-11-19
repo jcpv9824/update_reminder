@@ -1,10 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogExecutionRegistration } from "../lib/catalogExecutionRegistrationSqlRepository";
+import type { CatalogOperationalLink } from "../lib/catalogOperationalLinksSqlRepository";
 
 const m = vi.hoisted(() => ({ tx: {}, order: [] as string[], lock: vi.fn(), coverage: vi.fn(), roster: vi.fn(),
   physical: vi.fn(), register: vi.fn(), clock: vi.fn(), commit: vi.fn(), rollback: vi.fn(), intents: vi.fn(),
-  reason: vi.fn() }));
+  reason: vi.fn(), pins: vi.fn(), proof: vi.fn(), getSecret: vi.fn() }));
 vi.mock("../lib/sqlTransaction", () => ({ runSqlTransaction: async (work: (tx: object) => Promise<unknown>) => {
+  m.order.push("transaction");
   try { const result = await work(m.tx); m.commit(); return result; }
   catch (error) { m.rollback(); throw error; }
 } }));
@@ -21,7 +23,10 @@ vi.mock("../lib/catalogExecutionCoexistenceSql", () => ({ lockCatalogTaskDay: m.
 vi.mock("../lib/catalogSchedulePopulationCoverage", () => ({ readSqlCatalogSchedulePopulationCoverageInTransaction: m.coverage }));
 vi.mock("../lib/schedulingSqlRepository", () => ({ readSqlCatalogScheduleRosterInTransaction: m.roster }));
 vi.mock("../lib/catalogManualDayIntentSqlRepository", () => ({ readSqlCatalogManualDayIntentsInTransaction: m.intents }));
-vi.mock("../lib/catalogPhysicalTargetSqlRepository", () => ({ readSqlCatalogPhysicalTargetsInTransaction: m.physical }));
+vi.mock("../lib/catalogPhysicalTargetSqlRepository", () => ({ readSqlCatalogPhysicalTargetsInTransaction: m.physical,
+  readSqlCatalogPhysicalTargetPinsInTransaction: m.pins }));
+vi.mock("../lib/catalogSagTargetRuntimeSqlRepository", () => ({ verifyCatalogSagTargetRuntimeProof: m.proof }));
+vi.mock("../lib/keyVault", () => ({ getSecret: m.getSecret }));
 vi.mock("../lib/catalogExecutionRegistrationSqlRepository", () => ({
   registerSqlCatalogTaskExecutionInTransaction: m.register, catalogRegistrationConflictReason: m.reason,
 }));
@@ -42,6 +47,7 @@ const outcome = { status: "registered", taskId: "t1" };
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.stubEnv("PORTAL_CATALOG_SAG_V2_ENABLED", "false");
   m.order.length = 0;
   m.lock.mockImplementation(async (_tx, request) => { m.order.push(request.targetType); return true; });
   m.coverage.mockImplementation(async () => { m.order.push("coverage"); return { id: revisionId, complete: true, validUntil: approval }; });
@@ -52,6 +58,7 @@ beforeEach(() => {
   m.reason.mockReturnValue(null);
   m.intents.mockResolvedValue(new Map());
 });
+afterEach(() => vi.unstubAllEnvs());
 
 describe("atomic certified catalog business day", () => {
   it("takes legacy-compatible locks before the certified read, uses one transaction, and checks the earliest deadline", async () => {
@@ -60,7 +67,7 @@ describe("atomic certified catalog business day", () => {
       return io.register(write);
     });
     expect(result).toEqual({ status: "committed", value: outcome });
-    expect(m.order).toEqual(["database", "domain", "coverage", "roster"]);
+    expect(m.order).toEqual(["transaction", "database", "domain", "coverage", "roster"]);
     expect(m.coverage).toHaveBeenCalledExactlyOnceWith(m.tx, context.scope);
     expect(m.roster).toHaveBeenCalledExactlyOnceWith(m.tx, date);
     expect(m.physical).toHaveBeenCalledExactlyOnceWith(m.tx, { portalEnvironment: "qa", links: [] });
@@ -157,5 +164,125 @@ describe("atomic certified catalog business day", () => {
     expect(observer).toHaveBeenCalledExactlyOnceWith(m.tx, context, [blocked], approval);
     expect(m.commit).not.toHaveBeenCalled();
     expect(m.rollback).toHaveBeenCalledOnce();
+  });
+});
+
+describe("SAG v2 database schedule proof", () => {
+  const linkId = "30000000-0000-0000-0000-000000000001";
+  const physicalLinkId = "30000000-0000-0000-0000-000000000002";
+  const targetId = "30000000-0000-0000-0000-000000000003";
+  const webId = "30000000-0000-0000-0000-000000000004";
+  const db = { kind: "database", linkId, customerId: "c", domainId: "d", databaseId: "db", environment: "test" } as const;
+  const web = { kind: "domain", customerId: "c", domainId: "d", environment: "test" } as const;
+  const source = { ...db, evidence: { state: "verified" } } as unknown as CatalogOperationalLink;
+  const proofDeadline = new Date("2030-01-02T01:00:00Z");
+  const sagContext = { ...context, scope: { ...context.scope, links: [source] }, matchKeyVersion: 7,
+    sagDatabaseLinkIds: new Set([linkId]) };
+  const dbWrite = { ...write, task: { ...write.task, targetType: "database" }, matchKeyVersion: 7,
+    group: { ...write.group, kind: "database", targetId,
+    sources: [{ scheduleId: "a", link: db }] } } as unknown as CatalogExecutionRegistration;
+  const version = "7".repeat(32);
+  beforeEach(() => {
+    vi.stubEnv("PORTAL_CATALOG_SAG_V2_ENABLED", "true");
+    vi.stubEnv("PORTAL_SAG_ENVIRONMENT", "qa");
+    vi.stubEnv("PORTAL_CATALOG_MATCH_KEY_VERSION", "7");
+    vi.stubEnv("PORTAL_CATALOG_MATCH_KEY_SECRET_NAME", "sag-match-test-key");
+    vi.stubEnv("PORTAL_CATALOG_MATCH_KEY_SECRET_VERSION", version);
+    m.getSecret.mockImplementation(async () => { m.order.push("vault"); return "a7".repeat(32); });
+    m.pins.mockResolvedValue([{ status: "verified", id: targetId, physicalLinkId }]);
+    m.physical.mockResolvedValue([{ status: "verified", id: webId }]);
+    m.proof.mockResolvedValue({ targetId, validUntil: proofDeadline });
+  });
+  it("reads only the pinned key before SQL locks; verifies the exact relation and fences its earlier deadline", async () => {
+    const result = await runSqlCatalogScheduleDayTransaction(sagContext, async io => {
+      expect(await io.resolve({ portalEnvironment: "qa", links: [db, web, db] })).toEqual([
+        { status: "verified", id: targetId }, { status: "verified", id: webId }, { status: "verified", id: targetId }]);
+      return io.register(dbWrite);
+    });
+    expect(result).toEqual({ status: "committed", value: outcome });
+    expect(m.order.slice(0, 2)).toEqual(["vault", "transaction"]);
+    expect(m.getSecret).toHaveBeenCalledExactlyOnceWith("sag-match-test-key", expect.any(AbortSignal), version);
+    expect(m.pins).toHaveBeenCalledExactlyOnceWith(m.tx, { portalEnvironment: "qa", links: [db] });
+    expect(m.proof).toHaveBeenCalledExactlyOnceWith(m.tx, { environment: "qa", purpose: "task", operationalLinkId: linkId,
+      physicalLinkId, physicalTargetId: targetId, matchKeyVersion: 7, reportInstanceId: null }, Buffer.alloc(32));
+    expect(m.clock).toHaveBeenLastCalledWith(m.tx, { cutoffAt, validUntil: proofDeadline });
+  });
+  it.each(["relation", "no proof", "stale", "different target", "vault", "pin version", "wrong realm",
+    "malformed secret", "deleted physical row"] as const)(
+    "holds only database work when its prerequisite fails (%s)", async failure => {
+      if (failure === "no proof") m.proof.mockResolvedValue(null);
+      if (failure === "stale") m.proof.mockResolvedValue({ targetId, validUntil: new Date(0) });
+      if (failure === "different target") m.proof.mockResolvedValue({ targetId: webId, validUntil: proofDeadline });
+      if (failure === "vault") m.getSecret.mockRejectedValue(new Error("fictional vault failure"));
+      if (failure === "pin version") vi.stubEnv("PORTAL_CATALOG_MATCH_KEY_VERSION", "8");
+      if (failure === "wrong realm") vi.stubEnv("PORTAL_SAG_ENVIRONMENT", "production");
+      if (failure === "malformed secret") m.getSecret.mockResolvedValue("a7".repeat(32) + "\n");
+      if (failure === "deleted physical row") m.pins.mockResolvedValue([{ status: "not_found" }]);
+      const result = await runSqlCatalogScheduleDayTransaction(sagContext, io => io.resolve({ portalEnvironment: "qa",
+        links: [failure === "relation" ? { ...db, domainId: "other" } : db, web] }));
+      expect(result).toEqual({ status: "committed", value: [{ status: "unverifiable" }, { status: "verified", id: webId }] });
+      if (["relation", "vault", "pin version", "wrong realm", "malformed secret", "deleted physical row"].includes(failure)) {
+        expect(m.proof).not.toHaveBeenCalled();
+      }
+      if (failure === "pin version" || failure === "wrong realm") expect(m.getSecret).not.toHaveBeenCalled();
+    });
+  it("bounds a Vault read which ignores cancellation outside the transaction", async () => {
+    vi.useFakeTimers();
+    try {
+      m.getSecret.mockReturnValue(new Promise(() => undefined));
+      const pending = runSqlCatalogScheduleDayTransaction(sagContext, io => io.resolve({ portalEnvironment: "qa", links: [db, web] }));
+      expect(m.order).not.toContain("transaction");
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(await pending).toEqual({
+        status: "committed", value: [{ status: "unverifiable" }, { status: "verified", id: webId }],
+      });
+      expect(m.getSecret.mock.calls[0]?.[1]?.aborted).toBe(true);
+      expect(m.proof).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("keeps domains normal without loading the key when only domains were selected", async () => {
+    expect(await runSqlCatalogScheduleDayTransaction({ ...sagContext, sagDatabaseLinkIds: new Set() },
+      io => io.resolve({ portalEnvironment: "qa", links: [db, web] }))).toEqual({
+      status: "committed", value: [{ status: "unverifiable" }, { status: "verified", id: webId }],
+    });
+    expect(m.getSecret).not.toHaveBeenCalled();
+    expect(m.pins).not.toHaveBeenCalled();
+  });
+  it("checks all 33 distinct selected relations without a silent scheduling cap", async () => {
+    const links = Array.from({ length: 33 }, (_, i) => ({ ...db,
+      linkId: `30000000-0000-0000-0000-${(i + 100).toString().padStart(12, "0")}`, databaseId: `db-${i}` }));
+    const selected = new Set(links.map(link => link.linkId));
+    const scope = { ...sagContext.scope, links: links.map(link => ({ ...source, ...link })) };
+    m.pins.mockResolvedValue(links.map(() => ({ status: "verified", id: targetId, physicalLinkId })));
+    const result = await runSqlCatalogScheduleDayTransaction({ ...sagContext, scope, sagDatabaseLinkIds: selected },
+      io => io.resolve({ portalEnvironment: "qa", links }));
+    expect(result).toEqual({ status: "committed", value: links.map(() => ({ status: "verified", id: targetId })) });
+    expect(m.getSecret).toHaveBeenCalledOnce();
+    expect(m.proof).toHaveBeenCalledTimes(33);
+  });
+  it("refuses registration that did not go through the internal proof", async () => {
+    expect(await runSqlCatalogScheduleDayTransaction(sagContext, io => io.register(dbWrite))).toEqual({ status: "unverified" });
+    expect(m.register).not.toHaveBeenCalled();
+    expect(m.rollback).toHaveBeenCalledOnce();
+  });
+  it("refuses to use a proof from one alias to register a different logical tuple", async () => {
+    const changed = { ...dbWrite, group: { ...dbWrite.group,
+      sources: [{ scheduleId: "a", link: { ...db, domainId: "other" } }] } } as unknown as CatalogExecutionRegistration;
+    expect(await runSqlCatalogScheduleDayTransaction(sagContext, async io => {
+      await io.resolve({ portalEnvironment: "qa", links: [db] });
+      return io.register(changed);
+    })).toEqual({ status: "unverified" });
+    expect(m.proof).toHaveBeenCalledOnce();
+    expect(m.register).not.toHaveBeenCalled();
+  });
+  it("preserves existing DB resolution without loading a key when the feature is off", async () => {
+    vi.stubEnv("PORTAL_CATALOG_SAG_V2_ENABLED", "false");
+    m.physical.mockResolvedValue([{ status: "verified", id: targetId }]);
+    expect(await runSqlCatalogScheduleDayTransaction(sagContext,
+      io => io.resolve({ portalEnvironment: "qa", links: [db] }))).toEqual({ status: "committed", value: [{ status: "verified", id: targetId }] });
+    expect(m.getSecret).not.toHaveBeenCalled();
+    expect(m.proof).not.toHaveBeenCalled();
   });
 });

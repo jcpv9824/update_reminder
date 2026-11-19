@@ -131,4 +131,37 @@ describe("active users in the authorized masters report", () => {
     expect(result.rows.every(row => row.status === "unavailable")).toBe(true);
     expect(result.summary.activeUsers).toBeNull();
   });
+
+  it("requires SAG evidence before credentials and rejects a count if it later becomes stale", async () => {
+    const { io } = setup();
+    vi.stubEnv("PORTAL_CATALOG_SAG_V2_ENABLED", "true");
+    vi.stubEnv("PORTAL_CATALOG_MATCH_KEY_VERSION", "2");
+    const key = Buffer.alloc(32, 1);
+    const sag = { loadKey: vi.fn().mockResolvedValue(key), recheck: vi.fn()
+      .mockResolvedValueOnce(profile).mockResolvedValueOnce(profile).mockResolvedValueOnce(null) };
+    try {
+      const report = await loadCatalogMastersActiveUsers(masters, "qa", io, sag);
+      expect(sag.loadKey).toHaveBeenCalledOnce();
+      expect(sag.recheck).toHaveBeenCalledTimes(3);
+      expect(sag.recheck).toHaveBeenCalledWith(expect.objectContaining({ matchKeyVersion: 2, expected: profile,
+        links: [expect.objectContaining({ databaseId: "one" }), expect.objectContaining({ databaseId: "two" })] }));
+      expect(io.readSecret).toHaveBeenCalledOnce();
+      expect(report.rows.every(row => row.status === "unavailable" && row.activeUsers === null)).toBe(true);
+      expect(key).toEqual(Buffer.alloc(32));
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("does not fall back to legacy counts when SAG evidence is unavailable", async () => {
+    const { io } = setup();
+    vi.stubEnv("PORTAL_CATALOG_SAG_V2_ENABLED", "true");
+    vi.stubEnv("PORTAL_CATALOG_MATCH_KEY_VERSION", "2");
+    const sag = { loadKey: vi.fn().mockResolvedValue(Buffer.alloc(32, 1)), recheck: vi.fn().mockResolvedValue(null) };
+    try {
+      const report = await loadCatalogMastersActiveUsers(masters, "qa", io, sag);
+      expect(sag.recheck).toHaveBeenCalledOnce();
+      expect(io.readConnection).not.toHaveBeenCalled();
+      expect(io.readSecret).not.toHaveBeenCalled();
+      expect(report.summary).toMatchObject({ activeUsers: null, verifiedCounts: 0, partial: true });
+    } finally { vi.unstubAllEnvs(); }
+  });
 });
