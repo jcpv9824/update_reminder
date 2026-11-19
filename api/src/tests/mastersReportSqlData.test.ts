@@ -24,7 +24,7 @@ vi.mock("../lib/schedulingSqlRepository", () => ({ readSqlSchedules }));
 vi.mock("../lib/licensingSqlRepository", () => ({ readSqlLicenseModules, readSqlLicenseAssignments }));
 vi.mock("../lib/sqlTransaction", () => ({ runSqlTransaction: transaction }));
 
-import { loadSqlCatalogMastersReportData, loadSqlMastersReportData } from "../lib/mastersReportSqlData";
+import { catalogReportDatabaseLinkIds, loadSqlCatalogMastersReportData, loadSqlMastersReportData } from "../lib/mastersReportSqlData";
 
 describe("loadSqlMastersReportData", () => {
   beforeEach(() => {
@@ -74,12 +74,13 @@ describe("loadSqlMastersReportData", () => {
 
 describe("scoped catalog report data", () => {
   const first = "11111111-1111-4111-8111-111111111111", second = "22222222-2222-4222-8222-222222222222";
+  const databaseLink = "33333333-3333-4333-8333-333333333333", alternateLink = "44444444-4444-4444-8444-444444444444";
   const rowDate = new Date("2030-06-22T05:00:00Z");
   const domain = { certified_source_count: 2, open_link_count: 1, source_id: first, client_id: "client", official_name: "Cliente pruebas", client_created_at: rowDate,
     domain_id: "domain", domain_name: "https://client.example.test", domain_environment: "production", domain_created_at: rowDate,
-    target_kind: "domain", database_id: null, database_name: null, database_alias: null, database_environment: null, database_created_at: null };
+    target_kind: "domain", link_id: first, database_id: null, database_name: null, database_alias: null, database_environment: null, database_created_at: null };
   const database = { ...domain, source_id: second, official_name: "Cliente ERP oficial", target_kind: "database", database_id: "database",
-    database_name: "Base autorizada", database_alias: "cliente_sag", database_environment: "production", database_created_at: rowDate };
+    link_id: databaseLink, database_name: "Base autorizada", database_alias: "cliente_sag", database_environment: "production", database_created_at: rowDate };
   const scope = { portalEnvironment: "qa" as const, allowedSourceIds: new Set([first, second]) };
 
   beforeEach(() => {
@@ -113,6 +114,24 @@ describe("scoped catalog report data", () => {
     catalogQuery.mockResolvedValueOnce({ recordset: [{ ...domain, source_id: "33333333-3333-4333-8333-333333333333" }] });
     await expect(loadSqlCatalogMastersReportData(scope)).rejects.toThrow("catalog_masters_report_unavailable");
     catalogQuery.mockRejectedValueOnce(new Error("private driver detail"));
+    await expect(loadSqlCatalogMastersReportData(scope)).rejects.toThrow("catalog_masters_report_unavailable");
+  });
+
+  it("keeps only the exact database-link IDs from the authorized report selection out of the public data", async () => {
+    catalogQuery.mockResolvedValue({ recordset: [domain, database, { ...database, link_id: alternateLink },
+      { ...database, database_id: "unapproved", domain_id: "outside" }, { ...database, link_id: second, domain_id: "outside" }]
+      .map(row => ({ ...row, open_link_count: 5 })) });
+    const scoped = await loadSqlCatalogMastersReportData(scope);
+    expect(catalogReportDatabaseLinkIds(scoped, "database")).toEqual([databaseLink, alternateLink]);
+    expect(catalogReportDatabaseLinkIds(scoped, "unapproved")).toEqual([]);
+    expect(catalogReportDatabaseLinkIds({ ...scoped }, "database")).toEqual([]);
+    expect(JSON.stringify(scoped)).not.toContain(databaseLink);
+    expect(JSON.stringify(scoped)).not.toContain(alternateLink);
+  });
+
+  it("rejects a malformed database-link identity inside the certified selection", async () => {
+    catalogQuery.mockResolvedValue({ recordset: [domain, { ...database, link_id: "untrusted" }]
+      .map(row => ({ ...row, open_link_count: 2 })) });
     await expect(loadSqlCatalogMastersReportData(scope)).rejects.toThrow("catalog_masters_report_unavailable");
   });
 

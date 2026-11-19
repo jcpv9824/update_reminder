@@ -50,7 +50,7 @@ export async function loadSqlMastersReportData(today: string): Promise<SqlMaster
 }
 
 type CatalogReportLinkRow = {
-  source_id: string; client_id: string; official_name: string | null; client_created_at: Date;
+  source_id: string; link_id: string; client_id: string; official_name: string | null; client_created_at: Date;
   domain_id: string; domain_name: string; domain_environment: string; domain_created_at: Date;
   target_kind: "domain" | "database"; database_id: string | null; database_name: string | null;
   database_alias: string | null; database_environment: string | null; database_created_at: Date | null;
@@ -63,6 +63,13 @@ const maximumCatalogLinks = 5000;
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const fail = (): never => { throw new Error("catalog_masters_report_unavailable"); };
 const testLabel = (name: string) => /\b(?:pruebas?|tests?|demo)\b/iu.test(name);
+const databaseLinkPins = new WeakMap<SqlMastersReportData, ReadonlyMap<string, readonly string[]>>();
+const absentLinks: readonly string[] = Object.freeze([]);
+
+/** Internal pins for source-authorized counts only. The report DTO never carries them. */
+export function catalogReportDatabaseLinkIds(data: SqlMastersReportData, databaseId: string): readonly string[] {
+  return databaseLinkPins.get(data)?.get(databaseId) ?? absentLinks;
+}
 
 export const readCatalogMastersReportSql = `
 SET NOCOUNT ON;
@@ -98,7 +105,7 @@ CROSS JOIN (SELECT COUNT(*) AS open_link_count FROM (
   ORDER BY l.link_key
 ) limited) inventory
 OUTER APPLY (SELECT TOP (5001)
-  LOWER(CONVERT(char(36),e.catalog_source_id)) AS source_id,c.source_id AS client_id,
+  LOWER(CONVERT(char(36),e.catalog_source_id)) AS source_id,LOWER(CONVERT(char(36),e.link_id)) AS link_id,c.source_id AS client_id,
   published.official_name,c.created_at AS client_created_at,
   d.source_id AS domain_id,d.domain_name,d.environment_id AS domain_environment,d.created_at AS domain_created_at,
   e.target_kind,db.source_id AS database_id,db.company_name AS database_name,
@@ -137,6 +144,7 @@ function mapCatalogMastersReportData(rows: CatalogReportLinkRow[], allowed: Read
   const approvedDomains = new Set<string>();
   for (const row of rows) {
     if (!allowed.has(row.source_id) || !validName(row.client_id) || !validName(row.domain_id) ||
+        typeof row.link_id !== "string" || !uuid.test(row.link_id) || row.link_id === "00000000-0000-0000-0000-000000000000" ||
         (row.target_kind !== "domain" && row.target_kind !== "database")) return fail();
     if (row.target_kind === "domain" && safeReportDomain(row.domain_name)) approvedDomains.add(key(row.client_id, row.domain_id));
   }
@@ -212,9 +220,29 @@ export async function loadSqlCatalogMastersReportData({ portalEnvironment, allow
     const rows = recordset.filter((row): row is CatalogReportLinkRow & { certified_source_count: number; open_link_count: number } => row.source_id !== null);
     if (rows.length > open) return fail();
     const data = mapCatalogMastersReportData(rows, allowedSourceIds);
-    const displayedDomains = new Set(data.domains.map(row => row.id)), displayedDatabases = new Set(data.databases.map(row => row.id));
+    const displayedDomains = new Set(data.domains.map(row => row.id));
+    const displayedDatabases = new Map(data.databases.map(row => [row.id, row]));
+    const displayed = (row: CatalogReportLinkRow) => {
+      const db = row.database_id ? displayedDatabases.get(row.database_id) : undefined;
+      return !!db && db.clientId === row.client_id && db.domainId === row.domain_id && db.environment === row.database_environment;
+    };
     const omitted = rows.some(row => row.target_kind === "domain" ? !displayedDomains.has(row.domain_id) :
-      !row.database_id || !displayedDatabases.has(row.database_id));
-    return { ...data, catalogCoverage: { partial: count !== allowedSourceIds.size || !data.domains.length || rows.length !== open || omitted } };
+      !displayed(row));
+    const result: SqlMastersReportData = {
+      ...data, catalogCoverage: { partial: count !== allowedSourceIds.size || !data.domains.length || rows.length !== open || omitted },
+    };
+    const pins = new Map<string, Set<string>>();
+    const anchoredIds = new Map<string, string>();
+    for (const row of rows) {
+      if (row.target_kind !== "database" || !row.database_id || !displayed(row)) continue;
+      const prior = anchoredIds.get(row.link_id);
+      if (prior !== undefined && prior !== row.database_id) return fail();
+      anchoredIds.set(row.link_id, row.database_id);
+      const links = pins.get(row.database_id) ?? new Set<string>();
+      links.add(row.link_id);
+      pins.set(row.database_id, links);
+    }
+    databaseLinkPins.set(result, new Map([...pins].map(([id, links]) => [id, Object.freeze([...links].sort())])));
+    return result;
   } catch { return fail(); }
 }
