@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, apiUrl } from "../api/client";
 import { Alerta, DialogoConfirmar, EtiquetaEstado, Modal } from "../components/Comunes";
@@ -295,6 +295,8 @@ function FormularioFormato({ inicial, fuentes, modulosLicencia, cargando, errorS
   const [licenciaModuloId, setLicenciaModuloId] = useState(inicial?.licenciaModuloId ?? "");
   const [activo, setActivo] = useState(inicial?.activo ?? true);
   const [pdf, setPdf] = useState<PdfPayload | null>(null);
+  const [leyendoPdf, setLeyendoPdf] = useState(false);
+  const lecturaPdf = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [busquedaFuentes, setBusquedaFuentes] = useState("");
   const fuentesVisibles = useMemo(() => {
@@ -323,24 +325,43 @@ function FormularioFormato({ inicial, fuentes, modulosLicencia, cargando, errorS
     return fuenteIds.some((fuenteId) => fuenteId.toLocaleLowerCase("es-CO") === clave);
   }
 
-  async function cargarPdf(file?: File) {
+  async function cargarPdf(input: HTMLInputElement) {
+    const file = input.files?.[0];
+    const lectura = ++lecturaPdf.current;
     setError(null);
-    if (!file) { setPdf(null); return; }
+    setPdf(null);
+    setLeyendoPdf(false);
+    if (!file) return;
     if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+      input.value = "";
       setError("Solo se aceptan archivos PDF.");
       return;
     }
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
-    });
-    setPdf({ pdfBase64: dataUrl.split(",")[1] ?? "", pdfNombreOriginal: file.name });
+    setLeyendoPdf(true);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.onabort = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      if (lectura !== lecturaPdf.current) return;
+      const pdfBase64 = dataUrl.split(",")[1];
+      if (!pdfBase64) throw new Error("PDF vacío");
+      setPdf({ pdfBase64, pdfNombreOriginal: file.name });
+    } catch {
+      if (lectura !== lecturaPdf.current) return;
+      input.value = "";
+      setError("No se pudo leer el PDF. Selecciónelo de nuevo.");
+    } finally {
+      if (lectura === lecturaPdf.current) setLeyendoPdf(false);
+    }
   }
 
   function submit(e: FormEvent) {
     e.preventDefault();
+    if (leyendoPdf) return;
     if (!nombre.trim()) { setError("El nombre del formato es obligatorio."); return; }
     if (fuenteIds.length === 0) { setError("Seleccione al menos un tipo de fuente."); return; }
     if (!descripcion.trim()) { setError("La descripción es obligatoria."); return; }
@@ -403,11 +424,12 @@ function FormularioFormato({ inicial, fuentes, modulosLicencia, cargando, errorS
       {tamanoFormato === "personalizado" && <div className="fila-formulario"><label>Tamaño personalizado</label><input value={tamanoFormatoPersonalizado} onChange={(e) => setTamanoFormatoPersonalizado(e.target.value)} placeholder="Ej: 21 x 14 cm" /></div>}
       <div className="fila-formulario"><label><input type="checkbox" checked={requiereLicencia} onChange={(e) => setRequiereLicencia(e.target.checked)} style={{ width: "auto", marginRight: 6 }} />Restringir por tipo de licencia</label></div>
       {requiereLicencia && <div className="fila-formulario"><label>Tipo de licencia</label><select value={licenciaModuloId} onChange={(e) => setLicenciaModuloId(e.target.value)}><option value="">Seleccione un tipo de licencia</option>{modulosLicencia.map((modulo) => <option key={modulo.id} value={modulo.id}>{modulo.name}</option>)}</select></div>}
-      <div className="fila-formulario"><label htmlFor="pdf-formato">PDF {!inicial ? "*" : ""}</label><input id="pdf-formato" type="file" accept="application/pdf,.pdf" onChange={(e) => cargarPdf(e.target.files?.[0])} /></div>
+      <div className="fila-formulario"><label htmlFor="pdf-formato">PDF {!inicial ? "*" : ""}</label><input id="pdf-formato" type="file" accept="application/pdf,.pdf" onChange={(e) => cargarPdf(e.currentTarget)} /></div>
+      {leyendoPdf && <p className="texto-ayuda" role="status">Leyendo PDF…</p>}
       {inicial && <p className="texto-ayuda">PDF actual: {inicial.pdfNombreOriginal}</p>}
       {pdf && <p className="texto-ayuda">PDF seleccionado: {pdf.pdfNombreOriginal}</p>}
       <div className="fila-formulario"><label><input type="checkbox" checked={activo} onChange={(e) => setActivo(e.target.checked)} style={{ width: "auto", marginRight: 6 }} />Activo</label></div>
-      <div className="acciones-formulario"><button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button></div>
+      <div className="acciones-formulario"><button type="submit" className="primario" disabled={cargando || leyendoPdf}>{cargando ? "Guardando..." : "Guardar"}</button></div>
     </form>
   );
 }
