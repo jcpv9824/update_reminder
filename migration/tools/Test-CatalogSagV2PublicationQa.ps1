@@ -2,7 +2,8 @@
 param(
   [Parameter(Mandatory=$true)][string]$SessionDirectory,
   [ValidateSet('all','bootstrap','permissions','reserve','publish','failure','fences','payload','protocol','audit','superseded','tail')][string]$ProbeStage='all',
-  [ValidateRange(10,90)][int]$SqlTimeoutSeconds=90
+  [ValidateRange(10,90)][int]$SqlTimeoutSeconds=90,
+  [switch]$Installed
 )
 $ErrorActionPreference='Stop'
 $session=(Resolve-Path -LiteralPath $SessionDirectory).Path
@@ -43,6 +44,271 @@ BEGIN
     @observedAt=@observedAt OUTPUT,@leaseUntil=@leaseUntil OUTPUT,@successFreshUntil=@successFreshUntil OUTPUT;
 END;
 '@
+if($Installed){
+  if($ProbeStage -cne 'all' -or $descriptor.sessionAuthorized -ne $true -or $descriptor.approvalMode -cne 'session'){
+    throw 'Installed mode requires the authorized QA session and does not accept an absent-mode probe stage.'
+  }
+  $pinned=@'
+0f1d24f0df57953a016d1ac3dbd30f7f318decf0dd18bc6d1d1cb0df43feeeab  053_catalog_sag_v2_publication.sql
+f55689d6161c01fe150e131d0e1231b0ff85c8608660aa6440a91c22994284b5  054_catalog_sql_target_instance_identity.sql
+e3d04cd088f3c25f071a8163a91fe6194c2c8cc16c741f938f76c4af1cfcd49c  055_catalog_sag_target_observations.sql
+ca61cb55428e5821ac31f8ad9e713515f432a6732c1fdc27371965916bf95caa  056_catalog_sag_target_link_proof.sql
+dae2059f0255eac2db747f84284d838371c103036bd37909357876440253af5c  057_catalog_sag_target_runtime_gate.sql
+d142000b6eedba93c9c1b9fbc9045828c5b151e0814a0f1ceb5464403eb50588  058_catalog_sql_target_instance_enrollment.sql
+6450cd058f736089e9d100971527ab9aa81e1b3a9e5aa58b654ffb97b3d02f1b  059_catalog_sag_v2_license_approval.sql
+'@
+  $manifest=Get-Content -LiteralPath (Join-Path $root 'migration/sql/MANIFEST.sha256')
+  $rows=foreach($entry in ($pinned -split '\r?\n')){
+    if($entry -cnotmatch '^([0-9a-f]{64})  ((05[3-9])_[a-z0-9_]+\.sql)$'){throw 'Invalid pinned migration declaration.'}
+    $sha=$Matches[1];$name=$Matches[2];$id=$Matches[3]
+    if(@($manifest|Where-Object{$_ -ceq $entry}).Count -ne 1 -or
+      (Get-FileHash -LiteralPath (Join-Path $root "migration/sql/$name") -Algorithm SHA256).Hash.ToLowerInvariant() -cne $sha){
+      throw 'Installed QA mode requires the exact reviewed 053 through 059 artifacts.'
+    }
+    "('$id',N'$name',0x$sha)"
+  }
+  $candidate=$wrapper.Replace('qa_catalog_sag_v2_transition_rehearsal','qa_catalog_v2_installed_publish')
+  $fixed=$candidate.Replace('@action=@action,@attemptOrdinal=',"@action='publish',@attemptOrdinal=")
+  if($candidate -ceq $fixed -or $fixed -match '(?i)\bNEXT\s+VALUE\s+FOR\b|@action=@action'){
+    throw 'Installed mode may only reach the fixed publish action, never sequence allocation.'
+  }
+  $privateModule=[regex]::Matches($ddl053,"(?is)EXEC\s+sys\.sp_executesql\s+N'(CREATE OR ALTER PROCEDURE settings\.catalog_sag_v2_transition_internal(?:''|[^'])*)'\s*;")
+  if($privateModule.Count -ne 1){throw 'Expected one private 053 transition definition in the reviewed SQL.'}
+  $privateSuffix=$privateModule[0].Groups[1].Value.Replace("''","'").Substring('CREATE OR ALTER '.Length).Replace([string][char]13,'')
+  $privateSha=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::Unicode.GetBytes($privateSuffix)))
+  $permission=@'
+CREATE PROCEDURE settings.__MODULE__ @passed bit OUTPUT
+WITH EXECUTE AS '__USER__'
+AS
+BEGIN
+  SET NOCOUNT ON;
+  SET @passed=0;
+  IF USER_NAME()<>N'__USER__' OR ISNULL(IS_ROLEMEMBER(N'db_owner'),0)<>0
+    OR ISNULL(IS_ROLEMEMBER(N'__ROLE__'),0)<>1 OR ISNULL(IS_ROLEMEMBER(N'__OTHER__'),0)<>0
+    RETURN;
+  IF EXISTS(SELECT 1 FROM (VALUES
+    (N'settings.reserve_catalog_sag_v2_attempt',N'EXECUTE',__PUB__),
+    (N'settings.publish_catalog_sag_v2_revision',N'EXECUTE',__PUB__),
+    (N'settings.fail_catalog_sag_v2_attempt',N'EXECUTE',__PUB__),
+    (N'settings.publish_catalog_sag_v2_with_targets',N'EXECUTE',__PUB__),
+    (N'settings.catalog_sag_v2_transition_internal',N'EXECUTE',0),
+    (N'settings.enroll_catalog_sql_target_instance_internal',N'EXECUTE',0),
+    (N'settings.verify_catalog_sag_target_link_internal',N'EXECUTE',0),
+    (N'settings.verify_catalog_sag_target_link',N'EXECUTE',__RUNTIME__),
+    (N'settings.read_catalog_sag_target_link_candidates',N'EXECUTE',__RUNTIME__),
+    (N'core.catalog_sag_company_location_observations',N'SELECT',0),
+    (N'core.catalog_sag_company_location_seals',N'SELECT',0),
+    (N'settings.catalog_customer_attempt_sequence',N'UPDATE',0)
+  ) v(securable,permission,allowed) WHERE ISNULL(HAS_PERMS_BY_NAME(v.securable,N'OBJECT',v.permission),0)<>v.allowed)
+    RETURN;
+  SET @passed=1;
+END;
+'@
+  $installedRuntime=$permission.Replace('__MODULE__','qa_catalog_v2_installed_runtime_permissions').Replace('__USER__','qa_catalog_v2_runtime_test').
+    Replace('__ROLE__','portal_runtime').Replace('__OTHER__','portal_catalog_v2_publisher').Replace('__PUB__','0').Replace('__RUNTIME__','1')
+  $installedPublisher=$permission.Replace('__MODULE__','qa_catalog_v2_installed_publisher_permissions').Replace('__USER__','qa_catalog_v2_publisher_test').
+    Replace('__ROLE__','portal_catalog_v2_publisher').Replace('__OTHER__','portal_runtime').Replace('__PUB__','1').Replace('__RUNTIME__','0')
+  $installedPrefix="DECLARE @expected table(version varchar(3),script nvarchar(260),sha binary(32)); INSERT @expected VALUES "+($rows -join ',')+";"
+  $installedPrefix+="DECLARE @expectedPrivateSha binary(32)=0x$privateSha;"
+  $installedPrefix+="DECLARE @fixed nvarchar(max)=N'"+$fixed.Replace("'","''")+"',@runtime nvarchar(max)=N'"+$installedRuntime.Replace("'","''")+
+    "',@publisher nvarchar(max)=N'"+$installedPublisher.Replace("'","''")+"';"
+  $installedBody=@'
+SET NOCOUNT ON;SET XACT_ABORT ON;SET IMPLICIT_TRANSACTIONS OFF;
+IF DB_NAME() COLLATE Latin1_General_100_BIN2<>N'PortalSAGWeb-TEST' OR DATALENGTH(DB_NAME())<>34 OR @@TRANCOUNT<>0
+  OR CONVERT(int,SERVERPROPERTY('ProductMajorVersion'))<>15 OR NOT EXISTS(SELECT 1 FROM sys.databases
+    WHERE database_id=DB_ID() AND compatibility_level=150 AND collation_name=N'Modern_Spanish_CI_AS')
+  THROW 55391,N'Unexpected installed publication rehearsal target.',1;
+DECLARE @tag nvarchar(72)=N'qa-v2-installed-'+LOWER(CONVERT(char(36),NEWID()));
+DECLARE @case int=1,@passed int=0,@code int=0,@lock int,@savedOwner sysname=USER_NAME();
+DECLARE @draft table(source_key bigint PRIMARY KEY,version binary(8));
+DECLARE @sequence table(current_value bigint NULL,last_used_value bigint NULL);
+DECLARE @keyVer smallint,@vault binary(16),@verifier binary(32);
+DECLARE @profileKey bigint,@sourceKey bigint,@jobKey bigint,@sourceId uniqueidentifier,
+  @opVersion binary(8),@profileVersion binary(8),@job uniqueidentifier=NEWID(),@worker uniqueidentifier=NEWID(),
+  @lease uniqueidentifier=NEWID(),@wrongLease uniqueidentifier=NEWID(),@probeLease uniqueidentifier,
+  @now datetime2(3),@leaseEnd datetime2(3),@ordinal bigint=9223372036854700000+ABS(CONVERT(bigint,CHECKSUM(NEWID())))%50000,
+  @probeOrdinal bigint,@customers nvarchar(max),@companies nvarchar(max),@companyCount int,@result varchar(12),@status varchar(12),@revision bigint,
+  @reserved bigint,@observed datetime2(3),@leaseOut datetime2(3),@fresh datetime2(3),@permissionPassed bit;
+BEGIN TRY
+  SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+  BEGIN TRANSACTION;
+  EXEC @lock=sys.sp_getapplock @Resource=N'portal-sag:catalog-customer-publication:qa',@LockMode=N'Exclusive',
+    @LockOwner=N'Transaction',@DbPrincipal=N'public',@LockTimeout=5000;
+  IF @lock<0 OR EXISTS(SELECT version,script,sha FROM @expected EXCEPT
+    SELECT migration_version,script_name,script_sha256 FROM migration.schema_migrations WITH (HOLDLOCK) WHERE succeeded=1)
+    OR DATABASE_PRINCIPAL_ID(N'qa_catalog_v2_runtime_test') IS NOT NULL
+    OR DATABASE_PRINCIPAL_ID(N'qa_catalog_v2_publisher_test') IS NOT NULL
+    OR OBJECT_ID(N'settings.qa_catalog_v2_installed_publish',N'P') IS NOT NULL
+    OR OBJECT_ID(N'settings.qa_catalog_v2_installed_runtime_permissions',N'P') IS NOT NULL
+    OR OBJECT_ID(N'settings.qa_catalog_v2_installed_publisher_permissions',N'P') IS NOT NULL
+    OR (SELECT COUNT(*) FROM settings.catalog_source_bindings WITH (HOLDLOCK) WHERE portal_environment='qa')<>2
+    OR (SELECT COUNT(DISTINCT source_role) FROM settings.catalog_source_bindings WITH (HOLDLOCK)
+      WHERE portal_environment='qa' AND source_state='draft' AND source_role IN('erp-customers','sag-admin'))<>2
+    OR EXISTS(SELECT 1 FROM core.catalog_customer_source_revisions WHERE attempt_ordinal=@ordinal)
+    OR EXISTS(SELECT 1 FROM settings.catalog_source_refresh_attempts WHERE attempt_ordinal=@ordinal)
+    THROW 55392,N'Installed QA publication prerequisites changed.',1;
+  DECLARE @privateId int=OBJECT_ID(N'settings.catalog_sag_v2_transition_internal',N'P');
+  DECLARE @privateDefinition nvarchar(max)=OBJECT_DEFINITION(@privateId);
+  DECLARE @privateRawSha binary(32)=HASHBYTES('SHA2_256',CONVERT(varbinary(max),@privateDefinition));
+  SET @privateDefinition=REPLACE(@privateDefinition,NCHAR(13),N'');
+  DECLARE @anchor nvarchar(100)=N'PROCEDURE settings.catalog_sag_v2_transition_internal';
+  DECLARE @privateStart int=CASE
+    WHEN LEFT(@privateDefinition,16) COLLATE Latin1_General_100_BIN2=N'CREATE OR ALTER ' THEN 17
+    WHEN LEFT(@privateDefinition,9) COLLATE Latin1_General_100_BIN2=N'CREATE   ' THEN 10 END;
+  IF @privateRawSha IS NULL OR @privateStart IS NULL
+    OR SUBSTRING(@privateDefinition,@privateStart,LEN(@anchor)) COLLATE Latin1_General_100_BIN2<>@anchor COLLATE Latin1_General_100_BIN2
+    OR HASHBYTES('SHA2_256',CONVERT(varbinary(max),SUBSTRING(@privateDefinition,@privateStart,DATALENGTH(@privateDefinition)/2)))
+      <>@expectedPrivateSha
+    THROW 55392,N'Installed private 053 transition differs from the reviewed definition.',1;
+  INSERT @draft SELECT catalog_source_key,row_version FROM settings.catalog_source_bindings WHERE portal_environment='qa';
+  INSERT @sequence SELECT CONVERT(bigint,current_value),CONVERT(bigint,last_used_value) FROM sys.sequences
+    WHERE object_id=OBJECT_ID(N'settings.catalog_customer_attempt_sequence',N'SO');
+  SELECT @keyVer=match_key_version,@vault=vault_secret_version,@verifier=key_verifier
+  FROM settings.catalog_match_key_registry WITH (HOLDLOCK) WHERE portal_environment='qa';
+  IF @keyVer IS NULL OR @vault IS NULL OR @verifier IS NULL OR (SELECT COUNT(*) FROM @sequence)<>1
+    OR NOT EXISTS(SELECT 1 FROM settings.catalog_match_key_registry WHERE portal_environment='qa' AND enrolled_at<=SYSUTCDATETIME())
+    THROW 55392,N'Installed match-key or sequence metadata unavailable.',1;
+  SET @passed+=1;
+  CREATE USER qa_catalog_v2_runtime_test WITHOUT LOGIN;
+  CREATE USER qa_catalog_v2_publisher_test WITHOUT LOGIN;
+  ALTER ROLE portal_runtime ADD MEMBER qa_catalog_v2_runtime_test;
+  ALTER ROLE portal_catalog_v2_publisher ADD MEMBER qa_catalog_v2_publisher_test;
+  EXEC sys.sp_executesql @fixed;
+  EXEC sys.sp_executesql @runtime;
+  EXEC sys.sp_executesql @publisher;
+  SET @case=2;
+  EXEC settings.qa_catalog_v2_installed_runtime_permissions @permissionPassed OUTPUT;
+  IF ISNULL(@permissionPassed,0)<>1 THROW 55390,N'Installed runtime permissions did not match.',1;
+  SET @passed+=1;
+  SET @case=3;
+  EXEC settings.qa_catalog_v2_installed_publisher_permissions @permissionPassed OUTPUT;
+  IF ISNULL(@permissionPassed,0)<>1 THROW 55390,N'Installed publisher permissions did not match.',1;
+  SET @passed+=1;
+
+  SET @now=SYSUTCDATETIME();SET @leaseEnd=DATEADD(minute,2,@now);
+  INSERT settings.external_database_connections(source_id,display_name,server_host,database_name,login_name,
+    password_configured,password_secret_name,created_by,updated_by)
+  VALUES(@tag,@tag,N'fixture.invalid',N'synthetic',N'fixture',1,N'fixture-no-key',N'fixture',N'fixture');
+  SET @profileKey=SCOPE_IDENTITY();
+  SELECT @profileVersion=row_version FROM settings.external_database_connections WHERE external_database_connection_key=@profileKey;
+  INSERT settings.catalog_source_bindings(external_database_connection_key,display_name,source_role,portal_environment,
+    contract_version,source_state,validated_at,validated_profile_version,created_by,updated_by)
+  VALUES(@profileKey,@tag,'sag-admin','qa','sag_admin_v2','active',@now,@profileVersion,N'fixture',N'fixture');
+  SET @sourceKey=SCOPE_IDENTITY();
+  SELECT @sourceId=source_id,@opVersion=row_version FROM settings.catalog_source_bindings WHERE catalog_source_key=@sourceKey;
+  INSERT settings.catalog_source_refresh_jobs(job_id,catalog_source_key,portal_environment,binding_version,profile_version,match_key_version,
+    provenance,job_status,attempt_no,requested_at,updated_at,available_at,worker_id,lease_token,lease_expires_at,attempt_ordinal)
+  VALUES(@job,@sourceKey,'qa',@opVersion,@profileVersion,@keyVer,'timer','processing',1,@now,@now,@now,@worker,@lease,@leaseEnd,@ordinal);
+  SET @jobKey=SCOPE_IDENTITY();
+  INSERT settings.catalog_source_refresh_attempts(job_key,attempt_no,event_kind,occurred_at,attempt_ordinal)
+    VALUES(@jobKey,1,'claimed',@now,NULL),(@jobKey,1,'reserved',@now,@ordinal);
+  WHILE @case<7
+  BEGIN
+    SET @case+=1;SET @code=NULL;
+    SET @probeLease=CASE WHEN @case=4 THEN @wrongLease ELSE @lease END;
+    SET @probeOrdinal=CASE WHEN @case=5 THEN @ordinal+1 ELSE @ordinal END;
+    SET @customers=CASE WHEN @case=6 THEN N'{}' ELSE N'[]' END;
+    SET @companyCount=CASE WHEN @case=7 THEN 1 ELSE 0 END;
+    SET XACT_ABORT OFF;
+    BEGIN TRY
+      EXEC settings.qa_catalog_v2_installed_publish @environment='qa',@sourceId=@sourceId,@jobId=@job,@workerId=@worker,
+        @leaseToken=@probeLease,@attempt=1,@bindingVersion=@opVersion,@profileVersion=@profileVersion,
+        @matchKeyVersion=@keyVer,@vaultSecretVersion=@vault,@keyVerifier=@verifier,@action='publish',@attemptOrdinal=@probeOrdinal,
+        @customerCount=0,@companyCount=@companyCount,@customers=@customers,@companies=N'[]',@result=@result OUTPUT,
+        @jobStatus=@status OUTPUT,@reservedOrdinal=@reserved OUTPUT,@observedAt=@observed OUTPUT,
+        @leaseUntil=@leaseOut OUTPUT,@successFreshUntil=@fresh OUTPUT;
+    END TRY
+    BEGIN CATCH
+      SET @code=ERROR_NUMBER();
+    END CATCH;
+    SET XACT_ABORT ON;
+    IF ISNULL(@code,0)<>CASE WHEN @case IN(4,5) THEN 55307 ELSE 55308 END OR XACT_STATE()<>1 OR @@TRANCOUNT<>1
+      OR EXISTS(SELECT 1 FROM core.catalog_customer_source_revisions WHERE catalog_source_key=@sourceKey)
+      OR EXISTS(SELECT 1 FROM settings.catalog_customer_revision_heads WHERE catalog_source_key=@sourceKey)
+      OR (SELECT COUNT(*) FROM settings.catalog_source_refresh_attempts WHERE job_key=@jobKey)<>2
+      OR NOT EXISTS(SELECT 1 FROM settings.catalog_source_refresh_jobs WHERE job_key=@jobKey AND job_status='processing'
+        AND attempt_ordinal=@ordinal AND lease_token=@lease)
+      THROW 55394,N'Installed publication negative decision or synthetic job state differs.',1;
+    SET @passed+=1;
+  END;
+  -- Actual 053 materialization under the same rollback. 055 public RPC
+  -- requires an independent transaction; it is not invoked in this mode.
+  SET @case=8;SET @code=NULL;
+  SET @customers=N'[{"sourceRecordId":1,"issuer":null,"documentType":null,"token":null,"domainCandidate":null,"environmentKind":"test","licenseCodes":"AS","testStartedOn":null,"productionStartedOn":null,"demoStartedOn":null}]';
+  SET @companies=N'[{"companyRecordId":11,"customerRecordId":1,"displayName":"Synthetic fixture","isAvailable":true}]';
+  EXEC settings.qa_catalog_v2_installed_publish @environment='qa',@sourceId=@sourceId,@jobId=@job,@workerId=@worker,
+    @leaseToken=@lease,@attempt=1,@bindingVersion=@opVersion,@profileVersion=@profileVersion,
+    @matchKeyVersion=@keyVer,@vaultSecretVersion=@vault,@keyVerifier=@verifier,@action='publish',@attemptOrdinal=@ordinal,
+    @customerCount=1,@companyCount=1,@customers=@customers,@companies=@companies,@result=@result OUTPUT,
+    @jobStatus=@status OUTPUT,@reservedOrdinal=@reserved OUTPUT,@observedAt=@observed OUTPUT,
+    @leaseUntil=@leaseOut OUTPUT,@successFreshUntil=@fresh OUTPUT;
+  SELECT @revision=revision_key FROM settings.catalog_customer_revision_heads
+    WHERE catalog_source_key=@sourceKey AND attempt_status='succeeded' AND attempt_ordinal=@ordinal;
+  IF ISNULL(@result,'')<>'published' OR ISNULL(@status,'')<>'succeeded' OR @revision IS NULL OR @fresh IS NULL
+    OR NOT EXISTS(SELECT 1 FROM core.catalog_customer_source_revisions WHERE revision_key=@revision AND catalog_source_key=@sourceKey
+      AND match_key_version=@keyVer AND expected_rows=1 AND expected_sag_company_rows=1 AND has_sag_inventory_evidence=1
+      AND observed_at=@now AND sealed_at IS NOT NULL AND verified_until=@fresh)
+    OR NOT EXISTS(SELECT 1 FROM core.catalog_sag_revision_evidence WHERE revision_key=@revision AND source_record_id=1
+      AND environment_kind='test' AND license_codes='AS')
+    OR NOT EXISTS(SELECT 1 FROM core.catalog_sag_company_revision_rows WHERE revision_key=@revision AND company_record_id=11
+      AND customer_record_id=1 AND is_available=1)
+    OR NOT EXISTS(SELECT 1 FROM settings.catalog_source_refresh_jobs WHERE job_key=@jobKey AND job_status='succeeded'
+      AND finished_at IS NOT NULL AND attempt_ordinal IS NULL AND lease_token IS NULL)
+    OR (SELECT COUNT(*) FROM settings.catalog_source_refresh_attempts WHERE job_key=@jobKey)<>3
+    OR NOT EXISTS(SELECT 1 FROM settings.catalog_source_refresh_attempts WHERE job_key=@jobKey AND event_kind='succeeded' AND attempt_ordinal=@ordinal)
+    OR (SELECT COUNT(*) FROM audit.audit_logs WHERE entity_type=N'catalog_source_binding' AND entity_source_id=LOWER(CONVERT(char(36),@sourceId))
+      AND action=N'catalog_source_refreshed' AND JSON_VALUE(metadata_json,'$.status')='published')<>1
+    THROW 55394,N'Installed 053 did not materialize the exact synthetic Company revision and audit.',1;
+  SET @passed+=1;
+  ROLLBACK TRANSACTION;
+  SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+  IF @@TRANCOUNT<>0 OR USER_NAME()<>@savedOwner
+    OR ISNULL(OBJECT_ID(N'settings.catalog_sag_v2_transition_internal',N'P'),0)<>@privateId
+    OR ISNULL(HASHBYTES('SHA2_256',CONVERT(varbinary(max),OBJECT_DEFINITION(@privateId))),0x00)<>@privateRawSha
+    OR DATABASE_PRINCIPAL_ID(N'qa_catalog_v2_runtime_test') IS NOT NULL
+    OR DATABASE_PRINCIPAL_ID(N'qa_catalog_v2_publisher_test') IS NOT NULL
+    OR OBJECT_ID(N'settings.qa_catalog_v2_installed_publish',N'P') IS NOT NULL
+    OR OBJECT_ID(N'settings.qa_catalog_v2_installed_runtime_permissions',N'P') IS NOT NULL
+    OR OBJECT_ID(N'settings.qa_catalog_v2_installed_publisher_permissions',N'P') IS NOT NULL
+    OR EXISTS(SELECT 1 FROM settings.external_database_connections WHERE external_database_connection_key=@profileKey)
+    OR EXISTS(SELECT 1 FROM settings.catalog_source_bindings WHERE catalog_source_key=@sourceKey)
+    OR EXISTS(SELECT 1 FROM settings.catalog_source_refresh_jobs WHERE job_id=@job)
+    OR EXISTS(SELECT 1 FROM settings.catalog_source_refresh_attempts WHERE job_key=@jobKey)
+    OR EXISTS(SELECT 1 FROM settings.catalog_customer_revision_heads WHERE catalog_source_key=@sourceKey)
+    OR EXISTS(SELECT 1 FROM core.catalog_customer_source_revisions WHERE catalog_source_key=@sourceKey)
+    OR EXISTS(SELECT 1 FROM core.catalog_sag_company_revision_rows WHERE revision_key=@revision)
+    OR EXISTS(SELECT 1 FROM audit.audit_logs WHERE entity_type=N'catalog_source_binding' AND entity_source_id=LOWER(CONVERT(char(36),@sourceId)))
+    OR NOT EXISTS(SELECT 1 FROM settings.catalog_match_key_registry WHERE portal_environment='qa'
+      AND match_key_version=@keyVer AND vault_secret_version=@vault AND key_verifier=@verifier)
+    OR EXISTS(SELECT source_key,version FROM @draft EXCEPT SELECT catalog_source_key,row_version
+      FROM settings.catalog_source_bindings WHERE portal_environment='qa' AND source_state='draft')
+    OR EXISTS(SELECT current_value,last_used_value FROM @sequence EXCEPT
+      SELECT CONVERT(bigint,current_value),CONVERT(bigint,last_used_value) FROM sys.sequences
+      WHERE object_id=OBJECT_ID(N'settings.catalog_customer_attempt_sequence',N'SO'))
+    THROW 55393,N'Post-rollback fixtures or baseline metadata changed.',1;
+  SELECT @passed AS passed,0 AS fixture_rows_remaining,1 AS sequence_unchanged,1 AS materialized;
+END TRY
+BEGIN CATCH
+  DECLARE @line int=ERROR_LINE(),@error int=ERROR_NUMBER();
+  IF XACT_STATE()<>0 ROLLBACK TRANSACTION;
+  SET XACT_ABORT ON;
+  SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+  SELECT @error AS error_number,@line AS error_line,@case AS error_case,@code AS decision_number;
+END CATCH;
+'@
+  $invoke=Join-Path $PSScriptRoot '../connect-sql-server/Invoke-PortalSAGWeb-EphemeralRequest.ps1'
+  try {
+    $response=(& $invoke -SessionDirectory $session -Sql ($installedPrefix+$installedBody) -Mode write -TimeoutSeconds $SqlTimeoutSeconds -MaxRows 1)|
+      ConvertFrom-Json -Depth 14
+  } catch { throw 'Installed publication QA failed before a sanitized result.' }
+  $sets=@($response.resultSets)
+  $row=if($sets.Count -eq 1 -and @($sets[0].rows).Count -eq 1){$sets[0].rows[0]}else{$null}
+  if(!$response.success -or $row.passed -ne 8 -or $row.fixture_rows_remaining -ne 0 -or $row.sequence_unchanged -ne 1 -or $row.materialized -ne 1){
+    throw "Installed publication QA failed (SQL: $([int]$row.error_number); case: $([int]$row.error_case); line: $([int]$row.error_line); decision: $([int]$row.decision_number))."
+  }
+  $row | Select-Object passed,fixture_rows_remaining,sequence_unchanged,materialized | ConvertTo-Json -Compress
+  return
+}
 $probeTemplate=@'
 CREATE PROCEDURE settings.__PROCEDURE__
   @case int,@environment varchar(32),@sourceId uniqueidentifier,@jobId uniqueidentifier,@workerId uniqueidentifier,

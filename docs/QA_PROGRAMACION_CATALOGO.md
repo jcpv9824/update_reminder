@@ -368,6 +368,16 @@ publicación de la 038. SQL confirmó una inscripción exacta y cero fuentes
 activas. SQL conserva sólo la referencia de versión y el verificador, no
 la clave. La inscripción no activa ni publica orígenes.
 
+Con las migraciones 053–059 ya instaladas, el ensayo
+`Test-CatalogSagV2PublicationQa.ps1 -Installed` pasó **8/8** en la sesión
+existente. La 053 materializó un cliente, su compañía y su evidencia de
+licencia, junto con la cabecera y la auditoría de la publicación, usando
+datos sintéticos. La reversión dejó cero filas de ensayo y no consumió
+la secuencia; preservó los dos borradores y la inscripción real de la clave.
+No se creó un login. Los dos usuarios de base de datos sin login y sus
+permisos de prueba desaparecieron al revertir. Este ensayo no certifica
+el `COMMIT` del RPC público 055 ni la ejecución automática del API.
+
 Sobre ese mismo candidato pasaron las suites completas (API **1.879/1.879**,
 frontend **303/303**), la guarda SQL-only, TypeScript y ambos builds, y las
 auditorías de producción y completas de ambos paquetes. El build del
