@@ -12,6 +12,8 @@ type RequestedLink = Readonly<{
 }> & ({ kind: "domain"; databaseId?: never } | { kind: "database"; databaseId: string });
 
 type ResolvedTarget = CatalogTaskLink["target"];
+type ResolvedTargetPins = Exclude<ResolvedTarget, { status: "verified" }>
+  | (Extract<ResolvedTarget, { status: "verified" }> & { physicalLinkId: string });
 type ReadInput = { portalEnvironment: CatalogEnvironment; links: readonly RequestedLink[] };
 type Resolver = typeof readSqlCatalogPhysicalTargets;
 const maxLinks = 5000;
@@ -21,7 +23,7 @@ const validSourceId = (id: string) => typeof id === "string" && id.length >= 1 &
   && id === id.trim() && !/\p{C}/u.test(id);
 const fail = (): never => { throw new Error("catalog_physical_inventory_unavailable"); };
 
-const readTargets = `
+const readTargets = (withPins: boolean) => `
 WITH wanted AS (
   SELECT CONVERT(int,[key]) AS ordinal,
     JSON_VALUE([value],'$.kind') COLLATE Latin1_General_100_BIN2 AS target_kind,
@@ -31,7 +33,8 @@ WITH wanted AS (
   FROM OPENJSON(@requestedLinks)
 )
 SELECT w.ordinal, ready.target_status,
-  CASE WHEN ready.target_status='verified' THEN LOWER(CONVERT(char(36),t.target_id)) END AS physical_id
+  CASE WHEN ready.target_status='verified' THEN LOWER(CONVERT(char(36),t.target_id)) END AS physical_id${withPins ? `,
+  CASE WHEN ready.target_status='verified' THEN LOWER(CONVERT(char(36),l.link_id)) END AS physical_link_id` : ""}
 FROM wanted w
 LEFT JOIN core.clients c ON c.source_id=w.client_id AND c.source_id COLLATE Latin1_General_100_BIN2=w.client_id COLLATE Latin1_General_100_BIN2
 LEFT JOIN core.domains d ON d.client_key=c.client_key AND d.source_id=w.domain_id
@@ -73,7 +76,17 @@ export function readSqlCatalogPhysicalTargetsInTransaction(
   return readWithRequest(input, () => transaction.request());
 }
 
-async function readWithRequest(input: ReadInput, request: () => sql.Request | Promise<sql.Request>): Promise<ResolvedTarget[]> {
+/** Server-only proof input: never forward the link ID as part of a plan or public DTO. */
+export function readSqlCatalogPhysicalTargetPinsInTransaction(
+  transaction: sql.Transaction, input: ReadInput,
+): Promise<ResolvedTargetPins[]> {
+  return readWithRequest(input, () => transaction.request(), true);
+}
+
+type MakeRequest = () => sql.Request | Promise<sql.Request>;
+function readWithRequest(input: ReadInput, request: MakeRequest): Promise<ResolvedTarget[]>;
+function readWithRequest(input: ReadInput, request: MakeRequest, withPins: true): Promise<ResolvedTargetPins[]>;
+async function readWithRequest(input: ReadInput, request: MakeRequest, withPins = false): Promise<ResolvedTarget[]> {
   if (!["qa", "production"].includes(input.portalEnvironment) || input.links.length > maxLinks) fail();
   if (!input.links.length) return [];
   const links = input.links.map(link => {
@@ -86,14 +99,19 @@ async function readWithRequest(input: ReadInput, request: () => sql.Request | Pr
     const result = await (await request())
       .input("portalEnvironment", sql.VarChar(10), input.portalEnvironment)
       .input("requestedLinks", sql.NVarChar(sql.MAX), JSON.stringify(links))
-      .query<{ ordinal: number; target_status: string; physical_id: string | null }>(
-        `DECLARE @now datetime2(3)=SYSUTCDATETIME();\n${readTargets}`,
+      .query<{ ordinal: number; target_status: string; physical_id: string | null; physical_link_id?: string | null }>(
+        `DECLARE @now datetime2(3)=SYSUTCDATETIME();\n${readTargets(withPins)}`,
       );
     if (result.recordset.length !== links.length) fail();
-    return result.recordset.map(({ ordinal, target_status: status, physical_id: id }, index): ResolvedTarget => {
+    return result.recordset.map(({ ordinal, target_status: status, physical_id: id, physical_link_id: physicalLinkId }, index): ResolvedTarget | ResolvedTargetPins => {
       if (index !== ordinal) return fail();
-      if (status === "verified" && typeof id === "string" && opaqueId.test(id)) return { status, id };
-      if ((status === "unverifiable" || status === "not_found") && id === null) return { status };
+      if (status === "verified" && typeof id === "string" && opaqueId.test(id)) {
+        if (!withPins) return { status, id };
+        const nil = "00000000-0000-0000-0000-000000000000";
+        if (id === nil || typeof physicalLinkId !== "string" || !opaqueId.test(physicalLinkId) || physicalLinkId === nil) return fail();
+        return { status, id, physicalLinkId };
+      }
+      if ((status === "unverifiable" || status === "not_found") && id === null && (!withPins || physicalLinkId === null)) return { status };
       return fail();
     });
   } catch {

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   planCatalogTasksWithVerifiedTargets, readSqlCatalogPhysicalTargets, readSqlCatalogPhysicalTargetsInTransaction,
+  readSqlCatalogPhysicalTargetPinsInTransaction,
 } from "../lib/catalogPhysicalTargetSqlRepository";
 import type { CatalogTaskLink, CatalogTaskRequest } from "../lib/catalogTaskTargetPlanning";
 
@@ -100,5 +101,32 @@ describe("physical target registry reader", () => {
     }
     expect(request).not.toHaveBeenCalled();
     expect(fakes.pool).not.toHaveBeenCalled();
+  });
+
+  it("preserves the approved physical link only for the internal proof reader", async () => {
+    const physicalLinkId = "6b1fc8fb-cbde-4aee-bf4b-e146190ffec5";
+    const query = vi.fn().mockResolvedValue({ recordset: [
+      { ordinal: 0, target_status: "verified", physical_id: id, physical_link_id: physicalLinkId },
+      { ordinal: 1, target_status: "unverifiable", physical_id: null, physical_link_id: null },
+    ] });
+    const input = vi.fn().mockReturnThis();
+    const transaction = { request: vi.fn(() => ({ input, query })) } as unknown as Parameters<typeof readSqlCatalogPhysicalTargetsInTransaction>[0];
+    const wanted = { portalEnvironment: "qa" as const, links: links.slice(0, 2) };
+    await expect(readSqlCatalogPhysicalTargetPinsInTransaction(transaction, wanted))
+      .resolves.toEqual([{ status: "verified", id, physicalLinkId }, { status: "unverifiable" }]);
+    await expect(readSqlCatalogPhysicalTargetsInTransaction(transaction, wanted))
+      .resolves.toEqual([{ status: "verified", id }, { status: "unverifiable" }]);
+    expect(query.mock.calls[0][0]).toContain("l.link_id");
+    expect(fakes.pool).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing physical link instead of reporting an absence", async () => {
+    const query = vi.fn().mockResolvedValue({ recordset: [
+      { ordinal: 0, target_status: "verified", physical_id: id, physical_link_id: null },
+    ] });
+    const input = vi.fn().mockReturnThis();
+    const transaction = { request: () => ({ input, query }) } as unknown as Parameters<typeof readSqlCatalogPhysicalTargetsInTransaction>[0];
+    await expect(readSqlCatalogPhysicalTargetPinsInTransaction(transaction, { portalEnvironment: "qa", links: links.slice(0, 1) }))
+      .rejects.toThrow("catalog_physical_inventory_unavailable");
   });
 });
