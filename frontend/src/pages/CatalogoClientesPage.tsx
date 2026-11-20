@@ -11,7 +11,7 @@ type EstadoFuente = "verified" | "stale" | "unavailable";
 
 export type CatalogoClientesQuery = Readonly<{
   sourceIds?: readonly string[];
-  state: Estado | "all";
+  state: Estado | "active_or_unverified" | "all";
   web: Presencia | "all";
   search?: string;
   page: number;
@@ -27,6 +27,7 @@ export type FuenteCatalogoCliente = Readonly<{
 
 export type ResumenCatalogoCliente = Readonly<{
   id: string;
+  displayDocument?: string | null;
   name: string;
   state: Estado;
   web: Presencia;
@@ -60,7 +61,7 @@ type Props = {
   refreshService?: CatalogRefreshService;
 };
 
-const FILTROS_INICIALES: CatalogoClientesQuery = { state: "active", web: "in_web", page: 1, pageSize: 25 };
+const FILTROS_INICIALES: CatalogoClientesQuery = { state: "active_or_unverified", web: "all", page: 1, pageSize: 25 };
 const ESTADO: Record<Estado, string> = { active: "Activo", inactive: "Inactivo", unverified: "No verificado" };
 const SAG_WEB: Record<Presencia, string> = {
   in_web: "En SAG Web", not_in_web: "Fuera de SAG Web", unverified: "No verificado",
@@ -245,7 +246,7 @@ function CatalogoClientesContenido({ scopeKey, load, loadDetail, indicadores, re
       <form className="barra-filtros" onSubmit={buscar} aria-label="Filtros de clientes">
         <div className="campo">
           <label htmlFor={`${id}-buscar`}>Buscar por ID o nombre</label>
-          <input id={`${id}-buscar`} value={busqueda} maxLength={200}
+          <input id={`${id}-buscar`} value={busqueda} maxLength={120} autoComplete="off"
             onChange={event => setBusqueda(event.target.value)} />
         </div>
         <button type="submit" className="secundario">Buscar</button>
@@ -253,6 +254,7 @@ function CatalogoClientesContenido({ scopeKey, load, loadDetail, indicadores, re
           <label htmlFor={`${id}-estado`}>Estado del cliente</label>
           <select id={`${id}-estado`} value={filtros.state}
             onChange={event => cambiar({ state: event.target.value as CatalogoClientesQuery["state"] })}>
+            <option value="active_or_unverified">Activos y no verificados</option>
             <option value="active">Activos</option>
             <option value="inactive">Inactivos</option>
             <option value="unverified">No verificados</option>
@@ -379,7 +381,7 @@ function CustomerRows({ cliente, abierto, panelId, onToggle, scopeKey, loadDetai
   return (
     <>
       <tr>
-        <td>{cliente.id}</td>
+        <td>{cliente.displayDocument ?? "No disponible"}</td>
         <th scope="row">{cliente.name}</th>
         <td>{ESTADO[cliente.state]}{cliente.stateVaries && <small> · Varía por fuente</small>}</td>
         <td>{SAG_WEB[cliente.web]}{cliente.requiresReconciliation && <small> · Requiere conciliación</small>}</td>

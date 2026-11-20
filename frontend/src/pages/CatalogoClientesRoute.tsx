@@ -14,16 +14,22 @@ import CatalogoClientesPage, {
 } from "./CatalogoClientesPage";
 import ClientesPage from "./ClientesPage";
 
-export function catalogCustomersPath(query: CatalogoClientesQuery): string {
+export function catalogCustomersPath(query: CatalogoClientesQuery, directoryV2 = false): string {
   const params = new URLSearchParams({
     state: query.state,
     web: query.web,
     page: String(query.page),
     pageSize: String(query.pageSize),
   });
-  if (query.search) params.set("search", query.search);
+  if (query.search && !directoryV2) params.set("search", query.search);
   for (const id of new Set(query.sourceIds)) params.append("sourceId", id);
-  return `/catalog/customers?${params}`;
+  return `/catalog/customers${directoryV2 && query.search ? "/search" : ""}?${params}`;
+}
+
+function loadCustomers(query: CatalogoClientesQuery, signal: AbortSignal, directoryV2: boolean): Promise<CatalogoClientesResponse> {
+  const path = catalogCustomersPath(query, directoryV2);
+  if (directoryV2 && query.search) return api.post<CatalogoClientesResponse>(path, { search: query.search }, { signal });
+  return api.get<CatalogoClientesResponse>(path, { signal });
 }
 
 async function loadDetail(id: string, signal: AbortSignal): Promise<ResumenCatalogoCliente | null> {
@@ -39,6 +45,7 @@ export default function CatalogoClientesRoute() {
   const auth = useAuth();
   const catalogoCompletoHabilitado = import.meta.env.VITE_PORTAL_CATALOG_READ_ENABLED === "true";
   const catalogoHabilitado = catalogoCompletoHabilitado || import.meta.env.VITE_PORTAL_CATALOG_CLIENTS_READ_ENABLED === "true";
+  const directorioV2 = import.meta.env.VITE_PORTAL_CATALOG_DIRECTORY_V2_ENABLED === "true";
   const consultaRoles = useQuery({
     queryKey: ["roles"],
     queryFn: () => api.get<RoleDefinition[]>("/roles"),
@@ -58,7 +65,7 @@ export default function CatalogoClientesRoute() {
   return <CatalogoClientesPage
     key={scope}
     scopeKey={scope}
-    load={(query, signal) => api.get<CatalogoClientesResponse>(catalogCustomersPath(query), { signal })}
+    load={(query, signal) => loadCustomers(query, signal, directorioV2)}
     loadDetail={loadDetail}
     indicadores={indicadores}
     refreshService={catalogRefreshServiceIfEnabled()}

@@ -192,6 +192,7 @@ export function mapCatalogCustomerSnapshots(
     const sagRecords = new Map((sagHeader ? rowsBySource.get(sagHeader.source_id) ?? [] : [])
       .map(row => [row.source_record_id, row]));
     const orphanNames = new Map<string, string>();
+    const orphanDocuments = new Map<string, { sourceId: string; recordId: number; token: string }>();
     const documents = new Map<string, CatalogDocument>();
     const erpDocuments = new Map<string, CatalogDocument[]>();
     const knownErpDocumentKeys = new Set<string>();
@@ -221,6 +222,12 @@ export function mapCatalogCustomerSnapshots(
         // All environments for the same orphan identity share its SQL-generated UUID.
         const name = orphanNames.get(row.customer_id);
         if (!name || row.display_name.localeCompare(name, "es") < 0) orphanNames.set(row.customer_id, row.display_name);
+        if (token && sagHeader) {
+          const saved = orphanDocuments.get(row.customer_id);
+          if (!saved || row.sag_record_id < saved.recordId) {
+            orphanDocuments.set(row.customer_id, { sourceId: sagHeader.source_id, recordId: row.sag_record_id, token });
+          }
+        }
       } else {
         const candidates = erpDocuments.get(row.customer_id);
         if (!candidates?.length || candidates.some(doc => doc.issuer !== candidates[0].issuer ||
@@ -233,6 +240,7 @@ export function mapCatalogCustomerSnapshots(
     result.sag = { ...result.sag, documents: [...documents.values()], completeScopes: [],
       unresolvedNumbers: [], ...(!reconciled.sagReady ? { state: "unavailable" as const, verifiedAt: null } : {}) };
     result.sagOnlyCustomers = [...orphanNames].map(([customerId, name]) => ({ customerId, name }));
+    if (orphanDocuments.size) result.sagOnlyDocumentReferences = orphanDocuments;
     result.partial = reconciled.partial;
   }
   return result;

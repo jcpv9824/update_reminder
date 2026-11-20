@@ -3,6 +3,7 @@ import { requireUser, loadUserProfile } from "../lib/auth";
 import { createCatalogDirectoryHttp } from "../lib/catalogDirectoryHttp";
 import { readAuthorizedCatalogSourceIds } from "../lib/catalogSourceAccessSqlRepository";
 import { readSqlCatalogCustomerSnapshots } from "../lib/catalogCustomerSnapshotsSqlRepository";
+import { addCatalogCustomerDocuments } from "../lib/catalogCustomerDocumentDisplay";
 import { createCatalogCustomerInventoryHttp } from "../lib/catalogCustomerInventoryHttp";
 import { readSqlCatalogSagCustomerEvidence } from "../lib/catalogSagCustomerEvidenceSqlRepository";
 import { createCatalogMasterInventoryHttp, type CatalogMasterView } from "../lib/catalogMasterInventoryHttp";
@@ -45,6 +46,7 @@ const directory = createCatalogDirectoryHttp({
     }
   },
   readAllowedSourceIds: actorId => readAuthorizedCatalogSourceIds({ actorId, environment: environment() }),
+  readDisplayDocuments: (input, sourceIds) => addCatalogCustomerDocuments(input, environment(), matchKeyVersion(), sourceIds),
   readPublishedDirectory: (allowedSourceIds, actorId) => readSqlCatalogCustomerSnapshots({
     allowedSourceIds,
     ...(catalogDirectoryV2Enabled() ? { actorId, includeSagDirectory: true } : {}),
@@ -58,6 +60,13 @@ app.http("catalogCustomersList", {
   methods: ["GET"],
   authLevel: "anonymous",
   handler: request => directory(request, "list"),
+});
+
+app.http("catalogCustomersSearch", {
+  route: "catalog/customers/search",
+  methods: ["POST"],
+  authLevel: "anonymous",
+  handler: request => directory(request, "search"),
 });
 
 app.http("catalogCustomerDetail", {

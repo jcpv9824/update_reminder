@@ -12,6 +12,7 @@ const colombia = { sourceId: "co", label: "Colombia", revisionState: "verified",
 const estadosUnidos = { ...colombia, sourceId: "us", label: "Estados Unidos" };
 const cliente = {
   id: "cliente-opaco",
+  displayDocument: "00012345-6",
   name: "Comercial Ejemplo",
   state: "active",
   web: "in_web",
@@ -42,24 +43,40 @@ const selectorFuentes = () => screen.getByRole("button", { name: /^Fuentes:/ });
 const verSinSAG = "Ver clientes sin filtrar por presencia en SAG Web";
 
 describe("catálogo de clientes multiempresa", () => {
-  it("consulta por defecto todas las fuentes autorizadas, activos y en SAG Web, sin acciones de escritura", async () => {
-    const load = vi.fn<CargarCatalogoClientes>().mockResolvedValue(initial);
+  it("incluye por defecto los activos del ERP y los no verificados solo en SAG Admin, sin acciones de escritura", async () => {
+    const soloErp = { ...cliente, web: "not_in_web" } as const;
+    const soloSag = { ...cliente, id: "sag-id-opaco", displayDocument: "ID EXT-001", name: "Solo en SAG",
+      state: "unverified", sources: [], sagOnly: true } as const;
+    const sinDocumento = { ...cliente, id: "sin-documento-opaco", displayDocument: null, name: "Sin documento" } as const;
+    const load = vi.fn<CargarCatalogoClientes>().mockResolvedValue({
+      ...initial, items: [soloErp, soloSag, sinDocumento], total: 3,
+    });
     renderPage(load);
 
     await screen.findByText(cliente.name);
     const table = screen.getByRole("table", { name: "Clientes del catálogo" });
-    expect(within(table).getByText("Colombia")).toBeInTheDocument();
-    expect(load).toHaveBeenCalledWith({ state: "active", web: "in_web", page: 1, pageSize: 25 }, expect.any(AbortSignal));
+    const filaErp = within(table).getByRole("row", { name: /Comercial Ejemplo/ });
+    expect(within(filaErp).getByText("Colombia")).toBeInTheDocument();
+    expect(load).toHaveBeenCalledWith({ state: "active_or_unverified", web: "all", page: 1, pageSize: 25 }, expect.any(AbortSignal));
     expect(selectorFuentes()).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("checkbox", { name: "Todas las fuentes autorizadas" })).toBeNull();
     fireEvent.click(selectorFuentes());
     expect(screen.getByRole("checkbox", { name: "Todas las fuentes autorizadas" })).toBeChecked();
     expect(screen.queryByRole("button", { name: /crear|nuevo|editar|eliminar|administrar fuentes/i })).toBeNull();
-    expect(within(table).getByText(cliente.id)).toBeInTheDocument();
+    expect(within(table).getByText(soloErp.displayDocument)).toBeInTheDocument();
+    expect(within(table).getByText("Fuera de SAG Web")).toBeInTheDocument();
+    const filaSag = within(table).getByRole("row", { name: /Solo en SAG/ });
+    expect(within(filaSag).getByText(soloSag.displayDocument)).toBeInTheDocument();
+    expect(within(filaSag).getByText("Solo SAG Admin")).toBeInTheDocument();
+    expect(within(filaSag).getByText("No verificado")).toBeInTheDocument();
+    expect(within(table).getByText("No disponible")).toBeInTheDocument();
+    for (const item of [soloErp, soloSag, sinDocumento]) {
+      expect(within(table).queryByText(item.id)).not.toBeInTheDocument();
+    }
     expect(within(table).getAllByRole("columnheader").map(header => header.textContent))
       .toEqual(["ID", "Nombre", "Estado", "SAG Web", "Origen"]);
     expect(within(table).getByRole("columnheader", { name: "Origen" })).toHaveClass("catalogo-clientes-origen");
-    expect(within(table).getByText("Colombia").closest("td")).toHaveClass("catalogo-clientes-origen");
+    expect(within(filaErp).getByText("Colombia").closest("td")).toHaveClass("catalogo-clientes-origen");
   });
 
   it("permite consultar clientes sin estado verificado sin asumir que están activos o inactivos", async () => {
@@ -70,7 +87,7 @@ describe("catálogo de clientes multiempresa", () => {
     }));
     renderPage(load);
     await screen.findByText(cliente.name);
-    expect(screen.getByLabelText("Estado del cliente")).toHaveValue("active");
+    expect(screen.getByLabelText("Estado del cliente")).toHaveValue("active_or_unverified");
     fireEvent.change(screen.getByLabelText("Estado del cliente"), { target: { value: "unverified" } });
     await screen.findByText(soloSag.name);
     const row = screen.getByRole("row", { name: /Nombre desde SAG Admin/ });
@@ -78,19 +95,20 @@ describe("catálogo de clientes multiempresa", () => {
     expect(within(row).getByText("Solo SAG Admin")).toBeInTheDocument();
     expect(within(row).queryByText("Activo")).toBeNull();
     expect(within(row).queryByText("Inactivo")).toBeNull();
-    expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ state: "unverified", web: "in_web" }), expect.any(AbortSignal));
+    expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ state: "unverified", web: "all" }), expect.any(AbortSignal));
   });
 
-  it("aplica la búsqueda por ID solo al enviarla y conserva el ID que entrega el API", async () => {
+  it("aplica la búsqueda por documento solo al enviarla y conserva ceros y guion en pantalla", async () => {
     const load = vi.fn<CargarCatalogoClientes>().mockResolvedValue(initial);
     renderPage(load);
     await screen.findByText(cliente.name);
-    fireEvent.change(screen.getByLabelText("Buscar por ID o nombre"), { target: { value: ` ${cliente.id} ` } });
+    fireEvent.change(screen.getByLabelText("Buscar por ID o nombre"), { target: { value: ` ${cliente.displayDocument} ` } });
     expect(load).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
     await waitFor(() => expect(load).toHaveBeenLastCalledWith(
-      expect.objectContaining({ search: cliente.id, state: "active", web: "in_web", page: 1 }), expect.any(AbortSignal)));
-    expect(await screen.findByText(cliente.id)).toBeInTheDocument();
+      expect.objectContaining({ search: cliente.displayDocument, state: "active_or_unverified", web: "all", page: 1 }), expect.any(AbortSignal)));
+    expect(await screen.findByText(cliente.displayDocument)).toBeInTheDocument();
+    expect(screen.queryByText(cliente.id)).not.toBeInTheDocument();
   });
 
   it("permite combinar fuentes y modificar estado, presencia y búsqueda de forma independiente", async () => {
@@ -102,7 +120,7 @@ describe("catálogo de clientes multiempresa", () => {
     fireEvent.click(selectorFuentes());
     fireEvent.click(screen.getByRole("checkbox", { name: "Panamá" }));
     await waitFor(() => expect(load).toHaveBeenLastCalledWith(
-      expect.objectContaining({ sourceIds: ["co", "us"], state: "active", web: "in_web" }), expect.any(AbortSignal)));
+      expect.objectContaining({ sourceIds: ["co", "us"], state: "active_or_unverified", web: "all" }), expect.any(AbortSignal)));
 
     fireEvent.change(screen.getByLabelText("Estado del cliente"), { target: { value: "inactive" } });
     fireEvent.change(screen.getByLabelText("Presencia en SAG Web"), { target: { value: "all" } });
@@ -223,8 +241,11 @@ describe("catálogo de clientes multiempresa", () => {
       items: query.web === "all" ? [{ ...cliente, web: "unverified" }] : [], total: query.web === "all" ? 1 : 0,
     }));
     renderPage(load);
+    await screen.findByText(cliente.name);
+    expect(screen.queryByRole("button", { name: verSinSAG })).toBeNull();
+    fireEvent.change(screen.getByLabelText("Estado del cliente"), { target: { value: "active" } });
+    fireEvent.change(screen.getByLabelText("Presencia en SAG Web"), { target: { value: "in_web" } });
     expect(await screen.findByRole("button", { name: verSinSAG })).toBeInTheDocument();
-    expect(load.mock.calls[0][0]).toMatchObject({ web: "in_web", state: "active" });
     fireEvent.click(selectorFuentes());
     fireEvent.click(screen.getByRole("checkbox", { name: "Estados Unidos" }));
     fireEvent.change(screen.getByLabelText("Buscar por ID o nombre"), { target: { value: "Comercial" } });
@@ -247,6 +268,9 @@ describe("catálogo de clientes multiempresa", () => {
     const load = vi.fn<CargarCatalogoClientes>().mockResolvedValue({ ...initial, ...caso, partial: true, items: [] });
     renderPage(load);
     await screen.findByRole("table");
+    fireEvent.change(screen.getByLabelText("Estado del cliente"), { target: { value: "active" } });
+    fireEvent.change(screen.getByLabelText("Presencia en SAG Web"), { target: { value: "in_web" } });
+    await screen.findByRole("table");
     expect(screen.queryByRole("button", { name: verSinSAG })).toBeNull();
   });
 
@@ -255,6 +279,9 @@ describe("catálogo de clientes multiempresa", () => {
       ...initial, partial: true, sag: { state: "unavailable", verifiedAt: null }, items: [], total: 0,
     });
     renderPage(load);
+    await screen.findByRole("table");
+    fireEvent.change(screen.getByLabelText("Estado del cliente"), { target: { value: "active" } });
+    fireEvent.change(screen.getByLabelText("Presencia en SAG Web"), { target: { value: "in_web" } });
     expect(await screen.findByRole("button", { name: verSinSAG })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Estado del cliente"), { target: { value: "inactive" } });
     await screen.findByRole("table");

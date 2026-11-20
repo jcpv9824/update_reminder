@@ -87,6 +87,45 @@ describe("catalog directory HTTP contract", () => {
     expect(deps.readPublishedDirectory).not.toHaveBeenCalled();
   });
 
+  it("accepts a document in an authenticated, no-store POST body without exposing the hidden source", async () => {
+    const deps = dependencies();
+    const createSearch = (body: string, query = "state=active_or_unverified&web=all") => ({
+      ...request(query), headers: new Headers(),
+      body: new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new TextEncoder().encode(body)); controller.close(); },
+      }),
+    }) as HttpRequest;
+    const readDisplayDocuments = vi.fn(async (input: CatalogDirectoryInput) => ({
+      ...input, showDocuments: true, erp: input.erp.map(source => ({
+        ...source, customers: source.customers.map(row => ({ ...row, displayDocument: "0007-DOCUMENT" })),
+      })),
+    }));
+    const handle = createCatalogDirectoryHttp({ ...deps, includeSagDirectory: () => true, readDisplayDocuments });
+    const body = JSON.stringify({ search: "0007-DOCUMENT" });
+    deps.authorize.mockResolvedValueOnce({ status: 401 });
+    expect((await handle(createSearch(body), "search")).status).toBe(401);
+    expect(readDisplayDocuments).not.toHaveBeenCalled();
+    const result = await handle(createSearch(body), "search");
+    expect(result).toMatchObject({ status: 200, headers: { "Cache-Control": "no-store" },
+      jsonBody: { total: 1, items: [{ displayDocument: "0007-DOCUMENT", name: "Cliente de ejemplo" }] } });
+    expect(JSON.stringify(result.jsonBody)).not.toMatch(/No visible|opaque-validation|internal-/);
+    expect((await handle(createSearch(body, "sourceId=" + hiddenSource), "search")).status).toBe(400);
+  });
+
+  it("stops reading an oversized streamed document search before source access", async () => {
+    const dept = dependencies();
+    const stop = vi.fn();
+    const streamer = new ReadableStream<Uint8Array>({
+      pull(controller) { controller.enqueue(new Uint8Array(2050)); },
+      cancel: stop,
+    });
+    const handle = createCatalogDirectoryHttp({ ...dept, includeSagDirectory: () => true });
+    const result = await handle({ ...request(), body: streamer, headers: new Headers() } as HttpRequest, "search");
+    expect(result.status).toBe(400);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(dept.readAllowedSourceIds).not.toHaveBeenCalled();
+  });
+
   it("returns a safe service error instead of SQL details or an empty result", async () => {
     const deps = dependencies();
     deps.readPublishedDirectory.mockRejectedValueOnce(new Error("protected driver details"));

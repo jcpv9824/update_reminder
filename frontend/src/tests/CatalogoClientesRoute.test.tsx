@@ -10,7 +10,7 @@ vi.mock("../auth/AuthContext", () => ({
   useAuth: () => ({ cargando: false, usuario: { id: "sesion-prueba", roles: ["catalog-reader"] } }),
 }));
 
-const cliente = { id: "2f2e2f2e-0000-4000-8000-2f2e2f2e2f2e", name: "Comercial Ejemplo", state: "active", web: "in_web", sources: [],
+const cliente = { id: "2f2e2f2e-0000-4000-8000-2f2e2f2e2f2e", displayDocument: "00012345-6", name: "Comercial Ejemplo", state: "active", web: "in_web", sources: [],
   stateVaries: false, requiresReconciliation: false };
 const detallePath = `/catalog/customers/${cliente.id}`;
 const dominiosPath = `${detallePath}/domains`;
@@ -33,11 +33,32 @@ describe("indicadores de Clientes en la ruta", () => {
     fireEvent.click(await screen.findByRole("button", { name: `Ver fuentes de ${cliente.name}` }));
     await waitFor(() => expect(get).toHaveBeenCalledWith(detallePath, { signal: expect.any(AbortSignal) }));
     expect(get.mock.calls.map(([path]) => path)).toEqual([
-      "/catalog/customers?state=active&web=in_web&page=1&pageSize=25", detallePath,
+      "/catalog/customers?state=active_or_unverified&web=all&page=1&pageSize=25", detallePath,
     ]);
     expect(screen.queryByRole("button", { name: /Ver (dominios|licencias) observad/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Crear|Nuevo|Editar|Eliminar/i })).not.toBeInTheDocument();
     expect(post).not.toHaveBeenCalled();
+  });
+
+  it("envía el documento de búsqueda en el cuerpo de V2, no en la URL", async () => {
+    vi.stubEnv("VITE_PORTAL_CATALOG_CLIENTS_READ_ENABLED", "true");
+    vi.stubEnv("VITE_PORTAL_CATALOG_DIRECTORY_V2_ENABLED", "true");
+    vi.stubEnv("VITE_PORTAL_CATALOG_AUTOMATION_ENABLED", "false");
+    const response = { items: [cliente], sources: [], sag: { state: "verified", verifiedAt: null },
+      partial: false, total: 1, page: 1, pageSize: 25 };
+    get.mockResolvedValue(response);
+    post.mockResolvedValue(response);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={queryClient}><CatalogoClientesRoute /></QueryClientProvider>);
+    expect(await screen.findByText(cliente.displayDocument)).toBeInTheDocument();
+    expect(screen.queryByText(cliente.id)).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Buscar por ID o nombre"), { target: { value: cliente.displayDocument } });
+    expect(post).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
+    await waitFor(() => expect(post).toHaveBeenCalledExactlyOnceWith(
+      "/catalog/customers/search?state=active_or_unverified&web=all&page=1&pageSize=25",
+      { search: cliente.displayDocument }, { signal: expect.any(AbortSignal) }));
+    expect(get.mock.calls.every(([path]) => !path.includes(cliente.displayDocument))).toBe(true);
   });
   it.each([
     ["clients.domains.view", "Ver dominios observados", dominiosPath, "Ver licencias observadas", licenciasPath],

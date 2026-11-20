@@ -21,6 +21,8 @@ export interface CatalogErpCustomer {
   document: CatalogDocument | null;
   officialName: string | null;
   activeCode: string | null;
+  /** Populated only by the authenticated read-side document projection. */
+  displayDocument?: string | null;
 }
 
 export interface CatalogErpRevision {
@@ -49,13 +51,15 @@ export interface CatalogDirectoryInput {
   allowedSourceIds: ReadonlySet<string>;
   preferredSourceByCustomer?: ReadonlyMap<string, string>;
   /** SQL-authorized, fresh V2 orphans only. Never inferred by comparing visible ERP rows. */
-  sagOnlyCustomers?: readonly Readonly<{ customerId: string; name: string }>[];
+  sagOnlyCustomers?: readonly Readonly<{ customerId: string; name: string; displayDocument?: string | null }>[];
+  sagOnlyDocumentReferences?: ReadonlyMap<string, Readonly<{ sourceId: string; recordId: number; token: string }>>;
+  showDocuments?: boolean;
   partial?: boolean;
 }
 
 export interface CatalogDirectoryQuery {
   sourceIds?: readonly string[];
-  state?: CatalogCustomerState | "all";
+  state?: CatalogCustomerState | "active_or_unverified" | "all";
   web?: CatalogWebPresence | "all";
   search?: string;
   page?: number;
@@ -75,6 +79,8 @@ export interface CatalogCustomerSource extends CatalogSourceSummary {
 
 export interface CatalogCustomerSummary {
   id: string;
+  /** Business identifier, never the opaque route ID or comparison token. */
+  displayDocument?: string | null;
   name: string;
   state: CatalogCustomerState;
   web: CatalogWebPresence;
@@ -162,7 +168,7 @@ function buildCatalogCustomerDirectoryPage(input: CatalogDirectoryInput, query: 
   const pageSize = positiveInt(query.pageSize, 50, 100);
   const state = query.state ?? "active";
   const web = query.web ?? "in_web";
-  if (!["active", "inactive", "unverified", "all"].includes(state) ||
+  if (!["active", "inactive", "unverified", "active_or_unverified", "all"].includes(state) ||
       !["in_web", "not_in_web", "unverified", "all"].includes(web)) {
     throw new CatalogDirectoryError("invalid_filter");
   }
@@ -175,6 +181,11 @@ function buildCatalogCustomerDirectoryPage(input: CatalogDirectoryInput, query: 
   const search = normalizedSearch(query.search ?? "");
   if (search.length > 200) throw new CatalogDirectoryError("invalid_filter");
   const incompleteErp = selected.some(source => source.state !== "verified");
+  const matchesState = (value: CatalogCustomerState) => state === "all" || state === value ||
+    (state === "active_or_unverified" && value !== "inactive");
+  const matchesSearch = (name: string, id: string, displayDocument: string | null) => !search ||
+    normalizedSearch(name).includes(search) || (!input.showDocuments && normalizedSearch(id).includes(search)) ||
+    (displayDocument !== null && normalizedSearch(displayDocument).replace(/\s/gu, "").includes(search.replace(/\s/gu, "")));
 
   const byCustomerId = new Map<string, Membership[]>();
   const idsByDocument = new Map<string, Set<string>>();
@@ -232,7 +243,9 @@ function buildCatalogCustomerDirectoryPage(input: CatalogDirectoryInput, query: 
       a.source.priority - b.source.priority || compareOrdinal(a.source.sourceId, b.source.sourceId) ||
       compareOrdinal(a.customer.sourceCustomerId, b.customer.sourceCustomerId));
     const name = officialNames[0]?.customer.officialName?.trim();
-    if (!name || (search && !normalizedSearch(name).includes(search) && !normalizedSearch(id).includes(search))) continue;
+    const documents = new Set(memberships.flatMap(member => member.customer.displayDocument ? [member.customer.displayDocument] : []));
+    const displayDocument = input.showDocuments && documents.size === 1 ? [...documents][0] : null;
+    if (!name || !matchesSearch(name, id, displayDocument)) continue;
 
     const memberStates = new Set(memberships.map(member => member.state));
     const customerState: CatalogCustomerState = memberStates.has("active") ? "active" :
@@ -245,7 +258,7 @@ function buildCatalogCustomerDirectoryPage(input: CatalogDirectoryInput, query: 
       if (verifiedWebKeys.has(documentKey)) presence = "in_web";
       else if (!ambiguousWebNumbers.has(doc.number.trim()) && completeScopes.has(scopeKey(doc) ?? "")) presence = "not_in_web";
     }
-    if ((state !== "all" && customerState !== state) || (web !== "all" && presence !== web)) continue;
+    if (!matchesState(customerState) || (web !== "all" && presence !== web)) continue;
 
     const sources = new Map<string, CatalogCustomerSource>();
     for (const member of memberships) {
@@ -253,14 +266,14 @@ function buildCatalogCustomerDirectoryPage(input: CatalogDirectoryInput, query: 
       sources.set(member.source.sourceId, { ...publicSource(member.source),
         state: previous && previous.state !== member.state ? "unverified" : member.state });
     }
-    items.push({ id, name, state: customerState, web: presence,
+    items.push({ id, name, state: customerState, web: presence, ...(input.showDocuments && { displayDocument }),
       sources: [...sources.values()].sort((a, b) => compareLabel(a.label, b.label) || compareOrdinal(a.sourceId, b.sourceId)),
       stateVaries: memberStates.has("active") && memberStates.has("inactive"),
       requiresReconciliation: ambiguousIdentity || new Set(officialNames.map(member => member.customer.officialName?.trim())).size > 1 });
   }
 
   if (input.sag.state === "verified" && query.sourceIds === undefined &&
-      (state === "unverified" || state === "all") && (web === "in_web" || web === "all")) {
+      matchesState("unverified") && (web === "in_web" || web === "all")) {
     const orphanIds = new Set<string>();
     for (const orphan of input.sagOnlyCustomers ?? []) {
       if (!orphan.customerId || !orphan.name.trim() || byCustomerId.has(orphan.customerId) || orphanIds.has(orphan.customerId)) {
@@ -268,8 +281,10 @@ function buildCatalogCustomerDirectoryPage(input: CatalogDirectoryInput, query: 
       }
       orphanIds.add(orphan.customerId);
       if (targetId !== undefined && orphan.customerId !== targetId) continue;
-      if (search && !normalizedSearch(orphan.name).includes(search) && !normalizedSearch(orphan.customerId).includes(search)) continue;
+      const displayDocument = input.showDocuments ? orphan.displayDocument ?? null : null;
+      if (!matchesSearch(orphan.name, orphan.customerId, displayDocument)) continue;
       items.push({ id: orphan.customerId, name: orphan.name.trim(), state: "unverified", web: "in_web",
+        ...(input.showDocuments && { displayDocument }),
         sources: [], stateVaries: false, requiresReconciliation: false, sagOnly: true });
     }
   }
