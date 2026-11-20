@@ -9,7 +9,9 @@ param(
 
   [switch]$IncludeCatalogOwnerPublisher,
 
-  [switch]$IncludeCatalogErpOwnerPublisher
+  [switch]$IncludeCatalogErpOwnerPublisher,
+
+  [switch]$IncludeCatalogObservedInventory
 )
 
 $ErrorActionPreference='Stop'
@@ -18,6 +20,9 @@ if($IncludeCatalogOwnerPublisher -and -not $IncludeCatalog){
 }
 if($IncludeCatalogErpOwnerPublisher -and -not ($IncludeCatalog -and $IncludeCatalogOwnerPublisher)){
   throw 'The ERP owner publisher requires both -IncludeCatalog and -IncludeCatalogOwnerPublisher.'
+}
+if($IncludeCatalogObservedInventory -and -not ($IncludeCatalog -and $IncludeCatalogOwnerPublisher)){
+  throw 'Observed inventory requires both -IncludeCatalog and -IncludeCatalogOwnerPublisher.'
 }
 $repoMigrationRoot=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $sqlDirectory=Join-Path $repoMigrationRoot 'sql'
@@ -119,6 +124,9 @@ if($IncludeCatalog){
   }
   if($IncludeCatalogErpOwnerPublisher){
     $migrations += @{version='065';name='065_catalog_erp_owner_publisher.sql'}
+  }
+  if($IncludeCatalogObservedInventory){
+    $migrations += @{version='066';name='066_catalog_sag_database_names.sql'}
   }
   # Check the entire selected package before submitting its first write.
   foreach($entry in $migrations){
@@ -704,5 +712,27 @@ SELECT CASE WHEN EXISTS(SELECT 1 FROM migration.schema_migrations WHERE migratio
       throw 'Optional ERP owner publisher migration post-verification failed.'
     }
     Write-Host "$expectedDatabase optional ERP owner publisher migration 065 is applied and verified." -ForegroundColor Green
+  }
+  if($IncludeCatalogObservedInventory){
+    $observedVerificationSql=@'
+DECLARE @sidecar int=OBJECT_ID(N'core.catalog_sag_company_database_names',N'U');
+DECLARE @delegate int=DATABASE_PRINCIPAL_ID(N'portal_catalog_v2_owner_delegate');
+DECLARE @inner int=OBJECT_ID(N'settings.catalog_sag_v2_owner_database_names_internal',N'P');
+DECLARE @outer int=OBJECT_ID(N'settings.publish_catalog_sag_v2_owner_with_database_names',N'P');
+SELECT CASE WHEN EXISTS(SELECT 1 FROM migration.schema_migrations WHERE migration_version='066' AND succeeded=1)
+  AND EXISTS(SELECT 1 FROM sys.triggers WHERE object_id=OBJECT_ID(N'core.TR_catalog_sag_company_database_names_guard',N'TR')
+    AND parent_id=@sidecar AND is_disabled=0)
+  AND EXISTS(SELECT 1 FROM sys.sql_modules WHERE object_id=@inner AND execute_as_principal_id=@delegate)
+  AND EXISTS(SELECT 1 FROM sys.sql_modules WHERE object_id=@outer AND execute_as_principal_id IS NULL)
+  AND EXISTS(SELECT 1 FROM sys.database_permissions WHERE class=1 AND major_id=@sidecar AND minor_id=0
+    AND grantee_principal_id=DATABASE_PRINCIPAL_ID(N'portal_runtime') AND state='G' AND permission_name='SELECT')
+  AND NOT EXISTS(SELECT 1 FROM sys.database_permissions WHERE class=1 AND major_id IN (@inner,@outer))
+  THEN 1 ELSE 0 END AS observed_inventory_ready;
+'@
+    $observedVerification=Invoke-SessionSql -Sql $observedVerificationSql -Mode read -TimeoutSeconds 120 -MaxRows 5
+    if($observedVerification.resultSets[0].rows[0].observed_inventory_ready -ne 1){
+      throw 'Optional observed inventory migration post-verification failed.'
+    }
+    Write-Host "$expectedDatabase optional observed inventory migration 066 is applied and verified." -ForegroundColor Green
   }
 }

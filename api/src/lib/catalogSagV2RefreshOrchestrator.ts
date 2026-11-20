@@ -14,6 +14,7 @@ export type CatalogSagV2RefreshInput = Readonly<{
   /** Exact immutable Vault version from which the caller obtained matchKey. */
   vaultSecretVersion: string;
   scopesByCountry: ReadonlyMap<number, Scope>;
+  includeDatabaseNames?: true;
   signal?: AbortSignal;
 }>;
 export type CatalogSagV2RefreshIO = Readonly<{
@@ -62,8 +63,10 @@ const validUuid = (v: unknown): v is string => typeof v === "string" && uuid.tes
 
 function copyInput(input: CatalogSagV2RefreshInput) {
   const required = ["claim", "matchKey", "vaultSecretVersion", "scopesByCountry"] as const;
-  if (!exact(input, Object.hasOwn(input, "signal") ? [...required, "signal"] : required)) return null;
-  const { claim, matchKey, vaultSecretVersion, scopesByCountry, signal } = input;
+  const withNames = Object.hasOwn(input, "includeDatabaseNames");
+  if (!exact(input, [...required, ...(Object.hasOwn(input, "signal") ? ["signal"] : []),
+    ...(withNames ? ["includeDatabaseNames"] : [])])) return null;
+  const { claim, matchKey, vaultSecretVersion, scopesByCountry, signal, includeDatabaseNames } = input;
   if (!exact(claim, claimKeys) || !validUuid(claim.jobId) || !validUuid(claim.workerId) ||
     !validUuid(claim.leaseToken) || !validUuid(claim.sourceId) || !integer(claim.attempt, 1, 5) ||
     (claim.environment !== "qa" && claim.environment !== "production") ||
@@ -72,7 +75,7 @@ function copyInput(input: CatalogSagV2RefreshInput) {
     !integer(claim.matchKeyVersion, 1, 32767) ||
     !Buffer.isBuffer(matchKey) || matchKey.length !== 32 ||
     typeof vaultSecretVersion !== "string" || vaultSecretVersion.length !== 32 || !/^[a-f0-9]{32}$/i.test(vaultSecretVersion) ||
-    (signal !== undefined && !(signal instanceof AbortSignal))) return null;
+    (signal !== undefined && !(signal instanceof AbortSignal)) || (withNames && includeDatabaseNames !== true)) return null;
 
   const scopes = new Map<number, Scope>();
   // Bypass any instance-level iterator override, bound the actual map and copy each data-only value.
@@ -83,7 +86,7 @@ function copyInput(input: CatalogSagV2RefreshInput) {
     scopes.set(name, { issuer: scope.issuer, documentType: scope.documentType });
   }
   return { claim: Object.freeze({ ...claim } as CatalogRefreshClaim), scopes, privateKey: Buffer.from(matchKey),
-    vaultSecretVersion, signal };
+    vaultSecretVersion, signal, includeDatabaseNames };
 }
 
 /** Only read-side work can use this race. The caller of a write must await its result even on abort. */
@@ -215,9 +218,11 @@ export async function runCatalogSagV2Refresh(args: CatalogSagV2RefreshInput, io:
       },
     };
     const discovery = await readCatalogSagDiscoveryV2WithTargets(guarded, { environment: claim.environment,
-      sourceId: claim.sourceId, matchKey: input.privateKey, matchKeyVersion: claim.matchKeyVersion }, { signal });
+      sourceId: claim.sourceId, matchKey: input.privateKey, matchKeyVersion: claim.matchKeyVersion },
+    { signal, includeDatabaseNames: input.includeDatabaseNames });
     if (readState.denied) return readState.denied === "stale" ? stale : unconfirmed;
     if (discovery.status !== "complete" || signal?.aborted) return await fencedFailure();
+    if (input.includeDatabaseNames && discovery.databaseNames === undefined) return await fencedFailure();
 
     const afterRead = await authority(signal);
     if (afterRead.status !== "current") return afterRead.status === "stale" ? stale :
@@ -229,7 +234,9 @@ export async function runCatalogSagV2Refresh(args: CatalogSagV2RefreshInput, io:
     if (signal?.aborted) return await fencedFailure();
 
     // This RPC can commit even if its response is lost or the caller cancels. Nothing may compensate or retry here.
-    const response: unknown = await publisher.publishWithTargets(attemptOrdinal, body, discovery.targetObservations);
+    const response: unknown = input.includeDatabaseNames
+      ? await publisher.publishWithTargets(attemptOrdinal, body, discovery.targetObservations, discovery.databaseNames)
+      : await publisher.publishWithTargets(attemptOrdinal, body, discovery.targetObservations);
     if (!exact(response, ["result", "jobStatus"])) return unconfirmed;
     if (response.result === "published" && response.jobStatus === "succeeded")
       return { outcome: "published", queue: "settled", jobStatus: "succeeded" };

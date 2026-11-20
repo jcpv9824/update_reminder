@@ -72,7 +72,9 @@ function readConfiguration(environment: NodeJS.ProcessEnv) {
     const [issuer, documentType] = scope.split(":");
     scopes.set(countryId, Object.freeze({ issuer, documentType }));
   }
-  return Object.freeze({ environment: configuration.environment, keyVersion: configuration.matchKeyVersion, name, version, scopes, mode });
+  const includeDatabaseNames = mode === "portal-owner" && environment.PORTAL_CATALOG_SAG_DATABASE_NAMES_ENABLED === "true";
+  return Object.freeze({ environment: configuration.environment, keyVersion: configuration.matchKeyVersion, name, version, scopes,
+    mode, includeDatabaseNames });
 }
 
 /** Bound read-side work even when an injected provider ignores cancellation. Never race an RPC write. */
@@ -148,7 +150,8 @@ export async function publishClaimedCatalogSagV2(serverClaim: CatalogRefreshClai
 
     // The actual orchestrator copies and wipes its own key. It rereads the SQL authority before
     // reserving, before and during SNAPSHOT, and before mutation. SQL owns the lease and commit.
-    return await runCatalogSagV2Refresh({ claim, matchKey, vaultSecretVersion: config.version, scopesByCountry: config.scopes, signal: deadline }, {
+    return await runCatalogSagV2Refresh({ claim, matchKey, vaultSecretVersion: config.version, scopesByCountry: config.scopes,
+      ...(config.includeDatabaseNames ? { includeDatabaseNames: true as const } : {}), signal: deadline }, {
       readPinnedSource: (pinned, phaseSignal) => readCurrentBinding(pinned, io, phaseSignal, profileId),
       loadTransport: (binding, phaseSignal) => io.loadTransport(binding, phaseSignal),
       publisherFor: (pinned, keyProof) => createCatalogSagV2WorkerPublisher(pool, { claim: pinned, keyProof }, config.mode),

@@ -6,11 +6,11 @@ import { readSqlCatalogCustomerSnapshots } from "../lib/catalogCustomerSnapshots
 import { createCatalogCustomerInventoryHttp } from "../lib/catalogCustomerInventoryHttp";
 import { readSqlCatalogSagCustomerEvidence } from "../lib/catalogSagCustomerEvidenceSqlRepository";
 import { createCatalogMasterInventoryHttp } from "../lib/catalogMasterInventoryHttp";
-import { readSqlCatalogMasterInventory } from "../lib/catalogMasterInventorySqlRepository";
+import { readSqlCatalogMasterInventory, readSqlCatalogObservedInventory } from "../lib/catalogMasterInventorySqlRepository";
 import { canViewClients, canViewDatabases, canViewDomains, canViewLicensingOption } from "../lib/managementAccess";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import type { CatalogEnvironment } from "../lib/catalogSourceConfiguration";
-import { catalogClientsReadEnabled } from "../lib/catalogReadScope";
+import { catalogClientsReadEnabled, catalogFullReadEnabled, catalogObservedInventoryEnabled } from "../lib/catalogReadScope";
 
 function environment(): CatalogEnvironment {
   const configured = process.env.PORTAL_SAG_ENVIRONMENT?.trim();
@@ -92,7 +92,7 @@ for (const view of ["domains", "licenses"] as const) {
 }
 
 const standalone = createCatalogMasterInventoryHttp({
-  enabled: () => process.env.PORTAL_CATALOG_READ_ENABLED?.trim() === "true",
+  enabled: () => catalogFullReadEnabled() || catalogObservedInventoryEnabled(),
   authorize: async (request, view) => {
     try {
       const actor = await loadUserProfile(await requireUser(request));
@@ -107,7 +107,8 @@ const standalone = createCatalogMasterInventoryHttp({
     }
   },
   readSources: actorId => readAuthorizedCatalogSourceIds({ actorId, environment: environment() }),
-  read: query => readSqlCatalogMasterInventory({ ...query, environment: environment(), matchKeyVersion: matchKeyVersion() }),
+  read: query => (catalogObservedInventoryEnabled() ? readSqlCatalogObservedInventory : readSqlCatalogMasterInventory)(
+    { ...query, environment: environment(), matchKeyVersion: matchKeyVersion() }),
 });
 for (const view of ["domains", "databases", "licenses"] as const) {
   app.http(`catalogMasterInventory_${view}`, {

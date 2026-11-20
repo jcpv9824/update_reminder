@@ -69,7 +69,8 @@ $expected = @(
   '058_catalog_sql_target_instance_enrollment.sql',
   '059_catalog_sag_v2_license_approval.sql',
   '064_catalog_sag_owner_publisher.sql',
-  '065_catalog_erp_owner_publisher.sql'
+  '065_catalog_erp_owner_publisher.sql',
+  '066_catalog_sag_database_names.sql'
 )
 
 $resolvedSqlDirectory = (Resolve-Path -LiteralPath $SqlDirectory).Path
@@ -102,13 +103,14 @@ foreach ($name in $expected) {
   }
 
   if ($parseErrors.Count -eq 0) {
-    if ($name -cin @('064_catalog_sag_owner_publisher.sql','065_catalog_erp_owner_publisher.sql')) {
+    if ($name -cin @('064_catalog_sag_owner_publisher.sql','065_catalog_erp_owner_publisher.sql','066_catalog_sag_database_names.sql')) {
       # The outer parser sees these fixed module definitions only as string
       # literals; independently parse each batch that SQL Server will compile.
       $moduleText=[System.IO.File]::ReadAllText($path)
       $modules=[regex]::Matches($moduleText,"EXEC sys\.sp_executesql N'((?:[^']|'')*)';")
-      if($modules.Count -ne 4){
-        throw "Expected exactly four fixed module definitions in $name."
+      $expectedModules=if($name -ceq '066_catalog_sag_database_names.sql'){3}else{4}
+      if($modules.Count -ne $expectedModules){
+        throw "Expected exactly $expectedModules fixed module definitions in $name."
       }
       foreach($module in $modules){
         $moduleReader=[System.IO.StringReader]::new($module.Groups[1].Value.Replace("''","'"))

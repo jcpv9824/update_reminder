@@ -81,8 +81,10 @@ type DiscoveryResult<T> = { status: "complete"; customers: readonly CatalogSagSo
 export type CatalogSagDiscoveryV2Result = DiscoveryResult<CatalogSagCompanyDiscoveryRecord>;
 export type CatalogSagCompanyTargetObservation = Readonly<{ companyRecordId: number; state: "candidate"; locationToken: string } |
   { companyRecordId: number; state: "unverified"; locationToken: null }>;
+export type CatalogSagDatabaseObservation = Readonly<{ companyRecordId: number; databaseName: string }>;
 export type CatalogSagDiscoveryV2WithTargetsResult = (Extract<CatalogSagDiscoveryV2Result, { status: "complete" }> &
-  { targetObservations: readonly CatalogSagCompanyTargetObservation[] }) | Extract<CatalogSagDiscoveryV2Result, { status: "unavailable" }>;
+  { targetObservations: readonly CatalogSagCompanyTargetObservation[]; databaseNames?: readonly CatalogSagDatabaseObservation[] }) |
+  Extract<CatalogSagDiscoveryV2Result, { status: "unavailable" }>;
 type TargetScope = Readonly<{ environment: CatalogEnvironment; sourceId: string; matchKey: Buffer; matchKeyVersion: number }>;
 
 const textTypes = [167, 175, 231, 239] as const;
@@ -539,9 +541,9 @@ export async function verifyCatalogSagDiscoveryV2Targets(transport: CatalogExter
   return result.status === "complete" ? "verified" : result.reason === "write_access" ? "not_read_only" : "unavailable";
 }
 
-/** One SNAPSHOT; the private location never leaves the observation parser. */
+/** One SNAPSHOT; host and port never leave the observation parser. */
 export async function readCatalogSagDiscoveryV2WithTargets(transport: CatalogExternalSourceTransport,
-  scope: TargetScope, options: CatalogExternalReadOptions = {}): Promise<CatalogSagDiscoveryV2WithTargetsResult> {
+  scope: TargetScope, options: CatalogExternalReadOptions & { includeDatabaseNames?: boolean } = {}): Promise<CatalogSagDiscoveryV2WithTargetsResult> {
   if (!scope || (scope.environment !== "qa" && scope.environment !== "production") ||
     typeof scope.sourceId !== "string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(scope.sourceId) ||
     scope.sourceId === "00000000-0000-0000-0000-000000000000" || !Buffer.isBuffer(scope.matchKey) || scope.matchKey.length !== 32 ||
@@ -556,15 +558,24 @@ export async function readCatalogSagDiscoveryV2WithTargets(transport: CatalogExt
       const companyRecordId = company.companyRecordId;
       if (evidence.status === "unverified") {
         const target: CatalogSagCompanyTargetObservation = { companyRecordId, state: "unverified", locationToken: null };
-        return { company, target };
+        return { company, target, databaseName: null };
       }
       const locationToken = deriveCatalogSagCompanyLocationToken({ ...pins, companyRecordId }, key, evidence);
       if (locationToken === null) throw new Unavailable("invalid_rows");
       const target: CatalogSagCompanyTargetObservation = { companyRecordId, state: "candidate", locationToken };
-      return { company, target };
+      const databaseName = options.includeDatabaseNames === true && company.isAvailable === true &&
+        company.customerRecordId !== null ? evidence.databaseName : null;
+      return { company, target, databaseName };
     }, row => row.company.companyRecordId);
     if (result.status !== "complete") return result;
+    let databaseNames: CatalogSagDatabaseObservation[] | undefined;
+    if (options.includeDatabaseNames === true) {
+      const customerIds = new Set(result.customers.map(customer => customer.sourceRecordId));
+      databaseNames = result.companies.flatMap(row =>
+        row.databaseName !== null && row.company.customerRecordId !== null && customerIds.has(row.company.customerRecordId)
+          ? [{ companyRecordId: row.company.companyRecordId, databaseName: row.databaseName }] : []);
+    }
     return { status: "complete", customers: result.customers, companies: result.companies.map(row => row.company),
-      targetObservations: result.companies.map(row => row.target) };
+      targetObservations: result.companies.map(row => row.target), ...(databaseNames === undefined ? {} : { databaseNames }) };
   } finally { key.fill(0); }
 }

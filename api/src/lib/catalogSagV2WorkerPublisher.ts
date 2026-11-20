@@ -1,5 +1,5 @@
 import sql from "mssql";
-import type { CatalogSagCompanyDiscoveryRecord, CatalogSagCompanyTargetObservation } from "./catalogExternalSourceQueries";
+import type { CatalogSagCompanyDiscoveryRecord, CatalogSagCompanyTargetObservation, CatalogSagDatabaseObservation } from "./catalogExternalSourceQueries";
 import type { CatalogMatchKeyEvidence } from "./catalogMatchKeyEvidence";
 import type { CatalogRefreshClaim } from "./catalogRefreshQueueSqlRepository";
 import { normalizeCatalogSagInventoryEvidence, type CatalogSagInventoryEvidence } from "./catalogSagInventoryEvidence";
@@ -39,6 +39,8 @@ const procedures = {
 const maxRows = 100_000;
 const maxPayloadBytes = 16 * 1024 * 1024;
 const maxTargetsBytes = 24 * 1024 * 1024;
+const maxDatabaseNamesBytes = 40 * 1024 * 1024;
+const publishWithNamesProcedure = "settings.publish_catalog_sag_v2_owner_with_database_names";
 const invalid = (): never => { throw new Error("invalid_catalog_sag_v2_publication"); };
 const failed = (): never => { throw new Error("catalog_sag_v2_publication_failed"); };
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -155,11 +157,12 @@ function preparePayload(value: unknown) {
   } catch { return invalid(); }
 }
 
-function prepareTargets(value: unknown, companyIds: ReadonlySet<number>): string {
+function prepareTargets(value: unknown, companyIds: ReadonlySet<number>, collectCandidates: boolean) {
   try {
     if (!Array.isArray(value) || value.length !== companyIds.size ||
       Reflect.ownKeys(value).length !== value.length + 1) return invalid();
     const entries: string[] = [];
+    const candidates = new Set<number>();
     let last = -Infinity, bytes = 4; // opening/closing brackets in nvarchar
     for (let index = 0; index < value.length; index++) {
       const entry = Object.getOwnPropertyDescriptor(value, index);
@@ -170,13 +173,36 @@ function prepareTargets(value: unknown, companyIds: ReadonlySet<number>): string
       const { companyRecordId, state, locationToken } = row;
       if (state === "candidate" ? typeof locationToken !== "string" || locationToken.length !== 64 || !/^[a-f0-9]{64}$/.test(locationToken)
         : state !== "unverified" || locationToken !== null) return invalid();
+      if (collectCandidates && state === "candidate") candidates.add(companyRecordId);
       last = companyRecordId;
       const json = JSON.stringify({ companyRecordId, state, locationToken });
       bytes += 2 * (json.length + (index === 0 ? 0 : 1));
       if (bytes > maxTargetsBytes) return invalid();
       entries.push(json);
     }
-    return `[${entries.join(",")}]`;
+    return { json: `[${entries.join(",")}]`, candidates };
+  } catch { return invalid(); }
+}
+
+function prepareDatabaseNames(value: unknown, candidates: ReadonlySet<number>): string {
+  try {
+    if (!Array.isArray(value) || value.length > candidates.size || Reflect.ownKeys(value).length !== value.length + 1) return invalid();
+    const rows: CatalogSagDatabaseObservation[] = [];
+    let last = -Infinity;
+    for (let index = 0; index < value.length; index++) {
+      const entry = Object.getOwnPropertyDescriptor(value, index);
+      if (!entry?.enumerable || !Object.hasOwn(entry, "value")) return invalid();
+      const row: unknown = entry.value;
+      if (!exact(row, ["companyRecordId", "databaseName"])) return invalid();
+      const { companyRecordId, databaseName } = row;
+      if (!sqlInt(companyRecordId) || companyRecordId <= last || !candidates.has(companyRecordId) ||
+        typeof databaseName !== "string" || databaseName.length > 128 || databaseName !== databaseName.trim() ||
+        !/^[A-Za-z0-9_. -]+$/.test(databaseName) || !/[A-Za-z0-9]/.test(databaseName)) return invalid();
+      last = companyRecordId;
+      rows.push({ companyRecordId, databaseName });
+    }
+    const json = JSON.stringify(rows);
+    return Buffer.byteLength(json, "utf16le") <= maxDatabaseNamesBytes ? json : invalid();
   } catch { return invalid(); }
 }
 
@@ -206,10 +232,12 @@ export function createCatalogSagV2WorkerPublisher(pool: Pick<sql.ConnectionPool,
   })();
 
   async function rpc<T>(operation: keyof typeof procedures, bind: (request: sql.Request) => sql.Request,
-    decode: (row: unknown) => T): Promise<T> {
+    decode: (row: unknown) => T, withNames = false): Promise<T> {
     try {
       if (mode === "portal-owner" && operation === "publish") return invalid();
-      const procedure = mode === "portal-owner" ? CATALOG_SAG_V2_OWNER_PROCEDURES[operation as keyof typeof CATALOG_SAG_V2_OWNER_PROCEDURES] : procedures[operation];
+      if (withNames && (operation !== "publishWithTargets" || mode !== "portal-owner")) return invalid();
+      const procedure = withNames ? publishWithNamesProcedure :
+        mode === "portal-owner" ? CATALOG_SAG_V2_OWNER_PROCEDURES[operation as keyof typeof CATALOG_SAG_V2_OWNER_PROCEDURES] : procedures[operation];
       const request = pool.request().input("environment", sql.VarChar(32), pins.environment)
         .input("sourceId", sql.UniqueIdentifier, pins.sourceId).input("jobId", sql.UniqueIdentifier, pins.jobId)
         .input("workerId", sql.UniqueIdentifier, pins.workerId).input("leaseToken", sql.UniqueIdentifier, pins.leaseToken)
@@ -241,12 +269,16 @@ export function createCatalogSagV2WorkerPublisher(pool: Pick<sql.ConnectionPool,
       return rpc("publish", request => bindPublication(request, attemptOrdinal, payload), decodePublication);
     },
     async publishWithTargets(attemptOrdinal: string, publication: CatalogSagV2WorkerPublication,
-      targets: readonly CatalogSagCompanyTargetObservation[]): Promise<CatalogSagV2PublishResult> {
-      if (!ordinal(attemptOrdinal)) return invalid();
+      targets: readonly CatalogSagCompanyTargetObservation[],
+      databaseNames?: readonly CatalogSagDatabaseObservation[]): Promise<CatalogSagV2PublishResult> {
+      if (!ordinal(attemptOrdinal) || (databaseNames !== undefined && mode !== "portal-owner")) return invalid();
       const payload = preparePayload(publication);
-      const targetRows = prepareTargets(targets, payload.companyIds);
-      return rpc("publishWithTargets", request => bindPublication(request, attemptOrdinal, payload)
-        .input("targets", sql.NVarChar(sql.MAX), targetRows), decodePublication);
+      const targetRows = prepareTargets(targets, payload.companyIds, databaseNames !== undefined);
+      const names = databaseNames === undefined ? undefined : prepareDatabaseNames(databaseNames, targetRows.candidates);
+      return rpc("publishWithTargets", request => {
+        const bound = bindPublication(request, attemptOrdinal, payload).input("targets", sql.NVarChar(sql.MAX), targetRows.json);
+        return names === undefined ? bound : bound.input("databaseNames", sql.NVarChar(sql.MAX), names);
+      }, decodePublication, names !== undefined);
     },
     async recordFailure(attemptOrdinal: string): Promise<CatalogSagV2FailureResult> {
       if (!ordinal(attemptOrdinal)) return invalid();

@@ -3,7 +3,7 @@ import type { HttpRequest, HttpResponseInit } from "@azure/functions";
 export type CatalogMasterView = "domains" | "databases" | "licenses";
 export type CatalogMasterInventoryRow = Readonly<{
   id: string; customerName: string; name: string;
-  environment: "production" | "test" | "demo" | "unknown"; detail?: string;
+  environment: "production" | "test" | "demo" | "unknown" | "multiple"; detail?: string;
 }>;
 export type CatalogMasterInventoryQuery = Readonly<{ view: CatalogMasterView; page: number; pageSize: number; actorId: string;
   allowedSourceIds: ReadonlySet<string> }>;

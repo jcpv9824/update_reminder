@@ -12,10 +12,11 @@ const VISTAS = {
 } as const;
 
 const AMBIENTES = {
-  production: "Producción", test: "Pruebas", demo: "Demostración", unknown: "Ambiente no verificado",
+  production: "Producción", test: "Pruebas", demo: "Demostración", unknown: "Ambiente no verificado", multiple: "Varios ambientes",
 } as const;
 
 type Vista = keyof typeof VISTAS;
+type Modo = "operativo" | "observado";
 type Inventario = {
   items: { id: string; customerName: string; name: string; environment: keyof typeof AMBIENTES; detail?: string }[];
   state: "verified" | "partial" | "unavailable";
@@ -29,19 +30,26 @@ const TAMANO_PAGINA = 25;
 /** Used only inside the existing per-option permission guard. */
 export default function CatalogoInventarioRoute({ vista, legado }: { vista: Vista; legado: ReactElement }) {
   const auth = useAuth();
-  if (import.meta.env.VITE_PORTAL_CATALOG_READ_ENABLED !== "true") return legado;
+  const modo: Modo | null = import.meta.env.VITE_PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED === "true" ? "observado"
+    : import.meta.env.VITE_PORTAL_CATALOG_READ_ENABLED === "true" ? "operativo" : null;
+  if (modo === null) return legado;
   if (auth.cargando || !auth.usuario) return null;
 
   const alcance = JSON.stringify([auth.usuario.id, [...auth.usuario.roles].sort()]);
-  return <InventarioCatalogo key={JSON.stringify([alcance, vista])} alcance={alcance} vista={vista} />;
+  return <InventarioCatalogo key={JSON.stringify([alcance, vista, modo])} alcance={alcance} vista={vista} modo={modo} />;
 }
 
-function InventarioCatalogo({ alcance, vista }: { alcance: string; vista: Vista }) {
+function InventarioCatalogo({ alcance, vista, modo }: { alcance: string; vista: Vista; modo: Modo }) {
   const [pagina, setPagina] = useState(1);
   const { titulo, columna } = VISTAS[vista];
+  const observado = modo === "observado";
+  const muestraDominio = observado && vista === "databases";
+  const nombreColumna = observado && vista === "licenses" ? "Módulo o código" : columna;
+  const detalleColumna = !observado ? "Detalle" : vista === "licenses" ? "Verificación del módulo" : null;
   const queryClient = useQueryClient();
-  const consultas = { queryKey: ["catalogo-inventario", alcance, vista] };
-  const service = catalogRefreshServiceIfEnabled();
+  const consultas = { queryKey: ["catalogo-inventario", alcance, vista, modo] };
+  // The independent read-only release never queues an import, even if automation is configured.
+  const service = observado ? undefined : catalogRefreshServiceIfEnabled();
   const actualizacion = useCatalogRefresh({
     service,
     scopeKey: alcance,
@@ -80,7 +88,9 @@ function InventarioCatalogo({ alcance, vista }: { alcance: string; vista: Vista 
           Actualizar lista
         </button>
       </div>
-      <p className="texto-ayuda">Catálogo de SAG Web de solo lectura.</p>
+      <p className="texto-ayuda">{observado
+        ? "Datos observados en SAG Admin con el nombre oficial del ERP. Consulta de solo lectura."
+        : "Catálogo de SAG Web de solo lectura."}</p>
       {avisoActualizacion && (
         <p className={`alerta ${accesoDenegado ? "alerta-error" : "alerta-info"}`} role={accesoDenegado ? "alert" : "status"}>
           {avisoActualizacion}
@@ -98,26 +108,30 @@ function InventarioCatalogo({ alcance, vista }: { alcance: string; vista: Vista 
       {disponible && (
         <>
           {disponible.state === "partial" && (
-            <div className="alerta alerta-info" role="status">La información del catálogo está incompleta.</div>
+            <div className="alerta alerta-info" role="status">{observado
+              ? "La información del catálogo está incompleta. Puede haber registros que aún no se pueden confirmar."
+              : "La información del catálogo está incompleta."}</div>
           )}
           <div className="tabla-contenedor">
             <table aria-label={`${titulo} del catálogo`}>
               <thead><tr>
-                <th scope="col">Cliente</th>
-                <th scope="col">{columna}</th>
+                <th scope="col">{observado ? "Cliente (ERP)" : "Cliente"}</th>
+                {muestraDominio && <th scope="col">Dominio</th>}
+                <th scope="col">{nombreColumna}</th>
                 <th scope="col">Ambiente</th>
-                <th scope="col">Detalle</th>
+                {detalleColumna && <th scope="col">{detalleColumna}</th>}
               </tr></thead>
               <tbody>
                 {disponible.items.length ? disponible.items.map((fila) => (
                   <tr key={fila.id}>
                     <td>{fila.customerName}</td>
+                    {muestraDominio && <td>{fila.detail ?? "Dominio no verificado"}</td>}
                     <th scope="row">{fila.name}</th>
                     <td>{AMBIENTES[fila.environment] ?? AMBIENTES.unknown}</td>
-                    <td>{fila.detail ?? "—"}</td>
+                    {detalleColumna && <td>{fila.detail ?? "—"}</td>}
                   </tr>
                 )) : (
-                  <tr><td colSpan={4} className="vacio">
+                  <tr><td colSpan={muestraDominio || detalleColumna ? 4 : 3} className="vacio">
                     {disponible.state === "partial" || pagina > 1
                       ? "No hay registros confirmados en esta página."
                       : "No hay registros para mostrar."}

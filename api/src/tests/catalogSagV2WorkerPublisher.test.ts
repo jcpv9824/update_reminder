@@ -73,6 +73,24 @@ describe("dedicated SAG v2 worker publication adapter", () => {
     await expect(publisher.publishWithTargets(ordinal, payload(), [observedTarget])).rejects.toEqual(new Error(failed));
     expect(io.execute.mock.calls).toEqual([["settings.publish_catalog_sag_v2_owner_with_targets"]]);
   });
+
+  it("binds safe database names only to the explicit owner RPC, never to the legacy or dedicated RPC", async () => {
+    const io = fake();
+    const named = [{ companyRecordId: 1, databaseName: "Fixture_DB-1" }];
+    await expect(io.publisher().publishWithTargets(ordinal, payload(), [observedTarget], named)).rejects.toThrow(invalid);
+    const owner = createCatalogSagV2WorkerPublisher(io.pool, { claim, keyProof: proof() }, "portal-owner");
+    for (const rows of [[...named, ...named], [{ ...named[0], companyRecordId: 2 }],
+      [{ ...named[0], databaseName: "  " }], [{ ...named[0], databaseName: "Server=not-safe" }]]) {
+      await expect(owner.publishWithTargets(ordinal, payload(), [observedTarget], rows)).rejects.toThrow(invalid);
+    }
+    await expect(owner.publishWithTargets(ordinal, payload(), [{ companyRecordId: 1, state: "unverified", locationToken: null }], named))
+      .rejects.toThrow(invalid);
+    expect(io.request).not.toHaveBeenCalled();
+    io.execute.mockResolvedValueOnce(resultSet(success));
+    await expect(owner.publishWithTargets(ordinal, payload(), [observedTarget], named)).resolves.toEqual(success);
+    expect(io.execute.mock.calls).toEqual([["settings.publish_catalog_sag_v2_owner_with_database_names"]]);
+    expect(io.requests[0].input).toHaveBeenCalledWith("databaseNames", sql.NVarChar(sql.MAX), JSON.stringify(named));
+  });
   it("publishes the exact bounded Company observation set exclusively through the 055 RPC", async () => {
     const io = fake(), publisher = io.publisher();
     const second = Object.freeze({ ...company, companyRecordId: -2 });

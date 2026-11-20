@@ -33,6 +33,17 @@ describe("SAG Admin v2 metadata discovery", () => {
     matchKey: Buffer.alloc(32, 15), matchKeyVersion: 2 };
   const locator = { targetState: "candidate", targetHost: "fixture.example.invalid", targetPort: 54100, targetDatabaseName: "Fixture" };
 
+  it("optionally retains only the safe database name for available and linked companies", async () => {
+    const io = fake([ok, counts("1", "3"), [customer(1)], [
+      { ...company(7, 1), ...locator },
+      { ...company(8, 1, false), ...locator, targetDatabaseName: "Inactive" },
+      { ...company(9, null), ...locator, targetDatabaseName: "Orphan" },
+    ]]);
+    const result = await readCatalogSagDiscoveryV2WithTargets(io.transport, targetScope, { includeDatabaseNames: true });
+    expect(result).toMatchObject({ status: "complete", databaseNames: [{ companyRecordId: 7, databaseName: "Fixture" }] });
+    expect(JSON.stringify(result)).not.toMatch(/fixture\.example\.invalid|54100|Inactive|Orphan/);
+  });
+
   it("protects the target of every Company in the same snapshot without returning locations or writing legacy evidence", async () => {
     const io = fake([ok, counts("1", "3"), [customer(1)], [
       { ...company(7, 1), ...locator },

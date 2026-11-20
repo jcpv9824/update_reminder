@@ -73,6 +73,7 @@ describe("Vistas independientes del catálogo", () => {
 
   it.each(routes)("%s conserva su fuente heredada con la opción desactivada", async (path, _label, _view, permission, legacy) => {
     vi.stubEnv("VITE_PORTAL_CATALOG_READ_ENABLED", "false");
+    vi.stubEnv("VITE_PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED", "false");
     vi.stubEnv("VITE_PORTAL_CATALOG_CLIENTS_READ_ENABLED", "true");
     vi.stubEnv("VITE_PORTAL_CATALOG_AUTOMATION_ENABLED", "true");
     mockRequests(permission, () => { throw new Error("No debe consultar el catálogo"); });
@@ -83,13 +84,71 @@ describe("Vistas independientes del catálogo", () => {
     expect(post).not.toHaveBeenCalled();
   });
 
+  const observedRows = {
+    domains: { name: "ejemplo.sagweb.co", heading: "Dominio" },
+    databases: { name: "EMPRESA_WEB", heading: "Base de datos", detail: "ejemplo.sagweb.co", detailHeading: "Dominio" },
+    licenses: { name: "Código X", heading: "Módulo o código", detail: "Correspondencia no verificada", detailHeading: "Verificación del módulo" },
+  };
+
+  it.each(routes)("%s consulta observaciones sin activar el inventario operativo ni encolar importaciones", async (path, label, view, permission, legacy) => {
+    vi.stubEnv("VITE_PORTAL_CATALOG_READ_ENABLED", "false");
+    vi.stubEnv("VITE_PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED", "true");
+    vi.stubEnv("VITE_PORTAL_CATALOG_AUTOMATION_ENABLED", "true");
+    const record = observedRows[view];
+    mockRequests(permission, () => page("partial", [{
+      id: "observacion", customerName: "Nombre oficial ERP", name: record.name, environment: "unknown",
+      ...("detail" in record ? { detail: record.detail } : {}),
+      user: "dato-excluido", password: "valor-excluido",
+    }]));
+    renderRoute(path);
+    const table = await screen.findByRole("table", { name: `${label} del catálogo` });
+    expect(screen.getByText(/SAG Admin.*ERP.*solo lectura/i)).toBeInTheDocument();
+    expect(screen.getByText(/La información del catálogo está incompleta.*no se pueden confirmar/i)).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Cliente (ERP)" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: record.heading })).toBeInTheDocument();
+    expect(table).toHaveTextContent("Nombre oficial ERP");
+    expect(table).toHaveTextContent(record.name);
+    expect(table).toHaveTextContent("Ambiente no verificado");
+    if ("detail" in record) {
+      expect(screen.getByRole("columnheader", { name: record.detailHeading })).toBeInTheDocument();
+      expect(table).toHaveTextContent(record.detail);
+    }
+    expect(table).not.toHaveTextContent(/dato-excluido|valor-excluido/);
+    expect(screen.queryByRole("button", { name: /Crear|Nuevo|Editar|Eliminar|Desactivar|Copiar|Conexión|Contraseña/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Actualizar lista" }));
+    await waitFor(() => expect(get.mock.calls.filter(([request]) => request.startsWith("/catalog/inventory/"))).toHaveLength(2));
+    expect(get.mock.calls.some(([request]) => request.startsWith(legacy) || request.startsWith("/catalog/refresh"))).toBe(false);
+    expect(post).not.toHaveBeenCalled();
+  });
+
   it.each(routes)("%s rechaza el acceso directo sin el permiso de la vista", async (path) => {
-    vi.stubEnv("VITE_PORTAL_CATALOG_READ_ENABLED", "true");
+    vi.stubEnv("VITE_PORTAL_CATALOG_READ_ENABLED", "false");
+    vi.stubEnv("VITE_PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED", "true");
     mockRequests("clients.clients.view", () => { throw new Error("No debe consultar el catálogo"); });
     renderRoute(path);
     expect(await screen.findByRole("heading", { name: "No autorizado" })).toBeInTheDocument();
     await waitFor(() => expect(get).toHaveBeenCalledWith("/roles"));
     expect(get.mock.calls.some(([request]) => request.startsWith("/catalog/inventory/"))).toBe(false);
+  });
+
+  it("muestra la misma base como relaciones separadas para clientes y dominios distintos", async () => {
+    vi.stubEnv("VITE_PORTAL_CATALOG_READ_ENABLED", "true");
+    vi.stubEnv("VITE_PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED", "true");
+    vi.stubEnv("VITE_PORTAL_CATALOG_AUTOMATION_ENABLED", "true");
+    const relations = [
+      { id: "a-web", customerName: "Cliente A", detail: "web.ejemplo.test", environment: "multiple", label: "Varios ambientes" },
+      { id: "b-web", customerName: "Cliente B", detail: "web.ejemplo.test", environment: "production", label: "Producción" },
+      { id: "a-otro", customerName: "Cliente A", detail: "otro.ejemplo.test", environment: "production", label: "Producción" },
+    ];
+    mockRequests("clients.databases.view", () => page("verified", relations.map(row => ({
+      ...row, name: "EMPRESA_WEB",
+    }))));
+    renderRoute("/bases-de-datos");
+    await screen.findByRole("table", { name: "Bases de Datos del catálogo" });
+    for (const row of relations) {
+      expect(screen.getByRole("row", { name: `${row.customerName} ${row.detail} EMPRESA_WEB ${row.label}` })).toBeInTheDocument();
+    }
+    expect(post).not.toHaveBeenCalled();
   });
 
   it("distingue vacío verificado, cobertura parcial, indisponibilidad y error de lectura", async () => {
@@ -143,6 +202,7 @@ describe("Vistas independientes del catálogo", () => {
 
   it.each(routes)("%s encola al abrir con solo permiso de lectura y aborta al salir", async (path, label, _view, permission) => {
     vi.stubEnv("VITE_PORTAL_CATALOG_READ_ENABLED", "true");
+    vi.stubEnv("VITE_PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED", "false");
     vi.stubEnv("VITE_PORTAL_CATALOG_AUTOMATION_ENABLED", "true");
     mockRequests(permission, () => page());
     post.mockImplementation(() => new Promise(() => {}));

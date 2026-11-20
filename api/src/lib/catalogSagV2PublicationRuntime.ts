@@ -26,7 +26,7 @@ function pins(env: NodeJS.ProcessEnv) {
   if (!pool || pool.environment !== queue.environment) return null;
   const poolKey = JSON.stringify(pool);
   const policyKey = JSON.stringify([poolKey, queue.matchKeyVersion, env.PORTAL_CATALOG_MATCH_KEY_SECRET_NAME,
-    env.PORTAL_CATALOG_MATCH_KEY_SECRET_VERSION, env.PORTAL_CATALOG_SAG_ISSUER_MAP]);
+    env.PORTAL_CATALOG_MATCH_KEY_SECRET_VERSION, env.PORTAL_CATALOG_SAG_ISSUER_MAP, env.PORTAL_CATALOG_SAG_DATABASE_NAMES_ENABLED]);
   return { pool, poolKey, policyKey };
 }
 

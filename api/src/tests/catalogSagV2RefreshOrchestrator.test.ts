@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { catalogDocumentNumberToken } from "../lib/catalogCustomerRefresh";
 import { buildCatalogMatchKeyEvidence, type CatalogMatchKeyEvidence } from "../lib/catalogMatchKeyEvidence";
-import type { CatalogExternalReadStatement, CatalogExternalSourceTransport, CatalogSagCompanyTargetObservation } from "../lib/catalogExternalSourceQueries";
+import type { CatalogExternalReadStatement, CatalogExternalSourceTransport, CatalogSagCompanyTargetObservation,
+  CatalogSagDatabaseObservation } from "../lib/catalogExternalSourceQueries";
 import type { SqlCatalogSourceBinding } from "../lib/catalogSourceBindingsSqlRepository";
 import type { CatalogRefreshClaim } from "../lib/catalogRefreshQueueSqlRepository";
 import type { CatalogSagV2FailureResult, CatalogSagV2PublishResult, CatalogSagV2Reservation,
@@ -69,7 +70,8 @@ function harness(observedAt = new Date("2026-11-18T05:00:00.000Z")) {
     events.push("reserve"); return { attemptOrdinal: "908", observedAt };
   });
   const publish = vi.fn(async (_ordinal: string, _body: CatalogSagV2WorkerPublication,
-    _targets: readonly CatalogSagCompanyTargetObservation[]): Promise<CatalogSagV2PublishResult> => {
+    _targets: readonly CatalogSagCompanyTargetObservation[],
+    _names?: readonly CatalogSagDatabaseObservation[]): Promise<CatalogSagV2PublishResult> => {
     events.push("publish"); return { result: "published", jobStatus: "succeeded" };
   });
   const recordFailure = vi.fn(async (_ordinal: string): Promise<CatalogSagV2FailureResult> => {
@@ -82,6 +84,23 @@ function harness(observedAt = new Date("2026-11-18T05:00:00.000Z")) {
 }
 
 describe("SAG v2 dedicated refresh worker", () => {
+  it("publishes a safe catalog name with the target in an opted-in claim without exporting the locator", async () => {
+    const h = harness();
+    const { targetDatabaseName, targetHost } = { targetDatabaseName: "Fixture_DB", targetHost: "sql.synthetic.invalid" };
+    h.raw.companyPage = [
+      { ...companies[0], customerRecordId: 1, isAvailable: true, targetState: "candidate", targetHost,
+        targetPort: 54100, targetDatabaseName },
+      { ...companies[1], targetState: "unverified", targetHost: null, targetPort: null, targetDatabaseName: null },
+    ];
+    expect(await runCatalogSagV2Refresh({ ...h.input, includeDatabaseNames: true }, h.io))
+      .toMatchObject({ outcome: "published", queue: "settled" });
+    expect(h.publish).toHaveBeenCalledTimes(1);
+    const [[, payload, targets, names]] = h.publish.mock.calls;
+    expect(names).toEqual([{ companyRecordId: 1, databaseName: targetDatabaseName }]);
+    expect(JSON.stringify({ payload, targets, names })).not.toContain(targetHost);
+    expect(JSON.stringify({ payload, targets, names })).not.toContain("54100");
+  });
+
   it("uses bounded v2 SNAPSHOT and the reserved stamp, with exact protected rows and all companies", async () => {
     const h = harness();
     expect(await runCatalogSagV2Refresh(h.input, h.io)).toEqual({ outcome: "published", queue: "settled", jobStatus: "succeeded" });

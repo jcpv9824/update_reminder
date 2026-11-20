@@ -2,6 +2,20 @@
 
 Este avance no habilita el catálogo. Es independiente del corte de almacenamiento.
 
+## Dominios, Bases de Datos y Licenciamiento de solo consulta
+
+El modo de inventario observado cruza los clientes de las fuentes ERP autorizadas con una revisión vigente de SAG Admin v2, por país emisor, tipo de documento y coincidencia protegida del documento. Muestra el nombre oficial del ERP, también para clientes inactivos que sí coinciden. No da de alta clientes, dominios, bases ni licencias, no modifica el catálogo operativo y no amplía los permisos de navegación existentes.
+
+- **Dominios:** una fila por cliente y dominio. Si dos clientes comparten host, cada uno conserva su relación.
+- **Bases de Datos:** una fila por cliente, dominio y nombre observado de la base, sin colapsar vínculos entre clientes o dominios distintos. Un dominio o una base que aparece en varios ambientes verificados se muestra como tal. No se usa el nombre de la compañía para inferir el nombre de la base.
+- **Licenciamiento:** usa la descripción si existe una correspondencia vigente aprobada; si no, muestra el código que reporta SAG Admin. No infiere que el módulo esté instalado en una base concreta ni lo habilita como filtro operativo.
+
+La migración opcional 066 guarda únicamente nombres validados y asociados a registros disponibles del mismo lote de SAG Admin. No guarda host SQL, puerto, usuario, contraseña ni cadena de conexión. No escribe en SAG Admin ni en las bases de clientes. Las revisiones anteriores no se rellenan: Bases de Datos puede aparecer parcial hasta que el refresco habitual publique una revisión nueva. La consulta de estas pantallas solo hace GET; «Actualizar lista» vuelve a leer el Portal y no encola importaciones. No se necesitan perfiles de conteo, destinos físicos aprobados ni cambios en tareas o programaciones.
+
+**Ensayo y activación:** aplicar 066 con `-IncludeCatalog -IncludeCatalogOwnerPublisher -IncludeCatalogObservedInventory` en QA; comprobar que la repetición no duplique cambios. Publicar el API y establecer `PORTAL_CATALOG_SAG_DATABASE_NAMES_ENABLED=true` únicamente con modo SAG `portal-owner`. Verificar una revisión nueva con nombres y respuestas válidas en `/catalog/inventory/{domains,databases,licenses}` con y sin permisos. Activar `PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED=true` en el API y `VITE_PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED=true` al compilar el frontend; el modo observado prevalece solo en estas tres pantallas si también está habilitado el catálogo completo. El flujo de Static Web Apps toma la bandera de una variable de GitHub del mismo nombre que el ajuste del API y la mantiene apagada si la variable no existe. Repetir en producción únicamente con autorización y respaldo verificado. Para desactivar, volver a publicar el frontend sin la bandera y después retirar las dos banderas del API. No borrar el historial de revisiones ni la migración aplicada.
+
+## Historial de integración
+
 La primera ejecución del paquete de esquema en `PortalSAGWeb-TEST` registró las cinco migraciones 031–035 y pasó la verificación del ejecutor. Una consulta posterior de solo lectura confirmó 0 fuentes activas, 0 revisiones publicadas y 0 nuevas ejecuciones de tareas. No se publicó el API de QA ni se modificó producción.
 
 La migración 036 también quedó aplicada y verificada en `PortalSAGWeb-TEST`. El ensayo `migration/tools/Test-CatalogPhysicalTargetsQa.ps1` usó la consulta real del registro dentro de una transacción revertida: dos vínculos resolvieron un único destino web y SQL respectivamente, volver al valor anterior no reactivó una prueba de ruta/perfil, y quedaron cero filas de prueba. No se abrieron conexiones a bases de clientes ni se activó el programador.

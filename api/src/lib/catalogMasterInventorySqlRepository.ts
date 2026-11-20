@@ -1,19 +1,23 @@
 import sql from "mssql";
 import { runSqlTransaction } from "./sqlTransaction";
 import type { CatalogEnvironment } from "./catalogSourceConfiguration";
-import type { CatalogMasterInventoryQuery, CatalogMasterInventoryResult, CatalogMasterInventoryRow } from "./catalogMasterInventoryHttp";
+import type { CatalogMasterInventoryQuery, CatalogMasterInventoryResult, CatalogMasterInventoryRow, CatalogMasterView } from "./catalogMasterInventoryHttp";
 import { catalogSagPositiveLicenseRevisionSql } from "./catalogSagPositiveLicenseSql";
 
-// Only the small allowlisted projection leaves SQL. Source/document lineage
-// stays in the database and a held relationship never becomes a public row.
-export const readCatalogMasterInventorySql = `
+const observedSagRevisionSql = `(r.sealed_at IS NOT NULL AND r.has_sag_inventory_evidence=1
+    AND b.contract_version COLLATE Latin1_General_100_BIN2='sag_admin_v2'
+    AND r.expected_sag_company_rows IS NOT NULL AND DATALENGTH(b.contract_version)=12)`;
+
+const inventoryHeadsSql = (observed: boolean) => `
 SET NOCOUNT ON;
 DECLARE @now datetime2(7)=SYSUTCDATETIME(), @partial bit=0, @unavailable bit=0;
 DECLARE @allowed table (source_key bigint PRIMARY KEY);
 INSERT @allowed
 SELECT b.catalog_source_key
 FROM settings.catalog_source_bindings b
-JOIN security.users u ON u.source_id=@actorId AND u.active=1
+JOIN security.users u ON u.source_id=@actorId AND u.active=1${observed ? `
+  AND u.source_id COLLATE Latin1_General_100_BIN2=@actorId COLLATE Latin1_General_100_BIN2
+  AND DATALENGTH(u.source_id)=DATALENGTH(@actorId)` : ""}
 WHERE b.portal_environment=@environment AND b.source_role='erp-customers' AND b.source_state='active'
   AND EXISTS(SELECT 1 FROM OPENJSON(@sourceIds) ids WHERE TRY_CONVERT(uniqueidentifier,ids.[value])=b.source_id)
   AND (EXISTS(SELECT 1 FROM security.catalog_source_readers r
@@ -40,17 +44,20 @@ JOIN core.catalog_customer_source_revisions r ON r.revision_key=h.revision_key A
 WHERE b.portal_environment=@environment AND b.source_state='active' AND b.validated_at<=@now
   AND ((b.source_role='erp-customers' AND b.contract_version='erp_v1'
     AND EXISTS(SELECT 1 FROM @allowed a WHERE a.source_key=b.catalog_source_key))
-    OR (@view='licenses' AND b.source_role='sag-admin' AND ${catalogSagPositiveLicenseRevisionSql}));
+    OR (${observed ? "" : "@view='licenses' AND "}b.source_role='sag-admin' AND ${observed ? observedSagRevisionSql : catalogSagPositiveLicenseRevisionSql}));
 
 IF (SELECT COUNT(*) FROM @heads WHERE source_role='erp-customers')<>(SELECT COUNT(*) FROM @allowed) SET @partial=1;
 IF NOT EXISTS(SELECT 1 FROM @heads WHERE source_role='erp-customers')
-  OR (@view='licenses' AND ((SELECT COUNT(*) FROM @heads WHERE source_role='sag-admin')<>1
+  OR (${observed ? "" : "@view='licenses' AND "}((SELECT COUNT(*) FROM @heads WHERE source_role='sag-admin')<>1
     OR (SELECT COUNT(*) FROM settings.catalog_source_bindings WHERE portal_environment=@environment
       AND source_role='sag-admin' AND source_state='active')<>1))
   SET @unavailable=1;
 
 DECLARE @rows table(id char(64) NOT NULL PRIMARY KEY, customerName nvarchar(512) NOT NULL, name nvarchar(500) NOT NULL,
   environment varchar(20) NOT NULL, detail nvarchar(500) NULL);
+`;
+
+const operationalInventorySql = `
 IF @unavailable=0 AND @view IN ('domains','databases')
 BEGIN
   IF EXISTS(SELECT 1 FROM core.catalog_operational_link_evidence e JOIN @allowed a ON a.source_key=e.catalog_source_key
@@ -93,8 +100,11 @@ BEGIN
     CASE WHEN @view='databases' THEN parentDomain ELSE NULL END
   FROM approved WHERE ordinal=1 AND itemName IS NOT NULL;
 END;
-IF @unavailable=0 AND @view='licenses'
-BEGIN
+`;
+
+const canonicalErpInventorySql = (observed: boolean) => {
+  const eligible = (alias: string) => observed ? `${alias}.active_code IN ('S','N')` : `${alias}.active_code='S'`;
+  return `
   DECLARE @members table(customer_key bigint,issuer char(2) COLLATE Latin1_General_100_BIN2,
     document_type varchar(32) COLLATE Latin1_General_100_BIN2,token binary(32),name nvarchar(512),
     source_key bigint,source_order char(36) COLLATE Latin1_General_100_BIN2,
@@ -106,14 +116,14 @@ BEGIN
   JOIN settings.catalog_source_bindings b ON b.catalog_source_key=h.source_key
   WHERE h.source_role='erp-customers';
   IF @@ROWCOUNT>50000 THROW 54976,N'Catalog inventory bounds exceeded.',1;
-  IF EXISTS(SELECT 1 FROM @members WHERE active_code='S' AND (issuer IS NULL OR document_type IS NULL OR token IS NULL OR name IS NULL))
+  IF EXISTS(SELECT 1 FROM @members e WHERE ${eligible("e")} AND (issuer IS NULL OR document_type IS NULL OR token IS NULL OR name IS NULL))
     SET @partial=1;
   DECLARE @named table (customer_key bigint PRIMARY KEY,issuer char(2) COLLATE Latin1_General_100_BIN2,
     document_type varchar(32) COLLATE Latin1_General_100_BIN2,token binary(32),name nvarchar(512));
   ;WITH named AS (
-    SELECT m.*,ROW_NUMBER() OVER(PARTITION BY m.customer_key ORDER BY m.source_order,m.source_row_order) AS ordinal
+    SELECT m.*,ROW_NUMBER() OVER(PARTITION BY m.customer_key ORDER BY ${observed ? "CASE WHEN m.active_code='S' THEN 0 ELSE 1 END," : ""}m.source_order,m.source_row_order) AS ordinal
     FROM @members m
-    WHERE m.active_code='S' AND m.issuer IS NOT NULL AND m.document_type IS NOT NULL AND m.token IS NOT NULL
+    WHERE ${eligible("m")} AND m.issuer IS NOT NULL AND m.document_type IS NOT NULL AND m.token IS NOT NULL
       AND DATALENGTH(m.name)>0
       AND NOT EXISTS(SELECT 1 FROM @members x WHERE x.customer_key=m.customer_key
         AND (x.issuer IS NULL OR x.document_type IS NULL OR x.token IS NULL
@@ -124,16 +134,20 @@ BEGIN
         GROUP BY x.source_key HAVING COUNT_BIG(*)>1)
   )
   INSERT @named SELECT customer_key,issuer,document_type,token,name FROM named WHERE ordinal=1;
-  IF (SELECT COUNT(*) FROM @named)<>(SELECT COUNT(DISTINCT customer_key) FROM @members WHERE active_code='S')
+  IF (SELECT COUNT(*) FROM @named)<>(SELECT COUNT(DISTINCT customer_key) FROM @members e WHERE ${eligible("e")})
     SET @partial=1;
+`;
+};
+
+const licenseInventorySql = (observed: boolean) => `
   IF EXISTS(
     SELECT 1 FROM @named n
     JOIN @heads h ON h.source_role='sag-admin'
-    WHERE NOT EXISTS(SELECT 1 FROM core.catalog_customer_revision_rows s
+    WHERE ${observed ? "" : `NOT EXISTS(SELECT 1 FROM core.catalog_customer_revision_rows s
       JOIN core.catalog_sag_revision_evidence d ON d.revision_key=s.revision_key AND d.source_record_id=s.source_record_id
       WHERE s.revision_key=h.revision_key AND s.issuer=n.issuer AND s.document_type=n.document_type
         AND s.document_number_token=n.token)
-    OR EXISTS(SELECT 1 FROM core.catalog_customer_revision_rows s
+    OR `}EXISTS(SELECT 1 FROM core.catalog_customer_revision_rows s
       LEFT JOIN core.catalog_sag_revision_evidence d ON d.revision_key=s.revision_key AND d.source_record_id=s.source_record_id
       WHERE s.revision_key=h.revision_key AND s.document_number_token=n.token
         AND (s.issuer IS NULL OR (s.issuer=n.issuer AND s.document_type=n.document_type
@@ -160,11 +174,15 @@ BEGIN
         AND x.issuer IS NULL AND x.document_number_token=n.token)
   )
   INSERT @rows
-  SELECT TOP (5001) LOWER(CONVERT(char(64),HASHBYTES('SHA2_256',CONCAT('license:',customer_key,':',environment_kind,':',code)),2)),
-    customerName,licenseName,environment_kind,detail FROM items;
+  SELECT TOP (5001) LOWER(CONVERT(char(64),HASHBYTES('SHA2_256',CONCAT(${observed
+    ? "'observed-license:',CONVERT(char(36),catalogIdentity.customer_id)" : "'license:',customer_key"},':',environment_kind,':',code)),2)),
+    customerName,licenseName,environment_kind,detail FROM items${observed
+      ? " JOIN core.catalog_customer_ids catalogIdentity ON catalogIdentity.catalog_customer_key=items.customer_key" : ""};
   -- No absence claim for incomplete license evidence, including unrecognized codes.
   IF EXISTS(SELECT 1 FROM @rows WHERE detail IS NOT NULL OR environment='unknown') SET @partial=1;
-END;
+`;
+
+const inventoryResultSql = `
 DECLARE @total int=(SELECT COUNT(*) FROM @rows);
 IF @total>5000 THROW 54976,N'Catalog inventory bounds exceeded.',1;
 SELECT @total AS total,CASE WHEN @unavailable=1 THEN 'unavailable'
@@ -173,9 +191,129 @@ SELECT id,customerName,name,environment,detail FROM @rows
 ORDER BY customerName,name,environment,id OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY;
 `;
 
-export async function readSqlCatalogMasterInventory(scope: CatalogMasterInventoryQuery & {
-  actorId: string; environment: CatalogEnvironment; matchKeyVersion: number;
-}): Promise<CatalogMasterInventoryResult> {
+// Only the small allowlisted projection leaves SQL. Source/document lineage
+// stays in the database and a held relationship never becomes a public row.
+export const readCatalogMasterInventorySql = `${inventoryHeadsSql(false)}${operationalInventorySql}
+IF @unavailable=0 AND @view='licenses'
+BEGIN
+  ${canonicalErpInventorySql(false)}${licenseInventorySql(false)}
+END;
+${inventoryResultSql}`;
+
+const observedDomainAndDatabaseSql = `
+  DECLARE @sagMatches table (customer_key bigint, customerName nvarchar(512) NOT NULL, revision_key bigint NOT NULL,
+    source_record_id int NOT NULL, observedHost varchar(253) COLLATE Latin1_General_100_BIN2 NULL,
+    environment varchar(20) NOT NULL, PRIMARY KEY(customer_key,revision_key,source_record_id));
+  INSERT @sagMatches
+  SELECT TOP (50001) n.customer_key,n.name,h.revision_key,s.source_record_id,d.domain_candidate,d.environment_kind
+  FROM @named n
+  JOIN @heads h ON h.source_role='sag-admin'
+  JOIN core.catalog_customer_revision_rows s ON s.revision_key=h.revision_key AND s.issuer=n.issuer
+    AND s.document_type=n.document_type AND s.document_number_token=n.token
+  JOIN core.catalog_sag_revision_evidence d ON d.revision_key=s.revision_key AND d.source_record_id=s.source_record_id
+  WHERE NOT EXISTS(SELECT 1 FROM core.catalog_customer_revision_rows x WHERE x.revision_key=h.revision_key
+    AND x.issuer IS NULL AND x.document_number_token=n.token);
+  IF @@ROWCOUNT>50000 THROW 54976,N'Catalog inventory bounds exceeded.',1;
+  -- Incomplete observations never prove that domains or databases were absent.
+  IF EXISTS(SELECT 1 FROM @named n JOIN @heads h ON h.source_role='sag-admin'
+    JOIN core.catalog_customer_revision_rows s ON s.revision_key=h.revision_key AND s.document_number_token=n.token
+    LEFT JOIN core.catalog_sag_revision_evidence d ON d.revision_key=s.revision_key AND d.source_record_id=s.source_record_id
+    WHERE s.issuer IS NULL OR (s.issuer=n.issuer AND s.document_type=n.document_type AND d.source_record_id IS NULL))
+    OR EXISTS(SELECT 1 FROM @sagMatches WHERE observedHost IS NULL OR environment='unknown')
+    SET @partial=1;
+
+  IF @view='domains'
+  BEGIN
+    ;WITH items AS (
+      SELECT customer_key,customerName,observedHost,
+        CASE WHEN MIN(environment)=MAX(environment) THEN MIN(environment)
+          WHEN COUNT(DISTINCT CASE WHEN environment<>'unknown' THEN environment END)>1 THEN 'multiple'
+          ELSE 'unknown' END AS environment
+      FROM @sagMatches WHERE observedHost IS NOT NULL
+      GROUP BY customer_key,customerName,observedHost
+    )
+    INSERT @rows
+    SELECT TOP (5001) LOWER(CONVERT(char(64),HASHBYTES('SHA2_256',CONCAT('observed-domain:',
+      CONVERT(char(36),catalogIdentity.customer_id),':',observedHost)),2)),customerName,observedHost,environment,NULL
+    FROM items JOIN core.catalog_customer_ids catalogIdentity ON catalogIdentity.catalog_customer_key=items.customer_key;
+  END;
+
+  IF @view='databases'
+  BEGIN
+    -- Exact fresh v2 head plus the approved-name sidecar. The sidecar is
+    -- written atomically by the sealed location publisher and does not expose
+    -- the location token, SQL endpoint, or Company display label.
+    IF EXISTS(SELECT 1 FROM @sagMatches m JOIN core.catalog_sag_company_revision_rows c
+      ON c.revision_key=m.revision_key AND c.customer_record_id=m.source_record_id
+      LEFT JOIN core.catalog_sag_company_database_names databaseNames ON databaseNames.revision_key=c.revision_key
+        AND databaseNames.company_record_id=c.company_record_id
+      WHERE c.is_available IS NULL OR (c.is_available=1 AND databaseNames.database_name IS NULL))
+      SET @partial=1;
+    ;WITH items AS (
+      SELECT m.customer_key,m.customerName,m.observedHost,
+        CASE WHEN MIN(m.environment)=MAX(m.environment) THEN MIN(m.environment)
+          WHEN COUNT(DISTINCT CASE WHEN m.environment<>'unknown' THEN m.environment END)>1 THEN 'multiple'
+          ELSE 'unknown' END AS environment,
+        LOWER(databaseNames.database_name COLLATE Latin1_General_100_BIN2) AS normalizedDatabase,
+        MIN(databaseNames.database_name COLLATE Latin1_General_100_BIN2) AS databaseName
+      FROM @sagMatches m
+      JOIN @heads h ON h.source_role='sag-admin' AND h.revision_key=m.revision_key
+      JOIN core.catalog_sag_company_revision_rows c ON c.revision_key=m.revision_key
+        AND c.customer_record_id=m.source_record_id AND c.is_available=1
+      JOIN core.catalog_sag_company_database_names databaseNames ON databaseNames.revision_key=c.revision_key
+        AND databaseNames.company_record_id=c.company_record_id AND databaseNames.database_name IS NOT NULL
+      WHERE m.observedHost IS NOT NULL
+      GROUP BY m.customer_key,m.customerName,m.observedHost,LOWER(databaseNames.database_name COLLATE Latin1_General_100_BIN2)
+    )
+    INSERT @rows
+    SELECT TOP (5001) LOWER(CONVERT(char(64),HASHBYTES('SHA2_256',CONCAT('observed-db:',
+      CONVERT(char(36),catalogIdentity.customer_id),':',observedHost,':',normalizedDatabase)),2)),
+      customerName,databaseName,environment,observedHost
+    FROM items JOIN core.catalog_customer_ids catalogIdentity ON catalogIdentity.catalog_customer_key=items.customer_key;
+  END;
+  IF EXISTS(SELECT 1 FROM @rows WHERE environment='unknown') SET @partial=1;
+`;
+
+/** Observational display only: never used to plan, authorize or deduplicate real work. */
+export const readCatalogObservedInventorySql = `${inventoryHeadsSql(true)}
+IF @unavailable=0
+BEGIN
+  ${canonicalErpInventorySql(true)}
+  IF @view='licenses' BEGIN ${licenseInventorySql(true)} END;
+  ELSE BEGIN ${observedDomainAndDatabaseSql} END;
+END;
+${inventoryResultSql}`;
+
+function isObservedHostname(host: unknown): host is string {
+  if (typeof host !== "string" || host.length > 253 || /[^a-z0-9.-]/.test(host)) return false;
+  const labels = host.split(".");
+  return labels.length > 1 && /[a-z]/.test(labels[labels.length - 1]) &&
+    labels.every(label => label.length >= 1 && label.length <= 63 && !label.startsWith("-") && !label.endsWith("-"));
+}
+
+function isObservedDatabaseName(name: string): boolean {
+  return name.length >= 1 && name.length <= 128 && name === name.trim() &&
+    !/[^A-Za-z0-9_. -]/.test(name) && /[A-Za-z0-9]/.test(name);
+}
+
+export function mapCatalogObservedInventoryRows(view: CatalogMasterView, rows: readonly CatalogMasterInventoryRow[]) {
+  const items: CatalogMasterInventoryRow[] = [];
+  let partial = false;
+  for (const { id, customerName, name, environment, detail } of rows) {
+    if (view === "domains" ? !isObservedHostname(name) : view === "databases" &&
+      (!isObservedDatabaseName(name) || !isObservedHostname(detail))) {
+      partial = true;
+      continue;
+    }
+    // Only the declared display projection leaves the repository; never spread SQL row data.
+    items.push({ id, customerName, name, environment, ...(view !== "domains" && detail ? { detail } : {}) });
+  }
+  return { items, partial };
+}
+
+type InventoryScope = CatalogMasterInventoryQuery & { environment: CatalogEnvironment; matchKeyVersion: number };
+
+async function readInventory(scope: InventoryScope, observed: boolean): Promise<CatalogMasterInventoryResult> {
   const types = ["domains", "databases", "licenses"];
   if (!types.includes(scope.view) || !["qa", "production"].includes(scope.environment) ||
       !Number.isInteger(scope.matchKeyVersion) || scope.matchKeyVersion < 1 || scope.matchKeyVersion > 32767 ||
@@ -191,7 +329,7 @@ export async function readSqlCatalogMasterInventory(scope: CatalogMasterInventor
     .input("kind", sql.VarChar(10), scope.view === "databases" ? "database" : "domain")
     .input("matchKeyVersion", sql.SmallInt, scope.matchKeyVersion)
     .input("skip", sql.Int, (scope.page - 1) * scope.pageSize).input("take", sql.Int, scope.pageSize)
-    .query(readCatalogMasterInventorySql));
+    .query(observed ? readCatalogObservedInventorySql : readCatalogMasterInventorySql));
   const [summary, rows] = result.recordsets as unknown as [Array<{ state: CatalogMasterInventoryResult["state"]; total: number }>, CatalogMasterInventoryRow[]];
   const state = summary[0]?.state;
   const total = summary[0]?.total;
@@ -199,8 +337,13 @@ export async function readSqlCatalogMasterInventory(scope: CatalogMasterInventor
       !Number.isInteger(total) || total < 0 || total > 5000 || rows.length > scope.pageSize ||
       (state === "unavailable" && (rows.length || total)) ||
       rows.some(row => !/^[a-f0-9]{64}$/.test(row.id) || !row.customerName?.trim() || !row.name?.trim() ||
-        !["production", "test", "demo", "unknown"].includes(row.environment))) {
+        (!["production", "test", "demo", "unknown"].includes(row.environment) &&
+          !(observed && scope.view !== "licenses" && row.environment === "multiple")))) {
     throw new Error("catalog_master_inventory_result_invalid");
+  }
+  if (observed) {
+    const { items, partial } = mapCatalogObservedInventoryRows(scope.view, rows);
+    return { state: partial ? "partial" : state, total, items };
   }
   let incompleteDomain = false;
   const publicHost = (value: string) => {
@@ -217,3 +360,6 @@ export async function readSqlCatalogMasterInventory(scope: CatalogMasterInventor
     : scope.view === "databases" && row.detail ? { ...row, detail: publicHost(row.detail) } : row);
   return { state: incompleteDomain ? "partial" : state, total, items };
 }
+
+export const readSqlCatalogMasterInventory = (scope: InventoryScope) => readInventory(scope, false);
+export const readSqlCatalogObservedInventory = (scope: InventoryScope) => readInventory(scope, true);
