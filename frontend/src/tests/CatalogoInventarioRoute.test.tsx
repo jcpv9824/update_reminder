@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 
 const { get, post, auth } = vi.hoisted(() => ({
@@ -44,6 +44,12 @@ function renderRoute(path: string) {
 }
 
 describe("Vistas independientes del catálogo", () => {
+  beforeEach(() => {
+    // The rollout environment may enable observed inventory globally in CI.
+    // Each observed scenario opts in explicitly; legacy tests start without it.
+    vi.stubEnv("VITE_PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED", "false");
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
     get.mockReset();
