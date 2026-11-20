@@ -1,10 +1,13 @@
 import type sql from "mssql";
 import { describe, expect, it, vi } from "vitest";
 import {
-  CATALOG_SAG_V2_PUBLISHER_READINESS_SQL, CATALOG_SAG_V2_OWNER_PUBLISHER_READINESS_SQL,
+  CATALOG_SAG_V2_PUBLISHER_READINESS_SQL, CATALOG_SAG_V2_OWNER_PUBLISHER_READINESS_SQL, CATALOG_SAG_V2_OWNER_NAMES_READINESS_SQL,
   createCatalogSagV2PublisherPoolLoader, readCatalogSagV2PublisherPoolSettings,
 } from "../lib/catalogSagV2PublisherPool";
 import type { SocketConnector } from "../lib/outboundGuard";
+import { createCatalogSagV2WorkerPublisher } from "../lib/catalogSagV2WorkerPublisher";
+
+const namesWrapper = "settings.publish_catalog_sag_v2_owner_with_database_names";
 
 const server = "catalogdb.synthetic.host";
 const version = "102030405060708090a0b0c0d0e0f012";
@@ -90,7 +93,7 @@ describe("SAG v2 separate SQL publisher connection", () => {
       await req.execute(procedure);
     }
     expect(h.pool.execute).toHaveBeenCalledTimes(3);
-    for (const procedure of ["settings.publish_catalog_sag_v2_revision", "settings.publish_catalog_sag_v2_with_targets", "dbo.other", "settings.publish_catalog_sag_v2_owner_with_targets "]) {
+    for (const procedure of [namesWrapper, "settings.publish_catalog_sag_v2_revision", "settings.publish_catalog_sag_v2_with_targets", "dbo.other", "settings.publish_catalog_sag_v2_owner_with_targets "]) {
       await expect(req.execute(procedure)).rejects.toThrow(unavailable);
     }
     expect(h.pool.execute).toHaveBeenCalledTimes(3);
@@ -104,6 +107,30 @@ describe("SAG v2 separate SQL publisher connection", () => {
     await expect(loader.get()).rejects.toEqual(new Error(unavailable));
     expect(h.pool.close).toHaveBeenCalledOnce(); expect(h.io.newPool).toHaveBeenCalledOnce();
     expect(h.io.getSecret).not.toHaveBeenCalled(); expect(h.pool.execute).not.toHaveBeenCalled();
+  });
+
+  it("publishes names through the actual opt-in owner facade only after its SQL readiness check", async () => {
+    const namesEnv = { ...ownerEnv(), PORTAL_CATALOG_SAG_DATABASE_NAMES_ENABLED: "true" };
+    const denied = fakeIO(fakePool({ recordsets: [[{ ready: false }]] }));
+    await expect(createCatalogSagV2PublisherPoolLoader(namesEnv, denied.io).get()).rejects.toThrow(unavailable);
+    expect(denied.pool.query).toHaveBeenCalledExactlyOnceWith(CATALOG_SAG_V2_OWNER_NAMES_READINESS_SQL);
+    expect(denied.pool.execute).not.toHaveBeenCalled();
+
+    const h = fakeIO();
+    const loader = createCatalogSagV2PublisherPoolLoader(namesEnv, h.io);
+    const sink = await loader.get();
+    expect(h.pool.query).toHaveBeenCalledExactlyOnceWith(CATALOG_SAG_V2_OWNER_NAMES_READINESS_SQL);
+    expect(CATALOG_SAG_V2_OWNER_NAMES_READINESS_SQL).toContain(namesWrapper);
+    await expect(sink.request().execute("settings.catalog_sag_v2_owner_database_names_internal")).rejects.toThrow(unavailable);
+    const writer = createCatalogSagV2WorkerPublisher(sink, { claim: {
+      environment: "qa", attempt: 1, matchKeyVersion: 1, bindingRevision: "0123456789abcdef", profileRevision: "fedcba9876543210",
+      sourceId: "12345678-1111-4111-8111-111111111111", jobId: "12345678-2222-4222-8222-222222222222",
+      workerId: "12345678-3333-4333-8333-333333333333", leaseToken: "12345678-4444-4444-8444-444444444444",
+    }, keyProof: { vaultSecretVersion: Buffer.alloc(16, 1), keyVerifier: Buffer.alloc(32, 2) } }, "portal-owner");
+    await expect(writer.publishWithTargets("1", { customerCount: 0, companyCount: 0, customers: [], companies: [] }, [], []))
+      .resolves.toEqual({ result: "published", jobStatus: "succeeded" });
+    expect(h.pool.execute).toHaveBeenCalledExactlyOnceWith(namesWrapper);
+    await loader.close();
   });
 
   it("owner readiness preserves exact SQL identity, version, database and existing owner authority", () => {

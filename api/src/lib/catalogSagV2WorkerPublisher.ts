@@ -40,7 +40,6 @@ const maxRows = 100_000;
 const maxPayloadBytes = 16 * 1024 * 1024;
 const maxTargetsBytes = 24 * 1024 * 1024;
 const maxDatabaseNamesBytes = 40 * 1024 * 1024;
-const publishWithNamesProcedure = "settings.publish_catalog_sag_v2_owner_with_database_names";
 const invalid = (): never => { throw new Error("invalid_catalog_sag_v2_publication"); };
 const failed = (): never => { throw new Error("catalog_sag_v2_publication_failed"); };
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -236,7 +235,7 @@ export function createCatalogSagV2WorkerPublisher(pool: Pick<sql.ConnectionPool,
     try {
       if (mode === "portal-owner" && operation === "publish") return invalid();
       if (withNames && (operation !== "publishWithTargets" || mode !== "portal-owner")) return invalid();
-      const procedure = withNames ? publishWithNamesProcedure :
+      const procedure = withNames ? CATALOG_SAG_V2_OWNER_PROCEDURES.publishWithDatabaseNames :
         mode === "portal-owner" ? CATALOG_SAG_V2_OWNER_PROCEDURES[operation as keyof typeof CATALOG_SAG_V2_OWNER_PROCEDURES] : procedures[operation];
       const request = pool.request().input("environment", sql.VarChar(32), pins.environment)
         .input("sourceId", sql.UniqueIdentifier, pins.sourceId).input("jobId", sql.UniqueIdentifier, pins.jobId)

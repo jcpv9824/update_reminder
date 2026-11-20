@@ -10,5 +10,6 @@ export function readCatalogSagV2PublisherMode(env: NodeJS.ProcessEnv): CatalogSa
 export const CATALOG_SAG_V2_OWNER_PROCEDURES = Object.freeze({
   reserve: "settings.reserve_catalog_sag_v2_owner_attempt",
   publishWithTargets: "settings.publish_catalog_sag_v2_owner_with_targets",
+  publishWithDatabaseNames: "settings.publish_catalog_sag_v2_owner_with_database_names",
   fail: "settings.fail_catalog_sag_v2_owner_attempt",
 } as const);

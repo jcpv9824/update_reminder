@@ -518,7 +518,13 @@ SELECT
           N'publish_catalog_sag_v2_revision',N'fail_catalog_sag_v2_attempt',N'publish_catalog_sag_v2_with_targets')
         AND COALESCE(o.principal_id,s.principal_id)=DATABASE_PRINCIPAL_ID(N'dbo')
         AND m.execute_as_principal_id IS NULL)=5
-    AND (SELECT COUNT(*) FROM sys.database_permissions WHERE grantee_principal_id=DATABASE_PRINCIPAL_ID(N'portal_catalog_v2_publisher'))=12
+    AND (SELECT COUNT(*) FROM sys.database_permissions
+      WHERE grantee_principal_id=DATABASE_PRINCIPAL_ID(N'portal_catalog_v2_publisher')
+        AND NOT (class=1 AND minor_id=0
+          AND major_id=ISNULL(OBJECT_ID(N'core.catalog_sag_company_database_names',N'U'),-1)
+          AND grantor_principal_id=DATABASE_PRINCIPAL_ID(N'dbo') AND state='D'
+          AND permission_name IN ('INSERT','UPDATE','DELETE')
+          AND EXISTS(SELECT 1 FROM migration.schema_migrations WHERE migration_version='066' AND succeeded=1)))=12
     AND (SELECT COUNT(*) FROM sys.database_permissions WHERE class=1 AND minor_id=0
       AND grantee_principal_id=DATABASE_PRINCIPAL_ID(N'portal_catalog_v2_publisher') AND state='G' AND permission_name='EXECUTE'
       AND major_id IN(OBJECT_ID(N'settings.reserve_catalog_sag_v2_attempt',N'P'),
@@ -719,13 +725,19 @@ DECLARE @sidecar int=OBJECT_ID(N'core.catalog_sag_company_database_names',N'U');
 DECLARE @delegate int=DATABASE_PRINCIPAL_ID(N'portal_catalog_v2_owner_delegate');
 DECLARE @inner int=OBJECT_ID(N'settings.catalog_sag_v2_owner_database_names_internal',N'P');
 DECLARE @outer int=OBJECT_ID(N'settings.publish_catalog_sag_v2_owner_with_database_names',N'P');
+DECLARE @runtimeRole int=DATABASE_PRINCIPAL_ID(N'portal_runtime'),
+  @publisherRole int=DATABASE_PRINCIPAL_ID(N'portal_catalog_v2_publisher'),
+  @grantor int=DATABASE_PRINCIPAL_ID(N'dbo');
 SELECT CASE WHEN EXISTS(SELECT 1 FROM migration.schema_migrations WHERE migration_version='066' AND succeeded=1)
   AND EXISTS(SELECT 1 FROM sys.triggers WHERE object_id=OBJECT_ID(N'core.TR_catalog_sag_company_database_names_guard',N'TR')
     AND parent_id=@sidecar AND is_disabled=0)
   AND EXISTS(SELECT 1 FROM sys.sql_modules WHERE object_id=@inner AND execute_as_principal_id=@delegate)
   AND EXISTS(SELECT 1 FROM sys.sql_modules WHERE object_id=@outer AND execute_as_principal_id IS NULL)
-  AND EXISTS(SELECT 1 FROM sys.database_permissions WHERE class=1 AND major_id=@sidecar AND minor_id=0
-    AND grantee_principal_id=DATABASE_PRINCIPAL_ID(N'portal_runtime') AND state='G' AND permission_name='SELECT')
+  AND (SELECT COUNT(*) FROM sys.database_permissions WHERE class=1 AND major_id=@sidecar)=7
+  AND (SELECT COUNT(*) FROM sys.database_permissions WHERE class=1 AND major_id=@sidecar AND minor_id=0
+    AND grantor_principal_id=@grantor AND (
+      (grantee_principal_id=@runtimeRole AND state='G' AND permission_name='SELECT')
+      OR (grantee_principal_id IN (@runtimeRole,@publisherRole) AND state='D' AND permission_name IN ('INSERT','UPDATE','DELETE'))))=7
   AND NOT EXISTS(SELECT 1 FROM sys.database_permissions WHERE class=1 AND major_id IN (@inner,@outer))
   THEN 1 ELSE 0 END AS observed_inventory_ready;
 '@
