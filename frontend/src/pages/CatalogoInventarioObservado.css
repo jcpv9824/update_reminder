@@ -1,0 +1,13 @@
+.catalogo-modal-licencia {
+  box-sizing: border-box;
+  min-width: 0;
+  width: min(94vw, 900px);
+  max-width: 900px;
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-top: 4px solid var(--color-primary);
+}
+
+.catalogo-modal-licencia::backdrop {
+  background: rgba(28, 54, 100, 0.5);
+}

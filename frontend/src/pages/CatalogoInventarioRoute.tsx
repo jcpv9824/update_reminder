@@ -4,6 +4,7 @@ import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { Paginacion } from "../components/Comunes";
 import { catalogRefreshMessages, catalogRefreshServiceIfEnabled, useCatalogRefresh } from "../hooks/useCatalogRefresh";
+import CatalogoInventarioObservado from "./CatalogoInventarioObservado";
 
 const VISTAS = {
   domains: { titulo: "Dominios", columna: "Dominio" },
@@ -36,7 +37,11 @@ export default function CatalogoInventarioRoute({ vista, legado }: { vista: Vist
   if (auth.cargando || !auth.usuario) return null;
 
   const alcance = JSON.stringify([auth.usuario.id, [...auth.usuario.roles].sort()]);
-  return <InventarioCatalogo key={JSON.stringify([alcance, vista, modo])} alcance={alcance} vista={vista} modo={modo} />;
+  const clave = JSON.stringify([alcance, vista, modo]);
+  if (modo === "observado" && import.meta.env.VITE_PORTAL_CATALOG_DIRECTORY_V2_ENABLED === "true") {
+    return <CatalogoInventarioObservado key={clave} alcance={alcance} vista={vista} titulo={VISTAS[vista].titulo} />;
+  }
+  return <InventarioCatalogo key={clave} alcance={alcance} vista={vista} modo={modo} />;
 }
 
 function InventarioCatalogo({ alcance, vista, modo }: { alcance: string; vista: Vista; modo: Modo }) {

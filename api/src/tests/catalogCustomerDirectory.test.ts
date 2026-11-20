@@ -36,6 +36,26 @@ const fixture: CatalogDirectoryInput = {
 const all = { state: "all", web: "all" } as const;
 
 describe("multiempresa customer directory", () => {
+  it("searches stable Portal IDs as well as official names without changing defaults", () => {
+    expect(buildCatalogCustomerDirectory(fixture, { ...all, search: "portal-01" }).items.map(item => item.id))
+      .toEqual(["portal-01"]);
+    expect(buildCatalogCustomerDirectory(fixture, { ...all, search: "abaco" }).items[0].name).toBe("Ábaco Colombia");
+  });
+
+  it("includes only trusted verified SAG-only customers when all sources and unverified state are selected", () => {
+    const input = { ...fixture, sagOnlyCustomers: [{
+      customerId: "3d2f732f-5746-5d88-9283-7e301f293998", name: "Solo SAG",
+    }] };
+    expect(buildCatalogCustomerDirectory(input).items.every(item => item.name !== "Solo SAG")).toBe(true);
+    expect(buildCatalogCustomerDirectory(input, { state: "unverified" }).items).toMatchObject([{
+      id: input.sagOnlyCustomers[0].customerId, name: "Solo SAG", state: "unverified", web: "in_web",
+      sagOnly: true, sources: [],
+    }]);
+    expect(buildCatalogCustomerDirectory(input, { ...all, sourceIds: [colombia.sourceId] }).items.some(item => item.sagOnly)).toBe(false);
+    expect(buildCatalogCustomerDirectory({ ...input, sag: { ...input.sag, state: "stale" } }, all)
+      .items.some(item => item.sagOnly)).toBe(false);
+    expect(getCatalogCustomerDetail(input, input.sagOnlyCustomers[0].customerId)?.sagOnly).toBe(true);
+  });
   it("consolidates the same verified document across sources, not different issuing countries", () => {
     const page = buildCatalogCustomerDirectory(fixture, all);
     expect(page.total).toBe(3);

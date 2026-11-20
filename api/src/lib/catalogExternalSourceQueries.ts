@@ -5,7 +5,7 @@ import type { CatalogEnvironment } from "./catalogSourceConfiguration";
 /** Fixed, SELECT-only contracts. The transport owns TLS, credentials and target authorization. */
 export type CatalogExternalContract = "erp_v1" | "sag_admin_v1";
 /** Discovery is available only through its dedicated reader, not activation or v1 publication. */
-export type CatalogExternalTransportContract = CatalogExternalContract | "sag_admin_v2" | "sag_admin_v2_targets";
+export type CatalogExternalTransportContract = CatalogExternalContract | "sag_admin_v2" | "sag_admin_v2_targets" | "sag_admin_v2_directory";
 
 export interface CatalogErpSourceRecord {
   sourceRecordId: number;
@@ -17,6 +17,7 @@ export interface CatalogErpSourceRecord {
 
 export interface CatalogSagSourceRecord {
   sourceRecordId: number;
+  displayName?: string | null;
   documentNumber: string | null;
   /** Reported grouping evidence, not a verified document issuer. */
   reportedCountryId: number | null;
@@ -115,6 +116,7 @@ const fields = {
   sag_admin_v1: sagCustomerFields,
   sag_admin_v2: sagDiscoveryFields,
   sag_admin_v2_targets: [...sagDiscoveryFields, ["dbo.Companies", "StringConnection", textTypes]],
+  sag_admin_v2_directory: [...sagDiscoveryFields, ["dbo.Companies", "StringConnection", textTypes], ["dbo.Customers", "Name", textTypes]],
 } as const;
 
 // Only compiler-owned, closed identifiers reach this SQL builder.
@@ -250,11 +252,14 @@ ORDER BY co.Id ASC`;
 export function catalogExternalSelectSql(
   contract: CatalogExternalTransportContract, tag: CatalogExternalReadStatement["tag"],
 ): string {
-  if (contract === "sag_admin_v2" || contract === "sag_admin_v2_targets") {
+  if (contract === "sag_admin_v2" || contract === "sag_admin_v2_targets" || contract === "sag_admin_v2_directory") {
     if (tag === "schema") return schemaStatement(contract);
     if (tag === "counts") return sagDiscoveryCounts;
-    if (tag === "customerPage") return pages.sag_admin_v1;
-    if (tag === "companyPage") return sagDiscoveryCompanyPage(contract === "sag_admin_v2_targets");
+    if (tag === "customerPage") return contract === "sag_admin_v2_directory"
+      ? pages.sag_admin_v1.replace("c.Id AS sourceRecordId,", `c.Id AS sourceRecordId,
+    CASE WHEN DATALENGTH(CONVERT(nvarchar(max),c.Name))<=1024 THEN CONVERT(nvarchar(512),c.Name) END AS displayName,`)
+      : pages.sag_admin_v1;
+    if (tag === "companyPage") return sagDiscoveryCompanyPage(contract !== "sag_admin_v2");
   } else if (contract === "erp_v1" || contract === "sag_admin_v1") {
     if (tag === "schema") return schemaStatement(contract);
     if (tag === "page") return pages[contract];
@@ -299,15 +304,17 @@ function parseErp(value: unknown): CatalogErpSourceRecord {
     activeCode: code === "S" || code === "N" ? code : null };
 }
 
-function parseSag(value: unknown): CatalogSagSourceRecord {
+function parseSag(value: unknown, includeDirectory = false): CatalogSagSourceRecord {
   const row = rowWithKeys(value, ["sourceRecordId", "documentNumber", "reportedCountryId", "environment", "licensedModules",
-    "domainCandidate", "testStartedOn", "productionStartedOn", "demoStartedOn"]);
+    "domainCandidate", "testStartedOn", "productionStartedOn", "demoStartedOn", ...(includeDirectory ? ["displayName"] : [])]);
   const env = optionalText(row.environment, 64)?.toLowerCase();
   const environment = env && ["production", "produccion", "producción", "prod"].includes(env) ? "production" :
     env && ["test", "testing", "prueba", "pruebas", "qa"].includes(env) ? "test" : env === "demo" ? "demo" : "unknown";
   const modules = optionalText(row.licensedModules, 1024, true)?.toUpperCase();
   const document = optionalText(row.documentNumber, 128);
+  const name = includeDirectory ? optionalText(row.displayName, 512) : null;
   return { sourceRecordId: sqlInt(row.sourceRecordId), documentNumber: document && !/\p{C}/u.test(document) ? document : null,
+    ...(includeDirectory ? { displayName: name && !/\p{C}/u.test(name) ? name : null } : {}),
     reportedCountryId: row.reportedCountryId === null ? null : sqlInt(row.reportedCountryId), environment,
     licenseCodes: modules !== undefined && /^[A-Z ,;|]*$/.test(modules)
       ? [...new Set(modules.replace(/[^A-Z]/g, ""))].sort() : null,
@@ -453,7 +460,7 @@ function parseDiscoveryCount(value: unknown): bigint {
 }
 
 async function readExpectedDiscoveryPages<T>(session: CatalogExternalReadSession, signal: AbortSignal,
-  contract: "sag_admin_v2" | "sag_admin_v2_targets",
+  contract: "sag_admin_v2" | "sag_admin_v2_targets" | "sag_admin_v2_directory",
   tag: "customerPage" | "companyPage", count: number, pageSize: number, pageTimeoutMs: number,
   parse: (value: unknown) => T, idOf: (row: T) => number): Promise<T[]> {
   const records: T[] = [];
@@ -481,7 +488,7 @@ async function readExpectedDiscoveryPages<T>(session: CatalogExternalReadSession
 }
 
 async function readSagDiscovery<T>(transport: CatalogExternalSourceTransport, options: CatalogExternalReadOptions,
-  contract: "sag_admin_v2" | "sag_admin_v2_targets", parseCompany: (raw: unknown) => T, companyId: (row: T) => number,
+  contract: "sag_admin_v2" | "sag_admin_v2_targets" | "sag_admin_v2_directory", parseCompany: (raw: unknown) => T, companyId: (row: T) => number,
 ): Promise<DiscoveryResult<T>> {
   try {
     const pageSize = positiveInt(options.pageSize, 500, 1000);
@@ -506,7 +513,7 @@ async function readSagDiscovery<T>(transport: CatalogExternalSourceTransport, op
       if (customerCount + companyCount > BigInt(maxRows)) throw new Unavailable("row_limit");
 
       const customers = await readExpectedDiscoveryPages(session, signal, contract, "customerPage", Number(customerCount), pageSize,
-        pageTimeoutMs, parseSag, row => row.sourceRecordId);
+        pageTimeoutMs, row => parseSag(row, contract === "sag_admin_v2_directory"), row => row.sourceRecordId);
       const companies = await readExpectedDiscoveryPages(session, signal, contract, "companyPage", Number(companyCount), pageSize,
         pageTimeoutMs, parseCompany, companyId);
       return { status: "complete" as const, customers, companies };
@@ -543,7 +550,7 @@ export async function verifyCatalogSagDiscoveryV2Targets(transport: CatalogExter
 
 /** One SNAPSHOT; host and port never leave the observation parser. */
 export async function readCatalogSagDiscoveryV2WithTargets(transport: CatalogExternalSourceTransport,
-  scope: TargetScope, options: CatalogExternalReadOptions & { includeDatabaseNames?: boolean } = {}): Promise<CatalogSagDiscoveryV2WithTargetsResult> {
+  scope: TargetScope, options: CatalogExternalReadOptions & { includeDatabaseNames?: boolean; includeDirectory?: boolean } = {}): Promise<CatalogSagDiscoveryV2WithTargetsResult> {
   if (!scope || (scope.environment !== "qa" && scope.environment !== "production") ||
     typeof scope.sourceId !== "string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(scope.sourceId) ||
     scope.sourceId === "00000000-0000-0000-0000-000000000000" || !Buffer.isBuffer(scope.matchKey) || scope.matchKey.length !== 32 ||
@@ -553,7 +560,7 @@ export async function readCatalogSagDiscoveryV2WithTargets(transport: CatalogExt
   const pins = { environment: scope.environment, sourceId: scope.sourceId, matchKeyVersion: scope.matchKeyVersion };
   const key = Buffer.from(scope.matchKey);
   try {
-    const result = await readSagDiscovery(transport, options, "sag_admin_v2_targets", raw => {
+    const result = await readSagDiscovery(transport, options, options.includeDirectory ? "sag_admin_v2_directory" : "sag_admin_v2_targets", raw => {
       const { company, evidence } = parseSagCompanyWithTarget(raw);
       const companyRecordId = company.companyRecordId;
       if (evidence.status === "unverified") {

@@ -120,7 +120,7 @@ describe("actualización automática de Clientes", () => {
     fireEvent.click(screen.getByRole("button", { name: /Siguiente/i }));
     fireEvent.change(screen.getByLabelText("Estado del cliente"), { target: { value: "all" } });
     fireEvent.change(screen.getByLabelText("Presencia en SAG Web"), { target: { value: "all" } });
-    fireEvent.change(screen.getByLabelText("Buscar por nombre oficial"), { target: { value: "Comercial" } });
+    fireEvent.change(screen.getByLabelText("Buscar por ID o nombre"), { target: { value: "Comercial" } });
     expect(post).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
@@ -153,7 +153,7 @@ describe("actualización automática de Clientes", () => {
     const actualizar = screen.getByRole("button", { name: "Actualizar lista" });
     const lecturas = () => get.mock.calls.filter(([path]) =>
       path.startsWith("/catalog/customers?") && path.includes("search=Comercial"));
-    fireEvent.change(screen.getByLabelText("Buscar por nombre oficial"), { target: { value: "Comercial" } });
+    fireEvent.change(screen.getByLabelText("Buscar por ID o nombre"), { target: { value: "Comercial" } });
     fireEvent.click(buscar);
     await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
     expect(actualizar).toBeDisabled();

@@ -11,7 +11,8 @@ param(
 
   [switch]$IncludeCatalogErpOwnerPublisher,
 
-  [switch]$IncludeCatalogObservedInventory
+  [switch]$IncludeCatalogObservedInventory,
+  [switch]$IncludeCatalogDirectoryV2
 )
 
 $ErrorActionPreference='Stop'
@@ -23,6 +24,9 @@ if($IncludeCatalogErpOwnerPublisher -and -not ($IncludeCatalog -and $IncludeCata
 }
 if($IncludeCatalogObservedInventory -and -not ($IncludeCatalog -and $IncludeCatalogOwnerPublisher)){
   throw 'Observed inventory requires both -IncludeCatalog and -IncludeCatalogOwnerPublisher.'
+}
+if($IncludeCatalogDirectoryV2 -and -not ($IncludeCatalog -and $IncludeCatalogOwnerPublisher -and $IncludeCatalogObservedInventory)){
+  throw 'Catalog directory v2 requires the catalog, SAG owner publisher and observed inventory.'
 }
 $repoMigrationRoot=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $sqlDirectory=Join-Path $repoMigrationRoot 'sql'
@@ -127,6 +131,9 @@ if($IncludeCatalog){
   }
   if($IncludeCatalogObservedInventory){
     $migrations += @{version='066';name='066_catalog_sag_database_names.sql'}
+  }
+  if($IncludeCatalogDirectoryV2){
+    $migrations += @{version='067';name='067_catalog_sag_customer_directory.sql'}
   }
   # Check the entire selected package before submitting its first write.
   foreach($entry in $migrations){
@@ -521,10 +528,12 @@ SELECT
     AND (SELECT COUNT(*) FROM sys.database_permissions
       WHERE grantee_principal_id=DATABASE_PRINCIPAL_ID(N'portal_catalog_v2_publisher')
         AND NOT (class=1 AND minor_id=0
-          AND major_id=ISNULL(OBJECT_ID(N'core.catalog_sag_company_database_names',N'U'),-1)
           AND grantor_principal_id=DATABASE_PRINCIPAL_ID(N'dbo') AND state='D'
           AND permission_name IN ('INSERT','UPDATE','DELETE')
-          AND EXISTS(SELECT 1 FROM migration.schema_migrations WHERE migration_version='066' AND succeeded=1)))=12
+          AND ((major_id=ISNULL(OBJECT_ID(N'core.catalog_sag_company_database_names',N'U'),-1)
+            AND EXISTS(SELECT 1 FROM migration.schema_migrations WHERE migration_version='066' AND succeeded=1))
+            OR (major_id=ISNULL(OBJECT_ID(N'core.catalog_sag_customer_directory_rows',N'U'),-1)
+            AND EXISTS(SELECT 1 FROM migration.schema_migrations WHERE migration_version='067' AND succeeded=1)))))=12
     AND (SELECT COUNT(*) FROM sys.database_permissions WHERE class=1 AND minor_id=0
       AND grantee_principal_id=DATABASE_PRINCIPAL_ID(N'portal_catalog_v2_publisher') AND state='G' AND permission_name='EXECUTE'
       AND major_id IN(OBJECT_ID(N'settings.reserve_catalog_sag_v2_attempt',N'P'),
@@ -746,5 +755,18 @@ SELECT CASE WHEN EXISTS(SELECT 1 FROM migration.schema_migrations WHERE migratio
       throw 'Optional observed inventory migration post-verification failed.'
     }
     Write-Host "$expectedDatabase optional observed inventory migration 066 is applied and verified." -ForegroundColor Green
+  }
+  if($IncludeCatalogDirectoryV2){
+    $directoryVerificationSql=$observedVerificationSql.
+      Replace('catalog_sag_company_database_names','catalog_sag_customer_directory_rows').
+      Replace('catalog_sag_v2_owner_database_names_internal','catalog_sag_v2_owner_directory_internal').
+      Replace('publish_catalog_sag_v2_owner_with_database_names','publish_catalog_sag_v2_owner_with_directory').
+      Replace("migration_version='066'","migration_version='067'").
+      Replace('observed_inventory_ready','directory_v2_ready')
+    $result=Invoke-SessionSql -Sql $directoryVerificationSql -Mode read -TimeoutSeconds 120 -MaxRows 5
+    if($result.resultSets[0].rows[0].directory_v2_ready -ne 1){
+      throw 'Optional catalog directory v2 migration post-verification failed.'
+    }
+    Write-Host "$expectedDatabase optional catalog directory migration 067 is applied and verified." -ForegroundColor Green
   }
 }

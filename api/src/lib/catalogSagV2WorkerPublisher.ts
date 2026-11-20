@@ -24,6 +24,7 @@ export type CatalogSagV2WorkerPublication = Readonly<{
   customers: readonly CatalogSagV2ProtectedCustomer[];
   companies: readonly Readonly<CatalogSagCompanyDiscoveryRecord>[];
 }>;
+export type CatalogSagDirectoryObservation = Readonly<{ sourceRecordId: number; displayName: string | null; normalizedNitToken: string | null }>;
 
 export type CatalogSagV2Reservation = Readonly<{ attemptOrdinal: string; observedAt: Date }>;
 type Superseded = Readonly<{ result: "superseded"; jobStatus: "succeeded" | "cancelled" }>;
@@ -152,7 +153,7 @@ function preparePayload(value: unknown) {
     const customers = encodeRows(value.customers, value.customerCount, encodeCustomer, row => row.sourceRecordId);
     const companies = encodeRows(value.companies, value.companyCount, encodeCompany, row => row.companyRecordId);
     return { customerCount: value.customerCount, companyCount: value.companyCount,
-      customers: customers.json, companies: companies.json, companyIds: companies.ids };
+      customers: customers.json, companies: companies.json, companyIds: companies.ids, customerIds: customers.ids };
   } catch { return invalid(); }
 }
 
@@ -214,6 +215,26 @@ function decodePublication(row: unknown): CatalogSagV2PublishResult {
   return failed();
 }
 
+function prepareDirectoryRows(value: unknown, ids: ReadonlySet<number>): string {
+  if (!Array.isArray(value) || value.length !== ids.size || Reflect.ownKeys(value).length !== value.length + 1) return invalid();
+  let last = -Infinity;
+  const rows: CatalogSagDirectoryObservation[] = [];
+  for (let i = 0; i < value.length; i++) {
+    const entry = Object.getOwnPropertyDescriptor(value, i);
+    const row: unknown = entry?.value;
+    if (!entry?.enumerable || !exact(row, ["sourceRecordId", "displayName", "normalizedNitToken"])) return invalid();
+    const { sourceRecordId, displayName, normalizedNitToken } = row;
+    if (!sqlInt(sourceRecordId) || sourceRecordId <= last || !ids.has(sourceRecordId) ||
+      (displayName !== null && (typeof displayName !== "string" || !displayName || displayName.length > 512 ||
+        displayName.trim() !== displayName || /\p{C}/u.test(displayName))) ||
+      (normalizedNitToken !== null && (typeof normalizedNitToken !== "string" || !/^[a-f0-9]{64}$/.test(normalizedNitToken)))) return invalid();
+    rows.push({ sourceRecordId, displayName, normalizedNitToken });
+    last = sourceRecordId;
+  }
+  const json = JSON.stringify(rows);
+  return Buffer.byteLength(json, "utf16le") <= 32 * 1024 * 1024 ? json : invalid();
+}
+
 const bindPublication = (request: sql.Request, attemptOrdinal: string, payload: ReturnType<typeof preparePayload>) =>
   request.input("attemptOrdinal", sql.BigInt, BigInt(attemptOrdinal))
     .input("customerCount", sql.Int, payload.customerCount).input("companyCount", sql.Int, payload.companyCount)
@@ -231,11 +252,12 @@ export function createCatalogSagV2WorkerPublisher(pool: Pick<sql.ConnectionPool,
   })();
 
   async function rpc<T>(operation: keyof typeof procedures, bind: (request: sql.Request) => sql.Request,
-    decode: (row: unknown) => T, withNames = false): Promise<T> {
+    decode: (row: unknown) => T, withNames = false, withDirectory = false): Promise<T> {
     try {
       if (mode === "portal-owner" && operation === "publish") return invalid();
-      if (withNames && (operation !== "publishWithTargets" || mode !== "portal-owner")) return invalid();
-      const procedure = withNames ? CATALOG_SAG_V2_OWNER_PROCEDURES.publishWithDatabaseNames :
+      if ((withNames || withDirectory) && (operation !== "publishWithTargets" || mode !== "portal-owner")) return invalid();
+      const procedure = withDirectory ? CATALOG_SAG_V2_OWNER_PROCEDURES.publishWithDirectory :
+        withNames ? CATALOG_SAG_V2_OWNER_PROCEDURES.publishWithDatabaseNames :
         mode === "portal-owner" ? CATALOG_SAG_V2_OWNER_PROCEDURES[operation as keyof typeof CATALOG_SAG_V2_OWNER_PROCEDURES] : procedures[operation];
       const request = pool.request().input("environment", sql.VarChar(32), pins.environment)
         .input("sourceId", sql.UniqueIdentifier, pins.sourceId).input("jobId", sql.UniqueIdentifier, pins.jobId)
@@ -269,15 +291,19 @@ export function createCatalogSagV2WorkerPublisher(pool: Pick<sql.ConnectionPool,
     },
     async publishWithTargets(attemptOrdinal: string, publication: CatalogSagV2WorkerPublication,
       targets: readonly CatalogSagCompanyTargetObservation[],
-      databaseNames?: readonly CatalogSagDatabaseObservation[]): Promise<CatalogSagV2PublishResult> {
-      if (!ordinal(attemptOrdinal) || (databaseNames !== undefined && mode !== "portal-owner")) return invalid();
+      databaseNames?: readonly CatalogSagDatabaseObservation[],
+      directoryRows?: readonly CatalogSagDirectoryObservation[]): Promise<CatalogSagV2PublishResult> {
+      if (!ordinal(attemptOrdinal) || (databaseNames !== undefined && mode !== "portal-owner") ||
+        (directoryRows !== undefined && databaseNames === undefined)) return invalid();
       const payload = preparePayload(publication);
       const targetRows = prepareTargets(targets, payload.companyIds, databaseNames !== undefined);
       const names = databaseNames === undefined ? undefined : prepareDatabaseNames(databaseNames, targetRows.candidates);
+      const directory = directoryRows === undefined ? undefined : prepareDirectoryRows(directoryRows, payload.customerIds);
       return rpc("publishWithTargets", request => {
         const bound = bindPublication(request, attemptOrdinal, payload).input("targets", sql.NVarChar(sql.MAX), targetRows.json);
-        return names === undefined ? bound : bound.input("databaseNames", sql.NVarChar(sql.MAX), names);
-      }, decodePublication, names !== undefined);
+        if (names !== undefined) bound.input("databaseNames", sql.NVarChar(sql.MAX), names);
+        return directory === undefined ? bound : bound.input("directoryRows", sql.NVarChar(sql.MAX), directory);
+      }, decodePublication, names !== undefined, directory !== undefined);
     },
     async recordFailure(attemptOrdinal: string): Promise<CatalogSagV2FailureResult> {
       if (!ordinal(attemptOrdinal)) return invalid();

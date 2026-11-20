@@ -48,6 +48,9 @@ export interface CatalogDirectoryInput {
   sag: CatalogSagRevision;
   allowedSourceIds: ReadonlySet<string>;
   preferredSourceByCustomer?: ReadonlyMap<string, string>;
+  /** SQL-authorized, fresh V2 orphans only. Never inferred by comparing visible ERP rows. */
+  sagOnlyCustomers?: readonly Readonly<{ customerId: string; name: string }>[];
+  partial?: boolean;
 }
 
 export interface CatalogDirectoryQuery {
@@ -78,6 +81,7 @@ export interface CatalogCustomerSummary {
   sources: CatalogCustomerSource[];
   stateVaries: boolean;
   requiresReconciliation: boolean;
+  sagOnly?: boolean;
 }
 
 export interface CatalogDirectoryPage {
@@ -228,7 +232,7 @@ function buildCatalogCustomerDirectoryPage(input: CatalogDirectoryInput, query: 
       a.source.priority - b.source.priority || compareOrdinal(a.source.sourceId, b.source.sourceId) ||
       compareOrdinal(a.customer.sourceCustomerId, b.customer.sourceCustomerId));
     const name = officialNames[0]?.customer.officialName?.trim();
-    if (!name || (search && !normalizedSearch(name).includes(search))) continue;
+    if (!name || (search && !normalizedSearch(name).includes(search) && !normalizedSearch(id).includes(search))) continue;
 
     const memberStates = new Set(memberships.map(member => member.state));
     const customerState: CatalogCustomerState = memberStates.has("active") ? "active" :
@@ -255,11 +259,25 @@ function buildCatalogCustomerDirectoryPage(input: CatalogDirectoryInput, query: 
       requiresReconciliation: ambiguousIdentity || new Set(officialNames.map(member => member.customer.officialName?.trim())).size > 1 });
   }
 
+  if (input.sag.state === "verified" && query.sourceIds === undefined &&
+      (state === "unverified" || state === "all") && (web === "in_web" || web === "all")) {
+    const orphanIds = new Set<string>();
+    for (const orphan of input.sagOnlyCustomers ?? []) {
+      if (!orphan.customerId || !orphan.name.trim() || byCustomerId.has(orphan.customerId) || orphanIds.has(orphan.customerId)) {
+        throw new CatalogDirectoryError("inconsistent_revision");
+      }
+      orphanIds.add(orphan.customerId);
+      if (targetId !== undefined && orphan.customerId !== targetId) continue;
+      if (search && !normalizedSearch(orphan.name).includes(search) && !normalizedSearch(orphan.customerId).includes(search)) continue;
+      items.push({ id: orphan.customerId, name: orphan.name.trim(), state: "unverified", web: "in_web",
+        sources: [], stateVaries: false, requiresReconciliation: false, sagOnly: true });
+    }
+  }
   items.sort((a, b) => compareLabel(a.name, b.name) || compareOrdinal(a.id, b.id));
   return { items: items.slice((page - 1) * pageSize, page * pageSize),
     sources: permitted.map(publicSource).sort((a, b) => compareLabel(a.label, b.label) || compareOrdinal(a.sourceId, b.sourceId)),
     sag: { state: input.sag.state, verifiedAt: input.sag.verifiedAt },
-    partial: incompleteErp || input.sag.state !== "verified", total: items.length, page, pageSize };
+    partial: input.partial === true || incompleteErp || input.sag.state !== "verified", total: items.length, page, pageSize };
 }
 
 export function buildCatalogCustomerDirectory(input: CatalogDirectoryInput, query: CatalogDirectoryQuery = {}): CatalogDirectoryPage {

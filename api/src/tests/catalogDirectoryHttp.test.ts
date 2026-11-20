@@ -64,9 +64,21 @@ describe("catalog directory HTTP contract", () => {
     expect(result.status).toBe(200);
     expect(result.headers).toEqual({ "Cache-Control": "no-store" });
     expect(deps.readAllowedSourceIds).toHaveBeenCalledWith("authenticated-actor");
+    expect(deps.readPublishedDirectory).toHaveBeenCalledWith(new Set([visibleSource]), "authenticated-actor");
     expect(result.jsonBody).toMatchObject({ total: 1, items: [{ id: visibleCustomer, name: "Cliente de ejemplo" }] });
     expect(JSON.stringify(result.jsonBody)).not.toMatch(/No visible|ERP oculto|opaque-validation|internal-/);
     expect((await handle(request("", hiddenCustomer), "detail")).status).toBe(404);
+  });
+
+  it("strips SAG-only rows unless enabled by trusted runtime policy and never accepts caller enablement", async () => {
+    const orphan = { customerId: "00000000-0000-4000-8000-000000000009", name: "SAG aislado" };
+    const deps = dependencies();
+    deps.readPublishedDirectory.mockResolvedValue({ ...fixture, sagOnlyCustomers: [orphan] });
+    const disabled = await createCatalogDirectoryHttp(deps)(request("state=unverified"), "list");
+    expect(disabled.jsonBody).toMatchObject({ items: [] });
+    expect((await createCatalogDirectoryHttp(deps)(request("includeSagDirectory=true"), "list")).status).toBe(400);
+    const enabled = await createCatalogDirectoryHttp({ ...deps, includeSagDirectory: () => true })(request("state=unverified"), "list");
+    expect(enabled.jsonBody).toMatchObject({ items: [{ id: orphan.customerId, sagOnly: true }] });
   });
 
   it("does not load a published revision for a selection outside the actor's scope", async () => {

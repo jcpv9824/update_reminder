@@ -12,7 +12,9 @@ export type CatalogDirectoryHttpDependencies = {
   enabled: () => boolean;
   authorize: (request: HttpRequest) => Promise<Decision>;
   readAllowedSourceIds: (actorId: string) => Promise<ReadonlySet<string>>;
-  readPublishedDirectory: (allowedSourceIds: ReadonlySet<string>) => Promise<CatalogDirectoryInput>;
+  /** Trusted runtime flag only, never a query parameter. SQL rechecks the actor's SAG access. */
+  includeSagDirectory?: () => boolean;
+  readPublishedDirectory: (allowedSourceIds: ReadonlySet<string>, actorId?: string) => Promise<CatalogDirectoryInput>;
 };
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -77,13 +79,15 @@ export function createCatalogDirectoryHttp(deps: CatalogDirectoryHttpDependencie
       const id = request.params.id;
       if (context === "detail" && (!id || !uuid.test(id))) return notFound();
       const allowed = await deps.readAllowedSourceIds(auth.actorId);
-      if (!allowed.size) return denied();
+      const includeSagDirectory = deps.includeSagDirectory?.() === true;
+      if (!allowed.size && !includeSagDirectory) return denied();
       if (inputQuery?.sourceIds?.some(sourceId => !allowed.has(sourceId))) {
         return response(400, { error: "Filtro de catálogo inválido." });
       }
-      const loaded = await deps.readPublishedDirectory(allowed);
+      const loaded = await deps.readPublishedDirectory(allowed, auth.actorId);
       // The authenticated scope overrides repository input even if the reader is miswired.
-      const input: CatalogDirectoryInput = { ...loaded, allowedSourceIds: allowed };
+      const input: CatalogDirectoryInput = { ...loaded, allowedSourceIds: allowed,
+        sagOnlyCustomers: includeSagDirectory ? loaded.sagOnlyCustomers : undefined };
       if (context === "list") return response(200, buildCatalogCustomerDirectory(input, inputQuery));
       const item = getCatalogCustomerDetail(input, id!.toLowerCase());
       return item ? response(200, item) : notFound();

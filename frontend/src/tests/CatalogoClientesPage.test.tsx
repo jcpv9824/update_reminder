@@ -55,7 +55,42 @@ describe("catálogo de clientes multiempresa", () => {
     fireEvent.click(selectorFuentes());
     expect(screen.getByRole("checkbox", { name: "Todas las fuentes autorizadas" })).toBeChecked();
     expect(screen.queryByRole("button", { name: /crear|nuevo|editar|eliminar|administrar fuentes/i })).toBeNull();
-    expect(screen.queryByText(cliente.id)).toBeNull();
+    expect(within(table).getByText(cliente.id)).toBeInTheDocument();
+    expect(within(table).getAllByRole("columnheader").map(header => header.textContent))
+      .toEqual(["ID", "Nombre", "Estado", "SAG Web", "Origen"]);
+    expect(within(table).getByRole("columnheader", { name: "Origen" })).toHaveClass("catalogo-clientes-origen");
+    expect(within(table).getByText("Colombia").closest("td")).toHaveClass("catalogo-clientes-origen");
+  });
+
+  it("permite consultar clientes sin estado verificado sin asumir que están activos o inactivos", async () => {
+    const soloSag = { ...cliente, id: "sag-id-opaco", name: "Nombre desde SAG Admin",
+      state: "unverified", sources: [], sagOnly: true } as const;
+    const load = vi.fn<CargarCatalogoClientes>().mockImplementation(async query => ({
+      ...initial, items: query.state === "unverified" ? [soloSag] : [cliente],
+    }));
+    renderPage(load);
+    await screen.findByText(cliente.name);
+    expect(screen.getByLabelText("Estado del cliente")).toHaveValue("active");
+    fireEvent.change(screen.getByLabelText("Estado del cliente"), { target: { value: "unverified" } });
+    await screen.findByText(soloSag.name);
+    const row = screen.getByRole("row", { name: /Nombre desde SAG Admin/ });
+    expect(within(row).getByText("No verificado")).toBeInTheDocument();
+    expect(within(row).getByText("Solo SAG Admin")).toBeInTheDocument();
+    expect(within(row).queryByText("Activo")).toBeNull();
+    expect(within(row).queryByText("Inactivo")).toBeNull();
+    expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ state: "unverified", web: "in_web" }), expect.any(AbortSignal));
+  });
+
+  it("aplica la búsqueda por ID solo al enviarla y conserva el ID que entrega el API", async () => {
+    const load = vi.fn<CargarCatalogoClientes>().mockResolvedValue(initial);
+    renderPage(load);
+    await screen.findByText(cliente.name);
+    fireEvent.change(screen.getByLabelText("Buscar por ID o nombre"), { target: { value: ` ${cliente.id} ` } });
+    expect(load).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
+    await waitFor(() => expect(load).toHaveBeenLastCalledWith(
+      expect.objectContaining({ search: cliente.id, state: "active", web: "in_web", page: 1 }), expect.any(AbortSignal)));
+    expect(await screen.findByText(cliente.id)).toBeInTheDocument();
   });
 
   it("permite combinar fuentes y modificar estado, presencia y búsqueda de forma independiente", async () => {
@@ -71,7 +106,7 @@ describe("catálogo de clientes multiempresa", () => {
 
     fireEvent.change(screen.getByLabelText("Estado del cliente"), { target: { value: "inactive" } });
     fireEvent.change(screen.getByLabelText("Presencia en SAG Web"), { target: { value: "all" } });
-    fireEvent.change(screen.getByLabelText("Buscar por nombre oficial"), { target: { value: " Comercial " } });
+    fireEvent.change(screen.getByLabelText("Buscar por ID o nombre"), { target: { value: " Comercial " } });
     fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
     await waitFor(() => expect(load).toHaveBeenLastCalledWith(
       { sourceIds: ["co", "us"], state: "inactive", web: "all", search: "Comercial", page: 1, pageSize: 25 },
@@ -192,7 +227,7 @@ describe("catálogo de clientes multiempresa", () => {
     expect(load.mock.calls[0][0]).toMatchObject({ web: "in_web", state: "active" });
     fireEvent.click(selectorFuentes());
     fireEvent.click(screen.getByRole("checkbox", { name: "Estados Unidos" }));
-    fireEvent.change(screen.getByLabelText("Buscar por nombre oficial"), { target: { value: "Comercial" } });
+    fireEvent.change(screen.getByLabelText("Buscar por ID o nombre"), { target: { value: "Comercial" } });
     fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
     fireEvent.click(await screen.findByRole("button", { name: verSinSAG }));
     await screen.findByText(cliente.name);

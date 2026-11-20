@@ -2,6 +2,7 @@ import type sql from "mssql";
 import { describe, expect, it, vi } from "vitest";
 import {
   CATALOG_SAG_V2_PUBLISHER_READINESS_SQL, CATALOG_SAG_V2_OWNER_PUBLISHER_READINESS_SQL, CATALOG_SAG_V2_OWNER_NAMES_READINESS_SQL,
+  CATALOG_SAG_V2_OWNER_DIRECTORY_READINESS_SQL,
   createCatalogSagV2PublisherPoolLoader, readCatalogSagV2PublisherPoolSettings,
 } from "../lib/catalogSagV2PublisherPool";
 import type { SocketConnector } from "../lib/outboundGuard";
@@ -51,6 +52,24 @@ function fakeIO(pool = fakePool()) {
 }
 
 describe("SAG v2 separate SQL publisher connection", () => {
+  it("routes the directory wrapper only after both explicit opt-ins and 067 readiness", async () => {
+    const directory = "settings.publish_catalog_sag_v2_owner_with_directory";
+    const flag = { PORTAL_CATALOG_SAG_DIRECTORY_ENABLED: "true" };
+    expect(readCatalogSagV2PublisherPoolSettings({ ...ownerEnv(), ...flag })).toBeNull();
+    const base = { ...ownerEnv(), PORTAL_CATALOG_SAG_DATABASE_NAMES_ENABLED: "true" };
+    const old = fakeIO();
+    const legacy = createCatalogSagV2PublisherPoolLoader(base, old.io);
+    await expect((await legacy.get()).request().execute(directory)).rejects.toThrow(unavailable);
+    await legacy.close();
+    const h = fakeIO();
+    const loader = createCatalogSagV2PublisherPoolLoader({ ...base, ...flag }, h.io);
+    const pool = await loader.get();
+    expect(h.pool.query).toHaveBeenCalledExactlyOnceWith(CATALOG_SAG_V2_OWNER_DIRECTORY_READINESS_SQL);
+    expect(CATALOG_SAG_V2_OWNER_DIRECTORY_READINESS_SQL).toContain(directory);
+    await pool.request().execute(directory);
+    expect(h.pool.execute).toHaveBeenCalledExactlyOnceWith(directory);
+    await loader.close();
+  });
   it("enables owner reuse only by exact explicit mode without serializing its password", () => {
     const source = ownerEnv();
     const settings = readCatalogSagV2PublisherPoolSettings(source);

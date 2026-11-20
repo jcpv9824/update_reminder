@@ -16,6 +16,14 @@ La migración opcional 066 guarda únicamente nombres validados y asociados a re
 
 ## Historial de integración
 
+### Directorio observado V2: criterios de aceptación
+
+- Mostrar el identificador público del Portal, nunca el documento ni su token. Reutilizar el mismo ID para todas las vistas. Mantener el alcance de fuentes y permisos actuales; no reclasificar como «Solo SAG Admin» a un cliente cuya coincidencia ERP exista pero quede fuera del alcance del lector. «Solo SAG Admin» requiere una revisión vigente y estado ERP «No verificado»; no cambia la elegibilidad operativa.
+- Conservar el token histórico exacto. Para la comparación adicional de NIT colombiano, eliminar espacios, cortar desde el primer guion y aceptar solo el número base decimal en el alcance aprobado `CO:NIT`. El documento extranjero se conserva entero para la lógica anterior. Si los dos métodos apuntan a clientes diferentes, o hay más de un cliente candidato, no establecer el vínculo.
+- No agrupar ambientes en Dominios/Bases de Datos: mostrar una fila por cliente, relación y ambiente explícito. Filtrar antes de paginar. Licenciamiento ofrece las 24 equivalencias aprobadas únicamente para mostrar nombres: queda excluido el código sin nombre y no se deduce ningún código para BI. No registrar nuevas aprobaciones de módulos operativos.
+- Orden de ensayo: comprobar hash/parser de 067, ensayo revertido y repetición en QA; aplicar en QA, desplegar el API compatible, activar la publicación de la variante con la tabla nueva, esperar una revisión fresca y probar las pantallas y alcances. En producción requerir respaldo y autorización SQL vigente antes de tocar el esquema, publicar primero SQL y API, comprobar publicación y recién entonces avanzar el frontend.
+- La publicación nueva requiere `PORTAL_CATALOG_SAG_DIRECTORY_ENABLED=true` y el publicador 066 habilitado. La lectura V2 se aísla en `PORTAL_CATALOG_DIRECTORY_V2_ENABLED=true`; el frontend compila el opt-in desde la variable de GitHub `PORTAL_CATALOG_DIRECTORY_V2_ENABLED`. Mantener apagado el catálogo operativo donde ya lo estaba. La reversión de aplicación retorna al lector/publicador anterior, sin eliminar historial ni modificar permisos.
+
 La primera ejecución del paquete de esquema en `PortalSAGWeb-TEST` registró las cinco migraciones 031–035 y pasó la verificación del ejecutor. Una consulta posterior de solo lectura confirmó 0 fuentes activas, 0 revisiones publicadas y 0 nuevas ejecuciones de tareas. No se publicó el API de QA ni se modificó producción.
 
 La migración 036 también quedó aplicada y verificada en `PortalSAGWeb-TEST`. El ensayo `migration/tools/Test-CatalogPhysicalTargetsQa.ps1` usó la consulta real del registro dentro de una transacción revertida: dos vínculos resolvieron un único destino web y SQL respectivamente, volver al valor anterior no reactivó una prueba de ruta/perfil, y quedaron cero filas de prueba. No se abrieron conexiones a bases de clientes ni se activó el programador.

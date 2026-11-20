@@ -32,3 +32,4 @@ migration/sql/059_catalog_sag_v2_license_approval.sql text eol=lf
 migration/sql/064_catalog_sag_owner_publisher.sql text eol=lf
 migration/sql/065_catalog_erp_owner_publisher.sql text eol=lf
 migration/sql/066_catalog_sag_database_names.sql text eol=lf
+migration/sql/067_catalog_sag_customer_directory.sql text eol=lf

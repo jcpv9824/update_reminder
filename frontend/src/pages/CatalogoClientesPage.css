@@ -3,6 +3,10 @@
   max-inline-size: 100%;
 }
 
+.catalogo-clientes-origen {
+  text-align: right;
+}
+
 .catalogo-fuentes-boton {
   display: flex;
   align-items: center;

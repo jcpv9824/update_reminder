@@ -6,7 +6,7 @@ import type { CatalogExternalReadStatement, CatalogExternalSourceTransport, Cata
 import type { SqlCatalogSourceBinding } from "../lib/catalogSourceBindingsSqlRepository";
 import type { CatalogRefreshClaim } from "../lib/catalogRefreshQueueSqlRepository";
 import type { CatalogSagV2FailureResult, CatalogSagV2PublishResult, CatalogSagV2Reservation,
-  CatalogSagV2WorkerPublication } from "../lib/catalogSagV2WorkerPublisher";
+  CatalogSagV2WorkerPublication, CatalogSagDirectoryObservation } from "../lib/catalogSagV2WorkerPublisher";
 import { runCatalogSagV2Refresh, type CatalogSagV2RefreshInput } from "../lib/catalogSagV2RefreshOrchestrator";
 
 const baseClaim: CatalogRefreshClaim = {
@@ -33,7 +33,7 @@ const sensitiveError = () => new Error("synthetic-private-driver-message");
 const unconfirmed = { outcome: "unconfirmed", queue: "lease-recovery" };
 const stale = { outcome: "stale", queue: "fenced-stale" };
 
-function harness(observedAt = new Date("2026-11-18T05:00:00.000Z")) {
+function harness(observedAt = new Date("2026-11-18T05:00:00.000Z"), directory = false) {
   const raw: Partial<Record<CatalogExternalReadStatement["tag"], readonly unknown[]>> = {
     schema: [{ compatible: true, readOnly: true }], counts: [{ customerCount: "3", companyCount: "2" }],
     customerPage: [row(1, 1, " 123-4 "), row(2, 999, "ABC"), row(3, 1, "malformed\u0000document")],
@@ -59,7 +59,7 @@ function harness(observedAt = new Date("2026-11-18T05:00:00.000Z")) {
   const transport: CatalogExternalSourceTransport = {
     withConsistentRead(options, work) {
       events.push("snapshot");
-      expect(options.contract).toBe("sag_admin_v2_targets");
+      expect(options.contract).toBe(directory ? "sag_admin_v2_directory" : "sag_admin_v2_targets");
       return work({ consistency: "verified", select });
     },
   };
@@ -71,7 +71,8 @@ function harness(observedAt = new Date("2026-11-18T05:00:00.000Z")) {
   });
   const publish = vi.fn(async (_ordinal: string, _body: CatalogSagV2WorkerPublication,
     _targets: readonly CatalogSagCompanyTargetObservation[],
-    _names?: readonly CatalogSagDatabaseObservation[]): Promise<CatalogSagV2PublishResult> => {
+    _names?: readonly CatalogSagDatabaseObservation[],
+    _directory?: readonly CatalogSagDirectoryObservation[]): Promise<CatalogSagV2PublishResult> => {
     events.push("publish"); return { result: "published", jobStatus: "succeeded" };
   });
   const recordFailure = vi.fn(async (_ordinal: string): Promise<CatalogSagV2FailureResult> => {
@@ -84,6 +85,24 @@ function harness(observedAt = new Date("2026-11-18T05:00:00.000Z")) {
 }
 
 describe("SAG v2 dedicated refresh worker", () => {
+  it("keeps the original document token and publishes a separate directory variant only for approved Colombian NITs", async () => {
+    const h = harness(undefined, true);
+    h.raw.customerPage = [
+      { ...row(1, 1, "12 3 -4"), displayName: "Synthetic ERP match" },
+      { ...row(2, 999, "12-2-2025 DV3"), displayName: "Synthetic foreign customer" },
+      { ...row(3, null, null), displayName: "unsafe\u0000name" },
+    ];
+    expect(await runCatalogSagV2Refresh({ ...h.input, includeDatabaseNames: true, includeDirectory: true }, h.io))
+      .toMatchObject({ outcome: "published", queue: "settled" });
+    const [[, payload, , , records]] = h.publish.mock.calls;
+    expect(payload.customers[0].token).toEqual(catalogDocumentNumberToken(h.matchKey, "qa", "12 3 -4"));
+    expect(records).toEqual([
+      { sourceRecordId: 1, displayName: "Synthetic ERP match", normalizedNitToken: catalogDocumentNumberToken(h.matchKey, "qa", "123")?.toString("hex") },
+      { sourceRecordId: 2, displayName: "Synthetic foreign customer", normalizedNitToken: null },
+      { sourceRecordId: 3, displayName: null, normalizedNitToken: null },
+    ]);
+    expect(JSON.stringify(h.publish.mock.calls)).not.toMatch(/12 3 -4|12-2-2025 DV3/);
+  });
   it("publishes a safe catalog name with the target in an opted-in claim without exporting the locator", async () => {
     const h = harness();
     const { targetDatabaseName, targetHost } = { targetDatabaseName: "Fixture_DB", targetHost: "sql.synthetic.invalid" };

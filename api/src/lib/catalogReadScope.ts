@@ -10,3 +10,7 @@ export const catalogClientsReadEnabled = (env: NodeJS.ProcessEnv = process.env):
 /** Independent read-only directory; never enables operational catalog workflows. */
 export const catalogObservedInventoryEnabled = (env: NodeJS.ProcessEnv = process.env): boolean =>
   env.PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED === "true";
+
+/** Additive consultation features; never enable operational readers or timers. */
+export const catalogDirectoryV2Enabled = (env: NodeJS.ProcessEnv = process.env): boolean =>
+  catalogObservedInventoryEnabled(env) && env.PORTAL_CATALOG_DIRECTORY_V2_ENABLED === "true";

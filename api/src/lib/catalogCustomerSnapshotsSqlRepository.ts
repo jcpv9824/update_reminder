@@ -10,6 +10,8 @@ import {
 } from "./catalogCustomerDirectory";
 import type { CatalogEnvironment, CatalogSourceRole } from "./catalogSourceConfiguration";
 import { getSqlPool } from "./sql";
+import { catalogReconciledIdentitySql } from "./catalogReconciledIdentitySql";
+import { runSqlTransaction } from "./sqlTransaction";
 
 const maxSources = 32;
 const maxRows = 100_000;
@@ -23,6 +25,22 @@ export interface CatalogCustomerSnapshotsReadScope {
   matchKeyVersion: number;
   sourcePriorityById?: ReadonlyMap<string, number>;
   preferredSourceByCustomer?: ReadonlyMap<string, string>;
+  /** Trusted authenticated actor; required for V2 and revalidated against Portal SQL. */
+  actorId?: string;
+  /** Trusted runtime policy; not a browser-selected option. */
+  includeSagDirectory?: boolean;
+}
+
+export interface CatalogReconciledDirectoryRow {
+  customer_id: string;
+  display_name: string;
+  sag_record_id: number;
+  sag_only: boolean;
+}
+export interface CatalogReconciledDirectoryProjection {
+  rows: readonly CatalogReconciledDirectoryRow[];
+  sagReady: boolean;
+  partial: boolean;
 }
 
 export interface CatalogSnapshotHeaderRow {
@@ -90,6 +108,7 @@ export function mapCatalogCustomerSnapshots(
   headers: readonly CatalogSnapshotHeaderRow[],
   records: readonly CatalogSnapshotCustomerRow[],
   scopes: readonly CatalogSnapshotCoverageRow[],
+  reconciled?: CatalogReconciledDirectoryProjection,
 ): CatalogDirectoryInput {
   const allowed = normalizedAuthorizedSources(scope);
   if (headers.length > maxSources + 1 || records.length > maxRows || scopes.length > 512) fail();
@@ -161,11 +180,65 @@ export function mapCatalogCustomerSnapshots(
     } else fail();
   }
   if ([...rowsBySource.keys(), ...scopesBySource.keys()].some(id => !seen.has(id))) fail();
-  return { erp, sag: sag ?? { state: "unavailable", verifiedAt: null, documents: [], completeScopes: [] },
-    allowedSourceIds: allowed, preferredSourceByCustomer: scope.preferredSourceByCustomer };
+  const result: CatalogDirectoryInput = {
+    erp, sag: sag ?? { state: "unavailable", verifiedAt: null, documents: [], completeScopes: [] },
+    allowedSourceIds: allowed, preferredSourceByCustomer: scope.preferredSourceByCustomer,
+  };
+  if (scope.includeSagDirectory) {
+    if (!scope.actorId || !reconciled || reconciled.rows.length > maxRows ||
+        typeof reconciled.sagReady !== "boolean" || typeof reconciled.partial !== "boolean") fail();
+    const seenSagRecords = new Set<number>();
+    const sagHeader = headers.find(header => header.source_role === "sag-admin");
+    const sagRecords = new Map((sagHeader ? rowsBySource.get(sagHeader.source_id) ?? [] : [])
+      .map(row => [row.source_record_id, row]));
+    const orphanNames = new Map<string, string>();
+    const documents = new Map<string, CatalogDocument>();
+    const erpDocuments = new Map<string, CatalogDocument[]>();
+    const knownErpDocumentKeys = new Set<string>();
+    for (const source of erp) {
+      if (source.state !== "verified") continue;
+      for (const row of source.customers) {
+        if (row.document) {
+          erpDocuments.set(row.customerId, [...(erpDocuments.get(row.customerId) ?? []), row.document]);
+          knownErpDocumentKeys.add(JSON.stringify([row.document.issuer, row.document.type, row.document.number]));
+        }
+      }
+    }
+    for (const row of reconciled.rows) {
+      const sourceRow = sagRecords.get(row.sag_record_id);
+      if (!uuid.test(row.customer_id) || typeof row.display_name !== "string" ||
+          !row.display_name.trim() || row.display_name.length > 512 || /\p{C}/u.test(row.display_name) ||
+          !Number.isInteger(row.sag_record_id) || row.sag_record_id < -2147483648 || row.sag_record_id > 2147483647 ||
+          seenSagRecords.has(row.sag_record_id) || typeof row.sag_only !== "boolean") fail();
+      seenSagRecords.add(row.sag_record_id);
+      if (!reconciled.sagReady || result.sag.state !== "verified") continue;
+      if (!sourceRow) fail();
+      if (row.sag_only) {
+        if (erpDocuments.has(row.customer_id)) fail();
+        const token = tokenValue(sourceRow.document_number_token);
+        const doc = toDocument(sourceRow, token);
+        if (doc && knownErpDocumentKeys.has(JSON.stringify([doc.issuer, doc.type, doc.number]))) fail();
+        // All environments for the same orphan identity share its SQL-generated UUID.
+        const name = orphanNames.get(row.customer_id);
+        if (!name || row.display_name.localeCompare(name, "es") < 0) orphanNames.set(row.customer_id, row.display_name);
+      } else {
+        const candidates = erpDocuments.get(row.customer_id);
+        if (!candidates?.length || candidates.some(doc => doc.issuer !== candidates[0].issuer ||
+            doc.type !== candidates[0].type || doc.number !== candidates[0].number)) fail();
+        for (const doc of candidates) documents.set(JSON.stringify([doc.issuer, doc.type, doc.number]), doc);
+      }
+    }
+    // Only the common SQL match graph can certify a positive V2 relationship.
+    // It may contain held/ambiguous identities; do not turn their omission into absence.
+    result.sag = { ...result.sag, documents: [...documents.values()], completeScopes: [],
+      unresolvedNumbers: [], ...(!reconciled.sagReady ? { state: "unavailable" as const, verifiedAt: null } : {}) };
+    result.sagOnlyCustomers = [...orphanNames].map(([customerId, name]) => ({ customerId, name }));
+    result.partial = reconciled.partial;
+  }
+  return result;
 }
 
-const readSnapshots = `
+const readSnapshots = (v2: boolean) => `
   SET NOCOUNT ON;
   DECLARE @now datetime2(3)=SYSUTCDATETIME();
   DECLARE @eligible TABLE (
@@ -196,8 +269,11 @@ const readSnapshots = `
   LEFT JOIN core.catalog_customer_source_revisions AS r ON r.catalog_source_key=b.catalog_source_key AND r.revision_key=h.revision_key
   CROSS APPLY (VALUES (CASE WHEN r.sealed_at IS NOT NULL AND r.sealed_at<=@now AND r.match_key_version=@matchKeyVersion
     AND b.validated_profile_version=p.row_version AND r.profile_version=p.row_version AND r.binding_version=b.row_version
-    AND p.active=1 AND p.status='active' AND p.encrypt_connection=1 AND p.password_configured=1 THEN r.revision_key END)) AS ready(snapshot_key)
+    AND p.active=1 AND p.status='active' AND p.encrypt_connection=1 AND p.password_configured=1
+    ${v2 ? "AND EXISTS(SELECT 1 FROM @observedHeads captured WHERE captured.source_key=b.catalog_source_key AND captured.revision_key=r.revision_key)" : ""}
+    THEN r.revision_key END)) AS ready(snapshot_key)
   WHERE b.portal_environment=@environment AND b.source_state='active'
+    ${v2 ? "AND (b.source_role='sag-admin' OR EXISTS(SELECT 1 FROM @observedAllowed authorized WHERE authorized.source_id=LOWER(CONVERT(char(36),b.source_id))))" : ""}
     -- A first failed attempt still represents an authorized unavailable source.
     AND (b.source_role='sag-admin' OR (b.source_role='erp-customers'
       AND EXISTS (SELECT 1 FROM OPENJSON(@allowedSourceIds) AS a WHERE TRY_CONVERT(uniqueidentifier,a.[value])=b.source_id)));
@@ -220,21 +296,49 @@ const readSnapshots = `
 /** Service-only SELECTs against Portal SQL; never connects to ERP or SAG data sources. */
 export async function readSqlCatalogCustomerSnapshots(scope: CatalogCustomerSnapshotsReadScope): Promise<CatalogDirectoryInput> {
   const allowed = normalizedAuthorizedSources(scope);
-  if (!allowed.size) return mapCatalogCustomerSnapshots(scope, [], [], []);
+  const v2 = scope.includeSagDirectory === true;
+  if (v2 && (typeof scope.actorId !== "string" || !scope.actorId.trim() || scope.actorId.length > 128 ||
+      /\p{C}/u.test(scope.actorId))) fail();
+  if (!allowed.size && !v2) return mapCatalogCustomerSnapshots(scope, [], [], []);
   try {
-    const pool = await getSqlPool();
-    const result = await pool.request()
-      .input("environment", sql.VarChar(10), scope.environment)
-      .input("matchKeyVersion", sql.SmallInt, scope.matchKeyVersion)
-      .input("allowedSourceIds", sql.NVarChar(2048), JSON.stringify([...allowed]))
-      .input("rowLimit", sql.Int, maxRows)
-      .query(readSnapshots);
-    if (!Array.isArray(result.recordsets) || result.recordsets.length !== 3 ||
-        !result.recordsets.every(Array.isArray)) fail();
-    const [headers, records, scopes] = result.recordsets as unknown as [
-      CatalogSnapshotHeaderRow[], CatalogSnapshotCustomerRow[], CatalogSnapshotCoverageRow[],
-    ];
-    return mapCatalogCustomerSnapshots(scope, headers, records, scopes);
+    const read = async (request: sql.Request) => {
+      request
+        .input("environment", sql.VarChar(10), scope.environment)
+        .input("matchKeyVersion", sql.SmallInt, scope.matchKeyVersion)
+        .input("allowedSourceIds", sql.NVarChar(2048), JSON.stringify([...allowed]))
+        .input("rowLimit", sql.Int, maxRows);
+      if (v2) {
+        request.input("actorId", sql.NVarChar(128), scope.actorId)
+          .input("sourceIds", sql.NVarChar(2048), JSON.stringify([...allowed]))
+          .input("selectedSourceIds", sql.NVarChar(sql.MAX), null);
+      }
+      const result = await request.query(v2 ? `
+        ${catalogReconciledIdentitySql}
+        ${readSnapshots(true)}
+        SELECT customer_id,customer_name AS display_name,source_record_id AS sag_record_id,sag_only FROM @observedIdentity;
+        SELECT @observedSagReady AS sag_ready,@observedPartial AS partial;
+      ` : readSnapshots(false));
+      if (!Array.isArray(result.recordsets) || result.recordsets.length !== (v2 ? 5 : 3) ||
+          !result.recordsets.every(Array.isArray)) fail();
+      const [headers, records, scopes] = result.recordsets as unknown as [
+        CatalogSnapshotHeaderRow[], CatalogSnapshotCustomerRow[], CatalogSnapshotCoverageRow[],
+      ];
+      let reconciled: CatalogReconciledDirectoryProjection | undefined;
+      if (v2) {
+        const extraSets = result.recordsets as unknown as unknown[][];
+        const status = extraSets[4];
+        if (status.length !== 1) fail();
+        const row = status[0] as { sag_ready?: unknown; partial?: unknown };
+        if (typeof row.sag_ready !== "boolean" || typeof row.partial !== "boolean") fail();
+        reconciled = { rows: extraSets[3] as CatalogReconciledDirectoryRow[],
+          sagReady: row.sag_ready, partial: row.partial };
+      }
+      return mapCatalogCustomerSnapshots(scope, headers, records, scopes, reconciled);
+    };
+    // A serializable read prevents ACL, profile or head changes between the
+    // common graph and its exact immutable snapshot projection.
+    return v2 ? await runSqlTransaction(transaction => read(new sql.Request(transaction)))
+      : await read((await getSqlPool()).request());
   } catch {
     // Driver errors and internal comparison material are never exposed or logged here.
     fail();

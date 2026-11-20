@@ -33,6 +33,8 @@ export type ResumenCatalogoCliente = Readonly<{
   sources: readonly (FuenteCatalogoCliente & { readonly state: Estado })[];
   stateVaries: boolean;
   requiresReconciliation: boolean;
+  /** Absent in older payloads; never inferred from an unavailable ERP source. */
+  sagOnly?: boolean;
 }>;
 
 export type CatalogoClientesResponse = Readonly<{
@@ -106,7 +108,7 @@ function DetalleFuentes({ cliente, scopeKey, loadDetail, indicadores, panelId }:
             </li>
           ))}
         </ul>
-      ) : <p>Sin procedencias disponibles.</p>)}
+      ) : <p>{(loadDetail ? detalle.data?.sagOnly : cliente.sagOnly) ? "Solo SAG Admin" : "Sin procedencias disponibles."}</p>)}
       {indicadores && detalle.isSuccess && detalle.data &&
         <CatalogoClienteIndicadores key={alcanceIndicadores} scopeKey={alcanceIndicadores}
           customerId={cliente.id} indicadores={indicadores} />}
@@ -242,7 +244,7 @@ function CatalogoClientesContenido({ scopeKey, load, loadDetail, indicadores, re
       )}
       <form className="barra-filtros" onSubmit={buscar} aria-label="Filtros de clientes">
         <div className="campo">
-          <label htmlFor={`${id}-buscar`}>Buscar por nombre oficial</label>
+          <label htmlFor={`${id}-buscar`}>Buscar por ID o nombre</label>
           <input id={`${id}-buscar`} value={busqueda} maxLength={200}
             onChange={event => setBusqueda(event.target.value)} />
         </div>
@@ -253,6 +255,7 @@ function CatalogoClientesContenido({ scopeKey, load, loadDetail, indicadores, re
             onChange={event => cambiar({ state: event.target.value as CatalogoClientesQuery["state"] })}>
             <option value="active">Activos</option>
             <option value="inactive">Inactivos</option>
+            <option value="unverified">No verificados</option>
             <option value="all">Todos</option>
           </select>
         </div>
@@ -333,14 +336,15 @@ function CatalogoClientesContenido({ scopeKey, load, loadDetail, indicadores, re
           <div className="tabla-contenedor">
             <table aria-label="Clientes del catálogo">
               <thead><tr>
-                <th scope="col">Nombre oficial</th>
+                <th scope="col">ID</th>
+                <th scope="col">Nombre</th>
                 <th scope="col">Estado</th>
                 <th scope="col">SAG Web</th>
-                <th scope="col">Fuentes</th>
+                <th scope="col" className="catalogo-clientes-origen">Origen</th>
               </tr></thead>
               <tbody>
                 {!pagina.items.length && (
-                  <tr><td colSpan={4} className="vacio">
+                  <tr><td colSpan={5} className="vacio">
                     {pagina.partial ? "No hay resultados confirmados para estos filtros." : "No hay clientes para mostrar."}
                   </td></tr>
                 )}
@@ -375,11 +379,12 @@ function CustomerRows({ cliente, abierto, panelId, onToggle, scopeKey, loadDetai
   return (
     <>
       <tr>
+        <td>{cliente.id}</td>
         <th scope="row">{cliente.name}</th>
         <td>{ESTADO[cliente.state]}{cliente.stateVaries && <small> · Varía por fuente</small>}</td>
         <td>{SAG_WEB[cliente.web]}{cliente.requiresReconciliation && <small> · Requiere conciliación</small>}</td>
-        <td>
-          <span>{cliente.sources.map(fuente => fuente.label).join(", ") || "Sin procedencias en este resultado"}</span>{" "}
+        <td className="catalogo-clientes-origen">
+          <span>{cliente.sagOnly ? "Solo SAG Admin" : cliente.sources.map(fuente => fuente.label).join(", ") || "Sin procedencias en este resultado"}</span>{" "}
           <button type="button" className="secundario" onClick={onToggle}
             aria-expanded={abierto} aria-controls={abierto ? panelId : undefined}
             aria-label={`${abierto ? "Ocultar" : "Ver"} fuentes de ${cliente.name}`}>
@@ -387,7 +392,7 @@ function CustomerRows({ cliente, abierto, panelId, onToggle, scopeKey, loadDetai
           </button>
         </td>
       </tr>
-      {abierto && <tr><td colSpan={4}>
+      {abierto && <tr><td colSpan={5}>
         <DetalleFuentes cliente={cliente} scopeKey={scopeKey} loadDetail={loadDetail} indicadores={indicadores} panelId={panelId} />
       </td></tr>}
     </>

@@ -1,4 +1,5 @@
 import { catalogDocumentNumberToken } from "./catalogCustomerRefresh";
+import { normalizeCatalogColombianNit } from "./catalogColombianNit";
 import { buildCatalogMatchKeyEvidence, type CatalogMatchKeyEvidence } from "./catalogMatchKeyEvidence";
 import { readCatalogSagDiscoveryV2WithTargets, type CatalogExternalSourceTransport, type CatalogSagDiscoveryV2Result } from "./catalogExternalSourceQueries";
 import type { CatalogRefreshClaim } from "./catalogRefreshQueueSqlRepository";
@@ -15,6 +16,7 @@ export type CatalogSagV2RefreshInput = Readonly<{
   vaultSecretVersion: string;
   scopesByCountry: ReadonlyMap<number, Scope>;
   includeDatabaseNames?: true;
+  includeDirectory?: true;
   signal?: AbortSignal;
 }>;
 export type CatalogSagV2RefreshIO = Readonly<{
@@ -64,9 +66,10 @@ const validUuid = (v: unknown): v is string => typeof v === "string" && uuid.tes
 function copyInput(input: CatalogSagV2RefreshInput) {
   const required = ["claim", "matchKey", "vaultSecretVersion", "scopesByCountry"] as const;
   const withNames = Object.hasOwn(input, "includeDatabaseNames");
+  const withDirectory = Object.hasOwn(input, "includeDirectory");
   if (!exact(input, [...required, ...(Object.hasOwn(input, "signal") ? ["signal"] : []),
-    ...(withNames ? ["includeDatabaseNames"] : [])])) return null;
-  const { claim, matchKey, vaultSecretVersion, scopesByCountry, signal, includeDatabaseNames } = input;
+    ...(withNames ? ["includeDatabaseNames"] : []), ...(withDirectory ? ["includeDirectory"] : [])])) return null;
+  const { claim, matchKey, vaultSecretVersion, scopesByCountry, signal, includeDatabaseNames, includeDirectory } = input;
   if (!exact(claim, claimKeys) || !validUuid(claim.jobId) || !validUuid(claim.workerId) ||
     !validUuid(claim.leaseToken) || !validUuid(claim.sourceId) || !integer(claim.attempt, 1, 5) ||
     (claim.environment !== "qa" && claim.environment !== "production") ||
@@ -75,7 +78,8 @@ function copyInput(input: CatalogSagV2RefreshInput) {
     !integer(claim.matchKeyVersion, 1, 32767) ||
     !Buffer.isBuffer(matchKey) || matchKey.length !== 32 ||
     typeof vaultSecretVersion !== "string" || vaultSecretVersion.length !== 32 || !/^[a-f0-9]{32}$/i.test(vaultSecretVersion) ||
-    (signal !== undefined && !(signal instanceof AbortSignal)) || (withNames && includeDatabaseNames !== true)) return null;
+    (signal !== undefined && !(signal instanceof AbortSignal)) || (withNames && includeDatabaseNames !== true) ||
+    (withDirectory && (includeDirectory !== true || includeDatabaseNames !== true))) return null;
 
   const scopes = new Map<number, Scope>();
   // Bypass any instance-level iterator override, bound the actual map and copy each data-only value.
@@ -86,7 +90,7 @@ function copyInput(input: CatalogSagV2RefreshInput) {
     scopes.set(name, { issuer: scope.issuer, documentType: scope.documentType });
   }
   return { claim: Object.freeze({ ...claim } as CatalogRefreshClaim), scopes, privateKey: Buffer.from(matchKey),
-    vaultSecretVersion, signal, includeDatabaseNames };
+    vaultSecretVersion, signal, includeDatabaseNames, includeDirectory };
 }
 
 /** Only read-side work can use this race. The caller of a write must await its result even on abort. */
@@ -206,7 +210,8 @@ export async function runCatalogSagV2Refresh(args: CatalogSagV2RefreshInput, io:
     const guarded: CatalogExternalSourceTransport = {
       async withConsistentRead(request, read) {
         await checkRead(request.signal);
-        if (request.contract !== "sag_admin_v2_targets" || request.signal.aborted || signal?.aborted) throw unavailable();
+        if (request.contract !== (input.includeDirectory ? "sag_admin_v2_directory" : "sag_admin_v2_targets") ||
+          request.signal.aborted || signal?.aborted) throw unavailable();
         return transport.withConsistentRead(request, session => read({
           consistency: session.consistency,
           async select(statement) {
@@ -219,7 +224,7 @@ export async function runCatalogSagV2Refresh(args: CatalogSagV2RefreshInput, io:
     };
     const discovery = await readCatalogSagDiscoveryV2WithTargets(guarded, { environment: claim.environment,
       sourceId: claim.sourceId, matchKey: input.privateKey, matchKeyVersion: claim.matchKeyVersion },
-    { signal, includeDatabaseNames: input.includeDatabaseNames });
+    { signal, includeDatabaseNames: input.includeDatabaseNames, includeDirectory: input.includeDirectory });
     if (readState.denied) return readState.denied === "stale" ? stale : unconfirmed;
     if (discovery.status !== "complete" || signal?.aborted) return await fencedFailure();
     if (input.includeDatabaseNames && discovery.databaseNames === undefined) return await fencedFailure();
@@ -234,7 +239,16 @@ export async function runCatalogSagV2Refresh(args: CatalogSagV2RefreshInput, io:
     if (signal?.aborted) return await fencedFailure();
 
     // This RPC can commit even if its response is lost or the caller cancels. Nothing may compensate or retry here.
-    const response: unknown = input.includeDatabaseNames
+    const directoryRows = input.includeDirectory ? discovery.customers.map(row => {
+      const scope = row.reportedCountryId === null ? undefined : input.scopes.get(row.reportedCountryId);
+      const normalized = normalizeCatalogColombianNit(row.documentNumber, scope);
+      return { sourceRecordId: row.sourceRecordId, displayName: row.displayName ?? null,
+        normalizedNitToken: normalized === null ? null
+          : catalogDocumentNumberToken(input.privateKey, claim.environment, normalized)?.toString("hex") ?? null };
+    }) : undefined;
+    const response: unknown = directoryRows !== undefined
+      ? await publisher.publishWithTargets(attemptOrdinal, body, discovery.targetObservations, discovery.databaseNames, directoryRows)
+      : input.includeDatabaseNames
       ? await publisher.publishWithTargets(attemptOrdinal, body, discovery.targetObservations, discovery.databaseNames)
       : await publisher.publishWithTargets(attemptOrdinal, body, discovery.targetObservations);
     if (!exact(response, ["result", "jobStatus"])) return unconfirmed;

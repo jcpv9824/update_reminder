@@ -5,12 +5,15 @@ import { readAuthorizedCatalogSourceIds } from "../lib/catalogSourceAccessSqlRep
 import { readSqlCatalogCustomerSnapshots } from "../lib/catalogCustomerSnapshotsSqlRepository";
 import { createCatalogCustomerInventoryHttp } from "../lib/catalogCustomerInventoryHttp";
 import { readSqlCatalogSagCustomerEvidence } from "../lib/catalogSagCustomerEvidenceSqlRepository";
-import { createCatalogMasterInventoryHttp } from "../lib/catalogMasterInventoryHttp";
+import { createCatalogMasterInventoryHttp, type CatalogMasterView } from "../lib/catalogMasterInventoryHttp";
 import { readSqlCatalogMasterInventory, readSqlCatalogObservedInventory } from "../lib/catalogMasterInventorySqlRepository";
+import { createCatalogObservedInventoryV2Http } from "../lib/catalogObservedInventoryV2Http";
+import { readSqlCatalogObservedInventoryV2 } from "../lib/catalogObservedInventoryV2SqlRepository";
+import type { HttpRequest } from "@azure/functions";
 import { canViewClients, canViewDatabases, canViewDomains, canViewLicensingOption } from "../lib/managementAccess";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
 import type { CatalogEnvironment } from "../lib/catalogSourceConfiguration";
-import { catalogClientsReadEnabled, catalogFullReadEnabled, catalogObservedInventoryEnabled } from "../lib/catalogReadScope";
+import { catalogClientsReadEnabled, catalogFullReadEnabled, catalogObservedInventoryEnabled, catalogDirectoryV2Enabled } from "../lib/catalogReadScope";
 
 function environment(): CatalogEnvironment {
   const configured = process.env.PORTAL_SAG_ENVIRONMENT?.trim();
@@ -29,6 +32,7 @@ function matchKeyVersion(): number {
 
 const directory = createCatalogDirectoryHttp({
   enabled: catalogClientsReadEnabled,
+  includeSagDirectory: catalogDirectoryV2Enabled,
   authorize: async request => {
     try {
       const actor = await loadUserProfile(await requireUser(request));
@@ -41,8 +45,10 @@ const directory = createCatalogDirectoryHttp({
     }
   },
   readAllowedSourceIds: actorId => readAuthorizedCatalogSourceIds({ actorId, environment: environment() }),
-  readPublishedDirectory: allowedSourceIds => readSqlCatalogCustomerSnapshots({
+  readPublishedDirectory: (allowedSourceIds, actorId) => readSqlCatalogCustomerSnapshots({
     allowedSourceIds,
+    actorId,
+    includeSagDirectory: catalogDirectoryV2Enabled(),
     environment: environment(),
     matchKeyVersion: matchKeyVersion(),
   }),
@@ -91,28 +97,36 @@ for (const view of ["domains", "licenses"] as const) {
   });
 }
 
-const standalone = createCatalogMasterInventoryHttp({
-  enabled: () => catalogFullReadEnabled() || catalogObservedInventoryEnabled(),
-  authorize: async (request, view) => {
+async function authorizeInventory(request: HttpRequest, view: CatalogMasterView): Promise<{ actorId: string } | { status: 401 | 403 }> {
     try {
       const actor = await loadUserProfile(await requireUser(request));
-      if (!actor) return { status: 403 };
+      if (!actor) return { status: 403 as const };
       const roles = (await loadRoleDefinitions()).filter(role => role.active !== false);
       const permission = view === "domains" ? canViewDomains : view === "databases" ? canViewDatabases : canViewLicensingOption;
-      return permission(actor, roles) ? { actorId: actor.id } : { status: 403 };
+      return permission(actor, roles) ? { actorId: actor.id } : { status: 403 as const };
     } catch (error) {
       const status = (error as { status?: unknown } | null)?.status;
       if (status === 401 || status === 403) return { status };
       throw error;
     }
-  },
-  readSources: actorId => readAuthorizedCatalogSourceIds({ actorId, environment: environment() }),
+}
+const readInventorySources = (actorId: string) => readAuthorizedCatalogSourceIds({ actorId, environment: environment() });
+
+const standalone = createCatalogMasterInventoryHttp({
+  enabled: () => catalogFullReadEnabled() || catalogObservedInventoryEnabled(),
+  authorize: authorizeInventory,
+  readSources: readInventorySources,
   read: query => (catalogObservedInventoryEnabled() ? readSqlCatalogObservedInventory : readSqlCatalogMasterInventory)(
     { ...query, environment: environment(), matchKeyVersion: matchKeyVersion() }),
+});
+const standaloneV2 = createCatalogObservedInventoryV2Http({
+  authorize: authorizeInventory,
+  readSources: readInventorySources,
+  read: query => readSqlCatalogObservedInventoryV2({ ...query, environment: environment(), matchKeyVersion: matchKeyVersion() }),
 });
 for (const view of ["domains", "databases", "licenses"] as const) {
   app.http(`catalogMasterInventory_${view}`, {
     route: `catalog/inventory/${view}`, methods: ["GET"], authLevel: "anonymous",
-    handler: request => standalone(request, view),
+    handler: request => (catalogDirectoryV2Enabled() && request.query.has("v") ? standaloneV2 : standalone)(request, view),
   });
 }

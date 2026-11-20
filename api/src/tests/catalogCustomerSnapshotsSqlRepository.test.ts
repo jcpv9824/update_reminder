@@ -10,9 +10,11 @@ import {
   type CatalogSnapshotHeaderRow,
 } from "../lib/catalogCustomerSnapshotsSqlRepository";
 
-const sqlMocks = vi.hoisted(() => ({ pool: vi.fn(), query: vi.fn(), input: vi.fn() }));
+const sqlMocks = vi.hoisted(() => ({ pool: vi.fn(), query: vi.fn(), input: vi.fn(), transaction: vi.fn() }));
 vi.mock("../lib/sql", () => ({ getSqlPool: sqlMocks.pool }));
-vi.mock("mssql", () => ({ default: { VarChar: vi.fn(), SmallInt: {}, NVarChar: vi.fn(), Int: {} } }));
+vi.mock("../lib/sqlTransaction", () => ({ runSqlTransaction: sqlMocks.transaction }));
+vi.mock("mssql", () => ({ default: { VarChar: vi.fn(), SmallInt: {}, NVarChar: vi.fn(), Int: {}, MAX: -1,
+  Request: class { input = sqlMocks.input; query = sqlMocks.query; } } }));
 
 const erpId = "00000000-0000-4000-8000-000000000001";
 const sagId = "00000000-0000-4000-8000-000000000002";
@@ -38,6 +40,67 @@ const records: CatalogSnapshotCustomerRow[] = [
 const coverage: CatalogSnapshotCoverageRow[] = [{ source_id: sagId, issuer: "CO", document_type: "NIT" }];
 
 describe("customer catalog published snapshots", () => {
+  it("requires actor authorization and verified common graph evidence for V2 without altering ERP identity", () => {
+    const v2 = { ...scope, includeSagDirectory: true, actorId: "actor-prueba" };
+    const reconciled = { rows: [{ customer_id: publicId, display_name: "Cliente ERP",
+      sag_record_id: 17, sag_only: false }], sagReady: true, partial: false };
+    // Deliberately different SAG exact token: the shared SQL projection has
+    // reconciled the scoped CO:NIT alias to the canonical ERP UUID.
+    const different = [{ ...records[0] }, { ...records[1], document_number_token: Buffer.alloc(32, 52) }];
+    const input = mapCatalogCustomerSnapshots(v2, headers, different, coverage, reconciled);
+    expect(buildCatalogCustomerDirectory(input).items[0]).toMatchObject({
+      id: publicId, name: "Cliente ERP", state: "active", web: "in_web",
+    });
+    expect(() => mapCatalogCustomerSnapshots(v2, headers, records, coverage)).toThrow("inconsistente");
+    expect(() => mapCatalogCustomerSnapshots({ ...v2, actorId: undefined }, headers, records, coverage, reconciled))
+      .toThrow("inconsistente");
+  });
+
+  it("does not let withheld or unavailable V2 graph evidence imply positive or negative presence", () => {
+    const v2 = { ...scope, includeSagDirectory: true, actorId: "actor-prueba" };
+    const input = mapCatalogCustomerSnapshots(v2, headers, records, coverage,
+      { rows: [], sagReady: true, partial: true });
+    const page = buildCatalogCustomerDirectory(input, { web: "all" });
+    expect(page.items[0].web).toBe("unverified");
+    expect(page.partial).toBe(true);
+    expect(buildCatalogCustomerDirectory(input, { web: "not_in_web" }).items).toHaveLength(0);
+    const unavailable = mapCatalogCustomerSnapshots(v2, headers, records, coverage,
+      { rows: [{ customer_id: "00000000-0000-4000-8000-000000000099", display_name: "SAG no vigente",
+        sag_record_id: 17, sag_only: true }], sagReady: false, partial: true });
+    expect(unavailable.sagOnlyCustomers).toEqual([]);
+    expect(unavailable.sag.state).toBe("unavailable");
+  });
+
+  it("renders only SQL-authorized SAG-only UUIDs and does not leak internal normalized material", () => {
+    const v2 = { ...scope, includeSagDirectory: true, actorId: "actor-prueba" };
+    const orphan = { customer_id: "00000000-0000-5000-8000-000000000099", display_name: "SAG solamente",
+      sag_record_id: 17, sag_only: true };
+    const orphanRecords = [records[0], { ...records[1], document_number_token: Buffer.alloc(32, 51) }];
+    const input = mapCatalogCustomerSnapshots(v2, headers, orphanRecords, coverage,
+      { rows: [orphan], sagReady: true, partial: false });
+    const page = buildCatalogCustomerDirectory(input, { state: "unverified" });
+    expect(page.items).toMatchObject([{ id: orphan.customer_id, name: orphan.display_name, state: "unverified", sagOnly: true }]);
+    expect(JSON.stringify(page)).not.toMatch(/hmac:|normalized|sag_record_id|document/);
+  });
+
+  it("revalidates V2 actor ACLs and captured heads in one transactional Portal read", async () => {
+    sqlMocks.input.mockReturnThis();
+    sqlMocks.transaction.mockImplementationOnce(async work => work({}));
+    sqlMocks.query.mockResolvedValueOnce({ recordsets: [headers, records, coverage, [{
+      customer_id: publicId, display_name: "Cliente ERP", sag_record_id: 17, sag_only: false,
+    }], [{ sag_ready: true, partial: false }]] });
+    const input = await readSqlCatalogCustomerSnapshots({ ...scope, actorId: "actor-v2", includeSagDirectory: true });
+    expect(buildCatalogCustomerDirectory(input).items[0].id).toBe(publicId);
+    expect(sqlMocks.transaction).toHaveBeenCalledTimes(1);
+    expect(sqlMocks.input.mock.calls.some(([name, _type, value]) => name === "actorId" && value === "actor-v2")).toBe(true);
+    expect(sqlMocks.input.mock.calls.some(([name, _type, value]) => name === "selectedSourceIds" && value === null)).toBe(true);
+    const statement = sqlMocks.query.mock.calls.at(-1)![0] as string;
+    expect(statement).toContain("@observedAllowed authorized");
+    expect(statement).toContain("captured.revision_key=r.revision_key");
+    expect(statement).toContain("security.catalog_source_readers");
+    expect(statement).toContain("core.catalog_sag_customer_directory_rows");
+    expect(statement).not.toMatch(/p\.(?:server_host|server_port|login_name|password_secret_name)\b/);
+  });
   it("joins matching protected tokens by scope without exposing the original value, token or SAG records", () => {
     const input = mapCatalogCustomerSnapshots(scope, headers, records, coverage);
     const page = buildCatalogCustomerDirectory(input);
@@ -91,10 +154,10 @@ describe("customer catalog published snapshots", () => {
     sqlMocks.input.mockReturnThis();
     const input = await readSqlCatalogCustomerSnapshots(scope);
     expect(input.erp).toHaveLength(1);
-    expect(sqlMocks.input.mock.calls.map(([name, _type, value]) => [name, value])).toEqual([
+    expect(sqlMocks.input.mock.calls.slice(-4).map(([name, _type, value]) => [name, value])).toEqual([
       ["environment", "qa"], ["matchKeyVersion", 1], ["allowedSourceIds", JSON.stringify([erpId])], ["rowLimit", 100000],
     ]);
-    const statement = sqlMocks.query.mock.calls[0][0];
+    const statement = sqlMocks.query.mock.calls.at(-1)![0];
     expect(statement).toMatch(/INSERT INTO @eligible/);
     expect(statement).toMatch(/CASE WHEN b\.source_role='erp-customers' THEN p\.database_name ELSE b\.display_name END/);
     expect(statement).toMatch(/b\.source_role='sag-admin' OR \(b\.source_role='erp-customers'\s+AND EXISTS \(SELECT 1 FROM OPENJSON\(@allowedSourceIds\)/);

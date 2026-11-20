@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
@@ -23,6 +23,9 @@ const routes = [
   ["/bases-de-datos", "Bases de Datos", "databases", "clients.databases.view", "/databases?"],
   ["/licenciamiento", "Licenciamiento", "licenses", "clients.licensing.view", "/license-modules?"],
 ] as const;
+const nativeDialogMethods = (["showModal", "close"] as const).map(name => ({
+  name, original: Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, name),
+}));
 
 const page = (state = "verified", items: unknown[] = [], current = 1, total = items.length) => ({
   items, state, page: current, pageSize: 25, total,
@@ -48,9 +51,14 @@ describe("Vistas independientes del catálogo", () => {
     // The rollout environment may enable observed inventory globally in CI.
     // Each observed scenario opts in explicitly; legacy tests start without it.
     vi.stubEnv("VITE_PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED", "false");
+    vi.stubEnv("VITE_PORTAL_CATALOG_DIRECTORY_V2_ENABLED", "false");
   });
 
   afterEach(() => {
+    for (const { name, original } of nativeDialogMethods) {
+      if (original) Object.defineProperty(HTMLDialogElement.prototype, name, original);
+      else Reflect.deleteProperty(HTMLDialogElement.prototype, name);
+    }
     vi.unstubAllEnvs();
     get.mockReset();
     post.mockReset();
@@ -93,16 +101,27 @@ describe("Vistas independientes del catálogo", () => {
   const observedRows = {
     domains: { name: "ejemplo.sagweb.co", heading: "Dominio" },
     databases: { name: "EMPRESA_WEB", heading: "Base de datos", detail: "ejemplo.sagweb.co", detailHeading: "Dominio" },
-    licenses: { name: "Código X", heading: "Módulo o código", detail: "Correspondencia no verificada", detailHeading: "Verificación del módulo" },
   };
 
-  it.each(routes)("%s consulta observaciones sin activar el inventario operativo ni encolar importaciones", async (path, label, view, permission, legacy) => {
+  it("conserva el contrato anterior de observaciones si el directorio v2 no se activa", async () => {
+    vi.stubEnv("VITE_PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED", "true");
+    mockRequests("clients.licensing.view", () => page("verified", [{
+      id: "registro", customerName: "Cliente ERP", name: "Código X", environment: "unknown",
+    }]));
+    renderRoute("/licenciamiento");
+    expect(await screen.findByRole("table", { name: "Licenciamiento del catálogo" })).toHaveTextContent("Código X");
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+    expect(get).toHaveBeenCalledWith("/catalog/inventory/licenses?page=1&pageSize=25", expect.anything());
+  });
+
+  it.each([routes[0], routes[1]])("%s consulta observaciones sin activar el inventario operativo ni encolar importaciones", async (path, label, view, permission, legacy) => {
     vi.stubEnv("VITE_PORTAL_CATALOG_READ_ENABLED", "false");
     vi.stubEnv("VITE_PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED", "true");
+    vi.stubEnv("VITE_PORTAL_CATALOG_DIRECTORY_V2_ENABLED", "true");
     vi.stubEnv("VITE_PORTAL_CATALOG_AUTOMATION_ENABLED", "true");
     const record = observedRows[view];
     mockRequests(permission, () => page("partial", [{
-      id: "observacion", customerName: "Nombre oficial ERP", name: record.name, environment: "unknown",
+      id: "observacion", customerId: "CLI-01", customerName: "Nombre oficial ERP", name: record.name, environment: "unknown",
       ...("detail" in record ? { detail: record.detail } : {}),
       user: "dato-excluido", password: "valor-excluido",
     }]));
@@ -111,8 +130,10 @@ describe("Vistas independientes del catálogo", () => {
     expect(screen.getByText(/SAG Admin.*ERP.*solo lectura/i)).toBeInTheDocument();
     expect(screen.getByText(/La información del catálogo está incompleta.*no se pueden confirmar/i)).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Cliente (ERP)" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "ID del cliente" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: record.heading })).toBeInTheDocument();
     expect(table).toHaveTextContent("Nombre oficial ERP");
+    expect(table).toHaveTextContent("CLI-01");
     expect(table).toHaveTextContent(record.name);
     expect(table).toHaveTextContent("Ambiente no verificado");
     if ("detail" in record) {
@@ -127,9 +148,104 @@ describe("Vistas independientes del catálogo", () => {
     expect(post).not.toHaveBeenCalled();
   });
 
+  it.each([routes[0], routes[1]])("%s envía búsqueda y ambiente exactos al API y reinicia la paginación", async (path, label, view, permission) => {
+    vi.stubEnv("VITE_PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED", "true");
+    vi.stubEnv("VITE_PORTAL_CATALOG_DIRECTORY_V2_ENABLED", "true");
+    mockRequests(permission, request => {
+      const query = new URL(request, "https://portal.example.invalid").searchParams;
+      return page("verified", [{
+        id: "registro", customerId: "CLI-01", customerName: "Cliente A", name: "Nombre", environment: query.get("environment") ?? "production",
+      }], Number(query.get("page")), 26);
+    });
+    renderRoute(path);
+    await screen.findByRole("table", { name: `${label} del catálogo` });
+    const environment = screen.getByRole("combobox", { name: "Ambiente" });
+    expect(within(environment).getAllByRole("option").map(option => (option as HTMLOptionElement).value))
+      .toEqual(["", "production", "test", "demo", "unknown"]);
+    fireEvent.click(screen.getByRole("button", { name: "Siguiente" }));
+    await waitFor(() => expect(get).toHaveBeenCalledWith(`/catalog/inventory/${view}?page=2&pageSize=25&v=2`, expect.anything()));
+    const filtros = screen.getByRole("form", { name: "Filtros del inventario" });
+    const search = within(filtros).getByRole("textbox");
+    fireEvent.change(search, { target: { value: "  CLI-01 & A  " } });
+    fireEvent.click(within(filtros).getByRole("button", { name: "Buscar" }));
+    fireEvent.change(environment, { target: { value: "test" } });
+    await waitFor(() => expect(get).toHaveBeenCalledWith(
+      `/catalog/inventory/${view}?page=1&pageSize=25&v=2&search=CLI-01+%26+A&environment=test`, expect.anything()));
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("separa los módulos disponibles, los clientes y el detalle filtrable de un código", async () => {
+    Object.defineProperties(HTMLDialogElement.prototype, {
+      showModal: { configurable: true, value(this: HTMLDialogElement) {
+        this.open = true;
+        this.querySelector<HTMLElement>("button")?.focus();
+      } },
+      close: { configurable: true, value(this: HTMLDialogElement) { this.open = false; } },
+    });
+    vi.stubEnv("VITE_PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED", "true");
+    vi.stubEnv("VITE_PORTAL_CATALOG_DIRECTORY_V2_ENABLED", "true");
+    vi.stubEnv("VITE_PORTAL_CATALOG_READ_ENABLED", "true");
+    vi.stubEnv("VITE_PORTAL_CATALOG_AUTOMATION_ENABLED", "true");
+    const sourceA = "10000000-0000-4000-8000-000000000001";
+    const sources = [{ id: sourceA, label: "ERP Colombia" }, { id: "10000000-0000-4000-8000-000000000002", label: "ERP Dos" }];
+    mockRequests("clients.licensing.view", request => {
+      const tab = new URL(request, "https://portal.example.invalid").searchParams.get("tab");
+      if (tab === "customers") return page("verified", [
+        { id: "row-c", customerId: "CLI-01", customerName: "Nombre oficial ERP", licenses: ["Inventario", "Auditor"] },
+        { id: "row-empty", customerId: "CLI-02", customerName: "Cliente sin correspondencia", licenses: [] },
+      ]);
+      if (tab === "licenseCustomers") return page("verified", [{
+        id: "row-c", customerId: "CLI-01", customerName: "Nombre oficial ERP", password: "excluir",
+      }]);
+      return { ...page("partial", [{ id: "license-D", code: "D", name: "Inventario" }]), sources };
+    });
+    renderRoute("/licenciamiento");
+    expect(await screen.findByText("Inventario")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Licencias disponibles" })).toHaveAttribute("aria-selected", "true");
+    const abrir = screen.getByRole("button", { name: "Ver clientes de Inventario" });
+    fireEvent.click(abrir);
+    const detalle = await screen.findByRole("dialog", { name: "Clientes con Inventario" });
+    const table = await within(detalle).findByRole("table", { name: "Clientes con la licencia" });
+    expect(within(table).getAllByRole("columnheader").map(th => th.textContent)).toEqual(["ID", "Nombre"]);
+    expect(table).toHaveTextContent("CLI-01");
+    expect(table).toHaveTextContent("Nombre oficial ERP");
+    expect(table).not.toHaveTextContent("excluir");
+    expect(get).toHaveBeenCalledWith("/catalog/inventory/licenses?page=1&pageSize=25&v=2&tab=licenseCustomers&code=D&state=active&web=in_web", expect.anything());
+    fireEvent.change(within(detalle).getByRole("combobox", { name: "Estado del cliente" }), { target: { value: "inactive" } });
+    fireEvent.change(within(detalle).getByRole("combobox", { name: "Presencia en SAG Web" }), { target: { value: "all" } });
+    fireEvent.click(within(detalle).getByRole("button", { name: /Fuentes: Todas/ }));
+    fireEvent.click(within(detalle).getByRole("checkbox", { name: "ERP Dos" }));
+    const filtro = within(detalle).getByRole("textbox");
+    fireEvent.change(filtro, { target: { value: "CLI-01" } });
+    fireEvent.click(within(detalle).getByRole("button", { name: "Buscar" }));
+    await waitFor(() => expect(get).toHaveBeenCalledWith(
+      `/catalog/inventory/licenses?page=1&pageSize=25&v=2&tab=licenseCustomers&code=D&state=inactive&web=all&search=CLI-01&sourceId=${sourceA}`, expect.anything()));
+    if (!within(detalle).queryByRole("checkbox", { name: "ERP Colombia" })) {
+      fireEvent.click(within(detalle).getByRole("button", { name: /Fuentes: ERP Colombia/ }));
+    }
+    const numConsultas = get.mock.calls.length;
+    fireEvent.click(within(detalle).getByRole("checkbox", { name: "ERP Colombia" }));
+    expect(await within(detalle).findByText(/Selecciona al menos una fuente/)).toBeInTheDocument();
+    expect(within(detalle).queryByRole("table")).not.toBeInTheDocument();
+    expect(get.mock.calls).toHaveLength(numConsultas);
+    fireEvent.click(within(detalle).getByRole("button", { name: "Cerrar" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(abrir).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Licencias disponibles" }), { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: "Licencias por cliente" })).toHaveFocus();
+    const clientes = await screen.findByRole("table", { name: "Licencias por cliente" });
+    expect(get).toHaveBeenCalledWith("/catalog/inventory/licenses?page=1&pageSize=25&v=2&tab=customers&state=all&web=all", expect.anything());
+    expect(clientes).toHaveTextContent("CLI-01");
+    expect(clientes).toHaveTextContent("Nombre oficial ERP");
+    expect(clientes).toHaveTextContent("Inventario, Auditor");
+    expect(within(clientes).getByRole("row", { name: "CLI-02 Cliente sin correspondencia Sin licencias identificadas" })).toBeInTheDocument();
+    expect(post).not.toHaveBeenCalled();
+  });
+
   it.each(routes)("%s rechaza el acceso directo sin el permiso de la vista", async (path) => {
     vi.stubEnv("VITE_PORTAL_CATALOG_READ_ENABLED", "false");
     vi.stubEnv("VITE_PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED", "true");
+    vi.stubEnv("VITE_PORTAL_CATALOG_DIRECTORY_V2_ENABLED", "true");
     mockRequests("clients.clients.view", () => { throw new Error("No debe consultar el catálogo"); });
     renderRoute(path);
     expect(await screen.findByRole("heading", { name: "No autorizado" })).toBeInTheDocument();
@@ -140,11 +256,13 @@ describe("Vistas independientes del catálogo", () => {
   it("muestra la misma base como relaciones separadas para clientes y dominios distintos", async () => {
     vi.stubEnv("VITE_PORTAL_CATALOG_READ_ENABLED", "true");
     vi.stubEnv("VITE_PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED", "true");
+    vi.stubEnv("VITE_PORTAL_CATALOG_DIRECTORY_V2_ENABLED", "true");
     vi.stubEnv("VITE_PORTAL_CATALOG_AUTOMATION_ENABLED", "true");
     const relations = [
-      { id: "a-web", customerName: "Cliente A", detail: "web.ejemplo.test", environment: "multiple", label: "Varios ambientes" },
-      { id: "b-web", customerName: "Cliente B", detail: "web.ejemplo.test", environment: "production", label: "Producción" },
-      { id: "a-otro", customerName: "Cliente A", detail: "otro.ejemplo.test", environment: "production", label: "Producción" },
+      { id: "a-web-test", customerId: "CLI-01", customerName: "Cliente A", detail: "web.ejemplo.test", environment: "test", label: "Pruebas" },
+      { id: "a-web-prod", customerId: "CLI-01", customerName: "Cliente A", detail: "web.ejemplo.test", environment: "production", label: "Producción" },
+      { id: "b-web", customerId: "CLI-02", customerName: "Cliente B", detail: "web.ejemplo.test", environment: "production", label: "Producción" },
+      { id: "a-otro", customerId: "CLI-01", customerName: "Cliente A", detail: "otro.ejemplo.test", environment: "production", label: "Producción" },
     ];
     mockRequests("clients.databases.view", () => page("verified", relations.map(row => ({
       ...row, name: "EMPRESA_WEB",
@@ -152,7 +270,7 @@ describe("Vistas independientes del catálogo", () => {
     renderRoute("/bases-de-datos");
     await screen.findByRole("table", { name: "Bases de Datos del catálogo" });
     for (const row of relations) {
-      expect(screen.getByRole("row", { name: `${row.customerName} ${row.detail} EMPRESA_WEB ${row.label}` })).toBeInTheDocument();
+      expect(screen.getByRole("row", { name: `${row.customerId} ${row.customerName} ${row.detail} EMPRESA_WEB ${row.label}` })).toBeInTheDocument();
     }
     expect(post).not.toHaveBeenCalled();
   });

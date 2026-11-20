@@ -70,7 +70,8 @@ $expected = @(
   '059_catalog_sag_v2_license_approval.sql',
   '064_catalog_sag_owner_publisher.sql',
   '065_catalog_erp_owner_publisher.sql',
-  '066_catalog_sag_database_names.sql'
+  '066_catalog_sag_database_names.sql',
+  '067_catalog_sag_customer_directory.sql'
 )
 
 $resolvedSqlDirectory = (Resolve-Path -LiteralPath $SqlDirectory).Path
@@ -103,12 +104,12 @@ foreach ($name in $expected) {
   }
 
   if ($parseErrors.Count -eq 0) {
-    if ($name -cin @('064_catalog_sag_owner_publisher.sql','065_catalog_erp_owner_publisher.sql','066_catalog_sag_database_names.sql')) {
+    if ($name -cin @('064_catalog_sag_owner_publisher.sql','065_catalog_erp_owner_publisher.sql','066_catalog_sag_database_names.sql','067_catalog_sag_customer_directory.sql')) {
       # The outer parser sees these fixed module definitions only as string
       # literals; independently parse each batch that SQL Server will compile.
       $moduleText=[System.IO.File]::ReadAllText($path)
       $modules=[regex]::Matches($moduleText,"EXEC sys\.sp_executesql N'((?:[^']|'')*)';")
-      $expectedModules=if($name -ceq '066_catalog_sag_database_names.sql'){3}else{4}
+      $expectedModules=if($name -cin @('066_catalog_sag_database_names.sql','067_catalog_sag_customer_directory.sql')){3}else{4}
       if($modules.Count -ne $expectedModules){
         throw "Expected exactly $expectedModules fixed module definitions in $name."
       }
