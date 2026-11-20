@@ -47,8 +47,7 @@ const directory = createCatalogDirectoryHttp({
   readAllowedSourceIds: actorId => readAuthorizedCatalogSourceIds({ actorId, environment: environment() }),
   readPublishedDirectory: (allowedSourceIds, actorId) => readSqlCatalogCustomerSnapshots({
     allowedSourceIds,
-    actorId,
-    includeSagDirectory: catalogDirectoryV2Enabled(),
+    ...(catalogDirectoryV2Enabled() ? { actorId, includeSagDirectory: true } : {}),
     environment: environment(),
     matchKeyVersion: matchKeyVersion(),
   }),
