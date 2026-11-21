@@ -73,6 +73,14 @@ export const catalogTaskCutoffEvidenceSql = `
         AND t.client_key=l.client_key AND t.domain_key=l.domain_key AND t.verified_at<=boundary.as_of
         AND t.registered_at<=boundary.as_of AND target.created_at<=boundary.as_of AND t.valid_until>boundary.as_of
         AND t.retired_at IS NULL AND l.created_at<=boundary.as_of AND c.status='active' AND d.status='active'
+        AND EXISTS (
+          SELECT 1 FROM workflow.catalog_task_execution_sources provenance
+          JOIN scheduling.update_schedules source_schedule ON source_schedule.schedule_key=provenance.schedule_key
+          WHERE provenance.catalog_execution_link_key=l.catalog_execution_link_key
+            AND provenance.attached_at<=boundary.as_of
+            AND (provenance.detached_at IS NULL OR provenance.detached_at>boundary.as_of)
+            AND (source_schedule.deleted_at IS NULL OR source_schedule.deleted_at>boundary.as_of)
+        )
         AND ((e.execution_kind='domain' AND t.database_key IS NULL AND d.environment_id=l.link_environment
           AND t.domain_route_fingerprint=${catalogDomainRouteFingerprintSql})
           OR (e.execution_kind='database' AND t.database_key=l.database_key AND db.status='active'

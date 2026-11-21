@@ -34,6 +34,16 @@ export async function readSqlCatalogScheduleOperationApprovals(
   portalEnvironment: CatalogEnvironment,
   roster: readonly ExpectedSchedule[],
 ): Promise<ReadonlyMap<string, CatalogScheduleOperationApproval>> {
+  return readApprovals(() => getSqlPool().then(pool => pool.request()), portalEnvironment, roster);
+}
+
+export function readSqlCatalogScheduleOperationApprovalsInTransaction(transaction: sql.Transaction,
+  environment: CatalogEnvironment, roster: readonly ExpectedSchedule[]) {
+  return readApprovals(async () => transaction.request(), environment, roster);
+}
+
+async function readApprovals(request: () => Promise<sql.Request>, portalEnvironment: CatalogEnvironment,
+  roster: readonly ExpectedSchedule[]): Promise<ReadonlyMap<string, CatalogScheduleOperationApproval>> {
   if (!["qa", "production"].includes(portalEnvironment) || !Array.isArray(roster) || roster.length > 5000) return fail();
   const expected = new Map<string, string>();
   for (const { scheduleId, scheduleVersion } of roster) {
@@ -42,7 +52,7 @@ export async function readSqlCatalogScheduleOperationApprovals(
   }
   if (!expected.size) return new Map();
   try {
-    const { recordset } = await (await getSqlPool()).request()
+    const { recordset } = await (await request())
       .input("portalEnvironment", sql.VarChar(10), portalEnvironment)
       .input("expectedSchedules", sql.NVarChar(sql.MAX), JSON.stringify([...expected].map(([id, version]) => ({ id, version }))))
       .query<Record<string, unknown>>(readCatalogScheduleOperationApprovalsSql);

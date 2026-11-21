@@ -119,7 +119,23 @@ SELECT TOP (51) LOWER(CONVERT(char(36),b.source_id)) AS sourceId,b.source_role A
   CONVERT(bit,CASE WHEN p.active=1 AND p.status='active' AND p.encrypt_connection=1 AND p.password_configured=1
     AND b.validated_at<=@now AND b.validated_profile_version=p.row_version
     AND ((b.source_role='erp-customers' AND b.contract_version='erp_v1') OR
-      (b.source_role='sag-admin' AND b.contract_version='sag_admin_v1')) THEN 1 ELSE 0 END) AS certified
+      (b.source_role='sag-admin' AND b.contract_version='sag_admin_v1') OR
+      (b.source_role='sag-admin' AND b.contract_version COLLATE Latin1_General_100_BIN2='sag_admin_v2'
+        AND DATALENGTH(b.contract_version)=12 AND EXISTS (
+          SELECT 1 FROM settings.catalog_customer_revision_heads h WITH (HOLDLOCK)
+          JOIN core.catalog_customer_source_revisions r WITH (HOLDLOCK) ON r.revision_key=h.revision_key
+            AND r.catalog_source_key=b.catalog_source_key AND r.source_role=b.source_role AND r.attempt_ordinal=h.attempt_ordinal
+          JOIN settings.catalog_match_key_registry k WITH (HOLDLOCK) ON k.portal_environment=b.portal_environment COLLATE Latin1_General_100_BIN2
+            AND k.match_key_version=r.match_key_version AND k.enrolled_at<=@now
+          WHERE h.catalog_source_key=b.catalog_source_key AND h.attempt_status='succeeded' AND h.attempted_at<=@now
+            AND r.binding_version=b.row_version AND r.profile_version=p.row_version AND r.observed_at<=@now
+            AND r.sealed_at<=@now AND r.verified_until>@now AND r.has_sag_inventory_evidence=1
+            AND r.expected_sag_company_rows IS NOT NULL
+            AND (SELECT COUNT_BIG(*) FROM core.catalog_sag_customer_directory_rows d WITH (HOLDLOCK)
+              WHERE d.revision_key=r.revision_key)=r.expected_rows
+            AND (SELECT COUNT_BIG(*) FROM core.catalog_sag_company_revision_rows co WITH (HOLDLOCK)
+              WHERE co.revision_key=r.revision_key)=r.expected_sag_company_rows
+        ))) THEN 1 ELSE 0 END) AS certified
 FROM settings.catalog_source_bindings b WITH (HOLDLOCK)
 JOIN settings.external_database_connections p WITH (HOLDLOCK) ON p.external_database_connection_key=b.external_database_connection_key
 WHERE b.portal_environment=@portalEnvironment COLLATE Latin1_General_100_BIN2

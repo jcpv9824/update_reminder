@@ -94,7 +94,7 @@ const ENTITY_SNAPSHOT_SCHEMAS: Record<string, AuditSchema> = {
     sources: { array: { object: sourceSchema } },
   },
   user: {
-    id: "scalar", displayName: "scalar", email: "scalar", roles: "scalarArray", active: "scalar",
+    id: "scalar", displayName: "scalar", email: "scalar", roles: "scalarArray", active: "scalar", area: "scalar",
     mustChangePassword: "scalar", lastLoginAt: "scalar", passwordUpdatedAt: "scalar",
     passwordExpiresAt: "scalar", mfaEnabled: "scalar", mfaEnrolledAt: "scalar",
     createdAt: "scalar", createdBy: "scalar", updatedAt: "scalar", updatedBy: "scalar",

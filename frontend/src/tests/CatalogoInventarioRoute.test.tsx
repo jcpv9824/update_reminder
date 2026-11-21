@@ -121,7 +121,7 @@ describe("Vistas independientes del catálogo", () => {
     vi.stubEnv("VITE_PORTAL_CATALOG_AUTOMATION_ENABLED", "true");
     const record = observedRows[view];
     mockRequests(permission, () => page("partial", [{
-      id: "observacion", customerId: "CLI-01", customerName: "Nombre oficial ERP", name: record.name, environment: "unknown",
+      id: "observacion", customerId: "CLI-01", displayDocument: "00071-6", customerName: "Nombre oficial ERP", name: record.name, environment: "unknown",
       ...("detail" in record ? { detail: record.detail } : {}),
       user: "dato-excluido", password: "valor-excluido",
     }]));
@@ -130,10 +130,11 @@ describe("Vistas independientes del catálogo", () => {
     expect(screen.getByText(/SAG Admin.*ERP.*solo lectura/i)).toBeInTheDocument();
     expect(screen.getByText(/La información del catálogo está incompleta.*no se pueden confirmar/i)).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Cliente (ERP)" })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "ID del cliente" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "ID" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: record.heading })).toBeInTheDocument();
     expect(table).toHaveTextContent("Nombre oficial ERP");
-    expect(table).toHaveTextContent("CLI-01");
+    expect(table).toHaveTextContent("00071-6");
+    expect(table).not.toHaveTextContent("CLI-01");
     expect(table).toHaveTextContent(record.name);
     expect(table).toHaveTextContent("Ambiente no verificado");
     if ("detail" in record) {
@@ -191,11 +192,11 @@ describe("Vistas independientes del catálogo", () => {
     mockRequests("clients.licensing.view", request => {
       const tab = new URL(request, "https://portal.example.invalid").searchParams.get("tab");
       if (tab === "customers") return page("verified", [
-        { id: "row-c", customerId: "CLI-01", customerName: "Nombre oficial ERP", licenses: ["Inventario", "Auditor"] },
+        { id: "row-c", customerId: "CLI-01", displayDocument: "00071-6", customerName: "Nombre oficial ERP", licenses: ["Inventario", "Auditor"] },
         { id: "row-empty", customerId: "CLI-02", customerName: "Cliente sin correspondencia", licenses: [] },
       ]);
       if (tab === "licenseCustomers") return page("verified", [{
-        id: "row-c", customerId: "CLI-01", customerName: "Nombre oficial ERP", password: "excluir",
+        id: "row-c", customerId: "CLI-01", displayDocument: "00071-6", customerName: "Nombre oficial ERP", password: "excluir",
       }]);
       return { ...page("partial", [{ id: "license-D", code: "D", name: "Inventario" }]), sources };
     });
@@ -203,11 +204,14 @@ describe("Vistas independientes del catálogo", () => {
     expect(await screen.findByText("Inventario")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Licencias disponibles" })).toHaveAttribute("aria-selected", "true");
     const abrir = screen.getByRole("button", { name: "Ver clientes de Inventario" });
+    expect(abrir.closest("td")).toHaveClass("catalogo-columna-acciones");
+    expect(screen.getByRole("columnheader", { name: "Clientes" })).toHaveClass("catalogo-columna-acciones");
     fireEvent.click(abrir);
     const detalle = await screen.findByRole("dialog", { name: "Clientes con Inventario" });
     const table = await within(detalle).findByRole("table", { name: "Clientes con la licencia" });
     expect(within(table).getAllByRole("columnheader").map(th => th.textContent)).toEqual(["ID", "Nombre"]);
-    expect(table).toHaveTextContent("CLI-01");
+    expect(table).toHaveTextContent("00071-6");
+    expect(table).not.toHaveTextContent("CLI-01");
     expect(table).toHaveTextContent("Nombre oficial ERP");
     expect(table).not.toHaveTextContent("excluir");
     expect(get).toHaveBeenCalledWith("/catalog/inventory/licenses?page=1&pageSize=25&v=2&tab=licenseCustomers&code=D&state=active&web=in_web", expect.anything());
@@ -235,10 +239,11 @@ describe("Vistas independientes del catálogo", () => {
     expect(screen.getByRole("tab", { name: "Licencias por cliente" })).toHaveFocus();
     const clientes = await screen.findByRole("table", { name: "Licencias por cliente" });
     expect(get).toHaveBeenCalledWith("/catalog/inventory/licenses?page=1&pageSize=25&v=2&tab=customers&state=all&web=all", expect.anything());
-    expect(clientes).toHaveTextContent("CLI-01");
+    expect(clientes).toHaveTextContent("00071-6");
+    expect(clientes).not.toHaveTextContent("CLI-01");
     expect(clientes).toHaveTextContent("Nombre oficial ERP");
     expect(clientes).toHaveTextContent("Inventario, Auditor");
-    expect(within(clientes).getByRole("row", { name: "CLI-02 Cliente sin correspondencia Sin licencias identificadas" })).toBeInTheDocument();
+    expect(within(clientes).getByRole("row", { name: "No disponible Cliente sin correspondencia Sin licencias identificadas" })).toBeInTheDocument();
     expect(post).not.toHaveBeenCalled();
   });
 
@@ -270,7 +275,7 @@ describe("Vistas independientes del catálogo", () => {
     renderRoute("/bases-de-datos");
     await screen.findByRole("table", { name: "Bases de Datos del catálogo" });
     for (const row of relations) {
-      expect(screen.getByRole("row", { name: `${row.customerId} ${row.customerName} ${row.detail} EMPRESA_WEB ${row.label}` })).toBeInTheDocument();
+      expect(screen.getByRole("row", { name: `No disponible ${row.customerName} ${row.detail} EMPRESA_WEB ${row.label}` })).toBeInTheDocument();
     }
     expect(post).not.toHaveBeenCalled();
   });

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { generateCatalogScheduleDay, type CatalogScheduleDay, type CatalogScheduleRule } from "../lib/catalogScheduleDay";
+import { generateCatalogScheduleDay, previewCatalogScheduleDay, type CatalogScheduleDay, type CatalogScheduleRule } from "../lib/catalogScheduleDay";
 import { recordSqlCatalogOnceObservationsInTransaction } from "../lib/catalogOnceObservationSqlRepository";
 import type { CatalogTaskLink } from "../lib/catalogTaskTargetPlanning";
 import type { UpdateSchedule } from "../types/models";
@@ -68,6 +68,28 @@ describe("catalog schedule day", () => {
       rules: [...data.rules].reverse() }, deps)).toMatchObject({ existing: 1 });
     expect(deps.register.mock.calls[1][0].task.id).toBe(first.task.id);
     expect(deps.register.mock.calls[1][0].group.executionKey).toBe(first.group.executionKey);
+  });
+
+  it("previews through the certified day transaction and never calls registration or one-time observers", async () => {
+    const revision = { id: "catalog-population-v1:00000000-0000-0000-0000-000000000099", complete: true };
+    const scope = { date, portalEnvironment: data.portalEnvironment, checkedAt: data.checkedAt, links: [] };
+    const roster = new Map(data.rules.map(({ calendar }) => [calendar.id, calendar.version]));
+    const manualIntents = new Map<string, string>();
+    const scoped = io();
+    const inspect = vi.fn().mockResolvedValue({ candidates: [], remaining: { status: "empty", linkIds: [] } });
+    const tx = vi.fn(async (_context, work) => ({ status: "committed",
+      value: await work(scoped, inspect, undefined, () => data.cutoffAt) }));
+    await expect(previewCatalogScheduleDay({ ...data, revision }, tx)).resolves.toBeNull();
+    expect(tx).not.toHaveBeenCalled();
+    await expect(previewCatalogScheduleDay({ ...data, revision, populationFence: { scope, roster, manualIntents } }, tx))
+      .resolves.toEqual({ candidates: [], remaining: { status: "empty", linkIds: [] } });
+    expect(tx).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ date, scope, roster, manualIntents }), expect.any(Function));
+    expect(inspect).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ plan: expect.objectContaining({ tasks: [
+      expect.objectContaining({ targetId: physicalId, sources: expect.arrayContaining([
+        expect.objectContaining({ scheduleId: "schedule1" }), expect.objectContaining({ scheduleId: "schedule2" }),
+      ]) }),
+    ] }) }));
+    expect(scoped.register).not.toHaveBeenCalled();
   });
 
   it("observes the exact nonempty pair set per due once rule, including two aliases of one execution", async () => {

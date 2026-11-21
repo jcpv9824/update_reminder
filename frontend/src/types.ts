@@ -10,11 +10,14 @@ export type Role =
   | "formatos_impresion.admin"
   | "public_downloads.admin";
 
+export type AreaUsuario = "support" | "development" | "administrative" | "sales";
+
 export type Usuario = {
   id: string;
   email: string;
   displayName: string;
   roles: string[];
+  area?: AreaUsuario | null;
   active?: boolean;
   mustChangePassword?: boolean;
   passwordExpiresAt?: string | null;
@@ -276,6 +279,7 @@ export type Frecuencia = {
   }>;
   selectionMode?: "manual" | "licensing";
   manualTargetTypes?: "domains_and_databases" | "domains_only" | "databases_only";
+  manualEnvironment?: "production" | "test" | "demo" | "all";
   licensingScope?: {
     licenseModuleIds: string[];
     licenseMatchMode: "any" | "all";

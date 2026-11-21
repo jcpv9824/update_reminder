@@ -1,5 +1,6 @@
 import { app, InvocationContext, Timer } from "@azure/functions";
-import { resolveConfiguredRecipients } from "../lib/emailRecipients";
+import { resolveSingleTaskNoticeRecipients } from "../lib/scheduleNoticeRecipients";
+import { pinNewScheduleTaskNotice } from "../lib/scheduleTaskReminderDelivery";
 import { loadEmailAlertsSettings } from "../lib/settingsService";
 import { buildBlockedTaskReminderEmail } from "../lib/emailTemplates";
 import { readSqlWorkflowTasks } from "../lib/workflowTasksSqlRepository";
@@ -23,7 +24,7 @@ export async function ejecutarRecordatoriosBloqueos(log: (message: string) => vo
   if (hhmm < (settings.blockedReminderTime ?? "08:00")) return { enviados: 0 };
   const days = settings.blockedReminderDaysAfter ?? [];
   if (days.length === 0) return { enviados: 0 };
-  const recipients = await resolveConfiguredRecipients(settings.blockedAlertRecipientRoleIds ?? ["super_admin"], settings.blockedAlertCustomEmails ?? []);
+  const recipients = await resolveSingleTaskNoticeRecipients("blocked_task_reminder", undefined, settings);
   if (recipients.length === 0) {
     log("Recordatorios de bloqueos omitidos: sin destinatarios.");
     return { enviados: 0 };
@@ -36,6 +37,8 @@ export async function ejecutarRecordatoriosBloqueos(log: (message: string) => vo
     if (!task.blockedAt) continue;
     const elapsed = daysBetweenIso(task.blockedAt, today);
     if (!days.includes(elapsed)) continue;
+    const origin = await pinNewScheduleTaskNotice("blocked_task_reminder", task);
+    if (!origin) continue;
     const email = buildBlockedTaskReminderEmail({
       task: {
         clientName: task.clientName,
@@ -49,11 +52,11 @@ export async function ejecutarRecordatoriosBloqueos(log: (message: string) => vo
     });
     const queued = await enqueueSqlEmail({
       type: "blocked_task_reminder",
-      idempotencyKey: `blockedReminder:${task.id}:${elapsed}`,
+      idempotencyKey: `blockedReminder:${task.id}:${elapsed}${origin.idempotencySuffix}`,
       entityType: "task", entityId: task.id, taskId: task.id, sendDate: today,
       subject: email.subject, html: email.html, text: email.text,
       recipients: recipients.map((recipient) => ({ email: recipient })),
-      metadata: { daysAfter: elapsed, recipientsCount: recipients.length },
+      metadata: { ...origin.metadata, daysAfter: elapsed, recipientsCount: recipients.length },
     });
     if (queued.created) enviados++;
   }

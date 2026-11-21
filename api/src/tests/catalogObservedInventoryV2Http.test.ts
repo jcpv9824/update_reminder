@@ -5,7 +5,8 @@ import { createCatalogObservedInventoryV2Http } from "../lib/catalogObservedInve
 const source = "12345678-1111-4111-8111-111111111111";
 const req = (query: string) => ({ query: new URLSearchParams(query) }) as HttpRequest;
 function fixture() {
-  const authorize = vi.fn<() => Promise<{ actorId: string } | { status: 401 | 403 }>>().mockResolvedValue({ actorId: "fixture" });
+  const authorize = vi.fn<() => Promise<{ actorId: string; canReadCustomerDocuments?: boolean } | { status: 401 | 403 }>>()
+    .mockResolvedValue({ actorId: "fixture" });
   const readSources = vi.fn().mockResolvedValue(new Set([source]));
   const row = { id: "row", customerId: "customer", customerName: "Client", name: "Domain", environment: "test" as const,
     detail: "detail", code: "D", licenses: ["Inventario"], document: "restricted", token: "restricted" };
@@ -14,6 +15,37 @@ function fixture() {
 }
 
 describe("observed catalog v2 transport", () => {
+  it("leaves the license code and name intact and never looks up documents for the list of modules", async () => {
+    const h = fixture();
+    h.authorize.mockResolvedValue({ actorId: "fixture", canReadCustomerDocuments: true });
+    const readDocuments = vi.fn();
+    const handler = createCatalogObservedInventoryV2Http({ ...h, readDocuments });
+    const response = await handler(req("v=2&tab=available"), "licenses");
+    expect(response.jsonBody).toMatchObject({ items: [{ id: "row", code: "D", name: "Domain" }] });
+    expect(JSON.stringify(response)).not.toContain("displayDocument");
+    expect(readDocuments).not.toHaveBeenCalled();
+  });
+
+  it.each(["domains", "databases", "licenses"] as const)("adds only authorized display documents to %s without caching", async (view) => {
+    const h = fixture();
+    const readDocuments = vi.fn().mockResolvedValue(new Map([["customer", "00071-6"], ["unrelated", "unrelated-private"]]));
+    const handler = createCatalogObservedInventoryV2Http({ ...h, readDocuments });
+    const query = req(view === "licenses" ? "v=2&tab=licenseCustomers&code=D&sourceId=" + source : "v=2");
+
+    expect((await handler(query, view)).jsonBody).toMatchObject({ items: [{ displayDocument: null }] });
+    expect(readDocuments).not.toHaveBeenCalled();
+
+    h.authorize.mockResolvedValue({ actorId: "fixture", canReadCustomerDocuments: true });
+    const response = await handler(query, view);
+    expect(readDocuments).toHaveBeenCalledWith(expect.objectContaining({
+      actorId: "fixture", allowedSourceIds: new Set([source]),
+      ...(view === "licenses" ? { sourceIds: [source] } : {}),
+    }), ["customer"]);
+    expect(response).toMatchObject({ status: 200, headers: { "Cache-Control": "no-store" },
+      jsonBody: { items: [{ id: "row", displayDocument: "00071-6" }] } });
+    expect(JSON.stringify(response)).not.toMatch(/unrelated-private|restricted/);
+  });
+
   it("binds the authorized scope, cuts internal data from the response, and accepts a known environment", async () => {
     const h = fixture();
     const result = await h.handler(req("v=2&search=Client&environment=test&page=2&pageSize=5"), "domains");
@@ -40,7 +72,9 @@ describe("observed catalog v2 transport", () => {
     const h = fixture();
     const query = req("v=2&tab=licenseCustomers&code=D&state=unverified&web=in_web");
     const result = await h.handler(query, "licenses");
-    expect((result.jsonBody as { items: unknown[] }).items).toEqual([{ id: "row", customerId: "customer", customerName: "Client" }]);
+    expect((result.jsonBody as { items: unknown[] }).items).toEqual([
+      { id: "row", customerId: "customer", customerName: "Client", displayDocument: null },
+    ]);
     h.readSources.mockClear();
     h.authorize.mockResolvedValue({ status: 403 });
     expect((await h.handler(query, "licenses")).status).toBe(403);

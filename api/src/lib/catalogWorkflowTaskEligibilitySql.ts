@@ -24,6 +24,13 @@ export function catalogTaskCurrentLinkSql(executionAlias: string, linkAlias: str
     AND (${e}.cutoff_at>@now OR ${e}.cutoff_evaluated_at IS NOT NULL)
     AND ${l}.catalog_execution_key=${e}.catalog_execution_key AND ${l}.execution_kind=${e}.execution_kind
     AND ${l}.link_state='active' AND ${l}.retired_at IS NULL
+    AND EXISTS (
+      SELECT 1 FROM workflow.catalog_task_execution_sources AS active_attachment
+      JOIN scheduling.update_schedules AS attached_schedule
+        ON attached_schedule.schedule_key=active_attachment.schedule_key AND attached_schedule.deleted_at IS NULL
+      WHERE active_attachment.catalog_execution_link_key=${l}.catalog_execution_link_key
+        AND active_attachment.detached_at IS NULL
+    )
     AND ((${l}.catalog_source_key IS NULL AND NOT EXISTS (
       SELECT 1 FROM core.catalog_operational_links AS known_external
       WHERE known_external.link_id=TRY_CONVERT(uniqueidentifier,${l}.link_id)

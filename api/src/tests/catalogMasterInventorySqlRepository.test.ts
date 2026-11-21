@@ -13,7 +13,13 @@ it("shows positive SAG v2 licensing only from a sealed revision, without widenin
   expect(sql).toContain("AND a.binding_version=h.binding_version AND a.profile_version=h.profile_version");
   expect(sql).toContain("WHEN @partial=1 OR @total=0 THEN 'partial'");
   expect(sql).toContain("N'Correspondencia no verificada'");
-  expect(readCatalogSchedulePopulationSql).not.toContain("sag_admin_v2");
+  // Population certification after 074 accepts only a version-bound, fully
+  // sealed V2 population; it does not extend the separate once-closure gate.
+  expect(readCatalogSchedulePopulationSql).toContain("sag_admin_v2");
+  expect(readCatalogSchedulePopulationSql).toContain("r.binding_version=b.row_version AND r.profile_version=p.row_version");
+  expect(readCatalogSchedulePopulationSql).toContain("r.sealed_at<=@now AND r.verified_until>@now");
+  expect(readCatalogSchedulePopulationSql).toContain("WHERE d.revision_key=r.revision_key)=r.expected_rows");
+  expect(readCatalogSchedulePopulationSql).toContain("WHERE co.revision_key=r.revision_key)=r.expected_sag_company_rows");
   expect(readCatalogOnceClosureProofSql).not.toContain("sag_admin_v2");
 });
 

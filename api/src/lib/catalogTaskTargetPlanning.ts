@@ -37,6 +37,8 @@ export type CatalogTaskRequest = {
     environment?: Environment;
     /** If present, the approved fixed set; an empty set does not mean all links. */
     linkIds?: readonly string[];
+    /** Physical identities captured at activation; never accept a later rebind of a frozen link. */
+    frozenTargetIds?: ReadonlyMap<string, string>;
     excludedLinkIds?: readonly string[];
     modules?: { mode: "all" | "any"; ids: readonly string[] };
   };
@@ -185,6 +187,10 @@ export function planCatalogTaskTargets(input: {
         continue;
       }
       const targetId = link.target.id;
+      if (scope.frozenTargetIds && scope.frozenTargetIds.get(link.linkId) !== targetId) {
+        hold("target_unverifiable");
+        continue;
+      }
       const executionKey = catalogTaskExecutionKey(occurrenceId, link.kind, targetId);
       let group = groups.get(executionKey);
       if (!group) {

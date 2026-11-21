@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import sql from "mssql";
 import type { UpdateTask } from "../types/models";
 import type { CatalogEnvironment } from "./catalogSourceConfiguration";
-import { catalogAssignedUsers, catalogAssignmentIdentity, catalogTaskExecutionKey, type CatalogTaskAssignment, type CatalogTaskPlan } from "./catalogTaskTargetPlanning";
+import { catalogAssignedUsers, catalogAssignmentIdentity, catalogTaskExecutionKey, type CatalogTaskAssignment, type CatalogTaskKind, type CatalogTaskPlan } from "./catalogTaskTargetPlanning";
 import { runSqlTransaction } from "./sqlTransaction";
 import { rootScheduleId } from "./taskGenerator";
 import { insertSqlGeneratedTaskInTransaction } from "./workflowTaskGenerationSqlRepository";
@@ -87,7 +87,7 @@ const pair = (linkId: string, scheduleId: string) => JSON.stringify([linkId, sch
 const sameAssignment = (left: CatalogTaskAssignment, right: CatalogTaskAssignment) =>
   catalogAssignmentIdentity(left) === catalogAssignmentIdentity(right);
 
-function assignmentMatches(assignment: CatalogTaskAssignment, role: string | null, users: readonly string[]): boolean {
+function catalogExecutionAssignmentMatches(assignment: CatalogTaskAssignment, role: string | null, users: readonly string[]): boolean {
   if (assignment.kind === "user" || assignment.kind === "users") {
     const expected = catalogAssignedUsers(assignment);
     return expected.length > 0 && expected.length === users.length && new Set(users).size === users.length
@@ -113,7 +113,7 @@ function parseInput(input: CatalogExecutionRegistration) {
       task.targetType !== group.kind || task.status !== "pending" || task.result != null || !!task.notes || task.completedAt != null ||
       !safeText(task.assignedRole, 80) || (group.assignment.kind === "role" ? !safeText(group.assignment.id, 80)
         : task.assignedUserIds.length > 100 || catalogAssignedUsers(group.assignment).some(user => !safeText(user, 150))) ||
-      !assignmentMatches(group.assignment, task.assignedRole, task.assignedUserIds ?? [])) return conflict("invalid-plan");
+      !catalogExecutionAssignmentMatches(group.assignment, task.assignedRole, task.assignedUserIds ?? [])) return conflict("invalid-plan");
 
   const root = rootScheduleId(task.rootScheduleId || task.scheduleId);
   if (!safeText(root, 150) || rootScheduleId(task.scheduleId) !== root) return conflict("invalid-plan");
@@ -187,6 +187,80 @@ async function lockExecution(transaction: sql.Transaction, executionKey: Buffer)
   return rows.recordset[0];
 }
 
+const catalogExecutionCollisionSql = `
+  SELECT CONVERT(bit, CASE WHEN EXISTS (
+    SELECT 1 FROM workflow.update_tasks WITH (UPDLOCK,HOLDLOCK) WHERE source_id=@taskId
+  ) OR EXISTS (
+    SELECT 1 FROM workflow.catalog_task_executions AS e WITH (UPDLOCK,HOLDLOCK)
+    JOIN workflow.update_tasks AS t ON t.task_key=e.task_key
+    WHERE e.execution_kind=@kind AND e.verified_target_id=@physicalId AND t.task_date=@taskDate
+  ) OR EXISTS (
+    SELECT 1 FROM workflow.task_source_aliases WITH (UPDLOCK,HOLDLOCK) WHERE alias_source_id=@taskId
+  ) OR EXISTS (
+    SELECT 1 FROM OPENJSON(@targetIds) WITH (target_id nvarchar(150) '$') AS ids
+    JOIN workflow.update_tasks AS t WITH (UPDLOCK,HOLDLOCK)
+      ON t.target_type=@kind AND t.target_source_id=ids.target_id AND t.task_date=@taskDate
+  ) THEN 1 ELSE 0 END) AS collision;`;
+
+async function hasCatalogExecutionCollision(transaction: sql.Transaction, input: Readonly<{
+  taskId: string; kind: CatalogTaskKind; physicalId: string; taskDate: string; targetIds: readonly string[];
+}>): Promise<boolean> {
+  const collision = await new sql.Request(transaction)
+    .input("taskId", sql.NVarChar(260), input.taskId).input("kind", sql.VarChar(20), input.kind)
+    .input("physicalId", sql.NVarChar(150), input.physicalId)
+    .input("taskDate", sql.Date, input.taskDate).input("targetIds", sql.NVarChar(sql.MAX), JSON.stringify(input.targetIds))
+    .query<{ collision: boolean }>(catalogExecutionCollisionSql);
+  return collision.recordset[0]?.collision !== false;
+}
+
+type ReservationCandidate = Readonly<{ kind: CatalogTaskKind; physicalId: string; targetIds: readonly string[];
+  operationId: string; assignment: CatalogTaskAssignment; workflowRole: string }>;
+type ReservationStatus = "unoccupied" | "compatible_reservation" | "conflict";
+
+/** Advisory only. Callers with additional SQL reads must take the task-day locks before acquiring other relation locks. */
+export async function inspectCatalogExecutionReservationsInTransaction(transaction: sql.Transaction,
+  input: Readonly<{ taskDate: string; cutoffAt: Date; candidates: readonly ReservationCandidate[] }>,
+): Promise<readonly ReservationStatus[] | null> {
+  const { taskDate, cutoffAt, candidates } = input;
+  const parsedDate = Date.parse(taskDate);
+  if (!day.test(taskDate) || !Number.isFinite(parsedDate) || new Date(parsedDate).toISOString().slice(0, 10) !== taskDate ||
+    !(cutoffAt instanceof Date) || cutoffAt.getTime() !== parsedDate + 29 * 3_600_000 ||
+    !Array.isArray(candidates) || candidates.length > 100 || candidates.some((item: ReservationCandidate) => !item ||
+      (item.kind !== "domain" && item.kind !== "database") || !sourceIdFormat.test(item.physicalId) ||
+      !isCatalogScheduleOperationId(item.operationId) || !safeText(item.workflowRole, 80) ||
+      !Array.isArray(item.targetIds) || !item.targetIds.length || item.targetIds.length > 100 ||
+      item.targetIds.some((id: unknown) => !safeText(id, 150))) ||
+    new Set(candidates.map(item => [item.kind, item.physicalId].join(":"))).size !== candidates.length) {
+    throw new Error("catalog_schedule_reservation_input_invalid");
+  }
+  for (const targetType of ["database", "domain"] as const) {
+    if (candidates.some(item => item.kind === targetType) && !await lockCatalogTaskDay(transaction, { taskDate, targetType })) return null;
+  }
+  const result: ReservationStatus[] = [];
+  for (const item of candidates) {
+    const key = catalogTaskExecutionKey(taskDate, item.kind, item.physicalId);
+    const taskId = `catalog-${key}`;
+    const current = await lockExecution(transaction, Buffer.from(key, "hex"));
+    if (current) {
+      let users: readonly { id: string }[] = [];
+      try { users = JSON.parse(current.usersJson || "[]"); }
+      catch { return null; }
+      if (!Array.isArray(users) || users.some(user => !user || !safeText(user.id, 150))) return null;
+      const same = current.retiredAt === null && current.status !== "cancelled" && current.taskId === taskId &&
+        current.taskDate === taskDate && current.occurrenceId === taskDate && current.kind === item.kind &&
+        current.targetId === item.physicalId && current.cutoffAt instanceof Date && current.cutoffAt.getTime() === cutoffAt.getTime() &&
+        current.operationId === item.operationId && current.assignedRole === item.workflowRole &&
+        catalogExecutionAssignmentMatches(item.assignment, current.assignedRole, users.map(user => user.id));
+      result.push(same ? "compatible_reservation" : "conflict");
+    } else {
+      const collision = await hasCatalogExecutionCollision(transaction, { taskId, kind: item.kind, physicalId: item.physicalId,
+        taskDate, targetIds: item.targetIds });
+      result.push(collision ? "conflict" : "unoccupied");
+    }
+  }
+  return result;
+}
+
 async function verifyReplay(transaction: sql.Transaction, input: CatalogExecutionRegistration, row: ExecutionRow,
   planned: ReturnType<typeof parseInput>, replayMode: "exact" | "certified-day"): Promise<ReplayPlan> {
   const { group, task, cutoffAt } = input;
@@ -196,7 +270,7 @@ async function verifyReplay(transaction: sql.Transaction, input: CatalogExecutio
       row.targetId !== group.targetId || row.kind !== group.kind || row.taskDate !== task.taskDate || row.cutoffAt.valueOf() !== cutoffAt.valueOf() ||
       (replayMode === "exact" && (row.representativeTarget !== task.targetId || row.representativeClient !== task.clientId ||
         row.representativeDomain !== task.domainId || row.primaryScheduleId !== planned.root)) || row.assignedRole !== task.assignedRole ||
-      !assignmentMatches(group.assignment, row.assignedRole, users.map(user => user.id))) {
+      !catalogExecutionAssignmentMatches(group.assignment, row.assignedRole, users.map(user => user.id))) {
     return conflict("execution-conflict");
   }
   const result = await new sql.Request(transaction).input("executionId", sql.BigInt, row.executionId)
@@ -330,27 +404,8 @@ async function registerParsedExecutionInTransaction(
         await lockSqlCatalogSchedulePopulationApproval(transaction, portalEnvironment, group.revisionId) : undefined;
       if (approvalDeadline === null) return conflict("catalog-reference-changed");
 
-      if (!existing) {
-      const collision = await new sql.Request(transaction)
-        .input("taskId", sql.NVarChar(260), task.id).input("kind", sql.VarChar(20), group.kind)
-        .input("physicalId", sql.NVarChar(150), group.targetId)
-        .input("taskDate", sql.Date, task.taskDate).input("targetIds", sql.NVarChar(sql.MAX), JSON.stringify(planned.targetIds))
-        .query<{ collision: boolean }>(`
-          SELECT CONVERT(bit, CASE WHEN EXISTS (
-            SELECT 1 FROM workflow.update_tasks WITH (UPDLOCK,HOLDLOCK) WHERE source_id=@taskId
-          ) OR EXISTS (
-            SELECT 1 FROM workflow.catalog_task_executions AS e WITH (UPDLOCK,HOLDLOCK)
-            JOIN workflow.update_tasks AS t ON t.task_key=e.task_key
-            WHERE e.execution_kind=@kind AND e.verified_target_id=@physicalId AND t.task_date=@taskDate
-          ) OR EXISTS (
-            SELECT 1 FROM workflow.task_source_aliases WITH (UPDLOCK,HOLDLOCK) WHERE alias_source_id=@taskId
-          ) OR EXISTS (
-            SELECT 1 FROM OPENJSON(@targetIds) WITH (target_id nvarchar(150) '$') AS ids
-            JOIN workflow.update_tasks AS t WITH (UPDLOCK,HOLDLOCK)
-              ON t.target_type=@kind AND t.target_source_id=ids.target_id AND t.task_date=@taskDate
-          ) THEN 1 ELSE 0 END) AS collision;`);
-      if (collision.recordset[0]?.collision !== false) return conflict("legacy-task-collision");
-      }
+      if (!existing && await hasCatalogExecutionCollision(transaction, { taskId: task.id, kind: group.kind,
+        physicalId: group.targetId, taskDate: task.taskDate, targetIds: planned.targetIds })) return conflict("legacy-task-collision");
 
       const schedules = await new sql.Request(transaction)
         .input("workflowRole", sql.NVarChar(80), task.assignedRole)

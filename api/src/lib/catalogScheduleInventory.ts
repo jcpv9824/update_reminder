@@ -4,6 +4,7 @@ import { generateCatalogPersistedScheduleDay } from "./catalogScheduleScopes";
 import type { CatalogExecutionSourceEvidence } from "./catalogExecutionRegistrationSqlRepository";
 import { readSqlCatalogScheduleOperationApprovals } from "./catalogScheduleOperationApprovalSqlRepository";
 import { readSqlCatalogScheduleRoster } from "./schedulingSqlRepository";
+import { catalogScheduleRosterToken } from "./catalogScheduleActivation";
 import { readCatalogScheduleLicenseProof } from "./catalogScheduleLicenseProof";
 import { readSqlCatalogSchedulePopulationCoverage } from "./catalogSchedulePopulationCoverage";
 import { readSqlCatalogManualDayIntents } from "./catalogManualDayIntentSqlRepository";
@@ -116,13 +117,17 @@ export async function generateCatalogOperationalScheduleDay(
   input: OperationalDay,
   io: CatalogScheduleInventoryDependencies,
 ): ReturnType<typeof generateCatalogPersistedScheduleDay> {
+  return generateCatalogPersistedScheduleDay(await readCatalogOperationalScheduleDayEvidence(input, io), io.persisted);
+}
+
+export async function readCatalogOperationalScheduleDayEvidence(input: OperationalDay,
+  io: CatalogScheduleInventoryDependencies): Promise<PersistedDay> {
   if (!(input.checkedAt instanceof Date) || !Number.isFinite(input.checkedAt.valueOf())
     || !(input.cutoffAt instanceof Date) || !Number.isFinite(input.cutoffAt.valueOf())) return fail();
   if (input.checkedAt >= input.cutoffAt) {
     // Preserve the existing engine's cutoff semantics without reading/certifying
     // a population that cannot generate work. This neutral revision is incomplete.
-    return generateCatalogPersistedScheduleDay({ ...input,
-      revision: { id: "cutoff-not-certified", complete: false }, inventory: [] }, io.persisted);
+    return { ...input, revision: { id: "cutoff-not-certified", complete: false }, inventory: [] };
   }
   const links = await (io.readLinks ?? readSqlCatalogOperationalLinks)({ portalEnvironment: input.portalEnvironment });
   // Validate source evidence before asking other proof services or generating work.
@@ -132,16 +137,16 @@ export async function generateCatalogOperationalScheduleDay(
   const revision = await io.certifyCoverage(scope);
   if (!revision || !text(revision.id, 200) || typeof revision.complete !== "boolean") return fail();
   if (!revision.complete) {
-    return generateCatalogPersistedScheduleDay({ ...input, revision, inventory }, io.persisted);
+    return { ...input, revision, inventory };
   }
   const modulesByLink = io.readLicenseProof ? await io.readLicenseProof(scope)
     : input.matchKeyVersion === undefined ? new Map<string, readonly string[] | null>()
       : await readCatalogScheduleLicenseProof({ ...scope, matchKeyVersion: input.matchKeyVersion });
-  return generateCatalogPersistedScheduleDay({ ...input, revision,
+  return { ...input, revision,
     ...(io.populationRoster && io.manualIntents ? { populationFence: {
       scope, roster: io.populationRoster, manualIntents: io.manualIntents,
     } } : {}),
-    inventory: composeCatalogScheduleInventory(links, modulesByLink, input.checkedAt) }, io.persisted);
+    inventory: composeCatalogScheduleInventory(links, modulesByLink, input.checkedAt) };
 }
 
 /**
@@ -168,11 +173,12 @@ export async function generateApprovedCatalogOperationalScheduleDay(
   const manualIntents = await (io.readManualIntents ?? readSqlCatalogManualDayIntents)({
     date: input.date, portalEnvironment: input.portalEnvironment,
   });
-  const populationRoster = new Map(roster.map(({ schedule, version }) => [schedule.id, version]));
+  const populationRoster = new Map(roster.map(row => [row.schedule.id, catalogScheduleRosterToken(row)]));
+  const definitionVersions = new Map(roster.map(({ schedule, version }) => [schedule.id, version]));
   const activeManuals = new Set(roster.filter(({ schedule }) => schedule.active && schedule.frequencyType === "manual")
     .map(({ schedule }) => schedule.id));
   if (populationRoster.size !== roster.length ||
-    [...manualIntents].some(([id, version]) => !activeManuals.has(id) || populationRoster.get(id) !== version) ||
+    [...manualIntents].some(([id, version]) => !activeManuals.has(id) || definitionVersions.get(id) !== version) ||
     input.manualScheduleIds?.some(id => !manualIntents.has(id))) return { status: "unverified" };
   const operationsBySchedule = await (io.readOperations ?? readSqlCatalogScheduleOperationApprovals)(
     input.portalEnvironment, roster.map(({ schedule, version }) => ({ scheduleId: schedule.id, scheduleVersion: version })),

@@ -71,7 +71,21 @@ $expected = @(
   '064_catalog_sag_owner_publisher.sql',
   '065_catalog_erp_owner_publisher.sql',
   '066_catalog_sag_database_names.sql',
-  '067_catalog_sag_customer_directory.sql'
+  '067_catalog_sag_customer_directory.sql',
+  '068_user_area.sql',
+  '070_schedule_manual_environment.sql',
+  '071_catalog_schedule_activation_snapshots.sql',
+  '072_catalog_schedule_copy_intents.sql',
+  '073_catalog_historical_schedule_company_locations.sql',
+  '074_catalog_schedule_population_sag_v2.sql',
+  '075_catalog_schedule_copy_proposals.sql',
+  '076_catalog_schedule_copy_review_receipts.sql',
+  '077_catalog_schedule_copy_review_consumption.sql',
+  '078_catalog_schedule_draft_proposals.sql',
+  '079_catalog_schedule_draft_review_receipts.sql',
+  '080_catalog_schedule_draft_materialization.sql',
+  '081_catalog_schedule_draft_runtime_execute.sql',
+  '082_catalog_schedule_activation_seals.sql'
 )
 
 $resolvedSqlDirectory = (Resolve-Path -LiteralPath $SqlDirectory).Path
@@ -104,12 +118,26 @@ foreach ($name in $expected) {
   }
 
   if ($parseErrors.Count -eq 0) {
-    if ($name -cin @('064_catalog_sag_owner_publisher.sql','065_catalog_erp_owner_publisher.sql','066_catalog_sag_database_names.sql','067_catalog_sag_customer_directory.sql')) {
+    if ($name -cin @('064_catalog_sag_owner_publisher.sql','065_catalog_erp_owner_publisher.sql','066_catalog_sag_database_names.sql','067_catalog_sag_customer_directory.sql',
+      '072_catalog_schedule_copy_intents.sql','073_catalog_historical_schedule_company_locations.sql','074_catalog_schedule_population_sag_v2.sql',
+      '075_catalog_schedule_copy_proposals.sql','076_catalog_schedule_copy_review_receipts.sql','077_catalog_schedule_copy_review_consumption.sql',
+      '078_catalog_schedule_draft_proposals.sql','079_catalog_schedule_draft_review_receipts.sql','080_catalog_schedule_draft_materialization.sql',
+      '082_catalog_schedule_activation_seals.sql')) {
       # The outer parser sees these fixed module definitions only as string
       # literals; independently parse each batch that SQL Server will compile.
       $moduleText=[System.IO.File]::ReadAllText($path)
       $modules=[regex]::Matches($moduleText,"EXEC sys\.sp_executesql N'((?:[^']|'')*)';")
-      $expectedModules=if($name -cin @('066_catalog_sag_database_names.sql','067_catalog_sag_customer_directory.sql')){3}else{4}
+      $expectedModules=if($name -ceq '072_catalog_schedule_copy_intents.sql'){2}
+        elseif($name -eq '073_catalog_historical_schedule_company_locations.sql'){3}
+        elseif($name -eq '074_catalog_schedule_population_sag_v2.sql'){1}
+        elseif($name -eq '075_catalog_schedule_copy_proposals.sql'){2}
+        elseif($name -eq '076_catalog_schedule_copy_review_receipts.sql'){3}
+        elseif($name -eq '077_catalog_schedule_copy_review_consumption.sql'){1}
+        elseif($name -eq '078_catalog_schedule_draft_proposals.sql'){4}
+        elseif($name -eq '079_catalog_schedule_draft_review_receipts.sql'){3}
+        elseif($name -eq '080_catalog_schedule_draft_materialization.sql'){3}
+        elseif($name -eq '082_catalog_schedule_activation_seals.sql'){4}
+        elseif($name -cin @('066_catalog_sag_database_names.sql','067_catalog_sag_customer_directory.sql')){3}else{4}
       if($modules.Count -ne $expectedModules){
         throw "Expected exactly $expectedModules fixed module definitions in $name."
       }

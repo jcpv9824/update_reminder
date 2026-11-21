@@ -18,7 +18,7 @@ import {
   canResetUserPassword,
   canUpdateUser,
 } from "../lib/managementAccess";
-import type { UserRecord } from "../types/models";
+import { USER_AREAS, type UserRecord } from "../types/models";
 import { readSqlPublicUsers } from "../lib/securityUsersSqlRepository";
 import {
   createSqlUser,
@@ -64,12 +64,14 @@ const RoleIdSchema = z.string()
   .regex(/^[a-z0-9_.-]+$/, "El rol solo puede contener minúsculas, números, guiones, puntos y guiones bajos.");
 
 const RolesSchema = z.array(RoleIdSchema).transform((roles) => migrateLegacyRoleIds(roles));
+const AreaSchema = z.enum(USER_AREAS, { error: "Seleccione un área del usuario válida." }).nullable().optional();
 
 const UserCreateSchema = z.object({
   id: z.string().optional(),
   displayName: z.string().min(1, "El nombre es obligatorio."),
   email: z.string().email("Correo electrónico no válido."),
   roles: RolesSchema.default([]),
+  area: AreaSchema,
   active: z.boolean().default(true),
   password: z.string().min(14, "La contraseña debe tener al menos 14 caracteres."),
 });
@@ -77,6 +79,7 @@ const UserCreateSchema = z.object({
 const UserUpdateSchema = z.object({
   displayName: z.string().min(1).optional(),
   roles: RolesSchema.optional(),
+  area: AreaSchema,
   active: z.boolean().optional(),
 });
 
@@ -139,6 +142,7 @@ app.http("usersCreate", {
         displayName: parsed.data.displayName.trim(),
         email,
         roles: parsed.data.roles,
+        area: parsed.data.area,
         active: parsed.data.active,
         createdAt: now,
         createdBy: u.id,
@@ -156,6 +160,7 @@ app.http("usersCreate", {
         displayName: record.displayName,
         email: record.email,
         roles: record.roles,
+        area: record.area,
         active: record.active,
         passwordHash,
         mustChangePassword: true,

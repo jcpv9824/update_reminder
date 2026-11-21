@@ -8,13 +8,14 @@ describe("SQL security runtime mappings", () => {
   it("keeps credential material internal while reconstructing the authenticated user", () => {
     const user = mapSqlCredentialUser({
       source_id: "user-1", display_name: "Usuario", email: "user@example.test", active: true,
+      area: "development",
       password_hash: "bcrypt-hash-only", password_updated_at: at, password_expires_at: null,
       must_change_password: false, token_version: 4, last_login_at: at,
       password_reset_token_hash: null, password_reset_expires_at: null, password_reset_used_at: null,
       created_at: at, created_by: "migration", updated_at: at, updated_by: "migration",
       roles_json: '[{"value":"super_admin"}]',
     });
-    expect(user).toMatchObject({ id: "user-1", tokenVersion: 4, roles: ["super_admin"] });
+    expect(user).toMatchObject({ id: "user-1", tokenVersion: 4, roles: ["super_admin"], area: "development" });
     expect(user.passwordHash).toBe("bcrypt-hash-only");
   });
 

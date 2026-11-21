@@ -13,11 +13,16 @@ export type EntityStatus = "active" | "inactive" | "deleted";
 
 export type Environment = "production" | "test" | "demo";
 
+export const USER_AREAS = ["support", "development", "administrative", "sales"] as const;
+/** Organizational label only; never used for permission or assignment decisions. */
+export type UserArea = (typeof USER_AREAS)[number];
+
 export type CurrentUser = {
   id: string;
   email: string;
   displayName: string;
   roles: string[];
+  area?: UserArea | null;
 };
 
 export type UserRecord = {
@@ -25,6 +30,7 @@ export type UserRecord = {
   displayName: string;
   email: string;
   roles: string[];
+  area?: UserArea | null;
   active: boolean;
   createdAt: string;
   createdBy: string;
@@ -353,6 +359,7 @@ export type UpdateSchedule = {
   scopeGroups?: ScheduleScopeGroup[];
   selectionMode?: ScheduleSelectionMode;
   manualTargetTypes?: ManualTargetTypes;
+  manualEnvironment?: Environment | "all";
   licensingScope?: LicensingScope;
   assignmentMode?: ScheduleAssignmentMode;
   domainAssignedRole?: Role | string;

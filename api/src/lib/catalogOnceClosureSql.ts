@@ -20,6 +20,71 @@ export const catalogOnceExplicitCompletionSql = `completion.new_status='complete
     )`;
 
 /**
+ * Lifecycle: the exact frozen link set is the denominator. The later catalog
+ * is neither needed to close completed work nor allowed to add obligations.
+ * Caller owns both transaction-scoped day locks through the versioned update.
+ */
+export const readCatalogFrozenOnceClosureProofSql = `
+SET NOCOUNT ON;
+DECLARE @now datetime2(7)=SYSUTCDATETIME(),@dateText char(10)=CONVERT(char(10),@taskDate,23);
+DECLARE @dayStart datetime2(3)=DATEADD(hour,5,CONVERT(datetime2(3),@taskDate)),@cutoffAt datetime2(3);
+SET @cutoffAt=DATEADD(day,1,@dayStart);
+IF @@TRANCOUNT=0 OR XACT_STATE()<>1 OR @now<@cutoffAt
+  OR ISNULL(APPLOCK_MODE(N'public',N'portal.catalog-task.v1:database:'+@dateText,N'Transaction'),N'NoLock')<>N'Exclusive'
+  OR ISNULL(APPLOCK_MODE(N'public',N'portal.catalog-task.v1:domain:'+@dateText,N'Transaction'),N'NoLock')<>N'Exclusive'
+BEGIN
+  SELECT CONVERT(nvarchar(150),NULL) AS scheduleId,CONVERT(char(16),NULL) AS scheduleVersion,
+    CONVERT(nvarchar(150),NULL) AS clientId WHERE 1=0;
+  RETURN;
+END;
+SELECT s.source_id AS scheduleId,LOWER(CONVERT(char(16),s.row_version,2)) AS scheduleVersion,c.source_id AS clientId
+FROM scheduling.update_schedules s WITH (UPDLOCK,HOLDLOCK)
+JOIN core.clients c WITH (HOLDLOCK) ON c.client_key=s.client_key
+JOIN scheduling.catalog_schedule_activation_snapshots frozen WITH (HOLDLOCK)
+  ON frozen.schedule_key=s.schedule_key AND frozen.definition_version=s.row_version AND frozen.portal_environment=@portalEnvironment
+  AND frozen.activation_state='frozen' AND frozen.activation_at>=@dayStart AND frozen.activation_at<@cutoffAt
+  AND frozen.sealed_at<@cutoffAt AND frozen.recorded_at<@cutoffAt AND frozen.evidence_at=frozen.activation_at
+JOIN scheduling.catalog_schedule_operation_approvals approved WITH (HOLDLOCK)
+  ON approved.schedule_key=s.schedule_key AND approved.schedule_version=s.row_version
+  AND approved.portal_environment=frozen.portal_environment AND approved.retired_at IS NULL AND approved.approved_at<=frozen.activation_at
+WHERE s.schedule_key=CONVERT(bigint,@scheduleKey) AND s.active=1 AND s.deleted_at IS NULL AND s.completed_at IS NULL
+  AND s.catalog_activation_enabled=1 AND s.frequency_type='once' AND s.start_date=@taskDate
+  AND s.timezone COLLATE Latin1_General_100_BIN2=N'America/Bogota' AND DATALENGTH(s.timezone)=28
+  AND (SELECT COUNT_BIG(*) FROM scheduling.catalog_schedule_activation_targets held_count WITH (HOLDLOCK)
+    WHERE held_count.schedule_key=s.schedule_key AND held_count.evidence_state='eligible') BETWEEN 1 AND 5000
+  AND NOT EXISTS(SELECT 1 FROM scheduling.catalog_schedule_activation_targets uncertain WITH (HOLDLOCK)
+    WHERE uncertain.schedule_key=s.schedule_key AND uncertain.evidence_state='unverifiable')
+  AND NOT EXISTS(
+    SELECT 1 FROM scheduling.catalog_schedule_activation_targets f WITH (HOLDLOCK)
+    WHERE f.schedule_key=s.schedule_key AND f.evidence_state='eligible' AND NOT EXISTS (
+      SELECT 1 FROM workflow.catalog_task_execution_sources a WITH (HOLDLOCK)
+      JOIN workflow.catalog_task_execution_links x WITH (HOLDLOCK) ON x.catalog_execution_link_key=a.catalog_execution_link_key
+        AND x.link_id=LOWER(CONVERT(nvarchar(36),f.link_id)) COLLATE Latin1_General_100_BIN2 AND DATALENGTH(x.link_id)=72
+        AND x.execution_kind COLLATE Latin1_General_100_BIN2=f.target_kind
+        AND x.link_environment COLLATE Latin1_General_100_BIN2=f.target_environment
+        AND DATALENGTH(x.link_environment)=DATALENGTH(f.target_environment)
+        AND x.link_state='active' AND x.retired_at IS NULL AND x.created_at<@cutoffAt
+      JOIN workflow.catalog_task_executions e WITH (HOLDLOCK) ON e.catalog_execution_key=x.catalog_execution_key
+        AND e.execution_kind COLLATE Latin1_General_100_BIN2=f.target_kind AND e.retired_at IS NULL AND e.cutoff_at=@cutoffAt
+        AND e.occurrence_id=CONVERT(nvarchar(10),@dateText) AND DATALENGTH(e.occurrence_id)=20
+        AND e.operation_id=approved.operation_id AND DATALENGTH(e.operation_id)=DATALENGTH(approved.operation_id)
+        AND TRY_CONVERT(uniqueidentifier,e.verified_target_id)=f.verified_target_id AND DATALENGTH(e.verified_target_id)=72
+        AND e.created_at<@cutoffAt
+      JOIN workflow.update_tasks t WITH (HOLDLOCK) ON t.task_key=e.task_key AND t.target_type=e.execution_kind AND t.task_date=@taskDate
+        AND t.source_id COLLATE Latin1_General_100_BIN2=CONCAT(N'catalog-',LOWER(CONVERT(char(64),e.execution_key,2)))
+        AND DATALENGTH(t.source_id)=144 AND t.is_historical_orphan=0 AND t.created_at<@cutoffAt
+        AND t.status='completed' AND t.completed_with_problems=0
+        AND t.result COLLATE Latin1_General_100_BIN2=N'success' AND DATALENGTH(t.result)=14
+        AND t.completed_at>=a.attached_at AND t.completed_at>=t.created_at AND t.completed_at<=@now
+        AND (t.reopened_at IS NULL OR t.completed_at>t.reopened_at)
+      ${catalogOnceLatestCompletionSql}
+      WHERE a.schedule_key=s.schedule_key AND a.detached_at IS NULL
+        AND a.attached_at>=frozen.activation_at AND a.attached_at<@cutoffAt
+        AND ${catalogOnceExplicitCompletionSql}
+    )
+  );`.trim();
+
+/**
  * Internal only; caller holds both catalog day locks in its SERIALIZABLE
  * transaction through any subsequent versioned closure and audit. This read
  * neither mutates a schedule nor authorizes a worker to run.
@@ -69,7 +134,12 @@ INSERT @candidate
         AND newer.observation_key>o.observation_key
     );
 
-IF NOT EXISTS(SELECT 1 FROM @candidate)
+-- Old observations are not evidence for a schedule later enrolled in 071.
+DECLARE @candidateSchedule bigint=(SELECT schedule_key FROM @candidate),@enrolled bit=0;
+IF @candidateSchedule IS NOT NULL AND COL_LENGTH(N'scheduling.update_schedules',N'catalog_activation_enabled')=1
+  EXEC sys.sp_executesql N'SELECT @flag=catalog_activation_enabled FROM scheduling.update_schedules WITH (HOLDLOCK)
+    WHERE schedule_key=@key;',N'@key bigint,@flag bit OUTPUT',@candidateSchedule,@enrolled OUTPUT;
+IF @enrolled=1 OR @candidateSchedule IS NULL
 BEGIN
   SELECT CONVERT(nvarchar(150),NULL) AS scheduleId,CONVERT(char(16),NULL) AS scheduleVersion,
     CONVERT(nvarchar(150),NULL) AS clientId WHERE 1=0;

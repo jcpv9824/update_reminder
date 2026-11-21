@@ -263,7 +263,7 @@ export function expandSchedulesWithDomainInheritance(
 ): UpdateSchedule[] {
   const activeDomains = new Map(domains.filter((d) => d.status === "active").map((d) => [d.id, d]));
   const activeDatabases = databases.filter((d) => d.status === "active" && activeDomains.has(d.domainId));
-  const activeDbIds = new Set(activeDatabases.map((d) => d.id));
+  const activeDatabaseById = new Map(activeDatabases.map((d) => [d.id, d]));
   const databasesByDomain = new Map<string, DatabaseRecord[]>();
   for (const db of activeDatabases) {
     const list = databasesByDomain.get(db.domainId) ?? [];
@@ -284,11 +284,14 @@ export function expandSchedulesWithDomainInheritance(
     if (schedule.scopeGroups && schedule.scopeGroups.length > 0) {
       const includeManualDomains = (schedule.manualTargetTypes ?? "domains_and_databases") !== "databases_only";
       const includeManualDatabases = (schedule.manualTargetTypes ?? "domains_and_databases") !== "domains_only";
+      const environment = schedule.manualEnvironment ?? "all";
+      const matchesEnvironment = (candidate: string) => environment === "all" || candidate === environment;
       for (const group of schedule.scopeGroups) {
         const groupDomains = group.includeAllDomains
           ? domains.filter((d) => d.clientId === group.clientId && d.status === "active")
           : group.domains.map((g) => activeDomains.get(g.domainId)).filter(Boolean) as DomainRecord[];
         for (const domain of groupDomains) {
+          if (domain.clientId !== group.clientId || !matchesEnvironment(domain.environment)) continue;
           const domainConfig = group.domains.find((d) => d.domainId === domain.id);
           if (includeManualDomains) {
             expanded.push({
@@ -309,6 +312,7 @@ export function expandSchedulesWithDomainInheritance(
             ? (databasesByDomain.get(domain.id) ?? [])
             : (domainConfig?.databaseIds ?? []).map((id) => activeDatabases.find((db) => db.id === id)).filter(Boolean) as DatabaseRecord[];
           for (const db of dbs) {
+            if (db.clientId !== group.clientId || db.domainId !== domain.id || !matchesEnvironment(db.environment)) continue;
             expanded.push({
               ...schedule,
               id: `${schedule.id}__db_${db.id}`,
@@ -327,8 +331,14 @@ export function expandSchedulesWithDomainInheritance(
       continue;
     }
 
+    const environment = schedule.manualEnvironment ?? "all";
+    const matchesEnvironment = (target: { environment: string } | undefined) =>
+      Boolean(target && (environment === "all" || target.environment === environment));
     if (schedule.targetType === "database") {
-      const targetIds = schedule.targetIds.filter((id) => activeDbIds.has(id));
+      const targetIds = schedule.targetIds.filter((id) => {
+        const database = activeDatabaseById.get(id);
+        return matchesEnvironment(database) && (environment === "all" || matchesEnvironment(activeDomains.get(database!.domainId)));
+      });
       if (targetIds.length === 0) continue;
       expanded.push({ ...schedule, targetIds });
       continue;
@@ -338,7 +348,7 @@ export function expandSchedulesWithDomainInheritance(
     // solo tareas de dominio. Las bases de datos YA NO se heredan de forma
     // implícita; para incluirlas, la programación debe marcarlas en el alcance
     // (scopeGroups con "incluir todas las bases del dominio" o bases concretas).
-    const domainIds = schedule.targetIds.filter((id) => activeDomains.has(id));
+    const domainIds = schedule.targetIds.filter((id) => matchesEnvironment(activeDomains.get(id)));
     if (domainIds.length === 0) continue;
     expanded.push({ ...schedule, targetIds: domainIds });
   }

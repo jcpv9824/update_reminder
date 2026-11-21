@@ -25,7 +25,7 @@ vi.mock("../lib/catalogSchedulePopulationCoverage", () => ({
 }));
 
 import { registerSqlCatalogTaskExecution, registerSqlCatalogTaskExecutionInTransaction,
-  catalogRegistrationConflictReason, type CatalogExecutionRegistration } from "../lib/catalogExecutionRegistrationSqlRepository";
+  catalogRegistrationConflictReason, inspectCatalogExecutionReservationsInTransaction, type CatalogExecutionRegistration } from "../lib/catalogExecutionRegistrationSqlRepository";
 import { catalogTaskExecutionKey } from "../lib/catalogTaskTargetPlanning";
 import { runSqlTransaction } from "../lib/sqlTransaction";
 
@@ -70,6 +70,35 @@ const rows = (...response: object[][]) => {
 };
 
 beforeEach(() => { vi.resetAllMocks(); mock.insert.mockResolvedValue(17); mock.lockDay.mockResolvedValue(true); mock.population.mockResolvedValue(cutoffAt); });
+
+describe("schedule preview reservation inspection", () => {
+  const tx = mock.tx as Parameters<typeof inspectCatalogExecutionReservationsInTransaction>[0];
+  const db = { kind: "database", physicalId, targetIds: ["database1", "database2"], operationId: "release1",
+    assignment: { kind: "role", id: "db_updater" }, workflowRole: "db_updater" } as const;
+  const candidate = { taskDate: occurrenceId, cutoffAt, candidates: [db] };
+  const reservation = { ...existing, taskId: `catalog-${catalogTaskExecutionKey(occurrenceId, "database", physicalId)}` };
+  it("uses physical identity and distinguishes a compatible reservation from an incompatible one", async () => {
+    rows([reservation], [{ ...reservation, operationId: "release2" }], [{ ...reservation, usersJson: '[{"id":"other"}]' }]);
+    await expect(inspectCatalogExecutionReservationsInTransaction(tx, candidate)).resolves.toEqual(["compatible_reservation"]);
+    await expect(inspectCatalogExecutionReservationsInTransaction(tx, candidate)).resolves.toEqual(["conflict"]);
+    await expect(inspectCatalogExecutionReservationsInTransaction(tx, candidate)).resolves.toEqual(["conflict"]);
+    expect(mock.insert).not.toHaveBeenCalled();
+  });
+  it("shares the legacy collision check and keeps domain and database independent", async () => {
+    rows([], [{ collision: false }], [], [{ collision: true }]);
+    const domain = { ...db, kind: "domain" as const, targetIds: ["domain1"] };
+    await expect(inspectCatalogExecutionReservationsInTransaction(tx, { ...candidate, candidates: [domain, db] }))
+      .resolves.toEqual(["unoccupied", "conflict"]);
+    expect(mock.lockDay.mock.calls.map(([, key]) => key.targetType)).toEqual(["database", "domain"]);
+    expect(mock.query.mock.calls[1][1]).toMatchObject({ kind: "domain", targetIds: '["domain1"]' });
+    expect(mock.query.mock.calls[3][1]).toMatchObject({ kind: "database", targetIds: '["database1","database2"]' });
+  });
+  it("returns no preview when the shared day lock is unavailable", async () => {
+    mock.lockDay.mockResolvedValueOnce(false);
+    await expect(inspectCatalogExecutionReservationsInTransaction(tx, candidate)).resolves.toBeNull();
+    expect(mock.query).not.toHaveBeenCalled();
+  });
+});
 
 describe("certified-day additive schedule provenance", () => {
   const transaction = mock.tx as Parameters<typeof registerSqlCatalogTaskExecutionInTransaction>[0];

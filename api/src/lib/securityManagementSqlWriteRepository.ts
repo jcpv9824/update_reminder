@@ -1,5 +1,5 @@
 import sql from "mssql";
-import type { AuthSessionRecord, CurrentUser, UserRecord } from "../types/models";
+import type { AuthSessionRecord, CurrentUser, UserArea, UserRecord } from "../types/models";
 import type { RoleDefinitionRecord } from "./roleDefinitions";
 import type { RoleUsage } from "./roleLifecycle";
 import { normalizeEmail } from "./password";
@@ -11,7 +11,7 @@ import { enqueuePasswordResetNotificationSql } from "./notificationOutboxSqlRepo
 type Actor = Pick<CurrentUser, "id" | "email">;
 
 const USER_PROJECTION = `
-  users.source_id,users.display_name,users.email,users.active,users.password_hash,
+  users.source_id,users.display_name,users.email,users.active,users.area,users.password_hash,
   users.password_updated_at,users.password_expires_at,users.must_change_password,
   users.token_version,users.last_login_at,users.password_reset_token_hash,
   users.password_reset_expires_at,users.password_reset_used_at,
@@ -49,6 +49,7 @@ export type SqlUserCreateInput = {
   email: string;
   roles: string[];
   active: boolean;
+  area?: UserArea | null;
   passwordHash: string;
   mustChangePassword: boolean;
 };
@@ -57,6 +58,7 @@ export type SqlUserUpdateInput = {
   displayName?: string;
   roles?: string[];
   active?: boolean;
+  area?: UserArea | null;
 };
 
 function roleFromRow(row: RoleRow): RoleDefinitionRecord {
@@ -178,16 +180,17 @@ export async function createSqlUser(input: SqlUserCreateInput, actor: Actor): Pr
     insert.input("email", sql.NVarChar(254), email);
     insert.input("emailNormalized", sql.NVarChar(254), normalized);
     insert.input("active", sql.Bit, input.active);
+    insert.input("area", sql.VarChar(14), input.area ?? null);
     insert.input("passwordHash", sql.NVarChar(500), input.passwordHash);
     insert.input("mustChangePassword", sql.Bit, input.mustChangePassword);
     insert.input("now", sql.DateTime2(3), now);
     insert.input("actorId", sql.NVarChar(150), actor.id);
     await insert.query(`
       INSERT security.users
-      (source_id,display_name,email,email_normalized,active,password_hash,password_updated_at,
+      (source_id,display_name,email,email_normalized,active,area,password_hash,password_updated_at,
        password_expires_at,must_change_password,token_version,last_login_at,created_at,created_by,updated_at,updated_by)
       VALUES
-      (@sourceId,@displayName,@email,@emailNormalized,@active,@passwordHash,@now,
+      (@sourceId,@displayName,@email,@emailNormalized,@active,@area,@passwordHash,@now,
        NULL,@mustChangePassword,0,NULL,@now,@actorId,@now,@actorId);
     `);
     await replaceUserRoles(transaction, input.id, input.roles, actor.id, now);
@@ -215,16 +218,18 @@ export async function updateSqlUser(id: string, input: SqlUserUpdateInput, actor
     update.input("sourceId", sql.NVarChar(150), id);
     update.input("displayName", sql.NVarChar(160), input.displayName?.trim() ?? before.displayName);
     update.input("active", sql.Bit, active);
+    // Omission preserves the locked value; explicit null clears the classification.
+    update.input("area", sql.VarChar(14), input.area === undefined ? before.area ?? null : input.area);
     update.input("incrementTokenVersion", sql.Bit, deactivated || rolesChanged);
     update.input("updatedAt", sql.DateTime2(3), now);
     update.input("updatedBy", sql.NVarChar(150), actor.id);
     await update.query(`
-      UPDATE security.users SET display_name=@displayName,active=@active,
+      UPDATE security.users SET display_name=@displayName,active=@active,area=@area,
         token_version=token_version+CASE WHEN @incrementTokenVersion=1 THEN 1 ELSE 0 END,
         updated_at=@updatedAt,updated_by=@updatedBy
       WHERE source_id=@sourceId;
     `);
-    if (input.roles) await replaceUserRoles(transaction, id, roles, actor.id, now);
+    if (rolesChanged) await replaceUserRoles(transaction, id, roles, actor.id, now);
     if (deactivated || rolesChanged) {
       await revokeUserSessions(transaction, id, deactivated ? "user_deactivated" : "user_roles_changed", now);
     }

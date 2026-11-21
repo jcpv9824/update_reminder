@@ -2,13 +2,14 @@ import { timingSafeEqual } from "node:crypto";
 import sql from "mssql";
 import { getSqlPool } from "./sql";
 import type { AtomicSessionRotation, AuthSessionStore } from "./authSessions";
-import type { AuthSessionRecord, UserRecord } from "../types/models";
+import type { AuthSessionRecord, UserArea, UserRecord } from "../types/models";
 
 export type SqlCredentialUserRow = {
   source_id: string;
   display_name: string;
   email: string;
   active: boolean;
+  area?: UserArea | null;
   password_hash: string | null;
   password_updated_at: Date | null;
   password_expires_at: Date | null;
@@ -59,6 +60,7 @@ export function mapSqlCredentialUser(row: SqlCredentialUserRow): UserRecord {
     email: row.email,
     roles: parseRoles(row.roles_json),
     active: row.active,
+    area: row.area ?? null,
     passwordHash: row.password_hash ?? undefined,
     passwordUpdatedAt: iso(row.password_updated_at),
     passwordExpiresAt: iso(row.password_expires_at),
@@ -93,7 +95,7 @@ export function mapSqlAuthSession(row: SqlAuthSessionRow): AuthSessionRecord {
 }
 
 const USER_PROJECTION = `
-  users.source_id,users.display_name,users.email,users.active,users.password_hash,
+  users.source_id,users.display_name,users.email,users.active,users.area,users.password_hash,
   users.password_updated_at,users.password_expires_at,users.must_change_password,
   users.token_version,users.last_login_at,users.password_reset_token_hash,
   users.password_reset_expires_at,users.password_reset_used_at,

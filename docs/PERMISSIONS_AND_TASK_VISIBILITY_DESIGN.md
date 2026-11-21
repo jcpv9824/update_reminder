@@ -182,6 +182,12 @@ Archivos Públicos usa endpoints separados con disposición `inline`. Solo admit
 - `resend_credentials`
 - `assign_roles`
 
+**Área del usuario** es un dato de perfil opcional y auditable: Soporte,
+Desarrollo, Administrativo o Ventas. No se deduce de los roles ni concede
+permisos o elegibilidad para ejecutar tareas. Cualquier área puede tener el rol
+Super Administrador. Los usuarios existentes conservan el área sin asignar hasta
+que alguien autorizado edite su perfil.
+
 `configuration.roles`
 
 - `view`

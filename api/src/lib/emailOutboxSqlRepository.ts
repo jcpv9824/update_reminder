@@ -3,6 +3,7 @@ import sql from "mssql";
 import { normalizeEmail } from "./password";
 import { runSqlTransaction } from "./sqlTransaction";
 import { writeSqlAuditLog } from "./auditSqlWriter";
+import { getSqlPool } from "./sql";
 
 export type EmailOutboxType = "administrative_reminder" | "blocked_task_reminder" | "task_reminder" | "overdue_alert" | "password_notification" | "task_status_notification" | "test_email" | "masters_report";
 
@@ -34,6 +35,40 @@ export type ClaimedEmail = {
   metadata: Record<string, unknown> & { html?: string; text?: string };
   recipients: Array<{ email: string; name?: string; type: "to" | "cc" | "bcc" }>;
 };
+
+/** A regrouping of the same recipient's reminders must not queue the same surviving task twice. */
+export async function readCoveredTaskReminders(sendDate: string, recipient: string, origins: readonly (readonly [string, string])[]): Promise<Set<string>> {
+  if (!origins.length) return new Set<string>();
+  const request = (await getSqlPool()).request();
+  request.input("sendDate", sql.Date, sendDate);
+  request.input("recipient", sql.NVarChar(254), normalizeEmail(recipient));
+  request.input("origins", sql.NVarChar(sql.MAX), JSON.stringify(origins));
+  const results = await request.query<{ task_id: string }>(`
+    SELECT DISTINCT input_origin.task_id
+    FROM OPENJSON(@origins) WITH (task_id nvarchar(260) '$[0]',schedule_id nvarchar(150) '$[1]') input_origin
+    JOIN workflow.update_tasks task ON task.source_id=input_origin.task_id
+    WHERE EXISTS (
+      SELECT 1 FROM notifications.email_notifications notice
+      JOIN notifications.email_notification_recipients recipient ON recipient.notification_key=notice.notification_key
+      WHERE notice.notification_type='task_reminder' AND notice.send_date=@sendDate
+        AND recipient.email_normalized=@recipient AND recipient.recipient_type='to'
+        AND notice.status IN ('pending','processing','failed','sent')
+        AND (EXISTS (
+          SELECT 1 FROM OPENJSON(notice.metadata_json,'$.schedulesByTask')
+            WITH (task_id nvarchar(260) '$[0]',schedule_id nvarchar(150) '$[1]') pinned
+          WHERE pinned.task_id=input_origin.task_id AND pinned.schedule_id=input_origin.schedule_id
+        ) OR (
+          JSON_QUERY(notice.metadata_json,'$.schedulesByTask') IS NULL
+          AND task.primary_schedule_source_id=input_origin.schedule_id
+          AND (notice.task_key=task.task_key OR EXISTS (
+            SELECT 1 FROM OPENJSON(notice.metadata_json,'$.taskIds') member
+            WHERE member.type=1 AND member.value=input_origin.task_id
+          ))
+        ))
+    );
+  `);
+  return new Set(results.recordset.map(row => row.task_id));
+}
 
 export async function enqueueSqlEmail(input: EnqueueEmailInput): Promise<{ id: string; created: boolean }> {
   return runSqlTransaction(async (transaction) => {
@@ -170,9 +205,10 @@ export async function claimSqlEmailBatch(workerId: string, batchSize = 10, lease
 export async function completeSqlEmailAttempt(
   claimed: ClaimedEmail,
   workerId: string,
-  result: { ok: boolean; providerMessageId?: string; error?: string },
+  result: { ok: boolean; providerMessageId?: string; error?: string; deliveredTaskIds?: readonly string[]; attemptedTo?: readonly string[] },
 ): Promise<void> {
   await runSqlTransaction(async (transaction) => {
+    const attemptedTo = result.attemptedTo === undefined ? null : [...new Set(result.attemptedTo.map(normalizeEmail))];
     const terminalFailure = !result.ok && claimed.attemptNo >= 5;
     const status = result.ok ? "sent" : terminalFailure ? "cancelled" : "failed";
     const request = new sql.Request(transaction);
@@ -182,6 +218,7 @@ export async function completeSqlEmailAttempt(
     request.input("status", sql.VarChar(20), status);
     request.input("providerId", sql.NVarChar(300), result.providerMessageId ?? null);
     request.input("error", sql.NVarChar(2000), result.error?.slice(0, 2000) ?? null);
+    request.input("attemptedTo", sql.NVarChar(sql.MAX), attemptedTo === null ? null : JSON.stringify(attemptedTo));
     request.input("retrySeconds", sql.Int, Math.min(3600, 30 * (2 ** Math.max(0, claimed.attemptNo - 1))));
     const updated = await request.query(`
       -- Take the row lock before sampling the clock: a lock wait must not
@@ -205,9 +242,18 @@ export async function completeSqlEmailAttempt(
       WHERE notification_key=@notificationKey AND attempt_no=@attemptNo AND completed_at IS NULL;
       IF @@ROWCOUNT<>1 THROW 51071,N'La concesión de la notificación expiró.',1;
 
-      UPDATE notifications.email_notification_recipients
-      SET delivery_status=CASE WHEN @status='sent' THEN 'sent' ELSE 'failed' END,error_message=@error
-      WHERE notification_key=@notificationKey;
+      -- The configured audience may have shrunk between enqueue and delivery.
+      -- Record exclusions in the same fenced attempt, not as provider results.
+      UPDATE recipient
+      SET delivery_status=CASE WHEN @attemptedTo IS NOT NULL AND attempted.email_normalized IS NULL THEN 'skipped'
+                               WHEN @status='sent' THEN 'sent' ELSE 'failed' END,
+          error_message=CASE WHEN @attemptedTo IS NOT NULL AND attempted.email_normalized IS NULL
+                              THEN N'El destinatario no fue incluido en el intento de envío.' ELSE @error END
+      FROM notifications.email_notification_recipients recipient
+      LEFT JOIN OPENJSON(@attemptedTo) WITH (email_normalized nvarchar(254) '$') attempted
+        ON recipient.recipient_type='to' AND recipient.email_normalized COLLATE Latin1_General_100_BIN2
+          =attempted.email_normalized COLLATE Latin1_General_100_BIN2
+      WHERE recipient.notification_key=@notificationKey AND recipient.delivery_status IN ('pending','failed');
     `);
     void updated;
     const suffix = result.ok ? "sent" : "failed";
@@ -227,8 +273,10 @@ export async function completeSqlEmailAttempt(
         ? { provider: result.ok ? "configured" : "failed" }
         : claimed.type === "masters_report"
           ? { recipientsCount: claimed.recipients.length, provider: result.ok ? "configured" : "failed" }
-        : claimed.type === "task_status_notification"
+          : claimed.type === "task_status_notification"
           ? { notificationType: claimed.metadata.notificationType ?? "task_status" }
+          : result.deliveredTaskIds
+            ? { taskIds: result.deliveredTaskIds, deliveryTaskCount: result.deliveredTaskIds.length }
           : claimed.metadata;
     await writeSqlAuditLog(transaction, {
       entityType: claimed.entityType ?? "notification",
@@ -236,7 +284,7 @@ export async function completeSqlEmailAttempt(
       action: actionByType[claimed.type],
       performedBy: workerId,
       performedByEmail: "system",
-      metadata,
+      metadata: attemptedTo === null ? metadata : { ...metadata, attemptedRecipientCount: attemptedTo.length },
     });
   }, sql.ISOLATION_LEVEL.READ_COMMITTED);
 }
@@ -254,6 +302,90 @@ export const renewSqlEmailClaimSql = `
     AND claimed_by=@workerId AND attempt_count=@attemptNo AND claim_expires_at>@now;
   SELECT @@ROWCOUNT AS renewed;
 `;
+
+const cancelTaskNoticeRowsSql = `
+  UPDATE attempt SET completed_at=@now,attempt_status='failed',error_message=@reason
+  FROM notifications.email_notification_attempts attempt
+  JOIN @suppressed n ON n.notification_key=attempt.notification_key AND n.attempt_count=attempt.attempt_no
+  WHERE attempt.completed_at IS NULL;
+  UPDATE recipient SET delivery_status='skipped',error_message=@reason
+  FROM notifications.email_notification_recipients recipient
+  JOIN @suppressed n ON n.notification_key=recipient.notification_key
+  WHERE recipient.delivery_status IN ('pending','failed');
+`;
+
+/** Stop a current claim permanently without touching a stale or reclaimed attempt. */
+export async function suppressSqlEmailClaim(claimed: ClaimedEmail, workerId: string): Promise<void> {
+  await runSqlTransaction(async transaction => {
+    const request = new sql.Request(transaction);
+    request.input("notificationKey", sql.BigInt, claimed.notificationKey);
+    request.input("workerId", sql.NVarChar(150), workerId);
+    request.input("attemptNo", sql.Int, claimed.attemptNo);
+    await request.query(`
+      DECLARE @lockedKey bigint;
+      SELECT @lockedKey=notification_key FROM notifications.email_notifications WITH (UPDLOCK,HOLDLOCK)
+        WHERE notification_key=@notificationKey;
+      DECLARE @now datetime2(3)=SYSUTCDATETIME(), @reason nvarchar(160)=N'Las tareas de este aviso ya no están vigentes.';
+      DECLARE @suppressed TABLE (notification_key bigint PRIMARY KEY, attempt_count int NOT NULL);
+      UPDATE notifications.email_notifications SET status='cancelled',claimed_by=NULL,claim_expires_at=NULL,
+        next_attempt_at=NULL,last_error=@reason,updated_at=@now,updated_by=@workerId
+      OUTPUT INSERTED.notification_key,INSERTED.attempt_count INTO @suppressed
+      WHERE notification_key=@notificationKey AND status='processing' AND claimed_by=@workerId
+        AND attempt_count=@attemptNo AND claim_expires_at>@now
+        AND notification_type IN ('task_reminder','overdue_alert','blocked_task_reminder','task_status_notification');
+      ${cancelTaskNoticeRowsSql}
+    `);
+  }, sql.ISOLATION_LEVEL.READ_COMMITTED);
+}
+
+/** Stop exclusive queued notices within the same transaction as schedule deletion. Mixed batches are rebuilt at delivery. */
+export async function cancelQueuedEmailsForRemovedTasks(transaction: sql.Transaction, taskIds: readonly string[], actorId: string,
+  removedScheduleId: string) {
+  const request = new sql.Request(transaction);
+  request.input("taskIds", sql.NVarChar(sql.MAX), JSON.stringify(taskIds));
+  request.input("actorId", sql.NVarChar(150), actorId);
+  request.input("removedScheduleId", sql.NVarChar(150), removedScheduleId);
+  await request.query(`
+    DECLARE @now datetime2(3)=SYSUTCDATETIME(),@reason nvarchar(160)=N'La programación de las tareas fue eliminada.';
+    DECLARE @suppressed TABLE (notification_key bigint PRIMARY KEY, attempt_count int NOT NULL);
+    DECLARE @removed TABLE (source_id nvarchar(260) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY);
+    INSERT @removed SELECT DISTINCT CONVERT(nvarchar(260),value) FROM OPENJSON(@taskIds) WHERE type=1;
+
+    UPDATE n SET status='cancelled',claimed_by=NULL,claim_expires_at=NULL,next_attempt_at=NULL,
+      last_error=@reason,updated_at=@now,updated_by=@actorId
+    OUTPUT INSERTED.notification_key,INSERTED.attempt_count INTO @suppressed
+    FROM notifications.email_notifications n
+    -- An already handed-off live attempt may still report its genuine delivery
+    -- result. The worker fences it before handoff and before any retry.
+    WHERE (n.status IN ('pending','failed') OR (n.status='processing' AND n.claim_expires_at<=@now))
+      AND n.notification_type IN ('task_reminder','overdue_alert','blocked_task_reminder','task_status_notification')
+      AND (
+        (JSON_QUERY(n.metadata_json,'$.taskIds') IS NULL AND EXISTS (
+          SELECT 1 FROM workflow.update_tasks task LEFT JOIN @removed removed ON removed.source_id=task.source_id
+          WHERE task.task_key=n.task_key
+            AND (removed.source_id IS NOT NULL OR (n.notification_type IN ('blocked_task_reminder','task_status_notification')
+              AND JSON_QUERY(n.metadata_json,'$.schedulesByTask') IS NULL AND task.primary_schedule_source_id=@removedScheduleId))
+        ))
+        OR (EXISTS (SELECT 1 FROM OPENJSON(n.metadata_json,'$.taskIds'))
+          AND NOT EXISTS (
+            SELECT 1 FROM OPENJSON(n.metadata_json,'$.taskIds') member
+            LEFT JOIN @removed removed ON removed.source_id=member.value
+            LEFT JOIN workflow.update_tasks referred ON referred.source_id=member.value
+            WHERE member.type<>1 OR (removed.source_id IS NULL AND NOT (
+              n.notification_type IN ('task_reminder','blocked_task_reminder','task_status_notification') AND (
+                EXISTS (
+                  SELECT 1 FROM OPENJSON(n.metadata_json,'$.schedulesByTask')
+                    WITH (task_id nvarchar(260) '$[0]',schedule_id nvarchar(150) '$[1]') origin
+                  WHERE origin.task_id=member.value AND origin.schedule_id=@removedScheduleId
+                ) OR (JSON_QUERY(n.metadata_json,'$.schedulesByTask') IS NULL
+                  AND COALESCE(referred.primary_schedule_source_id,'')=@removedScheduleId)
+              )
+            ))
+          ))
+      );
+    ${cancelTaskNoticeRowsSql}
+  `);
+}
 
 export async function renewSqlEmailClaim(claimed: ClaimedEmail, workerId: string): Promise<boolean> {
   const started = performance.now();

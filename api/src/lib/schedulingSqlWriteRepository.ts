@@ -296,6 +296,7 @@ function bindSchedule(request: sql.Request, record: UpdateSchedule, actor: Actor
   request.input("databaseReminderMode", sql.VarChar(40), record.databaseReminderRecipientsMode ?? null);
   request.input("selectionMode", sql.VarChar(20), record.selectionMode ?? "manual");
   request.input("manualTargetTypes", sql.VarChar(40), record.manualTargetTypes ?? "domains_and_databases");
+  request.input("manualEnvironment", sql.VarChar(10), record.manualEnvironment ?? null);
   request.input("assignmentMode", sql.VarChar(20), record.assignmentMode ?? "role");
   request.input("origin", sql.NVarChar(80), record.origin ?? null);
   request.input("active", sql.Bit, record.active);
@@ -307,43 +308,59 @@ function bindSchedule(request: sql.Request, record: UpdateSchedule, actor: Actor
 }
 
 export async function createSqlSchedule(record: UpdateSchedule, actor: Actor): Promise<UpdateSchedule> {
-  return runSqlTransaction(async (transaction) => {
+  return runSqlTransaction(async transaction => (await insertSqlScheduleInTransaction(transaction, record, actor)).record);
+}
+
+/** Internal aggregate insert, including its normalized children and audit event. */
+export async function insertSqlScheduleInTransaction(transaction: sql.Transaction, record: UpdateSchedule, actor: Actor,
+  options?: Readonly<{ catalogLifecycle: true }>): Promise<{ key: number; record: UpdateSchedule; version?: string }> {
     const owner = await resolveScheduleOwner(transaction, record);
     const request = new sql.Request(transaction);
     bindSchedule(request, record, actor, owner);
     request.input("createdAt", sql.DateTime2(3), new Date(record.createdAt));
     request.input("createdBy", sql.NVarChar(150), actor.id);
-    const result = await request.query<{ schedule_key: number }>(`
+    const result = await request.query<{ schedule_key: number; version_hex?: string }>(`
       INSERT scheduling.update_schedules
       (source_id,client_key,client_name_snapshot,domain_key,domain_name_snapshot,name,target_type,
        frequency_type,every_n_weeks,interval_days,day_of_month,start_date,end_date,timezone,
        assigned_role,domain_assigned_role,database_assigned_role,database_reminder_recipients_mode,
-       selection_mode,manual_target_types,assignment_mode,origin,active,completed_at,completed_reason,
-       notes,created_at,created_by,updated_at,updated_by)
-      OUTPUT INSERTED.schedule_key
+       selection_mode,manual_target_types,manual_environment,assignment_mode,origin,active,completed_at,completed_reason,
+       notes,created_at,created_by,updated_at,updated_by${options?.catalogLifecycle ? ",catalog_activation_enabled" : ""})
+      OUTPUT INSERTED.schedule_key${options?.catalogLifecycle ? ",LOWER(CONVERT(char(16),CONVERT(binary(8),INSERTED.row_version),2)) AS version_hex" : ""}
       VALUES
       (@sourceId,@clientKey,@clientName,@domainKey,@domainName,@name,@targetType,
        @frequencyType,@everyNWeeks,@intervalDays,@dayOfMonth,@startDate,@endDate,@timezone,
        @assignedRole,@domainRole,@databaseRole,@databaseReminderMode,
-       @selectionMode,@manualTargetTypes,@assignmentMode,@origin,@active,@completedAt,@completedReason,
-       @notes,@createdAt,@createdBy,@updatedAt,@updatedBy);
+       @selectionMode,@manualTargetTypes,@manualEnvironment,@assignmentMode,@origin,@active,@completedAt,@completedReason,
+       @notes,@createdAt,@createdBy,@updatedAt,@updatedBy${options?.catalogLifecycle ? ",1" : ""});
     `);
     const key = result.recordset[0]?.schedule_key;
     if (!key) throw new Error("No se pudo crear la programación SQL.");
+    const version = result.recordset[0]?.version_hex;
+    if (options?.catalogLifecycle && (!version || !/^[a-f0-9]{16}$/.test(version))) throw new Error("catalog_schedule_definition_version_unavailable");
     await replaceScheduleChildren(transaction, key, owner.clientKey, record);
     await writeSqlAuditLog(transaction, {
       entityType: "schedule", entityId: record.id, clientId: record.clientId,
       clientName: owner.clientName, action: "schedule_created",
       performedBy: actor.id, performedByEmail: actor.email, after: record,
     });
-    return { ...record, clientName: owner.clientName, domainName: owner.domainName ?? undefined };
-  });
+    return { key, ...(version && { version }), record: { ...record, clientName: owner.clientName, domainName: owner.domainName ?? undefined } };
 }
 
 export async function updateSqlSchedule(before: UpdateSchedule, after: UpdateSchedule, actor: Actor): Promise<{ schedule: UpdateSchedule; cancelledTasks: number } | null> {
   return runSqlTransaction(async (transaction) => {
     const key = await scheduleKey(transaction, before.id);
     if (!key) return null;
+    const gate = await transaction.request().input("scheduleKey", sql.BigInt, key).query<{ frozen: boolean }>(`
+      SELECT CONVERT(bit,CASE WHEN catalog_activation_enabled=1 AND
+          (SYSUTCDATETIME()>=DATEADD(hour,5,CONVERT(datetime2(3),start_date))
+           OR EXISTS (SELECT 1 FROM scheduling.catalog_schedule_activation_snapshots a WHERE a.schedule_key=s.schedule_key))
+        THEN 1 ELSE 0 END) AS frozen
+      FROM scheduling.update_schedules s
+      WHERE s.schedule_key=@scheduleKey AND s.deleted_at IS NULL;
+    `);
+    if (!gate.recordset[0]) return null;
+    if (gate.recordset[0].frozen) throw Object.assign(new Error("El alcance está congelado. Duplica la programación para hacer cambios."), { status: 409 });
     const owner = await resolveScheduleOwner(transaction, after);
     let cancelledTasks = 0;
     if (before.frequencyType === "once" && after.frequencyType === "once" && before.startDate !== after.startDate) {
@@ -358,7 +375,7 @@ export async function updateSqlSchedule(before: UpdateSchedule, after: UpdateSch
         day_of_month=@dayOfMonth,start_date=@startDate,end_date=@endDate,timezone=@timezone,
         assigned_role=@assignedRole,domain_assigned_role=@domainRole,database_assigned_role=@databaseRole,
         database_reminder_recipients_mode=@databaseReminderMode,selection_mode=@selectionMode,
-        manual_target_types=@manualTargetTypes,assignment_mode=@assignmentMode,origin=@origin,active=@active,
+        manual_target_types=@manualTargetTypes,manual_environment=@manualEnvironment,assignment_mode=@assignmentMode,origin=@origin,active=@active,
         completed_at=@completedAt,completed_reason=@completedReason,notes=@notes,
         updated_at=@updatedAt,updated_by=@updatedBy
       WHERE source_id=@sourceId AND deleted_at IS NULL;
@@ -409,17 +426,19 @@ export async function deleteSqlSchedule(record: UpdateSchedule, actor: Actor): P
   return runSqlTransaction(async (transaction) => {
     const key = await scheduleKey(transaction, record.id);
     if (!key) return { deleted: false, cancelledTasks: 0 };
-    const now = new Date();
-    const cancelledTasks = await cancelOpenSqlTasksForSchedule(transaction, record.id, actor, "schedule_deactivated_or_deleted", now);
     const request = new sql.Request(transaction);
     request.input("sourceId", sql.NVarChar(150), record.id);
-    request.input("now", sql.DateTime2(3), now);
     request.input("actorId", sql.NVarChar(150), actor.id);
-    await request.query(`
-      UPDATE scheduling.update_schedules SET active=0,deleted_at=COALESCE(deleted_at,@now),
-        deleted_by=COALESCE(deleted_by,@actorId),updated_at=@now,updated_by=@actorId
-      WHERE source_id=@sourceId;
+    const changed = await request.query<{ deleted_at: Date }>(`
+      DECLARE @now datetime2(3)=SYSUTCDATETIME();
+      UPDATE scheduling.update_schedules SET active=0,deleted_at=@now,deleted_by=@actorId,updated_at=@now,updated_by=@actorId
+      WHERE source_id=@sourceId AND deleted_at IS NULL;
+      SELECT CASE WHEN @@ROWCOUNT=1 THEN @now END AS deleted_at;
     `);
+    const now = changed.recordset[0]?.deleted_at;
+    if (!now) return { deleted: false, cancelledTasks: 0 };
+    const cancelledTasks = await cancelOpenSqlTasksForSchedule(transaction, record.id, actor,
+      "schedule_deactivated_or_deleted", now, { deleting: true });
     await writeSqlAuditLog(transaction, {
       entityType: "schedule", entityId: record.id, clientId: record.clientId,
       clientName: record.clientName, action: "schedule_deleted",

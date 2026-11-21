@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const sqlMocks = vi.hoisted(() => {
   const request = {
@@ -25,7 +25,9 @@ describe("Scheduling SQL mapping", () => {
     sqlMocks.request.input.mockClear();
     sqlMocks.request.query.mockReset();
     sqlMocks.request.query.mockResolvedValue({ recordset: [] });
+    vi.stubEnv("PORTAL_CATALOG_SCHEDULE_LIFECYCLE_ENABLED", "false");
   });
+  afterEach(() => vi.unstubAllEnvs());
 
   it("excludes soft-deleted schedules from every operational list query", async () => {
     await readSqlSchedules({}, { enabled: false, page: 1, pageSize: 50 }, "2026-07-23");
@@ -39,20 +41,54 @@ describe("Scheduling SQL mapping", () => {
 
   it("loads candidate schedules for one day with an exact SQL Server 2019 version without legacy truncation", async () => {
     await expect(readSqlCatalogScheduleRoster("2026-07-23")).resolves.toEqual([]);
-    const query = sqlMocks.request.query.mock.calls[0][0];
+    expect(sqlMocks.request.query.mock.calls[0][0]).toContain("COL_LENGTH");
+    const query = sqlMocks.request.query.mock.calls[1][0];
     expect(query).toContain("CONVERT(binary(8),s.row_version)");
     expect(query).toContain("s.active=1 AND s.start_date<=CONVERT(date,@today,23)");
     expect(query).toContain("TOP (@catalogTake)");
     expect(query).not.toContain("workflow.update_tasks");
+    expect(query).not.toContain("catalog_schedule_activation_snapshots");
     expect(sqlMocks.request.input).toHaveBeenCalledWith("catalogTake", expect.anything(), 5001);
+  });
+
+  it("keeps registered lifecycle schedules held when the lifecycle flag is rolled back", async () => {
+    const version = "0000000000000001";
+    sqlMocks.request.query.mockResolvedValueOnce({ recordset: [{ installed: true }] })
+      .mockResolvedValueOnce({ recordset: [{ source_id: "registered", created_at: at, updated_at: at,
+        version_hex: version, activation_enabled: true }] });
+    await expect(readSqlCatalogScheduleRoster("2026-07-23")).resolves.toMatchObject([{ version, activation: null }]);
+    const query = sqlMocks.request.query.mock.calls[1][0];
+    expect(query).toContain("s.catalog_activation_enabled AS activation_enabled");
+    expect(query).not.toContain("catalog_schedule_activation_snapshots");
+  });
+
+  it("reads internal frozen scope only with lifecycle enabled and does not put it in the public list SQL", async () => {
+    vi.stubEnv("PORTAL_CATALOG_SCHEDULE_LIFECYCLE_ENABLED", "true");
+    const version = "0000000000000001";
+    const snapshot = { version, phase: "frozen", environment: "qa", targets: [{ kind: "database",
+      linkId: "31140f4d-81c3-4938-9ab2-a275473feb17", targetId: "31140f4d-81c3-4938-9ab2-a275473feb18" }],
+      principals: [{ kind: "database", principalKind: "user", id: "frozen-user" }] };
+    const row = { source_id: "programmed", created_at: at, updated_at: at, version_hex: version, activation_enabled: true };
+    sqlMocks.request.query.mockResolvedValueOnce({ recordset: [{ ...row, activation_snapshot: JSON.stringify(snapshot) }] });
+    await expect(readSqlCatalogScheduleRoster("2026-07-23")).resolves.toMatchObject([{ version, activation: snapshot }]);
+    expect(sqlMocks.request.query.mock.calls[0][0]).toContain("t.evidence_state='eligible'");
+    sqlMocks.request.query.mockResolvedValueOnce({ recordset: [{ ...row, activation_snapshot: null }] });
+    await expect(readSqlCatalogScheduleRoster("2026-07-23")).resolves.toMatchObject([{ version, activation: null }]);
+    sqlMocks.request.query.mockResolvedValueOnce({ recordset: [{ ...row,
+      activation_snapshot: JSON.stringify({ ...snapshot, version: "0000000000000002" }) }] });
+    await expect(readSqlCatalogScheduleRoster("2026-07-23")).rejects.toThrow("roster_activation_invalid");
+    await readSqlSchedules({}, { enabled: false, page: 1, pageSize: 50 }, "2026-07-23");
+    expect(sqlMocks.request.query.mock.lastCall?.[0]).not.toContain("catalog_schedule_activation_snapshots");
   });
 
   it("refuses invalid dates, incomplete rosters and malformed schedule versions", async () => {
     await expect(readSqlCatalogScheduleRoster("2026-02-30")).rejects.toThrow("schedule_date");
     expect(sqlMocks.request.query).not.toHaveBeenCalled();
-    sqlMocks.request.query.mockResolvedValueOnce({ recordset: Array(5001).fill({}) });
+    sqlMocks.request.query.mockResolvedValueOnce({ recordset: [{ installed: false }] })
+      .mockResolvedValueOnce({ recordset: Array(5001).fill({}) });
     await expect(readSqlCatalogScheduleRoster("2026-07-23")).rejects.toThrow("roster_limit");
-    sqlMocks.request.query.mockResolvedValueOnce({ recordset: [{ version_hex: "not-hex" }] });
+    sqlMocks.request.query.mockResolvedValueOnce({ recordset: [{ installed: false }] })
+      .mockResolvedValueOnce({ recordset: [{ version_hex: "not-hex" }] });
     await expect(readSqlCatalogScheduleRoster("2026-07-23")).rejects.toThrow("roster_invalid");
   });
 

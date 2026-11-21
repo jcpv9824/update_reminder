@@ -10,6 +10,7 @@ import { createCatalogMasterInventoryHttp, type CatalogMasterView } from "../lib
 import { readSqlCatalogMasterInventory, readSqlCatalogObservedInventory } from "../lib/catalogMasterInventorySqlRepository";
 import { createCatalogObservedInventoryV2Http } from "../lib/catalogObservedInventoryV2Http";
 import { readSqlCatalogObservedInventoryV2 } from "../lib/catalogObservedInventoryV2SqlRepository";
+import { readCatalogObservedInventoryDocuments } from "../lib/catalogObservedInventoryDocuments";
 import type { HttpRequest } from "@azure/functions";
 import { canViewClients, canViewDatabases, canViewDomains, canViewLicensingOption } from "../lib/managementAccess";
 import { loadRoleDefinitions } from "../lib/roleDefinitionStore";
@@ -105,13 +106,15 @@ for (const view of ["domains", "licenses"] as const) {
   });
 }
 
-async function authorizeInventory(request: HttpRequest, view: CatalogMasterView): Promise<{ actorId: string } | { status: 401 | 403 }> {
+async function authorizeInventory(request: HttpRequest, view: CatalogMasterView):
+  Promise<{ actorId: string; canReadCustomerDocuments: boolean } | { status: 401 | 403 }> {
     try {
       const actor = await loadUserProfile(await requireUser(request));
       if (!actor) return { status: 403 as const };
       const roles = (await loadRoleDefinitions()).filter(role => role.active !== false);
       const permission = view === "domains" ? canViewDomains : view === "databases" ? canViewDatabases : canViewLicensingOption;
-      return permission(actor, roles) ? { actorId: actor.id } : { status: 403 as const };
+      return permission(actor, roles) ? { actorId: actor.id,
+        canReadCustomerDocuments: catalogClientsReadEnabled() && canViewClients(actor, roles) } : { status: 403 as const };
     } catch (error) {
       const status = (error as { status?: unknown } | null)?.status;
       if (status === 401 || status === 403) return { status };
@@ -131,6 +134,8 @@ const standaloneV2 = createCatalogObservedInventoryV2Http({
   authorize: authorizeInventory,
   readSources: readInventorySources,
   read: query => readSqlCatalogObservedInventoryV2({ ...query, environment: environment(), matchKeyVersion: matchKeyVersion() }),
+  readDocuments: (query, ids) => readCatalogObservedInventoryDocuments(
+    { ...query, environment: environment(), matchKeyVersion: matchKeyVersion() }, ids),
 });
 for (const view of ["domains", "databases", "licenses"] as const) {
   app.http(`catalogMasterInventory_${view}`, {

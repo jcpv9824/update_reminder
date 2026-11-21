@@ -26,4 +26,19 @@ describe("bounded once closure worker", () => {
     await expect(runCatalogOnceClosureSweep("qa", fake)).rejects.toThrow("catalog_once_candidates_invalid");
     expect(fake.complete).not.toHaveBeenCalled();
   });
+  it("runs the frozen sweep independently of copy writes and leaves the old observer intact", async () => {
+    const fake = io();
+    const candidate = { taskDate: item.taskDate, scheduleKey: "32" };
+    const frozen = { reserve: vi.fn().mockResolvedValue([candidate]), complete: vi.fn().mockResolvedValue(true),
+      cursors: new Map<"qa" | "production",string>([["qa","16"]]) };
+    vi.stubEnv("PORTAL_CATALOG_SCHEDULE_LIFECYCLE_ENABLED","true");
+    vi.stubEnv("PORTAL_CATALOG_SCHEDULE_COPY_WRITE_ENABLED","false");
+    try {
+      expect(await runCatalogOnceClosureSweep("qa", { ...fake, frozen })).toEqual({ checked: 2, completed: 2, skipped: 0, failed: 0 });
+      expect(fake.complete).toHaveBeenCalledWith(item);
+      expect(frozen.reserve).toHaveBeenCalledWith("qa","16");
+      expect(frozen.complete).toHaveBeenCalledWith("qa",candidate);
+      expect(frozen.cursors.has("qa")).toBe(false);
+    } finally { vi.unstubAllEnvs(); }
+  });
 });

@@ -4,6 +4,7 @@ import { appendSqlCatalogManualDayIntents } from "./catalogManualDayIntentSqlRep
 import { readSqlCatalogScheduleRoster } from "./schedulingSqlRepository";
 import { getSqlPool } from "./sql";
 import { runCatalogOnceClosureSweep, type CatalogOnceClosureSummary } from "./catalogOnceClosureWorker";
+import { runCatalogScheduleActivationSweep, type CatalogActivationSweepSummary } from "./catalogScheduleActivationWorker";
 
 type Mode = "legacy" | "catalog";
 type Trigger = "timer" | "generate" | "refresh" | "schedule-change";
@@ -20,6 +21,7 @@ export type CatalogGenerationResult = {
   message: string;
   completedOneTimeSchedules?: number;
   onceClosure?: CatalogOnceClosureSummary;
+  activation?: CatalogActivationSweepSummary;
   /** Only background runs report the separate, independently committed Bogotá dates. */
   days?: Omit<CatalogGenerationResult, "days">[];
 };
@@ -75,7 +77,7 @@ function scope(request: Request, now: Date): { date: string; cutoffAt: Date; man
   return { date, cutoffAt, manualScheduleIds: [...manualScheduleIds] };
 }
 
-async function readActiveLicenseIds(): Promise<ReadonlySet<string>> {
+export async function readActiveLicenseIds(): Promise<ReadonlySet<string>> {
   // Do not use the paginated operator-grid projection as catalog evidence.
   const pool = await getSqlPool();
   const { recordset } = await pool.request().query<{ id: string }>(`
@@ -184,7 +186,16 @@ async function evaluateCatalogGeneration(request: Request, io: typeof dependenci
 
 /** Closure is independent of today's eight-date window and runs once per invocation. */
 export async function runCatalogGeneration(request: Request, io = dependencies,
-  env: NodeJS.ProcessEnv = process.env): Promise<CatalogGenerationResult> {
+  env: NodeJS.ProcessEnv = process.env, activate = runCatalogScheduleActivationSweep): Promise<CatalogGenerationResult> {
+  let activation: CatalogActivationSweepSummary | undefined;
+  if ((request.trigger === "timer" || request.trigger === "schedule-change") &&
+      env.PORTAL_CATALOG_SCHEDULE_LIFECYCLE_ENABLED === "true") {
+    const { portalEnvironment, matchKeyVersion } = configuration(env);
+    // Validate the trigger shape before invoking the historical worker.
+    scope(request, io.now());
+    try { activation = await activate(portalEnvironment, matchKeyVersion); }
+    catch { activation = { checked: 0, frozen: 0, cancelled: 0, held: 0, failed: 1 }; }
+  }
   const result = await evaluateCatalogGeneration(request, io, env);
   // evaluateCatalogGeneration has already enforced catalog mode/read/cutoff readiness
   // and all transport authorization belongs to its existing callers.
@@ -192,5 +203,5 @@ export async function runCatalogGeneration(request: Request, io = dependencies,
   let onceClosure: CatalogOnceClosureSummary;
   try { onceClosure = await io.closeOnce(portalEnvironment); }
   catch { onceClosure = { checked: 0, completed: 0, skipped: 0, failed: 1 }; }
-  return { ...result, completedOneTimeSchedules: onceClosure.completed, onceClosure };
+  return { ...result, ...(activation && { activation }), completedOneTimeSchedules: onceClosure.completed, onceClosure };
 }

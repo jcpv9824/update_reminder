@@ -4,6 +4,9 @@ import type { UpdateSchedule, UpdateTask, UserRecord } from "../types/models";
 const mocks = vi.hoisted(() => ({
   timer: vi.fn(),
   enqueue: vi.fn(async () => ({ created: true, outboxId: 1 })),
+  tasks: vi.fn(),
+  schedules: vi.fn(),
+  covered: vi.fn(),
 }));
 
 const schedule: UpdateSchedule = {
@@ -83,12 +86,12 @@ vi.mock("../lib/securityUsersSqlRepository", () => ({
   readSqlPublicUsers: vi.fn(async () => [user]),
 }));
 vi.mock("../lib/workflowTasksSqlRepository", () => ({
-  readSqlWorkflowTasks: vi.fn(async () => [task]),
+  readSqlWorkflowTasks: mocks.tasks,
 }));
 vi.mock("../lib/schedulingSqlRepository", () => ({
-  readSqlSchedules: vi.fn(async () => [schedule]),
+  readSqlSchedules: mocks.schedules,
 }));
-vi.mock("../lib/emailOutboxSqlRepository", () => ({ enqueueSqlEmail: mocks.enqueue }));
+vi.mock("../lib/emailOutboxSqlRepository", () => ({ enqueueSqlEmail: mocks.enqueue, readCoveredTaskReminders: mocks.covered }));
 
 import { ejecutarRecordatorios } from "../functions/sendScheduledReminders";
 
@@ -99,6 +102,9 @@ describe("recordatorios programados SQL-only", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-10T13:00:00.000Z"));
     mocks.enqueue.mockClear();
+    mocks.tasks.mockReset().mockResolvedValue([task]);
+    mocks.schedules.mockReset().mockResolvedValue([schedule]);
+    mocks.covered.mockReset().mockResolvedValue(new Set<string>());
   });
 
   afterEach(() => {
@@ -116,5 +122,31 @@ describe("recordatorios programados SQL-only", () => {
       type: "task_reminder",
       recipients: [{ email: user.email, name: user.displayName }],
     }));
+  });
+
+  it("mantiene el aviso de la copia del mismo día tras eliminar su programación original", async () => {
+    const copy = { ...schedule, id: "copy_same_day" };
+    mocks.tasks.mockResolvedValue([{ ...task, sources: [
+      { scheduleId: schedule.id, scheduleType: "normal", createdAt: schedule.createdAt },
+      { scheduleId: copy.id, scheduleType: "normal", createdAt: schedule.createdAt },
+    ] }]);
+    mocks.schedules.mockImplementation(async ({ sourceId }: { sourceId: string }) => sourceId === copy.id ? [copy] : []);
+    await expect(ejecutarRecordatorios(() => undefined)).resolves.toEqual({ enviados: 1, fallidos: 0 });
+    expect(mocks.enqueue).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ metadata: expect.objectContaining({
+      schedulesByTask: [[task.id, copy.id]], taskIds: [task.id],
+    }) }));
+  });
+
+  it("no usa la configuración global para revivir el aviso de una programación eliminada sin copia", async () => {
+    mocks.schedules.mockResolvedValue([]);
+    await expect(ejecutarRecordatorios(() => undefined)).resolves.toEqual({ enviados: 0, fallidos: 0 });
+    expect(mocks.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("no encola un segundo aviso si la copia ya está incluida en un correo agrupado", async () => {
+    mocks.covered.mockResolvedValue(new Set([task.id]));
+    await expect(ejecutarRecordatorios(() => undefined)).resolves.toEqual({ enviados: 0, fallidos: 0 });
+    expect(mocks.covered).toHaveBeenCalledWith("2026-05-10", user.email, [[task.id, schedule.id]]);
+    expect(mocks.enqueue).not.toHaveBeenCalled();
   });
 });

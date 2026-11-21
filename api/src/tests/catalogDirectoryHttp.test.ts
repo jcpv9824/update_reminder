@@ -37,6 +37,19 @@ function dependencies() {
 }
 
 describe("catalog directory HTTP contract", () => {
+  it("defaults V2 reads to active/unverified with confirmed SAG presence", async () => {
+    const deps = dependencies();
+    const secondCustomer = { ...fixture.erp[0].customers[0], sourceCustomerId: "different",
+      customerId: hiddenCustomer, officialName: "Solo ERP", document: { ...visibleDocument, number: "outside-key" } };
+    deps.readPublishedDirectory.mockResolvedValue({ ...fixture,
+      erp: [{ ...fixture.erp[0], customers: [...fixture.erp[0].customers, secondCustomer] }],
+      sagOnlyCustomers: [{ customerId: "00000000-0000-4000-8000-000000000009", name: "Solo SAG" }] });
+    const handler = createCatalogDirectoryHttp({ ...deps, includeSagDirectory: () => true });
+    const original = await handler(request(), "list");
+    expect(original.jsonBody).toMatchObject({ total: 2, items: [{ name: "Cliente de ejemplo" }, { name: "Solo SAG" }] });
+    expect((await handler(request("web=all"), "list")).jsonBody).toMatchObject({ total: 3 });
+  });
+
   it("parses independent filters and rejects duplicate, out-of-range and foreign query parameters", () => {
     expect(parseCatalogDirectoryQuery(new URLSearchParams("sourceId=" + visibleSource + "&state=inactive&web=all&page=2")))
       .toMatchObject({ sourceIds: [visibleSource], state: "inactive", web: "all", page: 2 });

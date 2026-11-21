@@ -1,7 +1,8 @@
 import sql from "mssql";
 import type { CatalogEnvironment } from "./catalogSourceConfiguration";
 import { lockCatalogTaskDay } from "./catalogExecutionCoexistenceSql";
-import { readCatalogOnceClosureProofSql } from "./catalogOnceClosureSql";
+import { readCatalogFrozenOnceClosureProofSql, readCatalogOnceClosureProofSql } from "./catalogOnceClosureSql";
+import { getSqlPool } from "./sql";
 import { writeSqlAuditLog } from "./auditSqlWriter";
 import { runSqlTransaction } from "./sqlTransaction";
 
@@ -36,6 +37,18 @@ DECLARE @last bigint=(SELECT TOP (1) observation_key FROM @chosen
   ORDER BY CASE WHEN observation_key>@after THEN 0 ELSE 1 END DESC,observation_key DESC);
 UPDATE scheduling.catalog_once_closure_scan_cursors SET last_observation_key=COALESCE(@last,0),updated_at=SYSUTCDATETIME()
 WHERE portal_environment=@portalEnvironment;
+IF @last IS NOT NULL AND COL_LENGTH(N'scheduling.update_schedules',N'catalog_activation_enabled')=1
+BEGIN
+  DECLARE @chosenKeys nvarchar(max)=(SELECT CONVERT(varchar(20),observation_key) AS id FROM @chosen FOR JSON PATH);
+  DECLARE @nonLegacy table(observation_key bigint PRIMARY KEY);
+  INSERT @nonLegacy EXEC sys.sp_executesql N'
+    SELECT o.observation_key
+    FROM OPENJSON(@keys) WITH (id bigint) p
+    JOIN scheduling.catalog_once_observations o WITH (HOLDLOCK) ON o.observation_key=p.id
+    JOIN scheduling.update_schedules s WITH (HOLDLOCK) ON s.schedule_key=o.schedule_key AND s.catalog_activation_enabled=1;',
+    N'@keys nvarchar(max)',@chosenKeys;
+  DELETE c FROM @chosen c JOIN @nonLegacy n ON n.observation_key=c.observation_key;
+END;
 SELECT @portalEnvironment AS portalEnvironment,CONVERT(char(10),task_date,23) AS taskDate,
   CONVERT(varchar(20),observation_key) AS observationKey FROM @chosen
 ORDER BY CASE WHEN observation_key>@after THEN 0 ELSE 1 END,observation_key;`;
@@ -56,9 +69,67 @@ const maxSqlBigInt = 9223372036854775807n;
 const id = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 150 &&
   value === value.trim() && !/\p{C}/u.test(value);
 const completedReason = "one_time_schedule_executed";
+export type CatalogFrozenOnceCandidate = { scheduleKey: string; taskDate: string };
+const sqlKey = (value: string, allowZero = false) =>
+  typeof value === "string" && (/^[1-9][0-9]{0,18}$/.test(value) || (allowZero && value === "0")) &&
+  BigInt(value) <= maxSqlBigInt;
+const businessDay = (value: string) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+  value >= "0001-01-01" && value <= "9999-12-30" && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0,10) === value;
+
+export async function reserveCatalogFrozenOnceCandidates(environment: CatalogEnvironment, after: string): Promise<CatalogFrozenOnceCandidate[]> {
+  if (!["qa","production"].includes(environment) || !sqlKey(after,true)) throw new Error("catalog_frozen_once_candidates_invalid");
+  const { recordset } = await (await getSqlPool()).request().input("env", sql.VarChar(10), environment)
+    .input("after", sql.VarChar(20), after).query<CatalogFrozenOnceCandidate>(`
+      SELECT TOP (50) CONVERT(varchar(20),s.schedule_key) AS scheduleKey,CONVERT(char(10),s.start_date,23) AS taskDate
+      FROM scheduling.update_schedules s
+      JOIN scheduling.catalog_schedule_activation_snapshots a ON a.schedule_key=s.schedule_key AND a.definition_version=s.row_version
+        AND a.portal_environment=@env AND a.activation_state='frozen' AND a.sealed_at IS NOT NULL
+      WHERE s.schedule_key>CONVERT(bigint,@after) AND s.start_date<CONVERT(date,DATEADD(hour,-5,SYSUTCDATETIME()))
+        AND s.active=1 AND s.catalog_activation_enabled=1 AND s.deleted_at IS NULL AND s.completed_at IS NULL AND s.frequency_type='once'
+      ORDER BY s.schedule_key;`);
+  if (recordset.length > 50 || recordset.some((row,index) => !sqlKey(row.scheduleKey) || !businessDay(row.taskDate) ||
+      BigInt(row.scheduleKey) <= BigInt(index ? recordset[index-1].scheduleKey : after))) throw new Error("catalog_frozen_once_candidates_invalid");
+  return recordset;
+}
+
+export async function completeCatalogFrozenOnceCandidate(environment: CatalogEnvironment, candidate: CatalogFrozenOnceCandidate): Promise<boolean> {
+  if (!["qa","production"].includes(environment) || !sqlKey(candidate.scheduleKey) || !businessDay(candidate.taskDate))
+    throw new Error("catalog_frozen_once_candidate_invalid");
+  return runSqlTransaction(async tx => {
+    for (const targetType of ["database","domain"] as const) {
+      if (!await lockCatalogTaskDay(tx, { taskDate: candidate.taskDate, targetType })) return false;
+    }
+    const request = () => tx.request().input("portalEnvironment", sql.VarChar(10), environment)
+      .input("taskDate", sql.Date, candidate.taskDate).input("scheduleKey", sql.VarChar(20), candidate.scheduleKey);
+    const { recordset } = await request().query<ProofRow>(readCatalogFrozenOnceClosureProofSql);
+    if (!recordset.length) return false;
+    const { scheduleId, scheduleVersion, clientId } = recordset[0];
+    if (recordset.length !== 1 || !id(scheduleId) || !id(clientId) || !/^[0-9a-f]{16}$/.test(scheduleVersion))
+      throw new Error("catalog_frozen_once_proof_invalid");
+    const changed = await request().input("version", sql.VarBinary(8), Buffer.from(scheduleVersion,"hex"))
+      .query<{ count: number }>(`
+        DECLARE @stamp datetime2(3)=SYSUTCDATETIME();
+        UPDATE scheduling.update_schedules SET active=0,completed_at=@stamp,completed_reason=N'one_time_schedule_executed',
+          updated_at=@stamp,updated_by=N'system'
+        WHERE schedule_key=CONVERT(bigint,@scheduleKey) AND row_version=@version AND catalog_activation_enabled=1
+          AND active=1 AND deleted_at IS NULL AND completed_at IS NULL AND frequency_type='once' AND start_date=@taskDate;
+        SELECT @@ROWCOUNT AS [count];`);
+    if (changed.recordset.length !== 1 || changed.recordset[0].count !== 1) throw new Error("catalog_frozen_once_update_invalid");
+    await writeSqlAuditLog(tx, { entityType: "schedule", entityId: scheduleId, clientId, action: "schedule_one_time_completed",
+      performedBy: "system", performedByEmail: "system",
+      metadata: { reason: completedReason, runDate: candidate.taskDate, scheduleId, proof: "catalog_activation_snapshot" } });
+    return true;
+  });
+}
 
 export const completeCatalogOnceScheduleSql = `
 DECLARE @stamp datetime2(3)=SYSUTCDATETIME();
+DECLARE @enrolled bit=0;
+IF COL_LENGTH(N'scheduling.update_schedules',N'catalog_activation_enabled')=1
+  EXEC sys.sp_executesql N'SELECT @flag=catalog_activation_enabled FROM scheduling.update_schedules WITH (HOLDLOCK)
+    WHERE source_id COLLATE Latin1_General_100_BIN2=@id COLLATE Latin1_General_100_BIN2
+      AND DATALENGTH(source_id)=DATALENGTH(@id);',N'@id nvarchar(150),@flag bit OUTPUT',@scheduleId,@enrolled OUTPUT;
+IF @enrolled=1 BEGIN SELECT 0 AS changed; RETURN; END;
 UPDATE s SET active=0,completed_at=@stamp,completed_reason=N'one_time_schedule_executed',
   updated_at=@stamp,updated_by=N'system'
 FROM scheduling.update_schedules s

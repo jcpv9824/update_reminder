@@ -11,7 +11,7 @@ vi.mock("mssql", () => ({ default: {
     input(name: string, _type: unknown, value: unknown) { this.parameters[name] = value; return this; }
     query(statement: string) { return m.query(statement, this.tx, this.parameters); }
   },
-  Date: Symbol(), BigInt: Symbol(), Int: Symbol(), VarChar: vi.fn(), Char: vi.fn(), NVarChar: vi.fn(),
+  Date: Symbol(), BigInt: Symbol(), Int: Symbol(), VarChar: vi.fn(), Char: vi.fn(), NVarChar: vi.fn(), VarBinary: vi.fn(),
 } }));
 vi.mock("../lib/catalogExecutionCoexistenceSql", () => ({ lockCatalogTaskDay: m.lock }));
 vi.mock("../lib/auditSqlWriter", () => ({ writeSqlAuditLog: m.audit }));
@@ -28,15 +28,17 @@ vi.mock("../lib/sqlTransaction", () => ({
   },
 }));
 
-import { completeSqlCatalogOnceSchedule, reserveSqlCatalogOnceClosureCandidates,
+import { completeCatalogFrozenOnceCandidate, completeSqlCatalogOnceSchedule, reserveSqlCatalogOnceClosureCandidates,
   reserveCatalogOnceClosureCandidatesSql } from "../lib/catalogOnceClosureSqlRepository";
-import { readCatalogOnceClosureProofSql } from "../lib/catalogOnceClosureSql";
+import { readCatalogFrozenOnceClosureProofSql, readCatalogOnceClosureProofSql } from "../lib/catalogOnceClosureSql";
+import sql from "mssql";
 const item: CatalogOnceClosureCandidate = { portalEnvironment: "qa", taskDate: "2030-01-01", observationKey: "9007199254740993" };
 const proof = { scheduleId: "once-a", scheduleVersion: "0000000000000001", clientId: "customer-a" };
 
 beforeEach(() => {
   vi.resetAllMocks();
   m.lock.mockResolvedValue(true);
+  Object.assign(m.tx, { request: () => new sql.Request(m.tx as never) });
 });
 
 describe("atomic closure of one catalogue schedule", () => {
@@ -49,6 +51,7 @@ describe("atomic closure of one catalogue schedule", () => {
     expect(reserveCatalogOnceClosureCandidatesSql).toContain("CASE WHEN o.observation_key>@after THEN 0 ELSE 1 END");
     expect(reserveCatalogOnceClosureCandidatesSql).toContain("last_observation_key=COALESCE(@last,0)");
     expect(reserveCatalogOnceClosureCandidatesSql).toContain("newer.observation_key>o.observation_key");
+    expect(reserveCatalogOnceClosureCandidatesSql).toContain("s.catalog_activation_enabled=1");
     expect(m.lock).not.toHaveBeenCalled();
     expect(m.audit).not.toHaveBeenCalled();
   });
@@ -67,6 +70,8 @@ describe("atomic closure of one catalogue schedule", () => {
     expect(update).toContain("o.observation_key=@observationKey");
     expect(update).toContain("o.portal_environment=@portalEnvironment");
     expect(update).toContain("s.active=1 AND s.frequency_type='once'");
+    expect(update).toContain("IF @enrolled=1 BEGIN SELECT 0 AS changed; RETURN; END");
+    expect(readCatalogOnceClosureProofSql).toMatch(/IF @enrolled=1 OR @candidateSchedule IS NULL\s+BEGIN\s+SELECT [^;]+WHERE 1=0;\s+RETURN;/);
     expect(m.audit).toHaveBeenCalledExactlyOnceWith(m.tx, {
       entityType: "schedule", entityId: proof.scheduleId, clientId: proof.clientId,
       action: "schedule_one_time_completed", performedBy: "system", performedByEmail: "system",
@@ -81,6 +86,25 @@ describe("atomic closure of one catalogue schedule", () => {
     expect(await completeSqlCatalogOnceSchedule(item)).toBe(false);
     expect(m.query).not.toHaveBeenCalled();
     expect(m.audit).not.toHaveBeenCalled();
+  });
+
+  it("closes a lifecycle schedule only when the locked SQL proof covers the complete frozen cohort", async () => {
+    const candidate = { taskDate: item.taskDate, scheduleKey: item.observationKey };
+    m.query.mockResolvedValueOnce({ recordset: [] }).mockResolvedValueOnce({ recordset: [proof] })
+      .mockResolvedValueOnce({ recordset: [{ count: 1 }] });
+    expect(await completeCatalogFrozenOnceCandidate("qa", candidate)).toBe(false);
+    expect(m.audit).not.toHaveBeenCalled();
+    expect(await completeCatalogFrozenOnceCandidate("qa", candidate)).toBe(true);
+    expect(m.query.mock.calls[1]).toEqual([readCatalogFrozenOnceClosureProofSql, m.tx,
+      { ...candidate, portalEnvironment: "qa" }]);
+    expect(readCatalogFrozenOnceClosureProofSql).toContain("f.evidence_state='eligible' AND NOT EXISTS (");
+    expect(readCatalogFrozenOnceClosureProofSql).toContain("TRY_CONVERT(uniqueidentifier,e.verified_target_id)=f.verified_target_id");
+    expect(readCatalogFrozenOnceClosureProofSql).toContain("t.completed_at>=a.attached_at");
+    expect(readCatalogFrozenOnceClosureProofSql).toContain("explicitCompletionSuccess");
+    expect(readCatalogFrozenOnceClosureProofSql).not.toMatch(/catalog_customer_revision_heads|catalog_once_observations/);
+    expect(m.audit).toHaveBeenCalledWith(m.tx, expect.objectContaining({ metadata: expect.objectContaining({
+      proof: "catalog_activation_snapshot",
+    }) }));
   });
 
   it("never falls back to another observation and makes no audit when current proof is gone", async () => {

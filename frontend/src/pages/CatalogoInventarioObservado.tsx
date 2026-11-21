@@ -21,7 +21,7 @@ type Pagina<T> = {
   total: number;
   sources?: readonly Fuente[];
 };
-type RegistroCliente = { id: string; customerId: string; customerName: string };
+type RegistroCliente = { id: string; displayDocument?: string | null; customerName: string };
 type Entidad = RegistroCliente & { name: string; environment: Ambiente; detail?: string };
 type Licencia = { id: string; code: string; name: string };
 type LicenciasCliente = RegistroCliente & { licenses: string[] };
@@ -93,13 +93,14 @@ function Resultados<T>({ consulta, onPagina, sinFuentes, children }: {
   );
 }
 
-function Tabla<T extends { id: string }>({ etiqueta, columnas, pagina, celdas }: {
-  etiqueta: string; columnas: string[]; pagina: Pagina<T>; celdas: (fila: T) => ReactNode;
+function Tabla<T extends { id: string }>({ etiqueta, columnas, pagina, celdas, columnaAcciones }: {
+  etiqueta: string; columnas: string[]; pagina: Pagina<T>; celdas: (fila: T) => ReactNode; columnaAcciones?: number;
 }) {
   return (
     <div className="tabla-contenedor">
       <table aria-label={etiqueta}>
-        <thead><tr>{columnas.map(columna => <th key={columna} scope="col">{columna}</th>)}</tr></thead>
+        <thead><tr>{columnas.map((columna, indice) => <th key={columna} scope="col"
+          className={indice === columnaAcciones ? "catalogo-columna-acciones" : undefined}>{columna}</th>)}</tr></thead>
         <tbody>
           {pagina.items.length ? pagina.items.map(fila => <tr key={fila.id}>{celdas(fila)}</tr>) : (
             <tr><td colSpan={columnas.length} className="vacio">
@@ -121,8 +122,8 @@ function TablaEntidades({ vista, alcance, titulo }: { vista: Exclude<Vista, "lic
   const [environment, setAmbiente] = useState<Ambiente | "">("");
   const consulta = usePagina<Entidad>(alcance, vista, pagina, { search, environment });
   const database = vista === "databases";
-  const columnas = database ? ["ID del cliente", "Cliente (ERP)", "Dominio", "Base de datos", "Ambiente"]
-    : ["ID del cliente", "Cliente (ERP)", "Dominio", "Ambiente"];
+  const columnas = database ? ["ID", "Cliente (ERP)", "Dominio", "Base de datos", "Ambiente"]
+    : ["ID", "Cliente (ERP)", "Dominio", "Ambiente"];
 
   function buscar(event: FormEvent) {
     event.preventDefault();
@@ -137,7 +138,7 @@ function TablaEntidades({ vista, alcance, titulo }: { vista: Exclude<Vista, "lic
       <Encabezado titulo={titulo} actualizar={() => void consulta.refetch()} ocupado={consulta.isFetching} />
       <form className="barra-filtros" aria-label="Filtros del inventario" onSubmit={buscar}>
         <div className="campo">
-          <label htmlFor={`${id}-buscar`}>Buscar por ID, cliente, dominio{database && " o base de datos"}</label>
+          <label htmlFor={`${id}-buscar`}>{database ? "Buscar por cliente, dominio o base de datos" : "Buscar por cliente o dominio"}</label>
           <input id={`${id}-buscar`} value={busqueda} maxLength={MAX_BUSQUEDA} onChange={event => setBusqueda(event.target.value)} />
         </div>
         <button type="submit" className="secundario">Buscar</button>
@@ -154,7 +155,7 @@ function TablaEntidades({ vista, alcance, titulo }: { vista: Exclude<Vista, "lic
         {datos => (
           <Tabla etiqueta={`${titulo} del catálogo`} columnas={columnas} pagina={datos} celdas={fila => (
             <>
-              <td>{fila.customerId}</td>
+              <td>{fila.displayDocument ?? "No disponible"}</td>
               <td>{fila.customerName}</td>
               {database && <td>{fila.detail ?? "Dominio no verificado"}</td>}
               <th scope="row">{fila.name}</th>
@@ -237,7 +238,7 @@ function CamposClientes({ filtros, fuentes, cambiar, reenviar }: {
       cambiar({ search });
     }}>
       <div className="campo">
-        <label htmlFor={`${id}-buscar`}>Buscar por ID o nombre oficial</label>
+        <label htmlFor={`${id}-buscar`}>Buscar por nombre oficial</label>
         <input id={`${id}-buscar`} value={busqueda} maxLength={MAX_BUSQUEDA} onChange={event => setBusqueda(event.target.value)} />
       </div>
       <button type="submit" className="secundario">Buscar</button>
@@ -302,7 +303,7 @@ function DetalleLicencia({ alcance, licencia, fuentes, cerrar }: {
         reenviar={() => { if (pagina === 1 && !sinFuentes) void consulta.refetch(); }} />
       <Resultados consulta={consulta} onPagina={setPagina} sinFuentes={sinFuentes}>
         {datos => <Tabla etiqueta="Clientes con la licencia" columnas={["ID", "Nombre"]} pagina={datos}
-          celdas={fila => <><td>{fila.customerId}</td><th scope="row">{fila.customerName}</th></>} />}
+          celdas={fila => <><td>{fila.displayDocument ?? "No disponible"}</td><th scope="row">{fila.customerName}</th></>} />}
       </Resultados>
     </dialog>
   );
@@ -356,12 +357,12 @@ function TablaLicencias({ alcance }: { alcance: string }) {
         {tab === "available" && (
           <Resultados consulta={disponibles} onPagina={setPaginaDisponible}>
             {datos => (
-              <Tabla etiqueta="Licencias disponibles" columnas={["Código", "Licencia", "Clientes"]} pagina={datos} celdas={fila => {
+              <Tabla etiqueta="Licencias disponibles" columnas={["Código", "Licencia", "Clientes"]} columnaAcciones={2} pagina={datos} celdas={fila => {
                 const nombre = fila.name || `Código ${fila.code}`;
                 return (
                   <>
                     <td>{fila.code}</td><th scope="row">{nombre}</th>
-                    <td><button type="button" className="secundario" aria-label={`Ver clientes de ${nombre}`}
+                    <td className="catalogo-columna-acciones"><button type="button" className="secundario" aria-label={`Ver clientes de ${nombre}`}
                       onClick={event => { origen.current = event.currentTarget; setLicencia(fila); }}>Ver clientes</button></td>
                   </>
                 );
@@ -377,10 +378,10 @@ function TablaLicencias({ alcance }: { alcance: string }) {
               cambiar={cambios => { setFiltros(actual => ({ ...actual, ...cambios })); setPaginaClientes(1); }}
               reenviar={() => { if (paginaClientes === 1 && !sinFuentes) void clientes.refetch(); }} />
             <Resultados consulta={clientes} onPagina={setPaginaClientes} sinFuentes={sinFuentes}>
-              {datos => <Tabla etiqueta="Licencias por cliente" columnas={["ID del cliente", "Cliente (ERP)", "Licencias"]}
+              {datos => <Tabla etiqueta="Licencias por cliente" columnas={["ID", "Cliente (ERP)", "Licencias"]}
                 pagina={datos} celdas={fila => (
                   <>
-                    <td>{fila.customerId}</td><th scope="row">{fila.customerName}</th>
+                    <td>{fila.displayDocument ?? "No disponible"}</td><th scope="row">{fila.customerName}</th>
                     <td>{fila.licenses.length ? fila.licenses.join(", ") : "Sin licencias identificadas"}</td>
                   </>
                 )} />}

@@ -5,6 +5,10 @@ import { requireUser, loadUserProfile } from "../lib/auth";
 import { badRequest, created, forbidden, noContent, notFound, ok, serverError } from "../lib/http";
 import {
   canCreateSchedule,
+  canViewClients,
+  canViewDatabases,
+  canViewDomains,
+  canViewLicensingOption,
   canDeactivateSchedule,
   canDeleteSchedule,
   canEditSchedule,
@@ -27,13 +31,24 @@ import { readSqlClients } from "../lib/clientsSqlRepository";
 import { readSqlDomains, readSqlPublicDatabases } from "../lib/coreMastersSqlRepository";
 import { readSqlLicenseModules } from "../lib/licensingSqlRepository";
 import { getTaskGenerationMode, runCatalogGeneration } from "../lib/catalogGenerationRuntime";
+import { createCatalogScheduleChoicesHttp } from "../lib/catalogScheduleChoices";
+import { readSqlCatalogScheduleChoices } from "../lib/catalogScheduleChoicesSqlRepository";
+import { readAuthorizedCatalogSourceIds } from "../lib/catalogSourceAccessSqlRepository";
+import { createCatalogScheduleCopyPreviewHttp, readCatalogScheduleCopyPreview } from "../lib/catalogScheduleCopyPreview";
+import { createCatalogScheduleCopyProposalHttp, readStoredCatalogCopyProposalInTransaction, requestCatalogScheduleCopyProposal } from "../lib/catalogScheduleCopyProposal";
+import { createCatalogScheduleCopyActivateHttp } from "../lib/catalogScheduleCopyActivateHttp";
+import { createCatalogCopyProposalListHttp, listOwnCatalogCopyProposals } from "../lib/catalogScheduleCopyProposalList";
+import { materializeReviewedCatalogCopyProposal } from "../lib/catalogScheduleSaveCopy";
+import { createNewCatalogSchedulePreviewHttp, previewNewCatalogSchedule } from "../lib/catalogScheduleDraftPreview";
+import { createNewCatalogDraftProposalHttp, saveNewCatalogDraftProposal } from "../lib/catalogScheduleDraftProposal";
+import { activateReviewedCatalogDraft } from "../lib/catalogScheduleDraftActivation";
+import { createCatalogDraftProposalListHttp, listOwnCatalogDraftProposals } from "../lib/catalogScheduleDraftProposalList";
+import { runSqlTransaction } from "../lib/sqlTransaction";
 import { runTaskGeneration } from "./generateDailyUpdateTasks";
 import type { ClientRecord, DatabaseRecord, LicensingScope, UpdateSchedule } from "../types/models";
 
 function bogotaTodayIso(): string {
-  const now = new Date();
-  const utcMs = now.getTime() + now.getTimezoneOffset() * 60_000;
-  return new Date(utcMs - 5 * 3600_000).toISOString().slice(0, 10);
+  return new Date(Date.now() - 5 * 3600_000).toISOString().slice(0, 10);
 }
 
 export async function loadScheduleClient(clientId: string): Promise<ClientRecord | null> {
@@ -60,8 +75,168 @@ async function getUserOrFail(req: HttpRequest) {
   return profile;
 }
 
+function scheduleCatalogEnvironment() {
+  const value = process.env.PORTAL_SAG_ENVIRONMENT;
+  if (value !== "qa" && value !== "production") throw new Error("catalog_schedule_choices_not_configured");
+  return value;
+}
+
+const catalogChoices = createCatalogScheduleChoicesHttp({
+  async authorize(request, kind, requiresLicensing) {
+    try {
+      const actor = await getUserOrFail(request);
+      const roles = await loadRoleDefinitions();
+      if (!canViewSchedules(actor, roles) || !canPreviewScheduleScope(actor, roles) || !canViewClients(actor, roles) ||
+          ((kind === "domain" || kind === "database") && !canViewDomains(actor, roles)) ||
+          (kind === "database" && !canViewDatabases(actor, roles)) ||
+          (requiresLicensing && !canViewLicensingOption(actor, roles))) return { status: 403 };
+      return { actorId: actor.id };
+    } catch (error) {
+      const status = (error as { status?: unknown } | undefined)?.status;
+      if (status === 401 || status === 403) return { status };
+      throw error;
+    }
+  },
+  readSources: actorId => readAuthorizedCatalogSourceIds({ actorId, environment: scheduleCatalogEnvironment() }),
+  read: input => {
+    const version = process.env.PORTAL_CATALOG_MATCH_KEY_VERSION ?? "";
+    if (!/^[1-9][0-9]{0,4}$/.test(version) || Number(version) > 32767) throw new Error("catalog_schedule_choices_not_configured");
+    return readSqlCatalogScheduleChoices({ ...input, portalEnvironment: scheduleCatalogEnvironment(), matchKeyVersion: Number(version) });
+  },
+});
+
+app.http("catalogScheduleChoices", {
+  route: "schedules/catalog-choices",
+  methods: ["GET"],
+  authLevel: "anonymous",
+  handler: request => process.env.PORTAL_CATALOG_SCHEDULE_UI_ENABLED === "true" &&
+    process.env.PORTAL_CATALOG_DIRECTORY_V2_ENABLED === "true" ? catalogChoices(request) : notFound(),
+});
+
+async function authorizeCatalogCopy(request: HttpRequest) {
+  try {
+    const actor = await getUserOrFail(request);
+    const roles = await loadRoleDefinitions();
+    if (!canViewSchedules(actor, roles) || !canCreateSchedule(actor, roles) || !canPreviewScheduleScope(actor, roles) ||
+        !canViewClients(actor, roles) || !canViewDomains(actor, roles)) return { status: 403 } as const;
+    return { actorId: actor.id, actorEmail: actor.email, allowedKinds: canViewDatabases(actor, roles) ? ["domain", "database"] as const : ["domain"] as const,
+      allowLicensing: canViewLicensingOption(actor, roles) };
+  } catch (error) {
+    const status = (error as { status?: unknown } | undefined)?.status;
+    if (status === 401 || status === 403) return { status } as const;
+    throw error;
+  }
+}
+
+function catalogScheduleMatchVersion() {
+  const version = process.env.PORTAL_CATALOG_MATCH_KEY_VERSION ?? "";
+  if (!/^[1-9][0-9]{0,4}$/.test(version) || Number(version) > 32767) throw new Error("catalog_schedule_copy_not_configured");
+  return Number(version);
+}
+
+const catalogDraftPreview = createNewCatalogSchedulePreviewHttp({
+  authorize: authorizeCatalogCopy,
+  read: input => previewNewCatalogSchedule({ ...input, portalEnvironment: scheduleCatalogEnvironment(),
+    matchKeyVersion: catalogScheduleMatchVersion() }),
+});
+app.http("catalogNewScheduleDraftPreview", {
+  route: "schedules/catalog-draft-preview", methods: ["POST"], authLevel: "anonymous",
+  handler: request => process.env.PORTAL_CATALOG_SCHEDULE_UI_ENABLED === "true" &&
+    process.env.PORTAL_CATALOG_DIRECTORY_V2_ENABLED === "true" &&
+    process.env.PORTAL_CATALOG_DRAFT_PREVIEW_ENABLED === "true" ? catalogDraftPreview(request) : notFound(),
+});
+const newCatalogDraftProposal = createNewCatalogDraftProposalHttp({
+  authorize: authorizeCatalogCopy,
+  save: input => saveNewCatalogDraftProposal({ ...input, portalEnvironment: scheduleCatalogEnvironment(),
+    matchKeyVersion: catalogScheduleMatchVersion() }),
+});
+const listCatalogDraftProposals = createCatalogDraftProposalListHttp({
+  authorize: authorizeCatalogCopy,
+  list: actor => listOwnCatalogDraftProposals(actor, scheduleCatalogEnvironment()),
+});
+const draftConfirmationEnabled = () => process.env.PORTAL_CATALOG_SCHEDULE_LIFECYCLE_ENABLED === "true" &&
+  process.env.PORTAL_CATALOG_DRAFT_MATERIALIZATION_ENABLED === "true";
+app.http("catalogNewScheduleDraftProposal", {
+  route: "schedules/catalog-draft-proposals", methods: ["GET","POST"], authLevel: "anonymous",
+  handler: request => process.env.PORTAL_CATALOG_SCHEDULE_UI_ENABLED === "true" &&
+    process.env.PORTAL_CATALOG_DIRECTORY_V2_ENABLED === "true" &&
+    process.env.PORTAL_CATALOG_DRAFT_PREVIEW_ENABLED === "true" &&
+    process.env.PORTAL_CATALOG_DRAFT_PROPOSALS_ENABLED === "true"
+    ? request.method === "POST" ? newCatalogDraftProposal(request)
+      : draftConfirmationEnabled() ? listCatalogDraftProposals(request) : notFound()
+    : notFound(),
+});
+
+const activateNewCatalogDraftProposal = createCatalogScheduleCopyActivateHttp({
+  subject: "programación",
+  authorize: authorizeCatalogCopy,
+  activate: (actor, proposalId, reviewId) => activateReviewedCatalogDraft({ ...actor, proposalId, reviewId,
+    checkedAt: new Date(), portalEnvironment: scheduleCatalogEnvironment(), matchKeyVersion: catalogScheduleMatchVersion() }),
+});
+app.http("activateNewCatalogDraftProposal", {
+  route: "schedules/catalog-draft-proposals/{proposalId}/activate", methods: ["POST"], authLevel: "anonymous",
+  handler: request => process.env.PORTAL_CATALOG_SCHEDULE_UI_ENABLED === "true" &&
+    process.env.PORTAL_CATALOG_DIRECTORY_V2_ENABLED === "true" &&
+    process.env.PORTAL_CATALOG_DRAFT_PROPOSALS_ENABLED === "true" &&
+    draftConfirmationEnabled() ? activateNewCatalogDraftProposal(request) : notFound(),
+});
+
+const catalogCopyPreview = createCatalogScheduleCopyPreviewHttp({
+  authorize: authorizeCatalogCopy,
+  read: input => {
+    return readCatalogScheduleCopyPreview({ ...input, portalEnvironment: scheduleCatalogEnvironment(), matchKeyVersion: catalogScheduleMatchVersion() });
+  },
+});
+
+const catalogCopyProposal = createCatalogScheduleCopyProposalHttp({
+  authorize: authorizeCatalogCopy,
+  submit: input => requestCatalogScheduleCopyProposal({ ...input, portalEnvironment: scheduleCatalogEnvironment(),
+    matchKeyVersion: catalogScheduleMatchVersion() }),
+});
+const listCatalogCopyProposals = createCatalogCopyProposalListHttp({
+  authorize: authorizeCatalogCopy,
+  list: (actorId, scheduleId) => listOwnCatalogCopyProposals(actorId, scheduleId, scheduleCatalogEnvironment()),
+});
+app.http("catalogScheduleCopyProposal", {
+  route: "schedules/{id}/catalog-copy-proposals", methods: ["GET", "POST"], authLevel: "anonymous",
+  handler: request => process.env.PORTAL_CATALOG_SCHEDULE_UI_ENABLED === "true" &&
+    process.env.PORTAL_CATALOG_DIRECTORY_V2_ENABLED === "true" &&
+    process.env.PORTAL_CATALOG_COPY_PROPOSALS_ENABLED === "true"
+    ? (request.method === "GET" ? listCatalogCopyProposals(request) : catalogCopyProposal(request)) : notFound(),
+});
+
+const activateCatalogCopyProposal = createCatalogScheduleCopyActivateHttp({
+  authorize: authorizeCatalogCopy,
+  async activate(actor, proposalId, reviewId) {
+    const portalEnvironment = scheduleCatalogEnvironment();
+    // The lookup provides inputs for planning only; materialization rereads the
+    // proposal, actor scope, operation and reservations under the day locks.
+    const proposal = await runSqlTransaction(tx => readStoredCatalogCopyProposalInTransaction(tx, proposalId, portalEnvironment));
+    if (!proposal || proposal.requesterId !== actor.actorId) return null;
+    return materializeReviewedCatalogCopyProposal({ actorId: actor.actorId, allowedKinds: actor.allowedKinds,
+      allowLicensing: actor.allowLicensing, proposalId, reviewId, scheduleId: proposal.scheduleId,
+      date: proposal.date, checkedAt: new Date(), portalEnvironment, matchKeyVersion: catalogScheduleMatchVersion() },
+    { id: actor.actorId, email: actor.actorEmail });
+  },
+});
+app.http("activateCatalogScheduleCopyProposal", {
+  route: "schedules/catalog-copy-proposals/{proposalId}/activate", methods: ["POST"], authLevel: "anonymous",
+  handler: request => process.env.PORTAL_CATALOG_SCHEDULE_UI_ENABLED === "true" &&
+    process.env.PORTAL_CATALOG_DIRECTORY_V2_ENABLED === "true" &&
+    process.env.PORTAL_CATALOG_COPY_PROPOSALS_ENABLED === "true" &&
+    process.env.PORTAL_CATALOG_SCHEDULE_COPY_WRITE_ENABLED === "true" &&
+    process.env.PORTAL_CATALOG_SCHEDULE_LIFECYCLE_ENABLED === "true" ? activateCatalogCopyProposal(request) : notFound(),
+});
+
+app.http("catalogScheduleCopyPreview", {
+  route: "schedules/{id}/catalog-copy-preview", methods: ["GET"], authLevel: "anonymous",
+  handler: request => process.env.PORTAL_CATALOG_SCHEDULE_UI_ENABLED === "true" &&
+    process.env.PORTAL_CATALOG_DIRECTORY_V2_ENABLED === "true" ? catalogCopyPreview(request) : notFound(),
+});
+
 const Weekdays = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"] as const;
 const FrequencyTypes = ["once", "weekly", "interval", "monthly", "manual"] as const;
+const ManualEnvironmentSchema = z.enum(["all", "production", "test", "demo"]).optional();
 
 const LicensingScopeSchema = z.object({
   licenseModuleIds: z.array(z.string()).default([]),
@@ -111,6 +286,7 @@ const ScheduleSchema = z.object({
   })).optional(),
   selectionMode: z.enum(["manual", "licensing"]).optional().default("manual"),
   manualTargetTypes: z.enum(["domains_and_databases", "domains_only", "databases_only"]).optional().default("domains_and_databases"),
+  manualEnvironment: ManualEnvironmentSchema,
   licensingScope: LicensingScopeSchema.optional(),
   assignmentMode: z.enum(["role", "users"]).optional(),
   domainAssignedRole: z.string().optional(),
@@ -263,6 +439,7 @@ app.http("schedulesCreate", {
         databaseAssignedUserIds: normalized.databaseAssignedUserIds ?? [],
         databaseReminderRecipientsMode: normalized.databaseReminderRecipientsMode,
         scopeGroups: normalized.scopeGroups,
+        manualEnvironment: normalized.manualEnvironment,
         selectionMode: normalized.selectionMode ?? parsed.data.selectionMode ?? "manual",
         licensingScope: normalized.licensingScope ?? parsed.data.licensingScope,
         assignmentMode: normalized.assignmentMode,
@@ -319,6 +496,8 @@ app.http("schedulesUpdate", {
       const existing = await findSchedule(req.params.id);
       if (!existing) return notFound();
       const body = await req.json() as any;
+      const manualEnvironment = ManualEnvironmentSchema.safeParse(body?.manualEnvironment);
+      if (!manualEnvironment.success) return badRequest("Seleccione un ambiente válido para el alcance manual.");
       if (body.active === false && existing.active !== false && !canDeactivateSchedule(user, roleDefinitions)) return forbidden();
       if (body.active === true && existing.active === false && !canReactivateSchedule(user, roleDefinitions)) return forbidden();
       if (body.selectionMode === "licensing") {
@@ -360,6 +539,7 @@ app.http("schedulesUpdate", {
         databaseAssignedUserIds: normalized.databaseAssignedUserIds ?? [],
         databaseReminderRecipientsMode: normalized.databaseReminderRecipientsMode ?? "roleUsers",
         scopeGroups: normalized.scopeGroups,
+        manualEnvironment: manualEnvironment.data ?? existing.manualEnvironment,
         selectionMode: normalized.selectionMode ?? body.selectionMode ?? existing.selectionMode ?? "manual",
         licensingScope: normalized.licensingScope ?? body.licensingScope,
         assignmentMode: normalized.assignmentMode,

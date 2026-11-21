@@ -75,6 +75,7 @@ export async function loadUserProfileDetailed(user: CurrentUser): Promise<Profil
         email: resource.email,
         displayName: resource.displayName,
         roles: migrateLegacyRoleIds(resource.roles ?? []),
+        area: resource.area ?? null,
       },
     };
   } catch {

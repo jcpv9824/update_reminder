@@ -61,7 +61,7 @@ type Props = {
   refreshService?: CatalogRefreshService;
 };
 
-const FILTROS_INICIALES: CatalogoClientesQuery = { state: "active_or_unverified", web: "all", page: 1, pageSize: 25 };
+const FILTROS_INICIALES: CatalogoClientesQuery = { state: "active_or_unverified", web: "in_web", page: 1, pageSize: 25 };
 const ESTADO: Record<Estado, string> = { active: "Activo", inactive: "Inactivo", unverified: "No verificado" };
 const SAG_WEB: Record<Presencia, string> = {
   in_web: "En SAG Web", not_in_web: "Fuera de SAG Web", unverified: "No verificado",
@@ -185,7 +185,8 @@ function CatalogoClientesContenido({ scopeKey, load, loadDetail, indicadores, re
   const elegidas = opcionesFuentes.filter(fuente => filtros.sourceIds?.includes(fuente.sourceId));
   const resumenFuentes = todas ? "Todas" : elegidas.length === 0 ? "Ninguna" :
     elegidas.length === 1 ? elegidas[0].opcion : `${elegidas.length} seleccionadas`;
-  const puedeVerSinSAG = filtros.state === "active" && filtros.web === "in_web" && filtros.page === 1 &&
+  const puedeVerSinSAG = (filtros.state === "active" || filtros.state === "active_or_unverified") &&
+    filtros.web === "in_web" && filtros.page === 1 &&
     pagina?.page === 1 && pagina.total === 0 && pagina.sag.state === "unavailable"
     && pagina.sources.some(fuente => todas || filtros.sourceIds?.includes(fuente.sourceId));
   const avisoActualizacion = catalogRefreshMessages[actualizacion.state];

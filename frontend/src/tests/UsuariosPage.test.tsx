@@ -79,6 +79,7 @@ beforeEach(() => {
         displayName: "Laura Pérez",
         email: "laura@empresa.com",
         roles: ["database_updater"],
+        area: "support",
         active: true,
         mfaEnabled: true,
         createdAt: "2026-06-01T10:00:00.000Z",
@@ -93,6 +94,32 @@ beforeEach(() => {
 });
 
 describe("UsuariosPage", () => {
+  it("muestra y borra el área del perfil sin volver a enviar sus roles", async () => {
+    renderPagina();
+    expect(await screen.findByText("Soporte")).toBeInTheDocument();
+    expect(screen.getByText("Actualizador de Bases de Datos")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Editar" }));
+    const area = await screen.findByRole("combobox", { name: "Área del usuario" });
+    expect(area).toHaveValue("support");
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "Sin asignar", "Soporte", "Desarrollo", "Administrativo", "Ventas",
+    ]);
+    fireEvent.change(area, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(apiMock.put).toHaveBeenCalledWith("/users/user_1", {
+      displayName: "Laura Pérez", active: true, area: null,
+    }));
+  });
+
+  it("omite el área en una edición que no cambió ese dato", async () => {
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: "Editar" }));
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(apiMock.put).toHaveBeenCalledWith("/users/user_1", {
+      displayName: "Laura Pérez", active: true,
+    }));
+  });
+
   it("no muestra estado ni controles de segundo factor", async () => {
     renderPagina();
     expect(await screen.findByText("Laura Pérez")).toBeInTheDocument();

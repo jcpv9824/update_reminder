@@ -7,6 +7,10 @@ import { DIAS_SEMANA, ETIQUETAS_AMBIENTE, ETIQUETAS_FRECUENCIA, ETIQUETAS_ROLES 
 import { SelectorBuscable } from "../components/SelectorBuscable";
 import { DEFAULT_ROLE_DEFINITIONS, type RoleDefinition } from "../permissionModel";
 import { eligibleRolesForTaskAssignment } from "../permissionAccess";
+import { hoyEnBogotaIso } from "../utils/fechas";
+import AlcanceCatalogoProgramacion from "../components/AlcanceCatalogoProgramacion";
+import CopiaProgramacionCatalogo from "../components/CopiaProgramacionCatalogo";
+import SolicitudesCopiaCatalogo from "../components/SolicitudesCopiaCatalogo";
 
 const DIAS_LISTA = Object.keys(DIAS_SEMANA);
 
@@ -18,8 +22,13 @@ type EmailAlertsResumen = {
 };
 
 export default function FrecuenciasPage() {
+  const alcanceCatalogo = import.meta.env.VITE_PORTAL_CATALOG_SCHEDULE_UI_ENABLED === "true";
+  const solicitudesDisponibles = alcanceCatalogo && import.meta.env.VITE_PORTAL_CATALOG_DRAFT_PREVIEW_ENABLED === "true" &&
+    import.meta.env.VITE_PORTAL_CATALOG_DRAFT_PROPOSALS_ENABLED === "true" &&
+    import.meta.env.VITE_PORTAL_CATALOG_DRAFT_MATERIALIZATION_ENABLED === "true";
   const qc = useQueryClient();
   const [modalAbierto, setModalAbierto] = useState(false);
+  const [solicitudesAbiertas, setSolicitudesAbiertas] = useState(false);
   const [editando, setEditando] = useState<Frecuencia | null>(null);
   const [duplicando, setDuplicando] = useState<Frecuencia | null>(null);
   const [busqueda, setBusqueda] = useState("");
@@ -74,7 +83,10 @@ export default function FrecuenciasPage() {
     <>
       <div className="encabezado-pagina">
         <h2>Programar Actualizaciones</h2>
-        <button className="primario" onClick={() => setModalAbierto(true)}>Nueva actualización programada</button>
+        <div className="acciones-formulario">
+          {solicitudesDisponibles && <button type="button" className="secundario" onClick={() => setSolicitudesAbiertas(true)}>Mis solicitudes</button>}
+          <button className="primario" onClick={() => setModalAbierto(true)}>Nueva actualización programada</button>
+        </div>
       </div>
       {exito && <Alerta tipo="exito">{exito}</Alerta>}
       {error && <Alerta tipo="error">{error}</Alerta>}
@@ -104,7 +116,7 @@ export default function FrecuenciasPage() {
                   <div className="grupo-tareas-titulo">{grupo.titulo} <span style={{ color: "#9ca3af", fontWeight: 400 }}>({items.length})</span></div>
                   <table>
                     <thead><tr>
-                      <th>Nombre</th><th>Cliente</th><th>Tipo</th><th>Objetivos</th><th>Frecuencia</th><th>Inicio</th><th>Salud</th><th>Estado</th><th>Acciones</th>
+                      <th>Nombre</th><th>Cliente</th><th>Tipo</th><th>Objetivos</th><th>Frecuencia</th><th>Inicio</th><th>Salud</th><th>Estado</th><th className="columna-acciones">Acciones</th>
                     </tr></thead>
                     <tbody>
                       {items.map((f) => (
@@ -117,14 +129,14 @@ export default function FrecuenciasPage() {
                           <td>{f.startDate}</td>
                           <td>{resumenSalud(f)}</td>
                           <td><EtiquetaEstado estado={f.active ? "active" : "inactive"} /></td>
-                          <td className="acciones-tabla">
+                          <td className="celda-acciones"><div className="acciones-tabla">
                             <button onClick={() => setEditando(f)}>Editar</button>
                             <button onClick={() => setDuplicando(f)}>Duplicar</button>
                             {f.active
                               ? <button className="advertencia" onClick={() => desactivar.mutate(f.id)}>Desactivar</button>
                               : <button className="exito" onClick={() => reactivar.mutate(f.id)}>Reactivar</button>}
                             <button className="peligro" onClick={() => setConfirmarEliminar(f)}>Eliminar</button>
-                          </td>
+                          </div></td>
                         </tr>
                       ))}
                     </tbody>
@@ -138,10 +150,18 @@ export default function FrecuenciasPage() {
       )}
 
       <Modal titulo="Nueva actualización programada" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
-        <FormularioFrecuencia clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} roles={roles} modulosLicencia={modulosLicencia} emailSettings={emailSettings} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />
+        {alcanceCatalogo ? <AlcanceCatalogoProgramacion roles={roles} usuarios={usuarios}
+          onOpenRequests={solicitudesDisponibles ? () => { setModalAbierto(false); setSolicitudesAbiertas(true); } : undefined} />
+          : <FormularioFrecuencia clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} roles={roles} modulosLicencia={modulosLicencia} emailSettings={emailSettings} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />}
       </Modal>
+      {solicitudesDisponibles && solicitudesAbiertas && <Modal titulo="Mis solicitudes de programación" abierto
+        onCerrar={() => setSolicitudesAbiertas(false)}>
+        <SolicitudesCopiaCatalogo />
+      </Modal>}
       <Modal titulo="Duplicar actualización programada" abierto={!!duplicando} onCerrar={() => setDuplicando(null)}>
-        {duplicando && (
+        {duplicando && (alcanceCatalogo ? (
+          <CopiaProgramacionCatalogo key={duplicando.id} original={duplicando} />
+        ) : (
           <FormularioFrecuencia
             inicial={{ ...duplicando, name: duplicando.name ? `${duplicando.name} (copia)` : undefined }}
             clientes={clientes}
@@ -154,7 +174,7 @@ export default function FrecuenciasPage() {
             cargando={crear.isPending}
             onSubmit={(v) => crear.mutate(v)}
           />
-        )}
+        ))}
       </Modal>
       <Modal titulo="Editar actualización programada" abierto={!!editando} onCerrar={() => setEditando(null)}>
         {editando && <FormularioFrecuencia inicial={editando} clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} roles={roles} modulosLicencia={modulosLicencia} emailSettings={emailSettings} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
@@ -229,11 +249,16 @@ function resumenSalud(f: Frecuencia): string {
   return partes.join(" · ") || "Sin tareas en ventana";
 }
 
-function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, roles, modulosLicencia, emailSettings, onSubmit, cargando }: { inicial?: Frecuencia; clientes: Cliente[]; dominios: Dominio[]; bds: BaseDeDatos[]; usuarios: Usuario[]; roles: RoleDefinition[]; modulosLicencia: ModuloLicencia[]; emailSettings?: EmailAlertsResumen; onSubmit: (v: any) => void; cargando: boolean }) {
+function FormularioFrecuencia({ inicial, clientes, dominios: dominiosFuente, bds: basesFuente, usuarios, roles, modulosLicencia, emailSettings, onSubmit, cargando }: { inicial?: Frecuencia; clientes: Cliente[]; dominios: Dominio[]; bds: BaseDeDatos[]; usuarios: Usuario[]; roles: RoleDefinition[]; modulosLicencia: ModuloLicencia[]; emailSettings?: EmailAlertsResumen; onSubmit: (v: any) => void; cargando: boolean }) {
   const [name, setName] = useState(inicial?.name ?? "");
   const [selectionMode, setSelectionMode] = useState<"manual" | "licensing">(inicial?.selectionMode ?? "manual");
   const [scopeGroups, setScopeGroups] = useState<ScopeGroup[]>(inicial?.scopeGroups ?? []);
   const [manualTargetTypes, setManualTargetTypes] = useState<TargetTypes>(inicial?.manualTargetTypes ?? "domains_and_databases");
+  const [manualEnvironment, setManualEnvironment] = useState<NonNullable<Frecuencia["manualEnvironment"]>>(inicial?.manualEnvironment ?? "all");
+  const dominios = useMemo(() => dominiosFuente.filter(d => manualEnvironment === "all" || d.environment === manualEnvironment),
+    [dominiosFuente, manualEnvironment]);
+  const bds = useMemo(() => basesFuente.filter(db => (manualEnvironment === "all" || db.environment === manualEnvironment) &&
+    dominios.some(d => d.id === db.domainId && d.clientId === db.clientId)), [basesFuente, dominios, manualEnvironment]);
   const [licenseModuleIds, setLicenseModuleIds] = useState<string[]>(inicial?.licensingScope?.licenseModuleIds ?? []);
   const [licenseMatchMode, setLicenseMatchMode] = useState<"any" | "all">(inicial?.licensingScope?.licenseMatchMode ?? "any");
   const [licenseEnvironment, setLicenseEnvironment] = useState(inicial?.licensingScope?.environment ?? "all");
@@ -258,7 +283,7 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, role
   const [weekdays, setWeekdays] = useState<string[]>(inicial?.weekdays ?? ["FRIDAY"]);
   const [intervalDays, setIntervalDays] = useState(inicial?.intervalDays ?? 15);
   const [dayOfMonth, setDayOfMonth] = useState(inicial?.dayOfMonth ?? 15);
-  const [startDate, setStartDate] = useState(inicial?.startDate ?? new Date().toISOString().slice(0, 10));
+  const [startDate, setStartDate] = useState(inicial?.startDate ?? hoyEnBogotaIso());
   const [hasEndDate, setHasEndDate] = useState(!!inicial?.endDate);
   const [endDate, setEndDate] = useState(inicial?.endDate ?? "");
   const [active, setActive] = useState(inicial?.active ?? true);
@@ -403,6 +428,7 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, role
         scopeGroups: selectionMode === "manual" ? scopeGroups : [],
         selectionMode,
         manualTargetTypes: selectionMode === "manual" ? manualTargetTypes : undefined,
+        manualEnvironment: selectionMode === "manual" ? manualEnvironment : undefined,
         licensingScope: selectionMode === "licensing" ? licensingScope() : undefined,
         assignmentMode,
         domainAssignedRole,
@@ -440,6 +466,7 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, role
         </select>
       </div>
       {selectionMode === "manual" && (
+        <>
         <div className="fila-formulario">
           <label>Objetivo de la actualización</label>
           <select value={manualTargetTypes} onChange={(e) => setManualTargetTypes(e.target.value as TargetTypes)}>
@@ -448,6 +475,26 @@ function FormularioFrecuencia({ inicial, clientes, dominios, bds, usuarios, role
             <option value="databases_only">Solo bases de datos</option>
           </select>
         </div>
+        <div className="fila-formulario">
+          <label htmlFor="programacion-ambiente-manual">Ambiente</label>
+          <select id="programacion-ambiente-manual" value={manualEnvironment} onChange={e => {
+            const environment = e.target.value as NonNullable<Frecuencia["manualEnvironment"]>;
+            const coincide = (candidate: string) => environment === "all" || candidate === environment;
+            setManualEnvironment(environment);
+            setScopeGroups(groups => groups.map(group => ({ ...group, domains: group.domains.flatMap(domain => {
+              const parent = dominiosFuente.find(d => d.id === domain.domainId && d.clientId === group.clientId);
+              if (!parent || !coincide(parent.environment)) return [];
+              return [{ ...domain, databaseIds: domain.databaseIds.filter(id => basesFuente.some(db =>
+                db.id === id && db.domainId === parent.id && db.clientId === group.clientId && coincide(db.environment))) }];
+            }) })));
+          }}>
+            <option value="all">Todos</option>
+            <option value="production">Producción</option>
+            <option value="test">Pruebas</option>
+            <option value="demo">Demo</option>
+          </select>
+        </div>
+        </>
       )}
       {selectionMode === "licensing" ? (
         <div className="tarjeta tarjeta-compacta">

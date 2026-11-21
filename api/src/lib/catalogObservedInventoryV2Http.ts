@@ -33,7 +33,7 @@ export type CatalogObservedInventoryV2Result = Readonly<{
   sources?: readonly Readonly<{ id: string; label: string }>[];
 }>;
 
-type Access = { actorId: string } | { status: 401 | 403 };
+type Access = { actorId: string; canReadCustomerDocuments?: boolean } | { status: 401 | 403 };
 const invalid = (): never => { throw new CatalogDirectoryError("invalid_filter"); };
 const envs = new Set(["production", "test", "demo", "unknown"]);
 const tabs = new Set(["available", "customers", "licenseCustomers"]);
@@ -69,6 +69,7 @@ export function createCatalogObservedInventoryV2Http(deps: {
   authorize(request: HttpRequest, view: CatalogMasterView): Promise<Access>;
   readSources(actorId: string): Promise<ReadonlySet<string>>;
   read(args: CatalogObservedInventoryV2Query): Promise<CatalogObservedInventoryV2Result>;
+  readDocuments?(args: CatalogObservedInventoryV2Query, customerIds: readonly string[]): Promise<ReadonlyMap<string, string>>;
 }) {
   return async (request: HttpRequest, view: CatalogMasterView): Promise<HttpResponseInit> => {
     try {
@@ -77,13 +78,23 @@ export function createCatalogObservedInventoryV2Http(deps: {
       const filters = parse(request.query, view);
       const allowedSourceIds = await deps.readSources(auth.actorId);
       if (filters.sourceIds?.some(id => !allowedSourceIds.has(id))) return invalid();
-      const result = await deps.read({ ...filters, view, actorId: auth.actorId, allowedSourceIds });
-      // Explicit projection: match tokens, grant IDs and raw documents are not part of this API.
+      const args = { ...filters, view, actorId: auth.actorId, allowedSourceIds };
+      const result = await deps.read(args);
+      const customers = view === "licenses" && filters.tab === "available" ? [] :
+        [...new Set(result.items.flatMap(row => row.customerId ? [row.customerId] : []))];
+      let documents: ReadonlyMap<string, string> | undefined;
+      if (auth.canReadCustomerDocuments === true && customers.length && deps.readDocuments) {
+        // Document enrichment fails closed without discarding the authorized inventory rows.
+        try { documents = await deps.readDocuments(args, customers); } catch { /* no source or driver details */ }
+      }
+      // Explicit projection: trust only the independently verified document map, not the inventory row.
       const items = result.items.map(row => view !== "licenses"
         ? { id: row.id, customerId: row.customerId, customerName: row.customerName,
+          displayDocument: row.customerId ? documents?.get(row.customerId) ?? null : null,
           name: row.name, environment: row.environment, ...(row.detail ? { detail: row.detail } : {}) }
         : filters.tab === "available" ? { id: row.id, code: row.code, name: row.name }
         : { id: row.id, customerId: row.customerId, customerName: row.customerName,
+          displayDocument: row.customerId ? documents?.get(row.customerId) ?? null : null,
           ...(filters.tab === "customers" ? { licenses: row.licenses } : {}) });
       return respond(200, { items, total: result.total, state: result.state, page: filters.page, pageSize: filters.pageSize,
         ...(result.sources ? { sources: result.sources.map(({ id, label }) => ({ id, label })) } : {}) });

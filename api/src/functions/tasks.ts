@@ -11,9 +11,10 @@ import {
 import { toPublicTask } from "../lib/publicDtos";
 import { readSqlWorkflowTasks, type WorkflowTaskFilters } from "../lib/workflowTasksSqlRepository";
 import { changeSqlWorkflowTaskStatus } from "../lib/workflowTasksSqlWriteRepository";
-import type { DatabaseRecord, UpdateTask } from "../types/models";
-import { readSqlRestrictedDatabase } from "../lib/coreMastersSqlRepository";
+import type { UpdateTask } from "../types/models";
 import { enqueueSqlEmail } from "../lib/emailOutboxSqlRepository";
+import { pinNewScheduleTaskNotice } from "../lib/scheduleTaskReminderDelivery";
+import { resolveSingleTaskNoticeRecipients } from "../lib/scheduleNoticeRecipients";
 
 async function getUserOrFail(req: HttpRequest) {
   const auth = await requireUser(req);
@@ -88,21 +89,19 @@ app.http("tasksGet", {
   },
 });
 
-async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string): Promise<void> {
+export async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string): Promise<void> {
   try {
     const { loadEmailAlertsSettings } = await import("../lib/settingsService");
     const { escapeHtml, formatDomainForPublishing } = await import("../lib/emailService");
     const { normalizeBaseUrl } = await import("../lib/emailTemplates");
-    const { resolveConfiguredRecipients } = await import("../lib/emailRecipients");
     const settings = await loadEmailAlertsSettings();
-    const destinatarios = await resolveConfiguredRecipients(
-      settings.blockedAlertRecipientRoleIds?.length ? settings.blockedAlertRecipientRoleIds : ["super_admin"],
-      settings.blockedAlertCustomEmails ?? []
-    );
+    const destinatarios = await resolveSingleTaskNoticeRecipients("task_status_notification", true, settings);
     if (destinatarios.length === 0) {
       // Sin admins activos: no se envía email pero la tarea ya quedó guardada.
       return;
     }
+    const origin = await pinNewScheduleTaskNotice("task_status_notification", t);
+    if (!origin) return;
     const tipo = t.targetType === "domain" ? "Dominio" : "Base de datos";
     const esFallida = t.status === "failed";
     const subject = esFallida
@@ -113,10 +112,6 @@ async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string):
       ? `<p><a href="${escapeHtml(`${normalizeBaseUrl(settings.frontendBaseUrl)}/tareas`)}">Abrir tareas</a></p>`
       : "";
     const dominioPublicable = formatDomainForPublishing(t.domainName);
-    let dbInfo: DatabaseRecord | null = null;
-    if (t.targetType === "database") {
-      dbInfo = await readSqlRestrictedDatabase(t.targetId);
-    }
     const html = `
       <h3>${escapeHtml(subject)}</h3>
       <p>Se reportó un problema durante la actualización.</p>
@@ -126,10 +121,7 @@ async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string):
         <li><strong>Dominio registrado:</strong> ${escapeHtml(t.domainName)}</li>
         <li><strong>Dominio para publicar:</strong> <code>${escapeHtml(dominioPublicable)}</code></li>
         ${t.targetType === "database" ? `
-          <li><strong>Empresa:</strong> ${escapeHtml(dbInfo?.companyName ?? t.targetName)}</li>
-          <li><strong>Servidor y puerto:</strong> ${escapeHtml(dbInfo?.dbAccess.serverHostPort ?? "-")}</li>
-          <li><strong>Base de datos:</strong> ${escapeHtml(dbInfo?.dbAccess.initialCatalog ?? t.targetName)}</li>
-          <li><strong>Usuario:</strong> ${escapeHtml(dbInfo?.dbAccess.userId ?? "-")}</li>
+          <li><strong>Base de datos:</strong> ${escapeHtml(t.targetName)}</li>
         ` : `<li><strong>Ambiente:</strong> ${escapeHtml((t as any).environment ?? "-")}</li>`}
         <li><strong>Fecha programada:</strong> ${escapeHtml(t.taskDate)}</li>
         <li><strong>Responsable:</strong> ${escapeHtml(performedByEmail)}</li>
@@ -139,14 +131,14 @@ async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string):
       <blockquote>${escapeHtml(detalleProblema)}</blockquote>
       ${linkApp}
     `;
-    const dbText = dbInfo ? ` Empresa: ${dbInfo.companyName}. Servidor y puerto: ${dbInfo.dbAccess.serverHostPort}. Base de datos: ${dbInfo.dbAccess.initialCatalog}. Usuario: ${dbInfo.dbAccess.userId}.` : "";
+    const dbText = t.targetType === "database" ? ` Base de datos: ${t.targetName}.` : "";
     const text = `${subject}. Tipo: ${tipo}. Cliente: ${t.clientName}. Dominio registrado: ${t.domainName}. Dominio para publicar: ${dominioPublicable}.${dbText} Fecha programada: ${t.taskDate}. Responsable: ${performedByEmail}. ${esFallida ? "Motivo" : "Problema"}: ${detalleProblema}`;
     await enqueueSqlEmail({
       type: "task_status_notification",
-      idempotencyKey: `task-status:${t.id}:${t.status}:${t.updatedAt}`,
+      idempotencyKey: `task-status:${t.id}:${t.status}:${t.updatedAt}${origin.idempotencySuffix}`,
       entityType: "task", entityId: t.id, taskId: t.id, subject, html, text,
       recipients: destinatarios.map((email) => ({ email })),
-      metadata: { status: t.status, targetType: t.targetType, problem: true },
+      metadata: { ...origin.metadata, status: t.status, targetType: t.targetType, problem: true },
     });
   } catch {/* no bloquear flujo de tarea */}
 }
@@ -154,18 +146,16 @@ async function notificarProblemaAdmins(t: UpdateTask, performedByEmail: string):
 // Notificación de confirmación cuando una tarea se completa CON ÉXITO (sin
 // problemas). Se envía a los mismos destinatarios de las alertas de vencidos
 // (administradores/encargados configurados). No expone datos sensibles.
-async function notificarCompletadaConExito(t: UpdateTask, performedByEmail: string): Promise<void> {
+export async function notificarCompletadaConExito(t: UpdateTask, performedByEmail: string): Promise<void> {
   try {
     const { loadEmailAlertsSettings } = await import("../lib/settingsService");
     const { escapeHtml, formatDomainForPublishing } = await import("../lib/emailService");
     const { normalizeBaseUrl } = await import("../lib/emailTemplates");
-    const { resolveConfiguredRecipients } = await import("../lib/emailRecipients");
     const settings = await loadEmailAlertsSettings();
-    const destinatarios = await resolveConfiguredRecipients(
-      settings.overdueAlertRecipientRoleIds?.length ? settings.overdueAlertRecipientRoleIds : ["super_admin"],
-      settings.overdueAlertCustomEmails ?? []
-    );
+    const destinatarios = await resolveSingleTaskNoticeRecipients("task_status_notification", false, settings);
     if (destinatarios.length === 0) return;
+    const origin = await pinNewScheduleTaskNotice("task_status_notification", t);
+    if (!origin) return;
     const tipo = t.targetType === "domain" ? "Dominio" : "Base de datos";
     const subject = t.targetType === "domain"
       ? "Actualización de dominio completada"
@@ -194,10 +184,10 @@ async function notificarCompletadaConExito(t: UpdateTask, performedByEmail: stri
     const text = `${subject}. Tipo: ${tipo}. Cliente: ${t.clientName}. Dominio para publicar: ${dominioPublicable}. Fecha programada: ${t.taskDate}. Completada por: ${performedByEmail}.${nota ? ` Nota: ${nota}` : ""}`;
     await enqueueSqlEmail({
       type: "task_status_notification",
-      idempotencyKey: `task-status:${t.id}:${t.status}:${t.updatedAt}`,
+      idempotencyKey: `task-status:${t.id}:${t.status}:${t.updatedAt}${origin.idempotencySuffix}`,
       entityType: "task", entityId: t.id, taskId: t.id, subject, html, text,
       recipients: destinatarios.map((email) => ({ email })),
-      metadata: { status: t.status, targetType: t.targetType, problem: false },
+      metadata: { ...origin.metadata, status: t.status, targetType: t.targetType, problem: false },
     });
   } catch {/* no bloquear flujo de tarea */}
 }

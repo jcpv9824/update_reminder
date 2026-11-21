@@ -11,3 +11,7 @@
 .catalogo-modal-licencia::backdrop {
   background: rgba(28, 54, 100, 0.5);
 }
+
+.catalogo-columna-acciones {
+  text-align: right;
+}

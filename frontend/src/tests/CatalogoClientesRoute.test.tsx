@@ -33,7 +33,7 @@ describe("indicadores de Clientes en la ruta", () => {
     fireEvent.click(await screen.findByRole("button", { name: `Ver fuentes de ${cliente.name}` }));
     await waitFor(() => expect(get).toHaveBeenCalledWith(detallePath, { signal: expect.any(AbortSignal) }));
     expect(get.mock.calls.map(([path]) => path)).toEqual([
-      "/catalog/customers?state=active_or_unverified&web=all&page=1&pageSize=25", detallePath,
+      "/catalog/customers?state=active_or_unverified&web=in_web&page=1&pageSize=25", detallePath,
     ]);
     expect(screen.queryByRole("button", { name: /Ver (dominios|licencias) observad/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Crear|Nuevo|Editar|Eliminar/i })).not.toBeInTheDocument();
@@ -56,7 +56,7 @@ describe("indicadores de Clientes en la ruta", () => {
     expect(post).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
     await waitFor(() => expect(post).toHaveBeenCalledExactlyOnceWith(
-      "/catalog/customers/search?state=active_or_unverified&web=all&page=1&pageSize=25",
+      "/catalog/customers/search?state=active_or_unverified&web=in_web&page=1&pageSize=25",
       { search: cliente.displayDocument }, { signal: expect.any(AbortSignal) }));
     expect(get.mock.calls.every(([path]) => !path.includes(cliente.displayDocument))).toBe(true);
   });

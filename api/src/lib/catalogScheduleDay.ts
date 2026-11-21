@@ -1,3 +1,5 @@
+import type sql from "mssql";
+import type { resolveCatalogSchedulePreviewReservations } from "./catalogScheduleConflictSelection";
 import type { UpdateTask } from "../types/models";
 import { registerSqlCatalogTaskExecution, type CatalogExecutionSourceEvidence } from "./catalogExecutionRegistrationSqlRepository";
 import { readSqlCatalogPhysicalTargets, planCatalogTasksWithVerifiedTargets } from "./catalogPhysicalTargetSqlRepository";
@@ -14,6 +16,8 @@ export type CatalogScheduleRule = Omit<CatalogTaskRequest, "scheduleId"> & {
   workflowRole: string;
   /** A persisted selection could not be reconstructed fully; this does not change task eligibility. */
   oneTimeSelectionIncomplete?: true;
+  /** Lifecycle schedules use their exact frozen cohort for closure, not mutable day observations. */
+  closeFromActivation?: true;
 };
 
 type CatalogOneTimeSchedulePair = Readonly<{ linkId: string; executionKey: string }>;
@@ -68,7 +72,7 @@ function collectOneTimeScheduleObservations(rules: readonly CatalogScheduleRule[
   const scopes = new Map<string, OneTimeScope>();
   for (const rule of rules) {
     const { calendar, operationId } = rule;
-    if (calendar.frequencyType !== "once") continue;
+    if (calendar.frequencyType !== "once" || rule.closeFromActivation) continue;
     const scope = scopes.get(calendar.id) ?? {
       scheduleId: calendar.id, scheduleVersion: calendar.version, operationId,
       invalid: false, kinds: new Set<CatalogTaskKind>(), pairs: new Map<string, string>(),
@@ -118,6 +122,56 @@ function selectedSagDatabases(rules: readonly CatalogScheduleRule[], inventory: 
         : scope.modules.ids.some(module => link.moduleIds!.includes(module))))))) selected.add(link.linkId);
   }
   return selected;
+}
+
+const planCatalogScheduleRules = (input: CatalogScheduleDay, rules: readonly CatalogScheduleRule[],
+  resolve: typeof readSqlCatalogPhysicalTargets) => planCatalogTasksWithVerifiedTargets(input.portalEnvironment, {
+  occurrenceId: input.date, revision: input.revision, links: input.inventory.map(row => row.link),
+  requests: rules.map(rule => ({ scheduleId: rule.calendar.id, operationId: rule.operationId,
+    assignment: rule.assignment, scope: rule.scope })),
+}, resolve);
+
+/**
+ * Read-only server preview for a proposed, already actor-authorized set of effective rules.
+ * Takes the same day locks and revalidates the same population/physical proofs as generation.
+ * Not a transport DTO. The caller must not expose raw links, tasks or assignments.
+ */
+type PreviewDay = CatalogScheduleDay & Pick<CatalogScheduleDayTransactionContext, "previewActorId" | "previewOrigin">;
+type VerifiedPreview = NonNullable<Awaited<ReturnType<typeof resolveCatalogSchedulePreviewReservations>>>;
+
+export function previewCatalogScheduleDay(input: PreviewDay, transaction = runSqlCatalogScheduleDayTransaction) {
+  return withCatalogScheduleDayPreview(input, async (_tx, preview) => preview, transaction);
+}
+
+/** Internal save/revalidation boundary; the callback runs under the exact preview locks. */
+export async function withCatalogScheduleDayPreview<T>(input: PreviewDay,
+  consume: (transaction: sql.Transaction, preview: VerifiedPreview, proofValidUntil: Date, tightenDeadline: (until: Date) => void) => Promise<T>,
+  transaction = runSqlCatalogScheduleDayTransaction): Promise<T | null> {
+  if (!validDay(input.date) || !Number.isFinite(input.checkedAt.valueOf()) || !Number.isFinite(input.cutoffAt.valueOf()) ||
+      input.checkedAt >= input.cutoffAt || !input.revision.complete || !input.revision.id.startsWith(catalogPopulationRevisionPrefix) ||
+      input.populationFence?.scope.portalEnvironment !== input.portalEnvironment || !input.rules.length || input.rules.length > 100 ||
+      input.inventory.length > 5000) return null;
+  const roles = new Map<string, string>();
+  for (const rule of input.rules) {
+    const key = ruleKey(rule.calendar.id, rule.scope.kind);
+    if (roles.has(key) || !rule.workflowRole.trim()) return null;
+    roles.set(key, rule.workflowRole);
+  }
+  const result = await transaction({ ...input.populationFence, date: input.date, cutoffAt: input.cutoffAt,
+    revisionId: input.revision.id, ...(input.matchKeyVersion === undefined ? {} : { matchKeyVersion: input.matchKeyVersion }),
+    ...(input.previewActorId ? { previewActorId: input.previewActorId } : {}),
+    ...(input.previewOrigin ? { previewOrigin: input.previewOrigin } : {}),
+    ...(process.env.PORTAL_CATALOG_SAG_V2_ENABLED?.trim() === "true"
+      ? { sagDatabaseLinkIds: selectedSagDatabases(input.rules, input.inventory) } : {}),
+  }, async ({ resolve }, inspect, tx, proofDeadline, tightenDeadline) => {
+    const preview = await inspect({ taskDate: input.date, cutoffAt: input.cutoffAt,
+      plan: await planCatalogScheduleRules(input, input.rules, resolve),
+      scopeIncomplete: input.rules.some(rule => rule.oneTimeSelectionIncomplete),
+      workflowRoleFor: (scheduleId, kind) => roles.get(ruleKey(scheduleId, kind)) });
+    return preview === null ? null : consume(tx, preview, proofDeadline(), tightenDeadline);
+  });
+  if (result.status !== "committed") return null;
+  return result.value;
 }
 
 /**
@@ -176,11 +230,7 @@ export async function generateCatalogScheduleDay(input: CatalogScheduleDay, io?:
   if (!activeRules.length) return result;
   const inventory = new Map(input.inventory.map(record => [record.link.linkId, record]));
   if (inventory.size !== input.inventory.length) throw new Error("inconsistent_catalog_schedule_inventory");
-  const plan = await planCatalogTasksWithVerifiedTargets(input.portalEnvironment, {
-    occurrenceId: input.date, revision: input.revision, links: input.inventory.map(row => row.link),
-    requests: activeRules.map(rule => ({ scheduleId: rule.calendar.id, operationId: rule.operationId,
-      assignment: rule.assignment, scope: rule.scope })),
-  }, resolve);
+  const plan = await planCatalogScheduleRules(input, activeRules, resolve);
   result.conflicts = plan.conflicts.length;
   result.held = plan.held.length;
   const oneTime = observeOneTimeSchedules ? collectOneTimeScheduleObservations(activeRules) : undefined;

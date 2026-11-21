@@ -12,10 +12,20 @@ param(
   [switch]$IncludeCatalogErpOwnerPublisher,
 
   [switch]$IncludeCatalogObservedInventory,
-  [switch]$IncludeCatalogDirectoryV2
+  [switch]$IncludeCatalogDirectoryV2,
+
+  [switch]$IncludeScheduleLifecycle,
+
+  [switch]$AuthorizeScheduleProcedureGrants
 )
 
 $ErrorActionPreference='Stop'
+if([bool]$IncludeScheduleLifecycle -ne [bool]$AuthorizeScheduleProcedureGrants){
+  throw 'Schedule lifecycle requires a separate approval for the object-only EXECUTE grants (073, 077 and 081).'
+}
+if($IncludeScheduleLifecycle -and -not $IncludeCatalogDirectoryV2){
+  throw 'The schedule lifecycle schema requires -IncludeCatalogDirectoryV2.'
+}
 if($IncludeCatalogOwnerPublisher -and -not $IncludeCatalog){
   throw 'The optional owner publisher requires -IncludeCatalog as well.'
 }
@@ -134,6 +144,24 @@ if($IncludeCatalog){
   }
   if($IncludeCatalogDirectoryV2){
     $migrations += @{version='067';name='067_catalog_sag_customer_directory.sql'}
+  }
+  if($IncludeScheduleLifecycle){
+    $migrations += @(
+      @{version='068';name='068_user_area.sql'},
+      @{version='070';name='070_schedule_manual_environment.sql'},
+      @{version='071';name='071_catalog_schedule_activation_snapshots.sql'},
+      @{version='072';name='072_catalog_schedule_copy_intents.sql'},
+      @{version='073';name='073_catalog_historical_schedule_company_locations.sql'},
+      @{version='074';name='074_catalog_schedule_population_sag_v2.sql'},
+      @{version='075';name='075_catalog_schedule_copy_proposals.sql'},
+      @{version='076';name='076_catalog_schedule_copy_review_receipts.sql'},
+      @{version='077';name='077_catalog_schedule_copy_review_consumption.sql'},
+      @{version='078';name='078_catalog_schedule_draft_proposals.sql'},
+      @{version='079';name='079_catalog_schedule_draft_review_receipts.sql'},
+      @{version='080';name='080_catalog_schedule_draft_materialization.sql'},
+      @{version='081';name='081_catalog_schedule_draft_runtime_execute.sql'},
+      @{version='082';name='082_catalog_schedule_activation_seals.sql'}
+    )
   }
   # Check the entire selected package before submitting its first write.
   foreach($entry in $migrations){
@@ -768,5 +796,98 @@ SELECT CASE WHEN EXISTS(SELECT 1 FROM migration.schema_migrations WHERE migratio
       throw 'Optional catalog directory v2 migration post-verification failed.'
     }
     Write-Host "$expectedDatabase optional catalog directory migration 067 is applied and verified." -ForegroundColor Green
+  }
+  if($IncludeScheduleLifecycle){
+    $scheduleLifecycleVerificationSql=@'
+DECLARE @intents int=OBJECT_ID(N'scheduling.catalog_schedule_copy_intents',N'U'),
+  @links int=OBJECT_ID(N'scheduling.catalog_schedule_copy_links',N'U'),
+  @intentGuard int=OBJECT_ID(N'scheduling.TR_catalog_schedule_copy_intents_immutable',N'TR'),
+  @linksGuard int=OBJECT_ID(N'scheduling.TR_catalog_schedule_copy_links_guard',N'TR'),
+  @proposal int=OBJECT_ID(N'scheduling.catalog_schedule_copy_proposals',N'U'),
+  @proposalLinks int=OBJECT_ID(N'scheduling.catalog_schedule_copy_proposal_links',N'U'),
+  @historyVerifier int=OBJECT_ID(N'settings.verify_catalog_historical_schedule_company_locations',N'P'),
+  @populationGuard int=OBJECT_ID(N'scheduling.TR_catalog_schedule_population_approvals_register',N'TR');
+SELECT CASE WHEN
+  (SELECT COUNT(*) FROM migration.schema_migrations WHERE migration_version IN ('068','070','071','072','073','074','075','076','077','078','079','080','081','082') AND succeeded=1)=14
+  AND COL_LENGTH(N'security.users',N'area')=14
+  AND COL_LENGTH(N'scheduling.update_schedules',N'manual_environment')=10
+  AND COL_LENGTH(N'scheduling.update_schedules',N'catalog_activation_enabled')=1
+  AND OBJECT_ID(N'scheduling.catalog_schedule_activation_snapshots',N'U') IS NOT NULL
+  AND OBJECT_ID(N'scheduling.catalog_schedule_activation_targets',N'U') IS NOT NULL
+  AND OBJECT_ID(N'scheduling.catalog_schedule_activation_responsibles',N'U') IS NOT NULL
+  AND COL_LENGTH(N'scheduling.catalog_schedule_activation_snapshots',N'sealed_at')=7
+  AND EXISTS(SELECT 1 FROM sys.triggers WHERE is_disabled=0 AND is_instead_of_trigger=1
+    AND object_id=OBJECT_ID(N'scheduling.TR_catalog_schedule_activation_snapshot_seal',N'TR'))
+  AND (SELECT COUNT(*) FROM sys.triggers WHERE is_disabled=0 AND is_instead_of_trigger=0 AND object_id IN (
+    OBJECT_ID(N'scheduling.TR_catalog_schedule_activation_snapshot_insert_delete',N'TR'),
+    OBJECT_ID(N'scheduling.TR_catalog_schedule_activation_targets_seal',N'TR'),
+    OBJECT_ID(N'scheduling.TR_catalog_schedule_activation_responsibles_seal',N'TR')))=3
+  AND EXISTS(SELECT 1 FROM sys.triggers WHERE object_id=OBJECT_ID(N'scheduling.TR_catalog_schedule_copy_proposals_immutable',N'TR')
+    AND parent_id=@proposal AND is_disabled=0 AND is_instead_of_trigger=0)
+  AND EXISTS(SELECT 1 FROM sys.triggers WHERE object_id=OBJECT_ID(N'scheduling.TR_catalog_schedule_copy_proposal_links_immutable',N'TR')
+    AND parent_id=@proposalLinks AND is_disabled=0 AND is_instead_of_trigger=0)
+  AND OBJECT_ID(N'migration.v_catalog_schedule_copy_review_state',N'V') IS NOT NULL
+  AND OBJECT_ID(N'migration.catalog_schedule_copy_review_uses',N'U') IS NOT NULL
+  AND OBJECT_ID(N'migration.v_catalog_schedule_draft_review_state',N'V') IS NOT NULL
+  AND OBJECT_ID(N'migration.catalog_schedule_draft_uses',N'U') IS NOT NULL
+  AND OBJECT_ID(N'migration.catalog_schedule_draft_manual_pins',N'U') IS NOT NULL
+  AND EXISTS(SELECT 1 FROM sys.sql_modules WHERE object_id=OBJECT_ID(N'settings.materialize_catalog_schedule_draft_review',N'P') AND execute_as_principal_id IS NULL)
+  AND (SELECT COUNT(*) FROM sys.database_permissions WHERE class=1 AND major_id=OBJECT_ID(N'settings.materialize_catalog_schedule_draft_review',N'P'))=1
+  AND EXISTS(SELECT 1 FROM sys.database_permissions p WHERE p.class=1 AND p.minor_id=0
+    AND p.major_id=OBJECT_ID(N'settings.materialize_catalog_schedule_draft_review',N'P')
+    AND p.permission_name=N'EXECUTE' AND p.state='G' AND p.grantee_principal_id=DATABASE_PRINCIPAL_ID(N'portal_runtime'))
+  AND COL_LENGTH(N'migration.catalog_schedule_draft_review_receipts',N'reviewed_state_sha256')=32
+  AND EXISTS(SELECT 1 FROM sys.triggers WHERE object_id=OBJECT_ID(N'migration.TR_catalog_schedule_draft_review_stamp',N'TR')
+    AND parent_id=OBJECT_ID(N'migration.catalog_schedule_draft_review_receipts',N'U') AND is_disabled=0 AND is_instead_of_trigger=1)
+  AND EXISTS(SELECT 1 FROM sys.triggers WHERE object_id=OBJECT_ID(N'migration.TR_catalog_schedule_draft_review_immutable',N'TR')
+    AND parent_id=OBJECT_ID(N'migration.catalog_schedule_draft_review_receipts',N'U') AND is_disabled=0 AND is_instead_of_trigger=0)
+  AND EXISTS(SELECT 1 FROM sys.triggers WHERE object_id=OBJECT_ID(N'scheduling.TR_catalog_schedule_draft_proposals_immutable',N'TR')
+    AND parent_id=OBJECT_ID(N'scheduling.catalog_schedule_draft_proposals',N'U') AND is_disabled=0)
+  AND EXISTS(SELECT 1 FROM sys.triggers WHERE object_id=OBJECT_ID(N'scheduling.TR_catalog_schedule_draft_proposal_links_immutable',N'TR')
+    AND parent_id=OBJECT_ID(N'scheduling.catalog_schedule_draft_proposal_links',N'U') AND is_disabled=0)
+  AND EXISTS(SELECT 1 FROM sys.triggers WHERE object_id=OBJECT_ID(N'scheduling.TR_catalog_schedule_draft_proposal_assignees_immutable',N'TR')
+    AND parent_id=OBJECT_ID(N'scheduling.catalog_schedule_draft_proposal_assignees',N'U') AND is_disabled=0)
+  AND EXISTS(SELECT 1 FROM sys.triggers WHERE object_id=OBJECT_ID(N'scheduling.TR_catalog_schedule_draft_proposal_weekdays_immutable',N'TR')
+    AND parent_id=OBJECT_ID(N'scheduling.catalog_schedule_draft_proposal_weekdays',N'U') AND is_disabled=0)
+  AND EXISTS(SELECT 1 FROM sys.database_permissions p WHERE p.class=1
+    AND p.major_id=OBJECT_ID(N'settings.consume_catalog_schedule_copy_review',N'P')
+    AND p.permission_name=N'EXECUTE' AND p.state='G' AND p.grantee_principal_id=DATABASE_PRINCIPAL_ID(N'portal_runtime'))
+  AND COL_LENGTH(N'migration.catalog_schedule_copy_review_receipts',N'reviewed_state_sha256')=32
+  AND EXISTS(SELECT 1 FROM sys.triggers WHERE object_id=OBJECT_ID(N'migration.TR_catalog_schedule_copy_reviews_stamp',N'TR')
+    AND parent_id=OBJECT_ID(N'migration.catalog_schedule_copy_review_receipts',N'U') AND is_disabled=0 AND is_instead_of_trigger=1)
+  AND EXISTS(SELECT 1 FROM sys.triggers WHERE object_id=OBJECT_ID(N'migration.TR_catalog_schedule_copy_reviews_immutable',N'TR')
+    AND parent_id=OBJECT_ID(N'migration.catalog_schedule_copy_review_receipts',N'U') AND is_disabled=0 AND is_instead_of_trigger=0)
+  AND EXISTS(SELECT 1 FROM sys.triggers WHERE object_id=@intentGuard AND parent_id=@intents AND is_disabled=0 AND is_instead_of_trigger=0)
+  AND EXISTS(SELECT 1 FROM sys.triggers WHERE object_id=@linksGuard AND parent_id=@links AND is_disabled=0 AND is_instead_of_trigger=0)
+  AND (SELECT COUNT(*) FROM sys.trigger_events WHERE object_id=@intentGuard AND type_desc IN ('UPDATE','DELETE'))=2
+  AND (SELECT COUNT(*) FROM sys.trigger_events WHERE object_id=@linksGuard AND type_desc IN ('INSERT','UPDATE','DELETE'))=3
+  AND (SELECT COUNT(*) FROM sys.key_constraints WHERE
+    (parent_object_id=@intents AND (type='PK' AND name=N'PK_catalog_schedule_copy_intents'
+      OR type='UQ' AND name=N'UQ_catalog_schedule_copy_intents_schedule'))
+    OR (parent_object_id=@links AND type='PK' AND name=N'PK_catalog_schedule_copy_links'))=3
+  AND (SELECT COUNT(*) FROM sys.foreign_keys WHERE parent_object_id IN (@intents,@links)
+    AND is_disabled=0 AND is_not_trusted=0 AND delete_referential_action=0 AND update_referential_action=0
+    AND name IN (N'FK_catalog_schedule_copy_intents_original',N'FK_catalog_schedule_copy_intents_copy',
+      N'FK_catalog_schedule_copy_links_intent',N'FK_catalog_schedule_copy_links_operational',
+      N'FK_catalog_schedule_copy_links_physical'))=5
+  AND (SELECT COUNT(*) FROM sys.check_constraints WHERE parent_object_id IN (@intents,@links) AND is_disabled=0 AND is_not_trusted=0
+    AND name IN (N'CK_catalog_schedule_copy_intents_distinct',N'CK_catalog_schedule_copy_intents_environment',
+      N'CK_catalog_schedule_copy_intents_actor',N'CK_catalog_schedule_copy_intents_operation',N'CK_catalog_schedule_copy_links_kind'))=5
+  AND NOT EXISTS(SELECT 1 FROM sys.database_permissions WHERE class=1 AND major_id IN (@intents,@links,@intentGuard,@linksGuard))
+  AND @historyVerifier IS NOT NULL
+  AND EXISTS(SELECT 1 FROM sys.sql_modules WHERE object_id=@historyVerifier AND execute_as_principal_id IS NULL)
+  AND (SELECT COUNT(*) FROM sys.database_permissions WHERE class=1 AND major_id=@historyVerifier)=1
+  AND EXISTS(SELECT 1 FROM sys.database_permissions WHERE class=1 AND major_id=@historyVerifier AND minor_id=0
+    AND grantee_principal_id=DATABASE_PRINCIPAL_ID(N'portal_runtime') AND permission_name=N'EXECUTE' AND state='G')
+  AND EXISTS(SELECT 1 FROM sys.triggers WHERE object_id=@populationGuard AND is_disabled=0 AND is_instead_of_trigger=1
+    AND parent_id=OBJECT_ID(N'scheduling.catalog_schedule_population_approvals',N'U'))
+  AND CHARINDEX(N'sag_admin_v2',OBJECT_DEFINITION(@populationGuard))>0
+  THEN 1 ELSE 0 END AS schedule_lifecycle_ready;
+'@
+    $result=Invoke-SessionSql -Sql $scheduleLifecycleVerificationSql -Mode read -TimeoutSeconds 120 -MaxRows 5
+    if($result.resultSets[0].rows[0].schedule_lifecycle_ready -ne 1){
+      throw 'Optional schedule lifecycle migrations post-verification failed.'
+    }
+    Write-Host "$expectedDatabase optional schedule lifecycle migrations 068 and 070-082 are applied and verified." -ForegroundColor Green
   }
 }

@@ -16,6 +16,11 @@ export type SqlScheduleDto = UpdateSchedule & { summary: ScheduleSummaryDto };
 
 type ScheduleRow = {
   version_hex?: string;
+  activation_enabled?: boolean;
+  activation_snapshot?: string | null;
+  catalog_exact_copy_links?: string | null;
+  catalog_draft_origin?: string | null;
+  catalog_exact_draft_links?: string | null;
   schedule_key: number;
   source_id: string;
   client_source_id: string;
@@ -37,6 +42,7 @@ type ScheduleRow = {
   database_reminder_recipients_mode: "assignedUsers" | "roleUsers" | null;
   selection_mode: "manual" | "licensing" | null;
   manual_target_types: "domains_and_databases" | "domains_only" | "databases_only" | null;
+  manual_environment?: UpdateSchedule["manualEnvironment"] | null;
   assignment_mode: "role" | "users";
   origin: string | null;
   active: boolean;
@@ -151,6 +157,7 @@ export function mapSqlSchedule(row: ScheduleRow): SqlScheduleDto {
     })) : undefined,
     selectionMode: row.selection_mode ?? undefined,
     manualTargetTypes: row.manual_target_types ?? undefined,
+    ...(row.manual_environment && { manualEnvironment: row.manual_environment }),
     licensingScope: licensingScope ? {
       licenseModuleIds: licensingScope.licenseModuleIds.map((entry) => entry.id),
       licenseMatchMode: licensingScope.licenseMatchMode,
@@ -191,6 +198,19 @@ type ScheduleFilters = { sourceId?: string; clientId?: string | null; origin?: s
 type SchedulePage = { enabled: boolean; page: number; pageSize: number };
 const catalogRosterMax = 5000;
 
+type FrozenTarget = { linkId: string; targetId: string; kind: "domain" | "database" };
+type FrozenPrincipal = { kind: "domain" | "database"; principalKind: "role" | "user"; id: string };
+type ActivationSnapshot = { version: string; phase: "frozen" | "held" | "cancelled";
+  environment: "qa" | "production"; targets: FrozenTarget[]; principals: FrozenPrincipal[] };
+export type CatalogScheduleRosterRow = { schedule: UpdateSchedule; version: string;
+  /** Undefined means legacy, null means lifecycle-enabled without a committed snapshot. */
+  activation?: ActivationSnapshot | null;
+  /** Immutable selection of an explicit remaining-targets copy (never inferred from parent IDs). */
+  copyLinks?: readonly FrozenTarget[];
+  draftOrigin?: { version: string; environment: "qa" | "production"; operationId: string; manual: boolean };
+  draftLinks?: readonly FrozenTarget[];
+};
+
 async function queryScheduleRows(
   request: sql.Request, filters: ScheduleFilters, pagination: SchedulePage,
   today: string,
@@ -200,7 +220,7 @@ async function queryScheduleRows(
   request.input("today", sql.VarChar(10), today);
   if (catalogRoster) {
     request.input("catalogTake", sql.Int, catalogRosterMax + 1);
-    conditions.push("s.active=1 AND s.start_date<=CONVERT(date,@today,23) AND (s.end_date IS NULL OR s.end_date>=CONVERT(date,@today,23))");
+    conditions.push(filters.sourceId ? "s.active=1" : "s.active=1 AND s.start_date<=CONVERT(date,@today,23) AND (s.end_date IS NULL OR s.end_date>=CONVERT(date,@today,23))");
   }
   if (filters.sourceId) {
     request.input("sourceId", sql.NVarChar(150), filters.sourceId);
@@ -238,18 +258,54 @@ async function queryScheduleRows(
     request.input("pageSize", sql.Int, pagination.pageSize);
   }
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const lifecycleOn = catalogRoster && process.env.PORTAL_CATALOG_SCHEDULE_LIFECYCLE_ENABLED === "true";
+  const markerExists = catalogRoster && !lifecycleOn && (await request.query<{ installed: boolean }>(`
+    SELECT CONVERT(bit,CASE WHEN COL_LENGTH(N'scheduling.update_schedules',N'catalog_activation_enabled')=1
+      THEN 1 ELSE 0 END) AS installed;`)).recordset[0]?.installed === true;
+  const activationColumns = lifecycleOn && !filters.sourceId ? `
+    s.catalog_activation_enabled AS activation_enabled,
+    (SELECT LOWER(CONVERT(char(16),a.definition_version,2)) AS version,
+      a.activation_state AS phase,a.portal_environment AS environment,
+      JSON_QUERY((SELECT TOP (5001) LOWER(CONVERT(char(36),t.link_id)) AS linkId,
+        LOWER(CONVERT(char(36),t.verified_target_id)) AS targetId,t.target_kind AS kind
+        FROM scheduling.catalog_schedule_activation_targets t WHERE t.schedule_key=a.schedule_key
+          AND t.evidence_state='eligible' ORDER BY t.link_id FOR JSON PATH)) AS targets,
+      JSON_QUERY((SELECT TOP (201) r.target_kind AS kind,r.principal_kind AS principalKind,r.principal_source_id AS id
+        FROM scheduling.catalog_schedule_activation_responsibles r WHERE r.schedule_key=a.schedule_key
+        ORDER BY r.target_kind,r.principal_kind,r.principal_source_id FOR JSON PATH)) AS principals
+      FROM scheduling.catalog_schedule_activation_snapshots a WHERE a.schedule_key=s.schedule_key AND s.catalog_activation_enabled=1
+        AND a.sealed_at IS NOT NULL
+      FOR JSON PATH,WITHOUT_ARRAY_WRAPPER) AS activation_snapshot,`
+    : (lifecycleOn || markerExists) ? "s.catalog_activation_enabled AS activation_enabled," : "";
+  const copyColumns = catalogRoster && process.env.PORTAL_CATALOG_SCHEDULE_LIFECYCLE_ENABLED === "true" ? `
+    CASE WHEN EXISTS(SELECT 1 FROM scheduling.catalog_schedule_copy_intents j WHERE j.copy_schedule_key=s.schedule_key)
+      THEN (SELECT TOP (5001) LOWER(CONVERT(char(36),l.link_id)) AS linkId,
+        LOWER(CONVERT(char(36),l.verified_target_id)) AS targetId,l.target_kind AS kind
+        FROM scheduling.catalog_schedule_copy_links l WHERE l.copy_schedule_key=s.schedule_key
+        ORDER BY l.link_id FOR JSON PATH) END AS catalog_exact_copy_links,` : "";
+  const draftColumns = catalogRoster && process.env.PORTAL_CATALOG_SCHEDULE_LIFECYCLE_ENABLED === "true" ? `
+    (SELECT LOWER(CONVERT(char(16),d.schedule_version,2)) AS version,
+      d.portal_environment AS environment,d.operation_id AS operationId,d.manual_selection AS manual
+      FROM scheduling.v_catalog_schedule_draft_approval d WHERE d.schedule_key=s.schedule_key
+      FOR JSON PATH,WITHOUT_ARRAY_WRAPPER) AS catalog_draft_origin,
+    CASE WHEN EXISTS(SELECT 1 FROM scheduling.v_catalog_schedule_draft_approval d
+      WHERE d.schedule_key=s.schedule_key AND d.manual_selection=1)
+      THEN (SELECT TOP (5001) LOWER(CONVERT(char(36),l.link_id)) AS linkId,
+        LOWER(CONVERT(char(36),l.verified_target_id)) AS targetId,l.target_kind AS kind
+        FROM scheduling.v_catalog_schedule_draft_pins l WHERE l.schedule_key=s.schedule_key
+        ORDER BY l.link_id FOR JSON PATH) END AS catalog_exact_draft_links,` : "";
 
   const result = await request.query<ScheduleRow>(`
     SELECT ${catalogRoster ? "TOP (@catalogTake) 0 AS total_count,LOWER(CONVERT(char(16),CONVERT(binary(8),s.row_version),2)) AS version_hex,"
     : pagination.enabled ? "COUNT_BIG(*) OVER() AS total_count," : "TOP (500) 0 AS total_count,"}
-      s.schedule_key,s.source_id,client.source_id AS client_source_id,
+      ${activationColumns} ${copyColumns} ${draftColumns} s.schedule_key,s.source_id,client.source_id AS client_source_id,
       COALESCE(s.client_name_snapshot,client.name) AS client_name,
       domain_record.source_id AS domain_source_id,
       COALESCE(s.domain_name_snapshot,domain_record.domain_name) AS domain_name,
       s.name,s.target_type,s.frequency_type,s.every_n_weeks,s.interval_days,s.day_of_month,
       CONVERT(char(10),s.start_date,23) AS start_date,CONVERT(char(10),s.end_date,23) AS end_date,
       s.timezone,s.assigned_role,s.domain_assigned_role,s.database_assigned_role,
-      s.database_reminder_recipients_mode,s.selection_mode,s.manual_target_types,s.assignment_mode,
+      s.database_reminder_recipients_mode,s.selection_mode,s.manual_target_types,s.manual_environment,s.assignment_mode,
       s.origin,s.active,s.completed_at,s.completed_reason,s.notes,s.created_at,s.created_by,s.updated_at,s.updated_by,
       COALESCE((
         SELECT COALESCE(target_domain.source_id,target_database.source_id) AS id
@@ -347,11 +403,29 @@ export async function readSqlSchedules(filters: ScheduleFilters, pagination: Sch
 }
 
 /** Internal roster. Parent versions and normalized children are read together; the API list keeps its existing DTO. */
-export async function readSqlCatalogScheduleRoster(today: string): Promise<ReadonlyArray<{
-  schedule: UpdateSchedule; version: string;
-}>> {
+export async function readSqlCatalogScheduleRoster(today: string): Promise<readonly CatalogScheduleRosterRow[]> {
   validateCatalogRosterDate(today);
   return runSqlTransaction(transaction => readSqlCatalogScheduleRosterInTransaction(transaction, today));
+}
+
+/** The original of a copy need not already be effective on the new copy date. */
+export async function readSqlCatalogScheduleCopyOrigin(scheduleId: string, date: string): Promise<CatalogScheduleRosterRow | null> {
+  return runSqlTransaction(transaction => readSqlCatalogScheduleCopyOriginInTransaction(transaction, scheduleId, date));
+}
+
+export async function readSqlCatalogScheduleCopyOriginInTransaction(transaction: sql.Transaction,
+  scheduleId: string, date: string): Promise<CatalogScheduleRosterRow | null> {
+  validateCatalogRosterDate(date);
+  if (!scheduleId.trim() || scheduleId.length > 150) throw new Error("catalog_schedule_copy_origin_invalid");
+  const rows = await queryScheduleRows(transaction.request(), { sourceId: scheduleId },
+    { enabled: false, page: 1, pageSize: 1 }, date, true);
+  if (rows.length > 1) throw new Error("catalog_schedule_copy_origin_invalid");
+  const row = rows[0];
+  if (!row || row.source_id !== scheduleId) return null;
+  const version = row.version_hex;
+  if (!version || !/^[a-f0-9]{16}$/.test(version)) throw new Error("catalog_schedule_roster_invalid");
+  const { summary: _summary, ...schedule } = mapSqlSchedule(row);
+  return { schedule, version, ...parseExactScope(row, schedule) };
 }
 
 function validateCatalogRosterDate(today: string) {
@@ -360,9 +434,7 @@ function validateCatalogRosterDate(today: string) {
 }
 
 /** Same normalized roster, retaining the range locks in the caller's SERIALIZABLE transaction. */
-export async function readSqlCatalogScheduleRosterInTransaction(transaction: sql.Transaction, today: string): Promise<ReadonlyArray<{
-  schedule: UpdateSchedule; version: string;
-}>> {
+export async function readSqlCatalogScheduleRosterInTransaction(transaction: sql.Transaction, today: string): Promise<readonly CatalogScheduleRosterRow[]> {
   validateCatalogRosterDate(today);
   const rows = await queryScheduleRows(transaction.request(), {}, { enabled: false, page: 1, pageSize: catalogRosterMax }, today, true);
   if (rows.length > catalogRosterMax) throw new Error("catalog_schedule_roster_limit");
@@ -370,6 +442,50 @@ export async function readSqlCatalogScheduleRosterInTransaction(transaction: sql
     const version = row.version_hex;
     if (!version || !/^[a-f0-9]{16}$/.test(version)) throw new Error("catalog_schedule_roster_invalid");
     const { summary: _summary, ...schedule } = mapSqlSchedule(row);
-    return { schedule, version };
+    const exact = parseExactScope(row, schedule);
+    if ((exact.copyLinks || exact.draftOrigin) && !row.activation_enabled) throw new Error("catalog_schedule_roster_exact_invalid");
+    if (!row.activation_enabled) return { schedule, version };
+    const activation = row.activation_snapshot ? parseActivationSnapshot(row.activation_snapshot, version) : null;
+    return { schedule, version, activation, ...exact };
   });
+}
+
+const activationGuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+const validKind = (kind: unknown) => kind === "domain" || kind === "database";
+function parseExactScope(row: ScheduleRow, schedule: UpdateSchedule): Pick<CatalogScheduleRosterRow, "copyLinks" | "draftLinks" | "draftOrigin"> {
+  const copyLinks = row.catalog_exact_copy_links == null ? undefined : parseCopyLinks(row.catalog_exact_copy_links);
+  const draftLinks = row.catalog_exact_draft_links == null ? undefined : parseCopyLinks(row.catalog_exact_draft_links);
+  const draftOrigin = row.catalog_draft_origin ? JSON.parse(row.catalog_draft_origin) as CatalogScheduleRosterRow["draftOrigin"] : undefined;
+  if ((copyLinks && draftOrigin) || (!draftOrigin && draftLinks) ||
+      (row.activation_enabled && process.env.PORTAL_CATALOG_SCHEDULE_LIFECYCLE_ENABLED === "true" &&
+        schedule.id.startsWith("catalog-draft-") && !draftOrigin) ||
+      (draftOrigin && (!/^catalog-draft-[0-9a-f-]{36}$/.test(schedule.id) || !/^[a-f0-9]{16}$/.test(draftOrigin.version) ||
+        !["qa","production"].includes(draftOrigin.environment) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(draftOrigin.operationId) ||
+        typeof draftOrigin.manual !== "boolean" || draftOrigin.manual !== Boolean(draftLinks) ||
+        schedule.selectionMode !== (draftOrigin.manual ? "manual" : "licensing")))) throw new Error("catalog_schedule_roster_exact_invalid");
+  return { ...(copyLinks && { copyLinks }), ...(draftOrigin && { draftOrigin }), ...(draftLinks && { draftLinks }) };
+}
+function parseCopyLinks(json: string): FrozenTarget[] {
+  const value = JSON.parse(json) as FrozenTarget[];
+  if (!Array.isArray(value) || !value.length || value.length > 5000 || value.some(link => !link || !validKind(link.kind) ||
+      !activationGuid.test(link.linkId ?? "") || !activationGuid.test(link.targetId ?? "")) ||
+      new Set(value.map(link => link.linkId)).size !== value.length) throw new Error("catalog_schedule_roster_copy_invalid");
+  return value;
+}
+function parseActivationSnapshot(json: string, version: string): ActivationSnapshot {
+  const snapshot = JSON.parse(json) as Partial<ActivationSnapshot>;
+  const invalid = () => { throw new Error("catalog_schedule_roster_activation_invalid"); };
+  if (!snapshot || snapshot.version !== version || (snapshot.environment !== "qa" && snapshot.environment !== "production") ||
+      (snapshot.phase !== "frozen" && snapshot.phase !== "held" && snapshot.phase !== "cancelled") ||
+      !Array.isArray(snapshot.targets) || snapshot.targets.length > 5000 ||
+      !Array.isArray(snapshot.principals) || snapshot.principals.length > 200 ||
+      (snapshot.phase === "frozen") !== (snapshot.targets.length > 0)) return invalid();
+  const { targets, principals } = snapshot;
+  if (targets.some(target => !target || !validKind(target.kind) || !activationGuid.test(target.linkId ?? "") ||
+      !activationGuid.test(target.targetId ?? "") || !principals.some(principal => principal?.kind === target.kind)) ||
+      new Set(targets.map(target => target.linkId)).size !== targets.length ||
+      principals.some(principal => !principal || !validKind(principal.kind) ||
+        (principal.principalKind !== "user" && principal.principalKind !== "role") || typeof principal.id !== "string" ||
+        !principal.id.trim() || principal.id.length > 150 || /\p{C}/u.test(principal.id))) return invalid();
+  return { version, environment: snapshot.environment, phase: snapshot.phase, targets, principals };
 }

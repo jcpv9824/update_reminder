@@ -336,7 +336,8 @@ app.timer("generateDailyUpdateTasks", {
         const result = await runCatalogGeneration({ trigger: "timer" });
         await sweepCatalogCutoffs(message => ctx.log(message));
         const dates = result.days ? ` fechas evaluadas=${result.days.filter(day => day.status === "evaluated").length}/${result.days.length};` : "";
-        ctx.log(`Catálogo: estado=${result.status};${dates} creadas=${result.created}; existentes=${result.existing}; retenidas=${result.held}; conflictos=${result.conflicts}; procedencias=${result.accountedOrigins}; programaciones únicas completadas=${result.completedOneTimeSchedules ?? 0}; fallos de cierre=${result.onceClosure?.failed ?? 0}.`);
+        const activation = result.activation ? ` activación: congeladas=${result.activation.frozen}, canceladas=${result.activation.cancelled}, pendientes=${result.activation.held}, fallos=${result.activation.failed};` : "";
+        ctx.log(`Catálogo: estado=${result.status};${dates}${activation} creadas=${result.created}; existentes=${result.existing}; retenidas=${result.held}; conflictos=${result.conflicts}; procedencias=${result.accountedOrigins}; programaciones únicas completadas=${result.completedOneTimeSchedules ?? 0}; fallos de cierre=${result.onceClosure?.failed ?? 0}.`);
         return;
       }
       const isoDate = todayInBogotaIso();

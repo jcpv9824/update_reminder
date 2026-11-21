@@ -11,7 +11,11 @@ import type { CatalogInventoryProofScope } from "./catalogScheduleInventory";
 import type { CatalogOneTimeScheduleObservation } from "./catalogScheduleDay";
 import { readSqlCatalogSchedulePopulationCoverageInTransaction } from "./catalogSchedulePopulationCoverage";
 import { readSqlCatalogScheduleRosterInTransaction } from "./schedulingSqlRepository";
+import { catalogScheduleRosterToken } from "./catalogScheduleActivation";
 import { runSqlTransaction } from "./sqlTransaction";
+import { resolveCatalogSchedulePreviewReservations } from "./catalogScheduleConflictSelection";
+import { readAuthorizedCatalogSourceIdsInTransaction } from "./catalogSourceAccessSqlRepository";
+import { readSqlCatalogScheduleOperationApprovalsInTransaction } from "./catalogScheduleOperationApprovalSqlRepository";
 
 export type CatalogScheduleDayTransactionContext = Readonly<{
   date: string; cutoffAt: Date; revisionId: string; scope: CatalogInventoryProofScope;
@@ -19,6 +23,9 @@ export type CatalogScheduleDayTransactionContext = Readonly<{
   matchKeyVersion?: number;
   /** Internally derived from the due and authorized rules, never supplied by a request. */
   sagDatabaseLinkIds?: ReadonlySet<string>;
+  /** Authenticated caller for interactive previews only; never from request parameters. */
+  previewActorId?: string;
+  previewOrigin?: Readonly<{ scheduleId: string; scheduleVersion: string; operationId: string }>;
 }>;
 type TransactionIo = {
   resolve: typeof readSqlCatalogPhysicalTargets;
@@ -58,7 +65,10 @@ async function checkClock(transaction: sql.Transaction, cutoffAt: Date, validUnt
  * before any tasks. Keep both task-day locks until the whole batch commits.
  */
 export async function runSqlCatalogScheduleDayTransaction<T>(context: CatalogScheduleDayTransactionContext,
-  work: (io: TransactionIo) => Promise<T>, observe?: OneTimeObserver): Promise<Result<T>> {
+  work: (io: TransactionIo, inspect: (input: Parameters<typeof resolveCatalogSchedulePreviewReservations>[1]) =>
+    ReturnType<typeof resolveCatalogSchedulePreviewReservations>, transaction: sql.Transaction,
+    proofDeadline: () => Date, tightenDeadline: (until: Date) => void) => Promise<T>,
+  observe?: OneTimeObserver): Promise<Result<T>> {
   const { cutoffAt, date, revisionId, roster, scope, manualIntents } = context;
   if (date !== scope.date || !(cutoffAt instanceof Date) || !Number.isFinite(cutoffAt.valueOf()) || roster.size > 5000) {
     return { status: "unverified" };
@@ -89,8 +99,16 @@ export async function runSqlCatalogScheduleDayTransaction<T>(context: CatalogSch
       let deadline = coverage.validUntil;
       const actual = await readSqlCatalogScheduleRosterInTransaction(transaction, date);
       if (actual.length !== roster.size || new Set(actual.map(row => row.schedule.id)).size !== roster.size ||
-          actual.some(row => roster.get(row.schedule.id) !== row.version)) return stop("unverified");
-      const oneTime = new Map(actual.filter(({ schedule }) => schedule.active && schedule.frequencyType === "once" &&
+          actual.some(row => roster.get(row.schedule.id) !== catalogScheduleRosterToken(row))) return stop("unverified");
+      const definitionVersions = new Map(actual.map(({ schedule, version }) => [schedule.id, version]));
+      if (context.previewOrigin) {
+        const origin = context.previewOrigin;
+        const versionOnDay = definitionVersions.get(origin.scheduleId);
+        if (versionOnDay !== undefined && versionOnDay !== origin.scheduleVersion) return stop("unverified");
+        const approvals = await readSqlCatalogScheduleOperationApprovalsInTransaction(transaction, scope.portalEnvironment, [origin]);
+        if (approvals.get(origin.scheduleId)?.operationId !== origin.operationId) return stop("unverified");
+      }
+      const oneTime = new Map(actual.filter(({ schedule, activation }) => activation === undefined && schedule.active && schedule.frequencyType === "once" &&
         schedule.startDate === date).map(({ schedule, version }) => [schedule.id, version]));
       const verified = new Map<string, Map<string, { executionKey: string; operationId: string }>>();
       let observed = false;
@@ -154,10 +172,11 @@ export async function runSqlCatalogScheduleDayTransaction<T>(context: CatalogSch
       const value = await work({
         resolve: scopedResolve,
         register: async registration => {
+          if (context.previewActorId) return stop("unverified");
           if (registration.portalEnvironment !== scope.portalEnvironment || registration.task.taskDate !== date ||
               registration.group.occurrenceId !== date || registration.group.revisionId !== revisionId ||
               registration.cutoffAt.valueOf() !== cutoffAt.valueOf() ||
-              [...registration.scheduleVersions].some(([id, version]) => roster.get(id) !== version)) return stop("unverified");
+              [...registration.scheduleVersions].some(([id, version]) => definitionVersions.get(id) !== version)) return stop("unverified");
           if (observed) return stop("unverified");
           if (requireSagProof && (registration.group.kind === "database" || registration.task.targetType === "database")) {
             if (registration.group.kind !== "database" || registration.task.targetType !== "database" ||
@@ -208,6 +227,24 @@ export async function runSqlCatalogScheduleDayTransaction<T>(context: CatalogSch
           observed = true;
           if (items.length) await observe(transaction, context, items, deadline);
         } } : {}),
+      }, async input => {
+        if (input.taskDate !== date || input.cutoffAt.getTime() !== cutoffAt.getTime()) return null;
+        if (context.previewActorId) {
+          const allowed = await readAuthorizedCatalogSourceIdsInTransaction(transaction, {
+            actorId: context.previewActorId, environment: scope.portalEnvironment,
+          });
+          const records = new Map(scope.links.map(link => [link.linkId, link.evidence]));
+          for (const group of [...input.plan.tasks, ...input.plan.conflicts]) {
+            for (const { link } of group.sources) {
+              const evidence = records.get(link.linkId);
+              if (evidence?.state !== "verified" || !allowed.has(evidence.sourceId)) return null;
+            }
+          }
+        }
+        return resolveCatalogSchedulePreviewReservations(transaction, input);
+      }, transaction, () => new Date(deadline.getTime()), until => {
+        if (!(until instanceof Date) || !Number.isFinite(until.getTime())) return stop("unverified");
+        if (until < deadline) deadline = new Date(until.getTime());
       });
       if (observe && oneTime.size && !observed) return stop("unverified");
       await checkClock(transaction, cutoffAt, deadline);

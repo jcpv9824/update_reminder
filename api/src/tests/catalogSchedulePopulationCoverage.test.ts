@@ -32,6 +32,12 @@ describe("schedule inventory coverage independent of the operational reader", ()
       expect(readCatalogSchedulePopulationSql).toContain(`CONVERT(char(16),CONVERT(binary(8),${source}),2)`);
     }
   });
+  it("accepts the V2 contract only through a fresh, sealed, complete version-pinned directory and company set", () => {
+    const branch = readCatalogSchedulePopulationSql.split("'sag_admin_v2'")[1].split("AS certified")[0];
+    for (const requirement of ["h.attempt_status='succeeded'", "r.binding_version=b.row_version", "r.profile_version=p.row_version",
+      "r.verified_until>@now", "r.sealed_at<=@now", "k.match_key_version=r.match_key_version", "=r.expected_rows",
+      "=r.expected_sag_company_rows"]) expect(branch).toContain(requirement);
+  });
   it("certifies a reviewed, exact population while keeping a known unverified edge explicit", () => {
     expect(assessCatalogSchedulePopulation(valid)).toEqual({
       id: `catalog-population-v1:${populationId}`, complete: true, validUntil: until,

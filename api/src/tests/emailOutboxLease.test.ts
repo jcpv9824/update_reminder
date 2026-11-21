@@ -2,10 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClaimedEmail } from "../lib/emailOutboxSqlRepository";
 
 const fake = vi.hoisted(() => ({ claim: vi.fn(), renew: vi.fn(), complete: vi.fn(), send: vi.fn(), authorize: vi.fn(), query: vi.fn(),
+  input: vi.fn(),
   timer: null as ((timer: unknown, context: { log: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> }) => Promise<void>) | null,
 }));
 vi.mock("mssql", () => ({ default: {
-  Request: class { input() { return this; } query = fake.query; },
+  Request: class { input(...args: unknown[]) { fake.input(...args); return this; } query = fake.query; },
   BigInt: "BigInt", Int: "Int", NVarChar: vi.fn(), VarChar: vi.fn(), ISOLATION_LEVEL: { READ_COMMITTED: 2 },
 } }));
 vi.mock("../lib/sqlTransaction", () => ({ runSqlTransaction: async (work: (transaction: unknown) => unknown) => work({}) }));
@@ -136,5 +137,26 @@ describe("SQL email lease fence", () => {
     expect(statement).toContain("attempt_count=@attemptNo AND claim_expires_at>@now");
     expect(statement).toContain("attempt_no=@attemptNo AND completed_at IS NULL");
     expect(statement).toContain("IF @@ROWCOUNT<>1 THROW 51071");
+  });
+
+  it.each([true, false])("records only actual To recipients and skips exclusions atomically, ok=%s", async ok => {
+    const actual = await vi.importActual<typeof import("../lib/emailOutboxSqlRepository")>("../lib/emailOutboxSqlRepository");
+    const { writeSqlAuditLog } = await import("../lib/auditSqlWriter");
+    const notice = {
+      ...message, type: "blocked_task_reminder",
+      recipients: [...message.recipients, { type: "to", email: "revoked@example.test" }],
+    } as ClaimedEmail;
+    await actual.completeSqlEmailAttempt(notice, "worker-one", {
+      ok, attemptedTo: [" QA@Example.Test ", "qa@example.test"], deliveredTaskIds: ["copy"],
+    });
+    expect(fake.input).toHaveBeenCalledWith("attemptedTo", undefined, '["qa@example.test"]');
+    expect(fake.input).toHaveBeenCalledWith("status", undefined, ok ? "sent" : "failed");
+    const statement = String(fake.query.mock.calls[0][0]);
+    expect(statement).toContain("THEN 'skipped'");
+    expect(statement.indexOf("UPDATE recipient")).toBeGreaterThan(statement.lastIndexOf("IF @@ROWCOUNT<>1"));
+    expect(statement).toContain("recipient.recipient_type='to'");
+    expect(statement).toContain("recipient.delivery_status IN ('pending','failed')");
+    expect(writeSqlAuditLog).toHaveBeenCalledWith(expect.anything(),
+      expect.objectContaining({ metadata: { taskIds: ["copy"], deliveryTaskCount: 1, attemptedRecipientCount: 1 } }));
   });
 });

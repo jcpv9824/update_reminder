@@ -1,6 +1,7 @@
 import sql from "mssql";
 import { writeSqlAuditLog } from "./auditSqlWriter";
 import { catalogTaskIsLegacySql } from "./catalogWorkflowTaskEligibilitySql";
+import { cancelQueuedEmailsForRemovedTasks } from "./emailOutboxSqlRepository";
 
 type Actor = { id: string; email: string };
 type TaskRow = {
@@ -74,7 +75,24 @@ export async function cancelOpenSqlTasksForSchedule(
   actor: Actor,
   reason: string,
   now: Date,
+  options: { deleting?: boolean } = {},
 ): Promise<number> {
+  if (options.deleting) {
+    const detach = new sql.Request(transaction);
+    detach.input("scheduleId", sql.NVarChar(150), scheduleId);
+    detach.input("now", sql.DateTime2(3), now);
+    // The provenance row remains historical; only this schedule is detached.
+    await detach.query(`
+      UPDATE provenance SET detached_at=CASE WHEN attached_at>@now THEN attached_at ELSE @now END
+      FROM workflow.catalog_task_execution_sources provenance
+      JOIN scheduling.update_schedules removed ON removed.schedule_key=provenance.schedule_key
+      JOIN workflow.catalog_task_execution_links link ON link.catalog_execution_link_key=provenance.catalog_execution_link_key
+      JOIN workflow.catalog_task_executions execution ON execution.catalog_execution_key=link.catalog_execution_key
+      JOIN workflow.update_tasks task ON task.task_key=execution.task_key
+      WHERE removed.source_id=@scheduleId AND provenance.detached_at IS NULL
+        AND task.status NOT IN ('completed','cancelled');
+    `);
+  }
   const query = new sql.Request(transaction);
   query.input("scheduleId", sql.NVarChar(150), scheduleId);
   const result = await query.query<TaskRow>(`
@@ -83,9 +101,32 @@ export async function cancelOpenSqlTasksForSchedule(
       task.task_date,task.status,task.result,task.notes
     FROM workflow.update_tasks task WITH (UPDLOCK,HOLDLOCK)
     LEFT JOIN workflow.task_sources source ON source.task_key=task.task_key
-    WHERE (task.primary_schedule_source_id=@scheduleId OR source.schedule_source_id=@scheduleId)
+    WHERE (task.primary_schedule_source_id=@scheduleId OR source.schedule_source_id=@scheduleId
+      ${options.deleting ? `OR EXISTS (
+        SELECT 1 FROM workflow.catalog_task_executions execution
+        JOIN workflow.catalog_task_execution_links link ON link.catalog_execution_key=execution.catalog_execution_key
+        JOIN workflow.catalog_task_execution_sources provenance ON provenance.catalog_execution_link_key=link.catalog_execution_link_key
+        JOIN scheduling.update_schedules removed ON removed.schedule_key=provenance.schedule_key
+        WHERE execution.task_key=task.task_key AND removed.source_id=@scheduleId
+      )` : ""})
       AND task.status NOT IN ('completed','cancelled')
-      AND ${catalogTaskIsLegacySql}
+      AND ${options.deleting ? `(
+        (${catalogTaskIsLegacySql} AND NOT EXISTS (
+          SELECT 1 FROM scheduling.update_schedules surviving_schedule WITH (HOLDLOCK)
+          WHERE surviving_schedule.deleted_at IS NULL AND surviving_schedule.active=1 AND surviving_schedule.source_id<>@scheduleId
+            AND (surviving_schedule.schedule_key=task.primary_schedule_key OR EXISTS (
+              SELECT 1 FROM workflow.task_sources surviving_source
+              WHERE surviving_source.task_key=task.task_key AND surviving_source.schedule_key=surviving_schedule.schedule_key
+            ))
+        )) OR (NOT (${catalogTaskIsLegacySql}) AND NOT EXISTS (
+          SELECT 1 FROM workflow.catalog_task_executions execution
+          JOIN workflow.catalog_task_execution_links link ON link.catalog_execution_key=execution.catalog_execution_key
+          JOIN workflow.catalog_task_execution_sources surviving_source ON surviving_source.catalog_execution_link_key=link.catalog_execution_link_key
+          JOIN scheduling.update_schedules surviving_schedule WITH (HOLDLOCK) ON surviving_schedule.schedule_key=surviving_source.schedule_key
+          WHERE execution.task_key=task.task_key AND surviving_source.detached_at IS NULL AND link.retired_at IS NULL
+            AND surviving_schedule.deleted_at IS NULL AND surviving_schedule.active=1 AND surviving_schedule.source_id<>@scheduleId
+        ))
+      )` : catalogTaskIsLegacySql}
     ORDER BY task.task_key;
   `);
   for (const task of result.recordset) {
@@ -124,5 +165,6 @@ export async function cancelOpenSqlTasksForSchedule(
       after: { status: "cancelled", result: "obsolete" },
     });
   }
+  if (options.deleting) await cancelQueuedEmailsForRemovedTasks(transaction, result.recordset.map(task => task.source_id), actor.id, scheduleId);
   return result.recordset.length;
 }

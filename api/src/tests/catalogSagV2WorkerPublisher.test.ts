@@ -244,23 +244,27 @@ describe("dedicated SAG v2 worker publication adapter", () => {
       await expect(publisher.publish(ordinal, { customerCount: 60000, companyCount: 40001,
         customers: Array(60000), companies: Array(40001) })).rejects.toThrow(invalid);
     } else {
-      const companies = Array.from({ length: 16000 }, (_, i) => ({ ...company, companyRecordId: i + 1, displayName: "x".repeat(512) }));
+      // Valid quotes consume two JSON code units each after escaping. Reach the
+      // same byte boundaries with fewer rows, especially normalized customers.
+      const displayName = '"'.repeat(512);
+      const companies = Array.from({ length: 7600 }, (_, i) => ({ ...company, companyRecordId: i + 1, displayName }));
       if (boundary === "one array over byte cap") {
         await expect(publisher.publish(ordinal, { customerCount: 0, companyCount: companies.length, customers: [], companies }))
           .rejects.toThrow(invalid);
       } else {
-        const under = companies.slice(0, 9500);
+        const under = companies.slice(0, 7550); // 16,743,688 UTF-16LE bytes: just under 16 MiB.
         if (boundary === "one array above 8 MiB") {
           io.execute.mockResolvedValueOnce(resultSet(success));
           await expect(publisher.publish(ordinal, { customerCount: 0, companyCount: under.length, customers: [], companies: under }))
             .resolves.toEqual(success);
           const boundBytes = Buffer.byteLength(io.requests[0].input.mock.calls[15][2], "utf16le");
           expect(boundBytes).toBeGreaterThan(8 * 1024 * 1024); // no separate 8 MiB cap per array
+          expect(boundBytes + Buffer.byteLength("[]", "utf16le")).toBeLessThanOrEqual(16 * 1024 * 1024);
           expect(io.request).toHaveBeenCalledOnce();
           expect(io.execute).toHaveBeenCalledExactlyOnceWith("settings.publish_catalog_sag_v2_revision");
           return;
         }
-        const customers = Array.from({ length: 12000 }, (_, i) => ({ ...customer, sourceRecordId: i + 1 }));
+        const customers = Array.from({ length: 100 }, (_, i) => ({ ...customer, sourceRecordId: i + 1 }));
         await expect(publisher.publish(ordinal, { customerCount: customers.length, companyCount: under.length, customers, companies: under }))
           .rejects.toThrow(invalid);
       }

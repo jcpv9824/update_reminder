@@ -4,7 +4,7 @@ import type { CatalogOperationalLink } from "../lib/catalogOperationalLinksSqlRe
 
 const m = vi.hoisted(() => ({ tx: {}, order: [] as string[], lock: vi.fn(), coverage: vi.fn(), roster: vi.fn(),
   physical: vi.fn(), register: vi.fn(), clock: vi.fn(), commit: vi.fn(), rollback: vi.fn(), intents: vi.fn(),
-  reason: vi.fn(), pins: vi.fn(), proof: vi.fn(), getSecret: vi.fn() }));
+  reason: vi.fn(), pins: vi.fn(), proof: vi.fn(), getSecret: vi.fn(), sourceAccess: vi.fn(), approvals: vi.fn() }));
 vi.mock("../lib/sqlTransaction", () => ({ runSqlTransaction: async (work: (tx: object) => Promise<unknown>) => {
   m.order.push("transaction");
   try { const result = await work(m.tx); m.commit(); return result; }
@@ -23,6 +23,8 @@ vi.mock("../lib/catalogExecutionCoexistenceSql", () => ({ lockCatalogTaskDay: m.
 vi.mock("../lib/catalogSchedulePopulationCoverage", () => ({ readSqlCatalogSchedulePopulationCoverageInTransaction: m.coverage }));
 vi.mock("../lib/schedulingSqlRepository", () => ({ readSqlCatalogScheduleRosterInTransaction: m.roster }));
 vi.mock("../lib/catalogManualDayIntentSqlRepository", () => ({ readSqlCatalogManualDayIntentsInTransaction: m.intents }));
+vi.mock("../lib/catalogSourceAccessSqlRepository", () => ({ readAuthorizedCatalogSourceIdsInTransaction: m.sourceAccess }));
+vi.mock("../lib/catalogScheduleOperationApprovalSqlRepository", () => ({ readSqlCatalogScheduleOperationApprovalsInTransaction: m.approvals }));
 vi.mock("../lib/catalogPhysicalTargetSqlRepository", () => ({ readSqlCatalogPhysicalTargetsInTransaction: m.physical,
   readSqlCatalogPhysicalTargetPinsInTransaction: m.pins }));
 vi.mock("../lib/catalogSagTargetRuntimeSqlRepository", () => ({ verifyCatalogSagTargetRuntimeProof: m.proof }));
@@ -32,6 +34,7 @@ vi.mock("../lib/catalogExecutionRegistrationSqlRepository", () => ({
 }));
 
 import { runSqlCatalogScheduleDayTransaction } from "../lib/catalogScheduleDayTransaction";
+import { catalogScheduleRosterToken } from "../lib/catalogScheduleActivation";
 const date = "2030-01-01";
 const cutoffAt = new Date("2030-01-02T05:00:00Z");
 const approval = new Date("2030-01-02T03:00:00Z");
@@ -61,6 +64,48 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("atomic certified catalog business day", () => {
+  it("does not inspect reservations if the original operation approval changed", async () => {
+    m.approvals.mockResolvedValueOnce(new Map());
+    const origin = { scheduleId: "a", scheduleVersion: roster[0].version, operationId: "snapshot-op" };
+    const work = vi.fn();
+    await expect(runSqlCatalogScheduleDayTransaction({ ...context, previewActorId: "actor", previewOrigin: origin }, work))
+      .resolves.toEqual({ status: "unverified" });
+    expect(m.approvals).toHaveBeenCalledWith(m.tx, "qa", [origin]);
+    expect(work).not.toHaveBeenCalled();
+  });
+
+  it("forbids registration on the interactive preview transaction", async () => {
+    await expect(runSqlCatalogScheduleDayTransaction({ ...context, previewActorId: "actor" }, io => io.register(write)))
+      .resolves.toEqual({ status: "unverified" });
+    expect(m.register).not.toHaveBeenCalled();
+  });
+
+  it("rolls back if a copy's selected physical proof expires while approval is being finalized", async () => {
+    m.clock.mockResolvedValueOnce({ recordset: [{ status: "valid" }] }).mockResolvedValueOnce({ recordset: [{ status: "unverified" }] });
+    await expect(runSqlCatalogScheduleDayTransaction({ ...context, previewActorId: "actor" },
+      async (_io, _inspect, transaction, deadline, tighten) => {
+        expect(transaction).toBe(m.tx);
+        expect(deadline()).toEqual(approval);
+        tighten(earliest);
+        expect(deadline()).toEqual(earliest);
+        return "simulated-created";
+      })).resolves.toEqual({ status: "unverified" });
+    expect(m.clock).toHaveBeenLastCalledWith(m.tx, { cutoffAt, validUntil: earliest });
+    expect(m.rollback).toHaveBeenCalledOnce();
+  });
+
+  it("does not inspect or expose candidates after the actor loses source access", async () => {
+    m.sourceAccess.mockResolvedValueOnce(new Set());
+    const linkId = "any-link";
+    const preview = await runSqlCatalogScheduleDayTransaction({ ...context, previewActorId: "actor" },
+      async (_io, inspect) => inspect({ taskDate: date, cutoffAt, workflowRoleFor: () => "role", plan: {
+        ready: true, tasks: [], held: [], conflicts: [{ sources: [{ link: { linkId } }] } as never],
+      } }));
+    expect(preview).toEqual({ status: "committed", value: null });
+    expect(m.sourceAccess).toHaveBeenCalledExactlyOnceWith(m.tx, { actorId: "actor", environment: "qa" });
+    expect(m.lock).toHaveBeenCalledTimes(2);
+    expect(m.register).not.toHaveBeenCalled();
+  });
   it("takes legacy-compatible locks before the certified read, uses one transaction, and checks the earliest deadline", async () => {
     const result = await runSqlCatalogScheduleDayTransaction(context, async io => {
       await io.resolve({ portalEnvironment: "qa", links: [] });
@@ -96,6 +141,27 @@ describe("atomic certified catalog business day", () => {
     expect(m.commit).not.toHaveBeenCalled();
     expect(m.rollback).toHaveBeenCalledOnce();
   });
+  it("rejects an activation commit after planning even though the definition version did not change", async () => {
+    const planning = { ...roster[0], activation: null };
+    const after = { ...planning, activation: { version: planning.version, phase: "held", environment: "qa",
+      targets: [], principals: [] } };
+    m.roster.mockResolvedValueOnce([after]);
+    const work = vi.fn();
+    expect(await runSqlCatalogScheduleDayTransaction({ ...context,
+      roster: new Map([[planning.schedule.id, catalogScheduleRosterToken(planning)]]) }, work)).toEqual({ status: "unverified" });
+    expect(m.rollback).toHaveBeenCalledOnce();
+    expect(work).not.toHaveBeenCalled();
+  });
+  it("registers against the locked definition version, not the activation fingerprint", async () => {
+    const planning = { ...roster[0], activation: { version: roster[0].version, phase: "frozen" as const, environment: "qa" as const,
+      targets: [{ kind: "domain" as const, linkId: "link-a", targetId: "target-a" }],
+      principals: [{ kind: "domain" as const, principalKind: "role" as const, id: "operator" }] } };
+    m.roster.mockResolvedValueOnce([planning]);
+    const { version } = planning;
+    const locked = { ...context, roster: new Map([[planning.schedule.id, catalogScheduleRosterToken(planning)]]) };
+    expect(await runSqlCatalogScheduleDayTransaction(locked, io => io.register({ ...write,
+      scheduleVersions: new Map([[planning.schedule.id, version]]) }))).toEqual({ status: "committed", value: outcome });
+  });
   it("rolls back previous groups if the registration of a later group loses evidence", async () => {
     const problem = new Error("fictional registration conflict");
     m.register.mockResolvedValueOnce({ outcome, validUntil: earliest }).mockRejectedValueOnce(problem);
@@ -116,6 +182,18 @@ describe("atomic certified catalog business day", () => {
   } as CatalogExecutionRegistration;
   const observedOnce = { scheduleId: "a", scheduleVersion: once.version, operationId,
     pairs: [{ linkId: "link-a", executionKey }] };
+
+  it("commits frozen one-time registrations without sending their activation fingerprint to the old observer", async () => {
+    const frozen = { ...once, activation: { version: once.version, phase: "frozen" as const,
+      environment: "qa" as const, targets: [], principals: [] } };
+    m.roster.mockResolvedValue([frozen]);
+    const observer = vi.fn();
+    const result = await runSqlCatalogScheduleDayTransaction({ ...context,
+      roster: new Map([[once.schedule.id, catalogScheduleRosterToken(frozen)]]) }, io => io.register(onceWrite), observer);
+    expect(result).toEqual({ status: "committed", value: outcome });
+    expect(observer).not.toHaveBeenCalled();
+    expect(m.rollback).not.toHaveBeenCalled();
+  });
 
   it("passes one-time evidence to the observer in the same transaction and before the final deadline guard", async () => {
     m.roster.mockResolvedValue([once]);

@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { generateCatalogPersistedScheduleDay, compileCatalogScheduleScopes } from "../lib/catalogScheduleScopes";
+import { generateCatalogPersistedScheduleDay, compileCatalogScheduleScopes, compileExactCopyProposal } from "../lib/catalogScheduleScopes";
 import { generateCatalogScheduleDay } from "../lib/catalogScheduleDay";
 import type { UpdateSchedule } from "../types/models";
 import type { CatalogTaskLink } from "../lib/catalogTaskTargetPlanning";
+import type { CatalogScheduleRosterRow } from "../lib/schedulingSqlRepository";
 
 const date = "2030-06-22";
 const version = "0000000000000001";
@@ -25,6 +26,92 @@ const input = { date, checkedAt: new Date("2030-06-22T05:00:00Z"), cutoffAt: new
 const row = (values: Partial<UpdateSchedule>) => [{ version, schedule: { ...base, ...values } }];
 
 describe("persisted catalog scope adapter", () => {
+  const frozen = (): CatalogScheduleRosterRow => ({ ...row({ selectionMode: "licensing", licensingScope: {
+    licenseMatchMode: "any", targetTypes: "domains_only", environment: "all", licenseModuleIds: ["A"], activeOnly: true,
+  } })[0], activation: { version, environment: "qa", phase: "frozen", targets: [{ kind: "domain",
+    linkId: "a:shared:domain:production", targetId: physicalId }], principals: [{ kind: "domain", principalKind: "user", id: "frozen-owner" }] } });
+
+  it("uses the frozen explicit links and assignee without expanding from current license memberships", async () => {
+    const register = vi.fn().mockResolvedValue({ status: "registered", taskId: "task" });
+    const resolve = vi.fn().mockResolvedValue(input.inventory.map(() => ({ status: "verified", id: physicalId })));
+    await expect(generateCatalogPersistedScheduleDay(input, {
+      readRoster: vi.fn().mockResolvedValue([frozen()]), generate: day => generateCatalogScheduleDay(day, { register, resolve }),
+    })).resolves.toMatchObject({ registered: 1 });
+    expect(register).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      task: expect.objectContaining({ assignedUserIds: ["frozen-owner"], clientId: "a", domainId: "shared" }),
+      group: expect.objectContaining({ sources: [expect.objectContaining({ link: expect.objectContaining({ linkId: "a:shared:domain:production" }) })] }),
+    }));
+  });
+
+  it("retains a frozen member in the snapshot but does not execute it without current licensing proof", async () => {
+    const register = vi.fn();
+    const inventory = input.inventory.map(record => ({ ...record, link: { ...record.link, moduleIds: null } }));
+    const resolve = vi.fn().mockResolvedValue(inventory.map(() => ({ status: "verified", id: physicalId })));
+    await expect(generateCatalogPersistedScheduleDay({ ...input, inventory }, { readRoster: vi.fn().mockResolvedValue([frozen()]),
+      generate: day => generateCatalogScheduleDay(day, { register, resolve }) })).resolves.toMatchObject({ held: 1, registered: 0 });
+    expect(register).not.toHaveBeenCalled();
+  });
+
+  it("holds a frozen link if current proof points to a different physical target", async () => {
+    const register = vi.fn();
+    const resolve = vi.fn().mockResolvedValue(input.inventory.map(() => ({ status: "verified", id: "rebound-target" })));
+    await expect(generateCatalogPersistedScheduleDay(input, { readRoster: vi.fn().mockResolvedValue([frozen()]),
+      generate: day => generateCatalogScheduleDay(day, { register, resolve }),
+    })).resolves.toMatchObject({ held: 1, registered: 0 });
+    expect(register).not.toHaveBeenCalled();
+  });
+
+  it("never replaces a missing activation snapshot with today's license matches", () => {
+    expect(compileCatalogScheduleScopes(input, [{ ...frozen(), activation: null }])).toMatchObject({
+      status: "ready", missingSelections: 1, rules: [{ scope: { linkIds: [] } }],
+    });
+  });
+
+  it("uses only the copied exact links; a copied database never adds its unselected domain", () => {
+    const selected = { kind: "database" as const, linkId: "a:shared:same:production", targetId: physicalId };
+    const copy: CatalogScheduleRosterRow = { ...row({ manualTargetTypes: "domains_and_databases" })[0], copyLinks: [selected],
+      activation: { version, environment: "qa", phase: "frozen", targets: [selected],
+        principals: [{ kind: "database", principalKind: "role", id: "database_updater" }] } };
+    expect(compileCatalogScheduleScopes(input, [copy])).toMatchObject({ status: "ready", rules: [
+      { scope: { kind: "database", linkIds: ["a:shared:same:production"] } },
+    ] });
+    expect(compileCatalogScheduleScopes(input, [{ ...copy, activation: { ...copy.activation!, targets: [
+      { ...selected, targetId: "changed" },
+    ] } }])).toEqual({ status: "unverified" });
+    expect(compileExactCopyProposal({ ...copy, activation: { ...copy.activation!, phase: "cancelled", targets: [] } },
+      "2030-06-23", "operation")).toMatchObject({ status: "ready", rules: [
+      { calendar: { startDate: "2030-06-23" }, scope: { kind: "database", linkIds: [selected.linkId] } },
+    ] });
+  });
+  it("restricts manual selections to the requested environment before collecting target IDs", () => {
+    const rule = row({ manualTargetTypes: "databases_only", manualEnvironment: "production", scopeGroups: [
+      { clientId: "a", includeAllDomains: true, domains: [] },
+    ] });
+    expect(compileCatalogScheduleScopes(input, rule)).toMatchObject({ rules: [{ scope: { linkIds: [
+      "a:different:same:production", "a:shared:same:production",
+    ] } }] });
+  });
+  it("uses a new manual draft's independently approved exact lanes and rejects changed scope or version", () => {
+    const selected = { kind: "database" as const, linkId: "a:shared:same:production", targetId: physicalId };
+    const draft: CatalogScheduleRosterRow = { ...row({ selectionMode: "manual" })[0],
+      draftOrigin: { manual: true, version, environment: "qa", operationId: "operation" }, draftLinks: [selected],
+      activation: { version, environment: "qa", phase: "frozen", targets: [selected],
+        principals: [{ kind: "database", principalKind: "role", id: "database_updater" }] } };
+    expect(compileCatalogScheduleScopes(input, [draft])).toMatchObject({ status: "ready", rules: [
+      { scope: { kind: "database", linkIds: [selected.linkId] } },
+    ] });
+    expect(compileExactCopyProposal(draft, "2030-06-23", "operation")).toMatchObject({ status: "ready", rules: [
+      { scope: { kind: "database", linkIds: [selected.linkId] } },
+    ] });
+    for (const changed of [
+      { ...draft, draftLinks: undefined },
+      { ...draft, copyLinks: [selected] },
+      { ...draft, draftOrigin: { ...draft.draftOrigin!, version: "0000000000000002" } },
+      { ...draft, draftOrigin: { ...draft.draftOrigin!, operationId: "other" } },
+      { ...draft, activation: { ...draft.activation!, targets: [{ ...selected, targetId: "another-destination" }] } },
+    ]) expect(compileCatalogScheduleScopes(input, [changed])).toEqual({ status: "unverified" });
+  });
+
   it("keeps all databases within a declared customer and domain, even with identical labels/target IDs in other branches", () => {
     const plan = compileCatalogScheduleScopes(input, row({ manualTargetTypes: "databases_only", scopeGroups: [
       { clientId: "a", includeAllDomains: false, domains: [{ domainId: "shared", includeAllDatabases: true, databaseIds: [] }] },

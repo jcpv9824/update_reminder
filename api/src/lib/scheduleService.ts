@@ -23,6 +23,7 @@ export type FrequencyInput = {
   scopeGroups?: import("../types/models").ScheduleScopeGroup[];
   selectionMode?: import("../types/models").ScheduleSelectionMode;
   manualTargetTypes?: import("../types/models").ManualTargetTypes;
+  manualEnvironment?: import("../types/models").UpdateSchedule["manualEnvironment"];
   licensingScope?: import("../types/models").LicensingScope;
   assignmentMode?: import("../types/models").ScheduleAssignmentMode;
   domainAssignedRole?: string;
@@ -203,6 +204,7 @@ export function buildScheduleRecord(args: {
     scopeGroups: normalized.scopeGroups,
     selectionMode: normalized.selectionMode,
     manualTargetTypes: normalized.manualTargetTypes,
+    ...(normalized.manualEnvironment && { manualEnvironment: normalized.manualEnvironment }),
     licensingScope: normalized.licensingScope,
     assignmentMode: normalized.assignmentMode,
     domainAssignedRole: normalized.domainAssignedRole,

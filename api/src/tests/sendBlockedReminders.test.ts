@@ -4,6 +4,7 @@ import type { UpdateTask } from "../types/models";
 const mocks = vi.hoisted(() => ({
   tasks: [] as UpdateTask[],
   enqueue: vi.fn(async () => ({ created: true, id: "outbox-1" })),
+  pin: vi.fn(),
   timer: vi.fn(),
 }));
 
@@ -12,6 +13,7 @@ vi.mock("../lib/workflowTasksSqlRepository", () => ({
   readSqlWorkflowTasks: vi.fn(async () => mocks.tasks),
 }));
 vi.mock("../lib/emailOutboxSqlRepository", () => ({ enqueueSqlEmail: mocks.enqueue }));
+vi.mock("../lib/scheduleTaskReminderDelivery", () => ({ pinNewScheduleTaskNotice: mocks.pin }));
 vi.mock("../lib/settingsService", () => ({
   loadEmailAlertsSettings: vi.fn(async () => ({
     blockedReminderEnabled: true,
@@ -48,6 +50,7 @@ describe("sendBlockedReminders SQL", () => {
     mocks.tasks = [blockedTask()];
     mocks.enqueue.mockClear();
     mocks.enqueue.mockResolvedValue({ created: true, id: "outbox-1" });
+    mocks.pin.mockReset().mockResolvedValue({ idempotencySuffix: "", metadata: { schedulesByTask: [["task_xss", "s1"]] } });
   });
 
   it("encola la plantilla con valores dinámicos escapados", async () => {
@@ -62,5 +65,30 @@ describe("sendBlockedReminders SQL", () => {
     expect(request.html).toContain("Tom &amp; Jerry");
     expect(request.text).toContain(`<script>alert("cliente")</script>`);
     expect(request.idempotencyKey).toBe("blockedReminder:task_xss:1");
+  });
+
+  it("can queue a new reminder for the surviving copy without reusing a cancelled original key", async () => {
+    const task = blockedTask();
+    mocks.tasks = [{ ...task, clientId: "c-copy", clientName: "Cliente de la copia" }];
+    mocks.pin.mockResolvedValue({
+      idempotencySuffix: ":s-copy",
+      metadata: {
+        taskIds: [task.id], schedulesByTask: [[task.id, "s-copy"]],
+        taskRepresentatives: [[task.id, "c-copy", task.domainId, task.targetId]],
+      },
+    });
+    await expect(ejecutarRecordatoriosBloqueos(vi.fn(), new Date("2026-07-03T08:00:00.000Z"))).resolves.toEqual({ enviados: 1 });
+    expect(mocks.pin).toHaveBeenCalledWith("blocked_task_reminder", mocks.tasks[0]);
+    expect(mocks.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: "blockedReminder:task_xss:1:s-copy",
+      html: expect.stringContaining("Cliente de la copia"),
+      metadata: expect.objectContaining({ schedulesByTask: [[task.id, "s-copy"]] }),
+    }));
+  });
+
+  it("does not queue when exact origin evidence is no longer available", async () => {
+    mocks.pin.mockResolvedValue(null);
+    await expect(ejecutarRecordatoriosBloqueos(vi.fn(), new Date("2026-07-03T08:00:00.000Z"))).resolves.toEqual({ enviados: 0 });
+    expect(mocks.enqueue).not.toHaveBeenCalled();
   });
 });

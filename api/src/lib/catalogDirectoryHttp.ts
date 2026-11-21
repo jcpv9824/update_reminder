@@ -118,7 +118,7 @@ export function createCatalogDirectoryHttp(deps: CatalogDirectoryHttpDependencie
       const includeSagDirectory = deps.includeSagDirectory?.() === true;
       if (includeSagDirectory && inputQuery) {
         inputQuery.state ??= "active_or_unverified";
-        inputQuery.web ??= "all";
+        inputQuery.web ??= "in_web";
       }
       if (!allowed.size && !includeSagDirectory) return denied();
       if (inputQuery?.sourceIds?.some(sourceId => !allowed.has(sourceId))) {

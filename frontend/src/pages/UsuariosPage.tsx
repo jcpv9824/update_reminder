@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Trash2 } from "lucide-react";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { Alerta, DialogoConfirmar, EtiquetaEstado, Modal, Paginacion } from "../components/Comunes";
-import { ETIQUETAS_ROLES, type RespuestaPaginada } from "../types";
+import { ETIQUETAS_ROLES, type AreaUsuario, type RespuestaPaginada } from "../types";
 import { hasPermissionForRoleIds } from "../permissionAccess";
 import {
   DEFAULT_ROLE_DEFINITIONS,
@@ -24,10 +24,18 @@ type Usuario = {
   displayName: string;
   email: string;
   roles: string[];
+  area?: AreaUsuario | null;
   active: boolean;
   createdAt: string;
   updatedAt: string;
   mustChangePassword?: boolean;
+};
+
+const ETIQUETAS_AREA: Record<AreaUsuario, string> = {
+  support: "Soporte",
+  development: "Desarrollo",
+  administrative: "Administrativo",
+  sales: "Ventas",
 };
 
 const VISIBILIDAD_TAREAS: Array<{ valor: TaskVisibilityLevel; etiqueta: string }> = [
@@ -147,13 +155,14 @@ export default function UsuariosPage() {
       {pestana === "usuarios" && puedeVerUsuarios && (isLoading ? <div className="cargando">Cargando...</div> : (
         <>
           <table>
-            <thead><tr><th>Nombre</th><th>Correo</th><th>Roles</th><th>Estado</th><th>Acciones</th></tr></thead>
+            <thead><tr><th>Nombre</th><th>Correo</th><th>Área del usuario</th><th>Roles</th><th>Estado</th><th>Acciones</th></tr></thead>
             <tbody>
-              {usuarios.length === 0 ? (<tr><td colSpan={5} className="vacio">No hay usuarios registrados.</td></tr>) :
+              {usuarios.length === 0 ? (<tr><td colSpan={6} className="vacio">No hay usuarios registrados.</td></tr>) :
               usuarios.map((u) => (
                 <tr key={u.id}>
                   <td>{u.displayName}</td>
                   <td>{u.email}</td>
+                  <td>{u.area ? ETIQUETAS_AREA[u.area] : "Sin asignar"}</td>
                   <td>{u.roles.map((r) => ETIQUETAS_ROLES[r] ?? r).join(", ")}</td>
                   <td><EtiquetaEstado estado={u.active ? "active" : "inactive"} /></td>
                   <td className="acciones-tabla">
@@ -255,6 +264,7 @@ function FormularioCrear({ rolesDisponibles, onSubmit, cargando }: { rolesDispon
   const [password, setPassword] = useState("");
   const [confirmacion, setConfirmacion] = useState("");
   const [roles, setRoles] = useState<string[]>([]);
+  const [area, setArea] = useState<AreaUsuario | null>(null);
   const [active, setActive] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
@@ -269,13 +279,14 @@ function FormularioCrear({ rolesDisponibles, onSubmit, cargando }: { rolesDispon
       if (!email.trim()) return setErr("El correo es obligatorio.");
       if (password.length < 14) return setErr("La contraseña debe tener al menos 14 caracteres.");
       if (password !== confirmacion) return setErr("Las contraseñas no coinciden.");
-      onSubmit({ displayName, email: email.trim(), password, roles, active });
+      onSubmit({ displayName, email: email.trim(), password, roles, active, area });
     }}>
       {err && <Alerta tipo="error">{err}</Alerta>}
       <div className="fila-formulario"><label>Nombre *</label><input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required /></div>
       <div className="fila-formulario"><label>Correo electrónico *</label><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></div>
       <div className="fila-formulario"><label>Contraseña temporal *</label><input type="password" maxLength={72} value={password} onChange={(e) => setPassword(e.target.value)} required /><small>Use al menos 14 caracteres. El usuario deberá cambiarla en su primer acceso.</small></div>
       <div className="fila-formulario"><label>Confirmar contraseña *</label><input type="password" value={confirmacion} onChange={(e) => setConfirmacion(e.target.value)} required /></div>
+      <SelectorAreaUsuario area={area} onChange={setArea} />
       <div className="fila-formulario"><label>Roles</label>
         {rolesDisponibles.map((r) => (
           <label key={r.id} style={{ display: "flex", fontWeight: 400, alignItems: "center" }}>
@@ -298,6 +309,7 @@ function FormularioCrear({ rolesDisponibles, onSubmit, cargando }: { rolesDispon
 function FormularioEditar({ inicial, rolesDisponibles, onSubmit, cargando }: { inicial: Usuario; rolesDisponibles: RoleDefinition[]; onSubmit: (v: any) => void; cargando: boolean }) {
   const [displayName, setDisplayName] = useState(inicial.displayName ?? "");
   const [roles, setRoles] = useState<string[]>(inicial.roles ?? []);
+  const [area, setArea] = useState<AreaUsuario | null>(inicial.area ?? null);
   const [active, setActive] = useState(inicial.active);
 
   function alternar(r: string) {
@@ -305,9 +317,19 @@ function FormularioEditar({ inicial, rolesDisponibles, onSubmit, cargando }: { i
   }
 
   return (
-    <form onSubmit={(e) => { e.preventDefault(); onSubmit({ displayName, roles, active }); }}>
+    <form onSubmit={(e) => {
+      e.preventDefault();
+      const rolesIniciales = inicial.roles ?? [];
+      const rolesCambiaron = roles.length !== rolesIniciales.length || roles.some((r) => !rolesIniciales.includes(r));
+      onSubmit({
+        displayName, active,
+        ...(rolesCambiaron ? { roles } : {}),
+        ...(area !== (inicial.area ?? null) ? { area } : {}),
+      });
+    }}>
       <div className="fila-formulario"><label>Nombre</label><input value={displayName} onChange={(e) => setDisplayName(e.target.value)} /></div>
       <div className="fila-formulario"><label>Correo electrónico</label><input value={inicial.email} disabled /></div>
+      <SelectorAreaUsuario area={area} onChange={setArea} />
       <div className="fila-formulario"><label>Roles</label>
         {rolesDisponibles.map((r) => (
           <label key={r.id} style={{ display: "flex", fontWeight: 400, alignItems: "center" }}>
@@ -324,6 +346,20 @@ function FormularioEditar({ inicial, rolesDisponibles, onSubmit, cargando }: { i
         <button type="submit" className="primario" disabled={cargando}>{cargando ? "Guardando..." : "Guardar"}</button>
       </div>
     </form>
+  );
+}
+
+function SelectorAreaUsuario({ area, onChange }: { area: AreaUsuario | null; onChange: (area: AreaUsuario | null) => void }) {
+  const id = useId();
+  return (
+    <div className="fila-formulario">
+      <label htmlFor={id}>Área del usuario</label>
+      <select id={id} value={area ?? ""} onChange={(event) => onChange((event.target.value || null) as AreaUsuario | null)}>
+        <option value="">Sin asignar</option>
+        {Object.entries(ETIQUETAS_AREA).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+      </select>
+      <small>Es una clasificación del perfil; no cambia sus roles ni permisos.</small>
+    </div>
   );
 }
 

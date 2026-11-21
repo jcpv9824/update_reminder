@@ -5,7 +5,7 @@ import type { RoleDefinition } from "../lib/permissionModel";
 type Handler = (request: HttpRequest) => Promise<HttpResponseInit>;
 const mocks = vi.hoisted(() => ({
   routes: new Map<string, Handler>(), auth: vi.fn(), profile: vi.fn(), roles: vi.fn(),
-  scope: vi.fn(), evidence: vi.fn(), snapshots: vi.fn(), masters: vi.fn(),
+  scope: vi.fn(), evidence: vi.fn(), snapshots: vi.fn(), masters: vi.fn(), observedV2: vi.fn(), observedDocuments: vi.fn(),
 }));
 vi.mock("@azure/functions", () => ({
   app: { http: (_name: string, config: { route: string; handler: Handler }) => mocks.routes.set(config.route, config.handler) },
@@ -16,6 +16,8 @@ vi.mock("../lib/catalogSourceAccessSqlRepository", () => ({ readAuthorizedCatalo
 vi.mock("../lib/catalogSagCustomerEvidenceSqlRepository", () => ({ readSqlCatalogSagCustomerEvidence: mocks.evidence }));
 vi.mock("../lib/catalogCustomerSnapshotsSqlRepository", () => ({ readSqlCatalogCustomerSnapshots: mocks.snapshots }));
 vi.mock("../lib/catalogMasterInventorySqlRepository", () => ({ readSqlCatalogMasterInventory: mocks.masters }));
+vi.mock("../lib/catalogObservedInventoryV2SqlRepository", () => ({ readSqlCatalogObservedInventoryV2: mocks.observedV2 }));
+vi.mock("../lib/catalogObservedInventoryDocuments", () => ({ readCatalogObservedInventoryDocuments: mocks.observedDocuments }));
 import "../functions/catalogCustomers";
 
 const id = "7115bf63-9ee5-4407-820b-b4e82baa45ee";
@@ -83,6 +85,26 @@ describe("catalog customer evidence route permissions", () => {
     expect(mocks.evidence).toHaveBeenCalledWith({
       customerId: id, environment: "qa", matchKeyVersion: 1, allowedSourceIds: new Set(["authorized"]),
     });
+  });
+
+  it("requires Clients view in addition to inventory view for the optional document label", async () => {
+    vi.stubEnv("PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED", "true");
+    vi.stubEnv("PORTAL_CATALOG_DIRECTORY_V2_ENABLED", "true");
+    mocks.observedV2.mockResolvedValue({ state: "verified", total: 1,
+      items: [{ id: "domain", customerId: id, customerName: "Fixture", name: "fixture.invalid", environment: "test" }] });
+    mocks.observedDocuments.mockResolvedValue(new Map([[id, "00011-9"]]));
+    const inventory = mocks.routes.get("catalog/inventory/domains")!;
+    const req = { ...request, query: new URLSearchParams("v=2") } as HttpRequest;
+
+    mocks.roles.mockResolvedValue([role(["clients.domains.view"])]);
+    expect((await inventory(req)).jsonBody).toMatchObject({ items: [{ displayDocument: null }] });
+    expect(mocks.observedDocuments).not.toHaveBeenCalled();
+
+    mocks.roles.mockResolvedValue([role(["clients.domains.view", "clients.clients.view"])]);
+    expect((await inventory(req)).jsonBody).toMatchObject({ items: [{ displayDocument: "00011-9" }] });
+    expect(mocks.observedDocuments).toHaveBeenCalledWith(expect.objectContaining({
+      actorId: "actor", allowedSourceIds: new Set(["authorized"]), environment: "qa",
+    }), [id]);
   });
 
   it("keeps the endpoint disabled by default and requires customer access when enabled", async () => {

@@ -23,11 +23,12 @@ describe("Security SQL read repositories", () => {
   it("maps only the public user projection and normalized role assignments", () => {
     const user = mapSqlPublicUser({
       source_id: "user-1", display_name: "Usuario", email: "user@example.test", active: true,
+      area: "sales",
       password_updated_at: at, password_expires_at: null, must_change_password: false,
       last_login_at: at, created_at: at, created_by: "admin", updated_at: at,
       updated_by: "admin", roles_json: '[{"value":"database_updater"}]', total_count: 1,
     });
-    expect(user).toMatchObject({ id: "user-1", roles: ["database_updater"], active: true });
+    expect(user).toMatchObject({ id: "user-1", roles: ["database_updater"], active: true, area: "sales" });
     expect(JSON.stringify(user)).not.toContain("passwordHash");
     expect(JSON.stringify(user)).not.toContain("resetToken");
     expect(JSON.stringify(user)).not.toContain("tokenVersion");

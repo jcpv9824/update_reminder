@@ -11,7 +11,17 @@ export async function readAuthorizedCatalogSourceIds(args: {
   actorId: string;
   environment: CatalogEnvironment;
 }): Promise<ReadonlySet<string>> {
-  const result = await (await getSqlPool()).request()
+  return readSourceIds((await getSqlPool()).request(), args);
+}
+
+type SourceScope = Parameters<typeof readAuthorizedCatalogSourceIds>[0];
+
+export function readAuthorizedCatalogSourceIdsInTransaction(transaction: sql.Transaction, args: SourceScope) {
+  return readSourceIds(transaction.request(), args);
+}
+
+async function readSourceIds(request: sql.Request, args: SourceScope): Promise<ReadonlySet<string>> {
+  const result = await request
     .input("actorId", sql.NVarChar(150), args.actorId)
     .input("environment", sql.VarChar(10), args.environment)
     .query<{ id: string }>(`

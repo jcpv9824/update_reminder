@@ -7,6 +7,7 @@ import { findSqlUserById } from "../lib/securityManagementSqlWriteRepository";
 import { readSqlWorkflowTasks } from "../lib/workflowTasksSqlRepository";
 import { enqueueSqlEmail } from "../lib/emailOutboxSqlRepository";
 import { createHash } from "node:crypto";
+import { taskNoticeRepresentative } from "../lib/scheduleTaskReminderDelivery";
 
 type Recipient = { email: string; name?: string };
 
@@ -100,10 +101,11 @@ export async function ejecutarAlertasVencidas(log: (m: string) => void): Promise
     const assigned = await recipientsFromAssigned(task);
     const recipients = assigned.length > 0 ? assigned : fallback;
     for (const recipient of recipients) {
-      const group = grupos.get(recipient.email) ?? { recipient, domains: [], databases: [] };
-      if (task.targetType === "domain") group.domains.push(task);
-      else group.databases.push(task);
-      grupos.set(recipient.email, group);
+      const recipientKey = recipient.email.toLowerCase();
+      const group = grupos.get(recipientKey) ?? { recipient, domains: [], databases: [] };
+      const rows = task.targetType === "domain" ? group.domains : group.databases;
+      if (!rows.some(item => item.id === task.id)) rows.push(task);
+      grupos.set(recipientKey, group);
     }
   }
 
@@ -148,7 +150,8 @@ export async function ejecutarAlertasVencidas(log: (m: string) => void): Promise
       period: frequency.period, sendDate: hoy,
       subject: email.subject, html: email.html, text: email.text,
       recipients: [group.recipient],
-      metadata: { date: hoy, recipientsCount: 1, domainCount: group.domains.length, databaseCount: group.databases.length, taskIds },
+      metadata: { date: hoy, recipientsCount: 1, domainCount: group.domains.length, databaseCount: group.databases.length, taskIds,
+        taskRepresentatives: [...group.domains, ...group.databases].map(taskNoticeRepresentative) },
     });
     if (queued.created) {
       enviados++;

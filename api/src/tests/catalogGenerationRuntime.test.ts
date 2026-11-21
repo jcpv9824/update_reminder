@@ -18,6 +18,20 @@ const deps = () => ({
 });
 
 describe("catalog generation activation boundary", () => {
+  it("runs the historical sweep once before generation, and only on enabled background invocations", async () => {
+    const io = deps();
+    const activeEnv = { ...env, PORTAL_CATALOG_SCHEDULE_LIFECYCLE_ENABLED: "true", PORTAL_CATALOG_SCHEDULE_COPY_WRITE_ENABLED: "false" };
+    const activate = vi.fn().mockResolvedValue({ checked: 3, frozen: 1, cancelled: 1, held: 1, failed: 0 });
+    await expect(runCatalogGeneration({ trigger: "timer" }, io, activeEnv, activate)).resolves.toMatchObject({
+      activation: { checked: 3, frozen: 1, cancelled: 1, held: 1, failed: 0 },
+    });
+    expect(activate).toHaveBeenCalledExactlyOnceWith("qa", 7);
+    expect(activate.mock.invocationCallOrder[0]).toBeLessThan(io.generate.mock.invocationCallOrder[0]);
+    await runCatalogGeneration({ trigger: "refresh" }, deps(), activeEnv, activate);
+    await runCatalogGeneration({ trigger: "timer" }, deps(), env, activate);
+    expect(activate).toHaveBeenCalledOnce();
+  });
+
   it("sweeps completed past once schedules once per background window, not once per generated date", async () => {
     const io = deps();
     const result = await runCatalogGeneration({ trigger: "timer" },io,env);
