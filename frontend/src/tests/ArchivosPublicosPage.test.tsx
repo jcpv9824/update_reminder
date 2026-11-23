@@ -49,6 +49,7 @@ describe("ArchivosPublicosAdminPage", () => {
 
     const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     await userEvent.upload(input, new File([png], "captura.png", { type: "image/png" }));
+    await screen.findByText("Archivo seleccionado: captura.png");
     fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
 
     await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith(
@@ -75,6 +76,7 @@ describe("ArchivosPublicosAdminPage", () => {
       screen.getByLabelText("Archivo *"),
       new File([new Uint8Array([0, 0, 0, 20, 102, 116, 121, 112])], "instalacion.mp4", { type: "video/mp4" }),
     );
+    await screen.findByText("Archivo seleccionado: instalacion.mp4");
     fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
 
     await waitFor(() => expect(apiMock.post).toHaveBeenCalledTimes(1));
@@ -93,6 +95,7 @@ describe("ArchivosPublicosAdminPage", () => {
       screen.getByLabelText("Archivo *"),
       new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], "manual.pdf", { type: "application/pdf" }),
     );
+    await screen.findByText("Archivo seleccionado: manual.pdf");
     fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
 
     const modal = screen.getByRole("heading", { name: "Nuevo archivo público" }).closest(".modal");
