@@ -403,19 +403,21 @@ describe("FrecuenciasPage", () => {
     fireEvent.mouseDown(await screen.findByRole("option", { name: "Cliente Uno" }));
 
     fireEvent.click(screen.getByRole("button", { name: /\+ Agregar dominios/i }));
-    expect(await screen.findByRole("heading", { name: /Seleccionar dominios/i })).toBeInTheDocument();
-    fireEvent.click(screen.getByText("cliente.sagerp.co"));
-    fireEvent.click(screen.getByText("cliente2.sagerp.co"));
-    fireEvent.click(screen.getByRole("button", { name: /Agregar seleccionados/i }));
-    expect(await screen.findByText(/Dominio: cliente.sagerp.co/i)).toBeInTheDocument();
+    const domainModal = screen.getByText("Seleccionar dominios", { selector: "h3" }).closest<HTMLElement>(".modal")!;
+    const domains = within(domainModal);
+    fireEvent.click(domains.getByText("cliente.sagerp.co"));
+    fireEvent.click(domains.getByText("cliente2.sagerp.co"));
+    fireEvent.click(domains.getByRole("button", { name: /Agregar seleccionados/i }));
+    expect(screen.getByText(/Dominio: cliente.sagerp.co/i)).toBeInTheDocument();
     expect(screen.getByText(/Dominio: cliente2.sagerp.co/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getAllByRole("button", { name: /\+ Agregar bases/i })[0]);
-    expect(await screen.findByRole("heading", { name: /Seleccionar bases de datos/i })).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Empresa Uno"));
-    fireEvent.click(screen.getByText("Empresa Dos"));
-    fireEvent.click(screen.getByRole("button", { name: /Agregar seleccionadas/i }));
-    expect(await screen.findByText(/Empresa Uno — EMPRESA_UNO — production/i)).toBeInTheDocument();
+    const databaseModal = screen.getByText("Seleccionar bases de datos", { selector: "h3" }).closest<HTMLElement>(".modal")!;
+    const databases = within(databaseModal);
+    fireEvent.click(databases.getByText("Empresa Uno"));
+    fireEvent.click(databases.getByText("Empresa Dos"));
+    fireEvent.click(databases.getByRole("button", { name: /Agregar seleccionadas/i }));
+    expect(screen.getByText(/Empresa Uno — EMPRESA_UNO — production/i)).toBeInTheDocument();
     expect(screen.getByText(/Empresa Dos — EMPRESA_DOS — production/i)).toBeInTheDocument();
     expect(screen.getByText(/Resumen del alcance: 1 cliente\(s\), 2 dominio\(s\), 2 base\(s\) de datos/i)).toBeInTheDocument();
   });
