@@ -66,6 +66,20 @@ describe("Qué hay de nuevo service contracts", () => {
     expect(statement.indexOf("WHERE e.status")).toBeLessThan(statement.indexOf("OFFSET @offset"));
     expect(mocks.query.mock.calls[1][2]).toMatchObject({ offset: 10, size: 10, from: new Date("2026-11-01T05:00:00Z"), until: new Date("2026-12-01T05:00:00Z") });
   });
+  it("counts all developer tabs in the authorized filtered scope before applying the tab and offset", async () => {
+    mocks.query.mockResolvedValueOnce([{ total: 9, borradores: 3, publicadas: 6 }]).mockResolvedValueOnce([]);
+    const result = await listEntries(context().actor, { tab: "borradores", q: "Ventas", page: 2, pageSize: 2 });
+    expect(result).toMatchObject({ total: 3, page: 2, tabCounts: { todas: 9, borradores: 3, publicadas: 6 } });
+    const [counts, page] = mocks.query.mock.calls.map((call) => call[1] as string);
+    expect(counts).toContain("d.source_id=@actor");
+    expect(counts).toContain("LIKE @search");
+    expect(counts).not.toContain(" AND e.status='borrador'");
+    expect(page.indexOf(" AND e.status='borrador'")).toBeLessThan(page.indexOf("OFFSET @offset"));
+  });
+  it("rejects developer tabs in the support queue", async () => {
+    await expect(listEntries(context().actor, { tab: "borradores" }, true)).rejects.toMatchObject({ status: 400 });
+    expect(mocks.query).not.toHaveBeenCalled();
+  });
   it("keeps foreign drafts invisible in SQL itself", async () => {
     mocks.query.mockResolvedValueOnce([{ total: 0 }]).mockResolvedValueOnce([]);
     const actor = context().actor; actor.permissions = new Set(["updates.whats_new.view", "updates.whats_new.author"]);

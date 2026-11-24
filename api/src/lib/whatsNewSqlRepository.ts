@@ -1,7 +1,7 @@
 import sql from "mssql";
 import { getSqlPool } from "./sql";
 import { WhatsNewError, formatEntryNumber, type AreaCode } from "./whatsNewModel";
-import type { EntryState, CommandContext } from "./whatsNewCommands";
+import type { EntryState, CommandContext, FileState } from "./whatsNewCommands";
 import type { WhatsNewActor } from "./whatsNewAccess";
 
 export type Db = sql.ConnectionPool | sql.Transaction;
@@ -63,6 +63,23 @@ export async function contextFor(db: Db, actor: WhatsNewActor, now: Date, newId:
   return { actor, now, newId, catalog: catalog as CommandContext["catalog"], users: await directory(db, [actor.id, ...userIds]), files: new Map() };
 }
 
+export async function readWhatsNewMediaStates(db: Db, key: number, actorId: string, fileIds: string[]) {
+  // Only verified files belonging to this entry and this uploader can move
+  // into the entry. Previously linked files remain available for corrections.
+  const rows = await query<FileState>(db, `SELECT LOWER(CONVERT(char(36),f.public_id)) fileId,f.kind,f.target,f.status,
+    f.original_name [name], CONVERT(int,f.declared_byte_count) bytes
+    FROM whats_new.entry_files f WITH(UPDLOCK,HOLDLOCK)
+    JOIN content.files c ON c.storage_provider='s3' AND c.storage_bucket=f.storage_bucket AND c.object_key=f.object_key
+      AND c.content_sha256=f.declared_sha256 AND c.byte_count=f.declared_byte_count AND c.mime_type=f.mime_type
+    WHERE f.entry_key=@key AND f.storage_provider='s3'
+      AND f.public_id IN (SELECT TRY_CONVERT(uniqueidentifier,value) FROM OPENJSON(@ids))
+      AND ((f.status='en_entrada' AND c.file_key=f.file_key) OR
+        (f.status='verificada' AND f.expires_at>SYSUTCDATETIME() AND f.uploaded_by_user_key=
+          (SELECT user_key FROM security.users WHERE source_id=@actor AND active=1)));`,
+  { key, actor: actorId, ids: JSON.stringify(fileIds) });
+  return new Map(rows.map((row) => [row.fileId, row]));
+}
+
 export async function readEntry(db: Db, id: string, lock = false, load: typeof query = query) {
   const [row] = await load(db, `SELECT e.*,d.source_id developer_id,d.display_name developer_name,t.source_id initial_tester_id
     FROM whats_new.entries e ${lock ? "WITH (UPDLOCK,HOLDLOCK)" : ""}
@@ -82,9 +99,9 @@ export async function readEntry(db: Db, id: string, lock = false, load: typeof q
   const actions = (await load(db, `SELECT a.entry_key,c.code,a.label_snapshot label,a.detail_json FROM whats_new.entry_required_actions a
     JOIN whats_new.action_catalog c ON c.action_catalog_key=a.action_catalog_key WHERE a.entry_key=@key ORDER BY a.ordinal;`, p))
     .map((a) => ({ code: a.code as string, label: a.label as string, detail: parse(a.detail_json) }));
-  const attachments = (await load(db, `SELECT a.*,CONVERT(varchar(36),f.public_id) file_id FROM whats_new.entry_attachments a
+  const attachments = (await load(db, `SELECT a.*,CONVERT(varchar(36),f.public_id) file_id,f.original_name file_name FROM whats_new.entry_attachments a
     LEFT JOIN whats_new.entry_files f ON f.entry_file_key=a.entry_file_key WHERE a.entry_key=@key ORDER BY a.attachment_group,a.ordinal;`, p))
-    .map((a) => a.item_kind === "archivo" ? { group: a.attachment_group, kind: "archivo" as const, fileId: a.file_id }
+    .map((a) => a.item_kind === "archivo" ? { group: a.attachment_group, kind: "archivo" as const, fileId: a.file_id, name: a.file_name as string }
       : { group: a.attachment_group, kind: "enlace" as const, url: a.link_url, label: a.link_label });
   const rounds = (await load(db, `SELECT r.*,u.source_id holder_id,u.display_name holder_name FROM whats_new.test_rounds r
     JOIN security.users u ON u.user_key=r.holder_user_key WHERE r.entry_key=@key ORDER BY r.round_no;`, p));

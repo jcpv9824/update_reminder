@@ -523,9 +523,10 @@ export async function storePrivateObject(input: {
   sha256: string;
   extension: string;
   mimeType: string;
+  requiredProvider?: ObjectStorageWriteProvider;
 }): Promise<StoredPrivateObject> {
   const config = getWriteConfig();
-  if (!config) {
+  if (!config || (input.requiredProvider && config.provider !== input.requiredProvider)) {
     throw Object.assign(new Error("El almacenamiento privado de archivos aún no está configurado."), { status: 503 });
   }
   const locator: PrivateObjectLocator = config.provider === "seaweedfs"
@@ -554,6 +555,43 @@ export async function storePrivateObject(input: {
   } catch (error) {
     if (registrationToken) await releaseObjectDeletionClaim(locator, registrationToken);
     throw error;
+  }
+}
+
+/** Bounded same-origin delivery for authenticated private SeaweedFS media.
+ * Do not use for unbounded or anonymous downloads. No URLs leave this boundary. */
+export async function readPrivateSeaweedFSBuffer(
+  input: Extract<PrivateObjectLocator, { storageProvider: "s3" }>,
+  expectedBytes: number,
+  expectedSha256: string,
+): Promise<Buffer> {
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 1 || expectedBytes > 30_000_000 ||
+      !/^[a-f0-9]{64}$/.test(expectedSha256)) throw new Error("Metadatos de archivo privado no válidos.");
+  const config = readSeaweedFSConfig(true)!;
+  if (config.bucket !== input.storageBucket) throw new Error("Ubicación de archivo privado no válida.");
+  const response = await getSeaweedFSClient(config).send(new GetObjectCommand({
+    Bucket: input.storageBucket, Key: input.storageObjectKey, IfMatch: quotedEtag(input.storageObjectEtag),
+  }), { abortSignal: AbortSignal.timeout(20_000) });
+  if (!response.Body) throw new Error("Archivo privado vacío.");
+  const responseBody = response.Body as Readable;
+  const stream = Readable.from(responseBody as AsyncIterable<Uint8Array>);
+  const output = Buffer.allocUnsafe(expectedBytes);
+  const hash = createHash("sha256");
+  let bytes = 0;
+  try {
+    if (response.ContentLength !== expectedBytes) throw new Error("Tamaño de archivo privado inesperado.");
+    for await (const value of stream) {
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+      if (bytes + chunk.length > expectedBytes) throw new Error("Tamaño de archivo privado inesperado.");
+      chunk.copy(output, bytes);
+      bytes += chunk.length;
+      hash.update(chunk);
+    }
+    if (bytes !== expectedBytes || hash.digest("hex") !== expectedSha256) throw new Error("Archivo privado no coincide con los metadatos verificados.");
+    return output;
+  } finally {
+    stream.destroy();
+    responseBody.destroy?.();
   }
 }
 

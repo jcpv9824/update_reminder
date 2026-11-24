@@ -49,15 +49,16 @@ async function execute(method: string, path: string, body?: unknown, options: In
   };
   // Keep bodyless reads "simple" so authenticated API redirects can continue
   // to private Blob SAS URLs without triggering a cross-origin preflight.
+  const multipart = typeof FormData !== "undefined" && body instanceof FormData;
   if (body !== undefined || !["GET", "HEAD"].includes(method.toUpperCase())) {
-    headers["Content-Type"] = "application/json";
+    if (!multipart) headers["Content-Type"] = "application/json";
     headers["X-Requested-With"] = "XMLHttpRequest";
   }
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
   return fetch(`${API_BASE_URL}${path}`, {
     method,
     headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: multipart ? body : body !== undefined ? JSON.stringify(body) : undefined,
     credentials: options.credentials ?? "include",
     ...(options.sensitive ? { cache: "no-store", redirect: "error" } as const : {}),
     ...(options.signal ? { signal: options.signal } : {}),
@@ -165,6 +166,7 @@ async function postTaskPassword(
 export const api = {
   get: <T>(path: string, options?: ApiRequestOptions) => request<T>("GET", path, undefined, options),
   post: <T>(path: string, body?: unknown, options?: ApiRequestOptions) => request<T>("POST", path, body, options),
+  postForm: <T>(path: string, body: FormData, options?: ApiRequestOptions) => request<T>("POST", path, body, options),
   postTaskPassword,
   put: <T>(path: string, body?: unknown, options?: ApiRequestOptions) => request<T>("PUT", path, body, options),
   patch: <T>(path: string, body?: unknown, options?: ApiRequestOptions) => request<T>("PATCH", path, body, options),

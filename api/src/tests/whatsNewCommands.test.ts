@@ -50,6 +50,31 @@ describe("Qué hay de nuevo domain gates", () => {
     expect(() => decidePublish(ctx, state)).toThrow(expect.objectContaining({ status: 422, details: { fields: ["clientId"] } }));
     expect(decidePublish(ctx, { ...state, clientName: "Canónico ERP" }).status).toBe("sin_probar");
   });
+  it("promotes only same-entry verified media from the exact target when committing a draft", () => {
+    const ctx = context();
+    ctx.mediaAvailable = true;
+    const fileId = "11111111-1111-4111-8111-111111111111";
+    const whatChanged = { type: "doc", content: [{ type: "image", attrs: { fileId } }] };
+    const state = { ...entry(), status: "borrador" as const, developerId: ctx.actor.id };
+    expect(() => decideSaveDraft(ctx, state, { whatChanged })).toThrow(expect.objectContaining({ status: 400 }));
+    ctx.files.set(fileId, { fileId, status: "verificada", kind: "imagen", target: "reglas_negocio" });
+    expect(() => decideSaveDraft(ctx, state, { whatChanged })).toThrow(expect.objectContaining({ status: 400 }));
+    ctx.files.set(fileId, { fileId, status: "verificada", kind: "imagen", target: "que_cambio" });
+    expect(decideSaveDraft(ctx, state, { whatChanged }).effects[0]).toEqual({ kind: "files.promote", fileIds: [fileId] });
+  });
+  it("uses verified names and sizes for private rich-text attachments", () => {
+    const ctx = context();
+    ctx.mediaAvailable = true;
+    const fileId = "11111111-1111-4111-8111-111111111111";
+    const whatChanged = { type: "doc", content: [{ type: "paragraph", content: [
+      { type: "adjuntoArchivo", attrs: { fileId, nombre: "wrong.html", tamano: 1 } },
+    ] }] };
+    const state = { ...entry(), status: "borrador" as const, developerId: ctx.actor.id };
+    ctx.files.set(fileId, { fileId, status: "en_entrada", kind: "documento", target: "que_cambio", name: "correcto.pdf", bytes: 50 });
+    const patch = decideSaveDraft(ctx, state, { whatChanged }).effects.find((effect) => effect.kind === "entry.patch");
+    expect(JSON.stringify(patch)).toContain("correcto.pdf");
+    expect(JSON.stringify(patch)).not.toContain("wrong.html");
+  });
   it("a partial draft edit does not default or erase omitted fields", () => {
     const ctx = context(); const state = { ...entry(), status: "borrador" as const, developerId: ctx.actor.id };
     const result = decideSaveDraft(ctx, state, DraftInSchema.parse({ whatChanged: doc }));

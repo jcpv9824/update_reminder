@@ -5,7 +5,7 @@ import {
   type AreaCode, type EntryStatus, type EntryType, type FileTarget, type LogAction, type SystemCode,
 } from "./whatsNewModel";
 import {
-  RICH_LIMITS, rewriteMentions, summaryLine, validateRichDoc,
+  RICH_LIMITS, extractPlainText, rewriteMentions, summaryLine, validateRichDoc,
   type RichDoc, type RichDocResult, type RichProfile,
 } from "./whatsNewRichText";
 import { RouteInputSchema, normalizeRoutes, routeSearchText, type NormalizedRoute, type RouteInput } from "./whatsNewRoutes";
@@ -18,7 +18,7 @@ import { nextStatus } from "./whatsNewStateMachine";
 
 /* ---------------------------------------------------------------- estado */
 
-export type FileState = { fileId: string; kind: "imagen" | "documento" | "video"; target: FileTarget; status: string };
+export type FileState = { fileId: string; kind: "imagen" | "documento" | "video"; target: FileTarget; status: string; name?: string; bytes?: number };
 
 export type RoundState = {
   id: string;
@@ -67,6 +67,7 @@ export type CommandContext = {
   users: Map<string, DirectoryUser>;
   /** Archivos de la entrada, por `fileId`. */
   files: Map<string, FileState>;
+  mediaAvailable?: boolean;
 };
 
 /* -------------------------------------------------------------- efectos */
@@ -98,6 +99,7 @@ export type EntryPatch = Partial<{
 }>;
 
 export type Effect =
+  | { kind: "files.promote"; fileIds: string[] }
   | { kind: "entry.patch"; patch: EntryPatch }
   | { kind: "routes.replace"; routes: NormalizedRoute[] }
   | { kind: "actions.replace"; actions: ActionValue[] }
@@ -186,23 +188,33 @@ export function validateDocWithFiles(
   field: keyof typeof RICH_LIMITS.jsonChars,
 ): RichDocResult {
   const result = validateRichDoc(input, profile, richMax(profile, field));
-  if (result.imageFileIds.length || result.attachmentFileIds.length) {
+  if ((result.imageFileIds.length || result.attachmentFileIds.length) && (!ctx.mediaAvailable || field !== "que_cambio" || profile === "cliente")) {
     throw new WhatsNewError(503, "almacenamiento_no_disponible", "El almacenamiento de archivos todavía no está conectado.");
   }
   const check = (fileId: string, kinds: string[]) => {
-    const file = ctx.files.get(fileId);
-    if (!file || !kinds.includes(file.kind)) {
+    const file = ctx.files.get(fileId.toLowerCase());
+    if (!file || file.target !== "que_cambio" || !kinds.includes(file.kind)) {
       throw new WhatsNewError(400, "texto_enriquecido_invalido", "El contenido tiene un formato no permitido.", { rule: "archivo_ajeno" });
     }
-    if (file.status !== "en_entrada") {
+    if (file.status !== "en_entrada" && file.status !== "verificada") {
       throw new WhatsNewError(422, "archivo_no_verificado", "El archivo no coincide con lo declarado.", { reason: file.status });
-    }
-    if (profile === "cliente" && file.target !== "texto_cliente") {
-      throw new WhatsNewError(400, "texto_enriquecido_invalido", "El contenido tiene un formato no permitido.", { rule: "imagen_no_publica" });
     }
   };
   result.imageFileIds.forEach((id) => check(id, ["imagen"]));
   result.attachmentFileIds.forEach((id) => check(id, ["documento", "video"]));
+  if (result.attachmentFileIds.length) {
+    // Do not let incoming rich text rename the bytes served by the portal.
+    const nodes = [...(result.doc.content ?? [])];
+    while (nodes.length) {
+      const node = nodes.pop()!;
+      if (node.type === "adjuntoArchivo") {
+        const file = ctx.files.get(String(node.attrs?.fileId));
+        node.attrs = { fileId: node.attrs?.fileId, nombre: file?.name ?? "Archivo adjunto", ...(file?.bytes === undefined ? {} : { tamano: file.bytes }) };
+      }
+      if (node.content) nodes.push(...node.content);
+    }
+    result.plainText = extractPlainText(result.doc);
+  }
   if (result.mentionUserIds.length > 0) {
     const names = new Map<string, string>();
     for (const id of result.mentionUserIds) {
@@ -280,16 +292,22 @@ function validateAttachments(ctx: CommandContext, attachments: AttachmentIn[]): 
       throw new WhatsNewError(400, "solicitud_invalida", `Se admiten hasta ${LIMITS.attachmentsPerGroup} adjuntos por lista.`);
     }
     if (item.kind === "enlace") return { ...item, url: validateAttachmentUrl(item.url), label: item.label || null };
+    if (!ctx.mediaAvailable) throw new WhatsNewError(503, "almacenamiento_no_disponible", "El almacenamiento de archivos no está disponible.");
     const file = ctx.files.get(item.fileId.toLowerCase());
     const expectedKinds = item.group === "video" ? ["video"] : ["documento"];
     if (!file || file.target !== item.group || !expectedKinds.includes(file.kind)) {
       throw new WhatsNewError(400, "solicitud_invalida", "El archivo adjunto no pertenece a esta lista.");
     }
-    if (file.status !== "en_entrada") {
+    if (file.status !== "en_entrada" && file.status !== "verificada") {
       throw new WhatsNewError(422, "archivo_no_verificado", "El archivo no coincide con lo declarado.", { reason: file.status });
     }
     return { ...item, fileId: item.fileId.toLowerCase() };
   });
+}
+
+function promotionEffect(ctx: CommandContext, ids: readonly string[]): Effect[] {
+  const fileIds = [...new Set(ids.map((id) => id.toLowerCase()))].filter((id) => ctx.files.get(id)?.status === "verificada");
+  return fileIds.length ? [{ kind: "files.promote", fileIds }] : [];
 }
 
 /** Campos que faltan para publicar (se muestran como «Faltan campos» en el borrador). */
@@ -338,6 +356,7 @@ export function decideSaveDraft(ctx: CommandContext, state: EntryState, input: D
   assertDeveloperOwner(ctx, state);
   nextStatus("guardar_borrador", state.status);
   const effects: Effect[] = [];
+  const fileIds: string[] = [];
   const patch: EntryPatch = {};
   const type = input.type !== undefined ? input.type : state.type;
   const cleared: string[] = [];
@@ -370,7 +389,9 @@ export function decideSaveDraft(ctx: CommandContext, state: EntryState, input: D
       patch.initialTesterId = input.initialTesterId;
     }
     if (input.attachments !== undefined) {
-      effects.push({ kind: "attachments.replace", attachments: validateAttachments(ctx, input.attachments) });
+      const attachments = validateAttachments(ctx, input.attachments);
+      fileIds.push(...attachments.flatMap((item) => item.kind === "archivo" ? [item.fileId] : []));
+      effects.push({ kind: "attachments.replace", attachments });
     }
   }
 
@@ -391,6 +412,7 @@ export function decideSaveDraft(ctx: CommandContext, state: EntryState, input: D
     } else {
       const result = validateDocWithFiles(ctx, input.whatChanged, "medio", "que_cambio");
       whatChanged = result.doc;
+      fileIds.push(...result.imageFileIds, ...result.attachmentFileIds);
       Object.assign(patch, {
         whatChanged: result.doc, whatChangedText: result.plainText, whatChangedSummary: summaryLine(result.plainText),
       });
@@ -404,7 +426,7 @@ export function decideSaveDraft(ctx: CommandContext, state: EntryState, input: D
     effects.push({ kind: "actions.replace", actions: resolved });
   }
 
-  effects.unshift({ kind: "entry.patch", patch });
+  effects.unshift(...promotionEffect(ctx, fileIds), { kind: "entry.patch", patch });
   if (shouldLog(state, "editar_borrador", ctx)) effects.push(log(state, "editar_borrador", null));
   const missingFields = missingFieldsForPublish({
     type, system: input.system !== undefined ? input.system : state.system, routes, whatChanged, actions,
@@ -498,6 +520,7 @@ export function decideCorrect(ctx: CommandContext, state: EntryState, input: Cor
     status: to,
     result: { revisionNo, onBehalf },
     effects: [
+      ...promotionEffect(ctx, [...whatChanged.imageFileIds, ...whatChanged.attachmentFileIds]),
       {
         kind: "entry.patch",
         patch: {

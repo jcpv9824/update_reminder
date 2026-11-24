@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { Readable } from "node:stream";
 
 const awsMocks = vi.hoisted(() => ({
   clientConfigs: [] as Array<Record<string, unknown>>,
@@ -36,6 +38,7 @@ import {
   createPrivateObjectUpload,
   getObjectStorageProvider,
   isObjectStorageConfigured,
+  readPrivateSeaweedFSBuffer,
   statPrivateObject,
 } from "../lib/objectStorage";
 
@@ -74,6 +77,23 @@ function clearConfig() {
 }
 
 describe("selectable private object storage configuration", () => {
+  it("buffers only expected SeaweedFS bytes and verifies the SHA-256 before returning", async () => {
+    clearConfig();
+    Object.assign(process.env, {
+      OBJECT_STORAGE_PROVIDER: "seaweedfs", SEAWEEDFS_ENDPOINT: "https://seaweedfs.example.com",
+      SEAWEEDFS_BUCKET: "portal-sag-content", SEAWEEDFS_ACCESS_KEY_ID: "fixture", SEAWEEDFS_SECRET_ACCESS_KEY: "fixture",
+    });
+    const locator = { storageProvider: "s3" as const, storageBucket: "portal-sag-content", storageObjectKey: "content/abc", storageObjectEtag: "expected" };
+    const bytes = Buffer.from("test bytes");
+    const sha = createHash("sha256").update(bytes).digest("hex");
+    awsMocks.send.mockResolvedValueOnce({ ContentLength: bytes.length, Body: Readable.from([bytes]) });
+    await expect(readPrivateSeaweedFSBuffer(locator, bytes.length, sha)).resolves.toEqual(bytes);
+    expect(awsMocks.send.mock.calls[0][0].input).toMatchObject({ IfMatch: '"expected"', Key: "content/abc" });
+    awsMocks.send.mockResolvedValueOnce({ ContentLength: bytes.length, Body: Readable.from([bytes, bytes]) });
+    await expect(readPrivateSeaweedFSBuffer(locator, bytes.length, sha)).rejects.toThrow("Tamaño");
+    awsMocks.send.mockResolvedValueOnce({ ContentLength: bytes.length, Body: Readable.from([bytes]) });
+    await expect(readPrivateSeaweedFSBuffer(locator, bytes.length, "a".repeat(64))).rejects.toThrow("no coincide");
+  });
   it("reports an entirely absent configuration without contacting a provider", () => {
     clearConfig();
     expect(isObjectStorageConfigured()).toBe(false);

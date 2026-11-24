@@ -9,9 +9,19 @@ import { WhatsNewError } from "../lib/whatsNewModel";
 import { areasFor, query } from "../lib/whatsNewSqlRepository";
 import { mutate, assertIdempotencyKey, type Operation } from "../lib/whatsNewSqlWriteRepository";
 import * as service from "../lib/whatsNewService";
+import { buildObjectContentDisposition } from "../lib/objectStorage";
+import {
+  WHATS_NEW_UPLOAD_BODY_MAX, assertWhatsNewMediaSize, inspectWhatsNewMedia, parseWhatsNewMediaFields,
+  preflightWhatsNewUpload, readWhatsNewMedia, uploadWhatsNewMedia,
+} from "../lib/whatsNewMedia";
 
 type Handler = (req: HttpRequest, actor: WhatsNewActor | null) => Promise<unknown>;
 export function whatsNewRateLimit(method: string, url: string, authenticated: boolean) {
+  const path = new URL(url, "https://portal.invalid").pathname;
+  const mediaUpload = authenticated && method === "POST" && /\/whats-new\/entries\/[^/]+\/uploads$/.test(path);
+  const mediaRead = authenticated && method === "GET" && /\/whats-new\/files\/[^/]+$/.test(path);
+  if (mediaUpload || mediaRead) return { scope: mediaUpload ? "whats_new_media_write" : "whats_new_media_read",
+    policy: { maxAttempts: mediaUpload ? 6 : 32, windowSeconds: 60, blockSeconds: 60 } };
   const preview = authenticated && url.includes("/reports/preview");
   const write = authenticated && method !== "GET";
   return { scope: !authenticated ? "whats_new_public" : preview ? "whats_new_preview" : write ? "whats_new_write" : "whats_new_read",
@@ -102,9 +112,68 @@ register("whatsNewReportsCreate", "whats-new/reports", ["POST"], async (r, a) =>
 });
 // The HTTP boundary validates any active persisted user; report reading intentionally has no option/area/recipient ACL.
 register("whatsNewReportRead", "whats-new/reports/{id}", ["GET"], async () => service.pendingStorage());
-register("whatsNewUpload", "whats-new/entries/{id}/uploads", ["POST"], async (r, a) => { await service.getEntry(a!, param(r)); return service.pendingStorage(); });
+export async function parseWhatsNewMultipart(req: HttpRequest) {
+  const contentType = req.headers.get("content-type") ?? "";
+  const declared = req.headers.get("content-length");
+  const tooBig = () => new WhatsNewError(413, "contenido_muy_grande", "El archivo supera el tamaño permitido.");
+  const invalid = () => new WhatsNewError(400, "archivo_invalido", "Envíe un archivo y su sección de destino.");
+  if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > WHATS_NEW_UPLOAD_BODY_MAX)) throw tooBig();
+  if (contentType.length > 140 || !/^multipart\/form-data;\s*boundary=/i.test(contentType) || !req.body) throw invalid();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  const reader = req.body.getReader();
+  try {
+    for (;;) {
+      const part = await reader.read();
+      if (part.done) break;
+      size += part.value.byteLength;
+      if (size > WHATS_NEW_UPLOAD_BODY_MAX) {
+        void reader.cancel().catch(() => undefined);
+        throw tooBig();
+      }
+      chunks.push(part.value);
+    }
+  } finally { reader.releaseLock(); }
+  let form: FormData;
+  try {
+    const payload = new Uint8Array(size);
+    let position = 0;
+    for (const chunk of chunks) { payload.set(chunk, position); position += chunk.byteLength; }
+    form = await new Response(payload, { headers: { "content-type": contentType } }).formData();
+  } catch { throw invalid(); }
+  if ([...form.keys()].length !== 3 || form.getAll("kind").length !== 1 || form.getAll("target").length !== 1 ||
+      form.getAll("file").length !== 1) throw invalid();
+  const fields = parseWhatsNewMediaFields(form.get("kind"), form.get("target"));
+  const file = form.get("file");
+  if (!file || typeof file === "string") throw invalid();
+  assertWhatsNewMediaSize(fields.kind, file.size);
+  return inspectWhatsNewMedia(fields, file.name, Buffer.from(await file.arrayBuffer()));
+}
+let activeMediaTransfers = 0;
+export async function withWhatsNewMediaSlot<T>(operation: () => Promise<T>): Promise<T> {
+  if (activeMediaTransfers >= 2) throw new WhatsNewError(503, "archivo_en_proceso", "Hay otras transferencias en curso. Intente de nuevo.");
+  activeMediaTransfers++;
+  try { return await operation(); }
+  finally { activeMediaTransfers--; }
+}
+register("whatsNewUpload", "whats-new/entries/{id}/uploads", ["POST"], async (r, a) => {
+  const id = param(r);
+  const key = assertIdempotencyKey(r.headers.get("idempotency-key"));
+  await preflightWhatsNewUpload(a!, id);
+  return withWhatsNewMediaSlot(async () => {
+    const { replayed, ...file } = await uploadWhatsNewMedia(a!, id, key, await parseWhatsNewMultipart(r));
+    return { response: { status: replayed ? 200 : 201, jsonBody: file,
+      ...(replayed ? { headers: { "Idempotency-Replayed": "true" } } : {}) } };
+  });
+});
 register("whatsNewUploadComplete", "whats-new/entries/{id}/uploads/{fileId}/complete", ["POST"], async (r, a) => { await service.getEntry(a!, param(r)); return service.pendingStorage(); });
-register("whatsNewFileRead", "whats-new/files/{id}", ["GET"], async () => service.pendingStorage());
+register("whatsNewFileRead", "whats-new/files/{id}", ["GET"], async (r, a) => withWhatsNewMediaSlot(async () => {
+  const file = await readWhatsNewMedia(a!, param(r));
+  return { response: { status: 200, body: file.bytes, headers: {
+    "Content-Type": file.mime, "Content-Length": String(file.bytes.length),
+    "Content-Disposition": buildObjectContentDisposition(file.kind === "documento" ? "attachment" : "inline", file.name),
+  } } };
+}));
 register("whatsNewPublic", "public/novedades", ["GET"], (r) => service.publicNews(filters(r)), true);
 register("whatsNewPublicDetail", "public/novedades/{id}", ["GET"], (r) => service.publicNews({}, param(r)), true);
 register("whatsNewPublicImage", "public/novedades/{publicId}/imagenes/{fileId}", ["GET"], async () => service.pendingStorage(), true);

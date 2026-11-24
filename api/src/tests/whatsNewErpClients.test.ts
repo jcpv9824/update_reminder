@@ -33,9 +33,9 @@ describe("authenticated ERP selection boundary", () => {
   afterEach(() => vi.unstubAllEnvs());
 
   it("requires both Novedades author access and client catalog access before reads", async () => {
-    await expect(lookupWhatsNewErpClients({ ...actor(), permissions: new Set([PERMISSIONS.view, PERMISSIONS.author]) }, ""))
+    await expect(lookupWhatsNewErpClients({ ...actor(), permissions: new Set([PERMISSIONS.view, PERMISSIONS.author]) }, "agil"))
       .rejects.toMatchObject({ status: 403 });
-    await expect(lookupWhatsNewErpClients({ ...actor(), areas: new Set(["soporte"]) }, ""))
+    await expect(lookupWhatsNewErpClients({ ...actor(), areas: new Set(["soporte"]) }, "agil"))
       .rejects.toMatchObject({ status: 403 });
     expect(mock.transaction).not.toHaveBeenCalled();
   });
@@ -45,7 +45,12 @@ describe("authenticated ERP selection boundary", () => {
     expect(mock.sources).toHaveBeenCalledWith(db, { actorId: "actor", environment: "qa" });
     expect(mock.snapshot).toHaveBeenCalledWith(expect.objectContaining({ allowedSourceIds: input.allowedSourceIds }), db);
     mock.sources.mockResolvedValue(new Set(["stale"]));
-    await expect(lookupWhatsNewErpClients(actor(), "")).rejects.toMatchObject({ status: 503, code: "catalogo_clientes_no_disponible" });
+    await expect(lookupWhatsNewErpClients(actor(), "agil")).rejects.toMatchObject({ status: 503, code: "catalogo_clientes_no_disponible" });
+  });
+
+  it("does not query or offer an unfiltered directory for short search terms", () => {
+    expect(() => lookupWhatsNewErpClients(actor(), " ab ")).toThrow("al menos 3 caracteres");
+    expect(mock.transaction).not.toHaveBeenCalled();
   });
 
   it("resolves the canonical write name and rejects an ineligible identity before persistence", async () => {

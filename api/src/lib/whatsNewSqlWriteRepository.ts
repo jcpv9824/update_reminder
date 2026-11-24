@@ -5,9 +5,10 @@ import { writeSqlAuditLog } from "./auditSqlWriter";
 import { assertCanSeeEntry, requireDeveloper, requireTester, requireView, requirePermission, access, type WhatsNewActor } from "./whatsNewAccess";
 import { z } from "zod";
 import { WhatsNewError, VIA_LABELS } from "./whatsNewModel";
-import { query, readEntry, requireEtag, contextFor, participantDto, type Db, type Params, type EntryDetail } from "./whatsNewSqlRepository";
+import { query, readEntry, requireEtag, contextFor, participantDto, readWhatsNewMediaStates, type Db, type Params, type EntryDetail } from "./whatsNewSqlRepository";
 import * as commands from "./whatsNewCommands";
 import { resolveWhatsNewErpClientName } from "./whatsNewErpClients";
+import { whatsNewMediaAvailable } from "./whatsNewMedia";
 
 function canonical(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -30,6 +31,20 @@ export async function applyEffects(db: sql.Transaction, key: number, actor: What
   for (const effect of effects) {
     const run = (statement: string, p: Params = {}) => query(db, statement, { ...base, ...p });
     switch (effect.kind) {
+      case "files.promote": {
+        const [result] = await run(`UPDATE f SET status='en_entrada',file_key=c.file_key,promoted_at=@now
+          FROM whats_new.entry_files f JOIN content.files c ON c.storage_provider='s3'
+            AND c.storage_bucket=f.storage_bucket AND c.object_key=f.object_key
+            AND c.content_sha256=f.declared_sha256 AND c.byte_count=f.declared_byte_count AND c.mime_type=f.mime_type
+          WHERE f.entry_key=@key AND f.status='verificada' AND f.expires_at>SYSUTCDATETIME()
+            AND f.uploaded_by_user_key=${userKey}
+            AND f.public_id IN (SELECT TRY_CONVERT(uniqueidentifier,value) FROM OPENJSON(@ids));
+          SELECT @@ROWCOUNT touched;`, { ids: JSON.stringify(effect.fileIds) });
+        if (Number(result?.touched) !== effect.fileIds.length) {
+          throw new WhatsNewError(409, "archivo_no_disponible", "Uno de los archivos ya no está disponible.");
+        }
+        break;
+      }
       case "entry.patch": {
         const columns: Record<keyof commands.EntryPatch, string> = {
           status: "status", type: "entry_type", system: "system_code", whatChanged: "what_changed_json", whatChangedText: "what_changed_text",
@@ -208,6 +223,7 @@ export async function mutate(args: { actor: WhatsNewActor; operation: Operation;
     assertCanSeeEntry(actor, current?.state ?? null);
     const { state } = current!;
     const references = new Set<string>(state.initialTesterId ? [state.initialTesterId] : []);
+    const fileIds = new Set<string>();
     const stack: unknown[] = [body];
     let visited = 0;
     while (stack.length) {
@@ -217,16 +233,24 @@ export async function mutate(args: { actor: WhatsNewActor; operation: Operation;
       if (Array.isArray(node)) { stack.push(...node); continue; }
       const record = node as Record<string, unknown>;
       if (typeof record.initialTesterId === "string") references.add(record.initialTesterId);
+      if (typeof record.fileId === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(record.fileId)) {
+        fileIds.add(record.fileId.toLowerCase());
+      }
       if (record.type === "mencion" && typeof record.attrs === "object" && record.attrs && "id" in record.attrs && typeof record.attrs.id === "string") references.add(record.attrs.id);
       stack.push(...Object.values(record));
     }
     if (references.size > 200) throw new WhatsNewError(413, "contenido_muy_grande", "Demasiados usuarios referenciados.");
+    if (fileIds.size > 50) throw new WhatsNewError(413, "contenido_muy_grande", "Demasiados archivos referenciados.");
     const ctx = await contextFor(db, actor, now, randomUUID, [...references]);
     const roundOp = ["checklist", "notes", "findings", "note-draft"].includes(operation);
     if (operation !== "create" && operation !== "annul") {
       const resource = roundOp ? current!.detail.rounds.find((r) => r.id === args.id) : operation === "client-text" ? current!.detail.clientText : null;
       requireEtag(args.etag, resource?.etag ?? state.etag);
       if (roundOp && (state.openRound?.id !== args.id)) throw new WhatsNewError(409, "estado_no_permite_accion", "La ronda ya está cerrada.");
+    }
+    if (fileIds.size && (operation === "draft" || operation === "correct") && whatsNewMediaAvailable()) {
+      ctx.mediaAvailable = true;
+      ctx.files = await readWhatsNewMediaStates(db, state.key, actor.id, [...fileIds]);
     }
     let result: commands.CommandResult;
     switch (operation) {

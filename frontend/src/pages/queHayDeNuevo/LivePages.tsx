@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { Plus } from "lucide-react";
 import { Link, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
@@ -6,9 +7,11 @@ import { useAuth } from "../../auth/AuthContext";
 import { ConstructorRutas } from "./componentes/ConstructorRuta";
 import { Dialogo, EtiquetaEstadoQhdn, EtiquetaSistema, EtiquetaTipo } from "./componentes/Comunes";
 import { EditorEnriquecido, VisorEnriquecido } from "./componentes/EditorEnriquecido";
-import { ETIQUETAS_TIPO_CORTAS, rutaVacia } from "./logica";
-import { createDraftSaveSession, draftFromForm, errorMessage, formFromEntry, mutationOptions, safeDisplayDoc, storagePending, whatsNewApi, type ConfigDto, type EntryDto, type ErpClientLookup, type Me, type ReportInput, type ReportPreview, type UserLookup } from "./contrato";
-import type { DatosFormulario, DocEnriquecido, Sistema, TipoEntrada } from "./tipos";
+import { ErpClientCombobox } from "./componentes/ErpClientCombobox";
+import { docVacio, ETIQUETAS_ESTADO_QHDN, ETIQUETAS_TIPO_CORTAS, rutaTexto, rutaVacia } from "./logica";
+import { createDraftSaveSession, draftFromForm, errorMessage, formFromEntry, mutationOptions, safeDisplayDoc, storagePending, whatsNewApi, type ConfigDto, type EntryDto, type EntrySummary, type ErpClientLookup, type Me, type Page, type ReportInput, type ReportPreview } from "./contrato";
+import { aceptaDocumentoPrivado, BotonDescargaPrivada, subirArchivoPrivado, tiposVideoPrivado, validarArchivoPrivado, type DestinoArchivoPrivado, type TipoArchivoPrivado } from "./componentes/archivosPrivados";
+import type { Adjunto, DatosFormulario, DocEnriquecido, Sistema, TipoEntrada } from "./tipos";
 import "./queHayDeNuevo.css";
 
 const base = "/actualizaciones/que-hay-de-nuevo";
@@ -27,7 +30,9 @@ function PrivateScope({ children }: { children: ReactNode }) {
 const can = (me: Me, permission: string) => me.permissions.includes(permission);
 function Feedback({ error }: { error: unknown }) { return error ? <div className="alerta-error" role="alert">{errorMessage(error)}</div> : null; }
 function Loading() { return <p role="status">Cargando...</p>; }
-function ReadDoc({ value, publicProfile = false }: { value: DocEnriquecido | null; publicProfile?: boolean }) { return <VisorEnriquecido valor={safeDisplayDoc(value, publicProfile)} />; }
+function ReadDoc({ value, publicProfile = false, privateMedia = false }: { value: DocEnriquecido | null; publicProfile?: boolean; privateMedia?: boolean }) {
+  return <VisorEnriquecido valor={safeDisplayDoc(value, publicProfile, privateMedia)} archivosPrivados={privateMedia && !publicProfile} />;
+}
 function PageControl({ page, total, size, onChange }: { page: number; total: number; size: number; onChange: (n: number) => void }) {
   return <div className="qhdn-fila" aria-label="Paginación"><button disabled={page <= 1} onClick={() => onChange(page - 1)}>Anterior</button><span role="status">Página {page} · {total} resultados</span><button disabled={page * size >= total} onClick={() => onChange(page + 1)}>Siguiente</button></div>;
 }
@@ -53,15 +58,78 @@ function PrivateWhatsNew() {
   const read = actor.views.includes("lectura");
   const view = chosen && ((chosen === "desarrollador" && dev) || (chosen === "asesor" && test)) ? chosen : dev ? "desarrollador" : test ? "asesor" : read ? "lectura" : null;
   if (!can(actor, "updates.whats_new.view") || (!dev && !test && !read)) return <div className="alerta-error" role="alert">No tienes un área y permisos habilitados para esta opción. Solicita acceso al administrador.</div>;
-  return <div className="qhdn-pagina"><div className="qhdn-simulacion"><p>{actor.user.displayName}</p>{dev && test && <div className="qhdn-selector-vision" role="group" aria-label="Visión"><button aria-pressed={view === "desarrollador"} onClick={() => setChosen("desarrollador")}>Desarrollador</button><button aria-pressed={view === "asesor"} onClick={() => setChosen("asesor")}>Asesor</button></div>}</div>
+  return <div className="qhdn-pagina">{dev && test && <div className="qhdn-visiones"><div className="qhdn-selector-vision" role="group" aria-label="Visión"><button aria-pressed={view === "desarrollador"} onClick={() => setChosen("desarrollador")}>Desarrollador</button><button aria-pressed={view === "asesor"} onClick={() => setChosen("asesor")}>Asesor</button></div></div>}
     <Routes>
       <Route path="nueva" element={dev ? <LiveForm me={actor} /> : <p role="alert">No tienes permiso para crear entradas.</p>} />
       <Route path=":id/editar" element={dev ? <LoadForm me={actor} /> : <p role="alert">No tienes permiso para editar entradas.</p>} />
       <Route path=":id/corregir" element={dev || can(actor, "configuration.whats_new.manage") ? <LoadForm me={actor} correction /> : <p role="alert">No tienes permiso para corregir entradas.</p>} />
-      <Route path=":id" element={<LiveEntry me={actor} />} />
-      <Route index element={<LiveList me={actor} support={view !== "desarrollador"} />} />
+      <Route path=":id" element={<LiveEntry me={actor} developerView={view === "desarrollador"} />} />
+      <Route index element={view === "desarrollador" ? <DeveloperList me={actor} /> : <LiveList me={actor} support />} />
     </Routes>
   </div>;
+}
+
+const developerTabs = [["todas", "Todas"], ["borradores", "Borradores"], ["publicadas", "Publicadas"]] as const;
+type DeveloperTab = typeof developerTabs[number][0];
+type DeveloperPage = Page<EntrySummary> & { tabCounts?: Record<DeveloperTab, number> };
+const localDate = new Intl.DateTimeFormat("es-CO", { day: "numeric", month: "short", year: "numeric", timeZone: "America/Bogota" });
+function prettyDate(date: string) { const value = new Date(date); return Number.isNaN(value.valueOf()) ? "—" : localDate.format(value); }
+function statusDetail(row: EntrySummary) {
+  if (row.status === "borrador" && (!row.type || !row.system || !row.primaryRoute || !row.summary)) return "Faltan campos";
+  if (row.status === "en_pruebas" && row.holder) return `${row.holder.displayName} · ${row.checklistDone} de ${row.checklistTotal}`;
+  if (row.openFindings > 0) return `${row.openFindings} ${row.openFindings === 1 ? "hallazgo vigente" : "hallazgos vigentes"}`;
+  return null;
+}
+function DeveloperList({ me }: { me: Me }) {
+  const key = useContext(Scope);
+  const tabsId = useId();
+  const [tab, setTab] = useState<DeveloperTab>("todas");
+  const [scope, setScope] = useState("mine");
+  const [type, setType] = useState(""); const [system, setSystem] = useState(""); const [status, setStatus] = useState("");
+  const [q, setQ] = useState(""); const [page, setPage] = useState(1);
+  const mayListTeam = can(me, "updates.whats_new.view_all") || can(me, "configuration.whats_new.manage");
+  const showAuthor = mayListTeam && scope === "all";
+  const filters = { tab, scope: showAuthor ? "all" : "mine", type, system, status, q, page, pageSize: 20 };
+  const entries = useQuery({ queryKey: [...key, "entries", filters], queryFn: async (): Promise<DeveloperPage> => whatsNewApi.list(filters) });
+  const useTab = (value: DeveloperTab) => { setTab(value); setPage(1); };
+  const change = (set: (v: string) => void, value: string) => { set(value); setPage(1); };
+  return <>
+    <header className="qhdn-encabezado">
+      <h1>Qué hay de nuevo · Mis entradas</h1>
+      <Link className="qhdn-boton-primario-enlace" to={`${base}/nueva`}><Plus size={16} aria-hidden="true" /> Nueva entrada</Link>
+    </header>
+    <p className="alerta alerta-info qhdn-aviso-desarrollador">Las entradas publicadas se consultan en solo lectura. El detalle muestra el avance de las pruebas y sus hallazgos; puedes corregir una entrada propia cuando el estado lo permite.</p>
+    <div className="qhdn-filtros-desarrollador" role="search" aria-label="Filtrar mis entradas">
+      {mayListTeam && <label>Ver<select value={scope} onChange={e => change(setScope, e.target.value)}><option value="mine">Mis entradas</option><option value="all">Todo el equipo</option></select></label>}
+      <label>Tipo<select value={type} onChange={e => change(setType, e.target.value)}><option value="">Todos</option>{types.map(t => <option key={t} value={t}>{ETIQUETAS_TIPO_CORTAS[t]}</option>)}</select></label>
+      <label>Sistema<select value={system} onChange={e => change(setSystem, e.target.value)}><option value="">Todos</option><option value="sag_web">SAG Web</option><option value="sag_clasico">SAG Clásico</option></select></label>
+      <label>Estado<select value={status} onChange={e => change(setStatus, e.target.value)}><option value="">Todos</option>{Object.entries(ETIQUETAS_ESTADO_QHDN).map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+      <label className="qhdn-filtro-busqueda">Buscar por ruta o texto<input type="search" value={q} maxLength={100} placeholder="Ruta o texto" onChange={e => change(setQ, e.target.value)} /></label>
+    </div>
+    <div className="qhdn-pestanas qhdn-pestanas-desarrollador" role="tablist" aria-label="Entradas por publicación">
+      {developerTabs.map(([value,label], index) => <button key={value} type="button" role="tab" id={`${tabsId}-${value}`} aria-selected={tab === value} aria-controls={`${tabsId}-panel`} tabIndex={tab === value ? 0 : -1} onClick={() => useTab(value)} onKeyDown={event => {
+        const next = event.key === "Home" ? 0 : event.key === "End" ? developerTabs.length - 1 : event.key === "ArrowRight" ? (index + 1) % developerTabs.length : event.key === "ArrowLeft" ? (index + developerTabs.length - 1) % developerTabs.length : null;
+        if (next !== null) { event.preventDefault(); const target = developerTabs[next][0]; useTab(target); document.getElementById(`${tabsId}-${target}`)?.focus(); }
+      }}>{label}{entries.data?.tabCounts?.[value] !== undefined && !entries.error && <span className="qhdn-conteo">{entries.data.tabCounts[value]}</span>}</button>)}
+    </div>
+    <section id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-${tab}`} tabIndex={0}>
+      {entries.isPending ? <Loading /> : entries.error ? <><Feedback error={entries.error} /><button type="button" onClick={() => entries.refetch()}>Reintentar</button></> : <>
+        {entries.data.items.length === 0 ? <div className="tarjeta">No hay entradas con estos filtros.</div> : <div className="qhdn-tabla-contenedor qhdn-tabla-desarrollador"><table>
+          <caption className="sr-only">{showAuthor ? "Entradas de todo el equipo" : "Mis entradas"}</caption>
+          <thead><tr><th scope="col">Tipo</th><th scope="col">Ruta</th><th scope="col">Qué cambió</th><th scope="col">Sistema</th>{showAuthor && <th scope="col">Desarrollador</th>}<th scope="col">Estado</th><th scope="col">Creada</th><th scope="col">Acción</th></tr></thead>
+          <tbody>{entries.data.items.map(e => {
+            const detail = statusDetail(e);
+            const continueDraft = e.status === "borrador" && e.developer.id === me.user.id;
+            return <tr key={e.id}><td><EtiquetaTipo tipo={e.type} /></td><td className="qhdn-celda-ruta">{e.primaryRoute || "—"}<small className="qhdn-detalle-estado">{e.number}</small></td>
+              <td className="qhdn-celda-resumen">{e.summary || <span className="texto-ayuda">Sin descripción</span>}</td><td><EtiquetaSistema sistema={e.system} /></td>{showAuthor && <td>{e.developer.displayName}</td>}
+              <td><EtiquetaEstadoQhdn estado={e.status} />{detail && <small className="qhdn-detalle-estado">{detail}</small>}</td><td><time dateTime={e.createdAt}>{prettyDate(e.createdAt)}</time></td>
+              <td><div className="acciones-tabla"><Link className="qhdn-accion-fila" to={`${base}/${e.id}${continueDraft ? "/editar" : ""}`} aria-label={`${continueDraft ? "Continuar" : "Ver detalle de"} ${e.number}`}>{continueDraft ? "Continuar" : "Ver detalle"}</Link></div></td></tr>;
+          })}</tbody>
+        </table></div>}
+        <PageControl page={page} total={entries.data.total} size={entries.data.pageSize} onChange={setPage} />
+      </>}
+    </section>
+  </>;
 }
 
 function LiveList({ me, support }: { me: Me; support: boolean }) {
@@ -94,30 +162,47 @@ function LiveList({ me, support }: { me: Me; support: boolean }) {
 
 const emptyForm = (): DatosFormulario => ({ tipo: null, sistema: null, rutas: [rutaVacia()], queCambio: null, acciones: [], cliente: "", asesorInicialId: "", reglasNegocio: [], videos: [] });
 type LiveDraftForm = DatosFormulario & { clientSelection?: ErpClientLookup | null };
-function ErpClientSelector({ name, selectedId, readOnly, onSelect }: { name: string | null; selectedId?: string; readOnly: boolean; onSelect: (client: ErpClientLookup | null) => void }) {
-  const key = useContext(Scope);
-  const instance = useId();
-  const attempt = useRef(0);
-  const [input, setInput] = useState("");
-  const [requested, setRequested] = useState<{ text: string; attempt: number } | null>(null);
-  const active = !readOnly && !!requested && requested.text === input.trim();
-  const results = useQuery({ queryKey: [...key, "erp-clients", instance, requested?.attempt, requested?.text], queryFn: () => whatsNewApi.lookupErpClients(requested!.text), enabled: active, retry: false, gcTime: 0 });
-  const choices = active && results.isSuccess && !results.isFetching ? results.data : [];
-  function search() { if (!readOnly && input.trim().length >= 2) setRequested({ text: input.trim(), attempt: ++attempt.current }); }
-  return <section aria-label="Cliente del ERP">
-    {name && <p><strong>Cliente seleccionado:</strong> {name} {!readOnly && <button type="button" onClick={() => onSelect(null)}>Quitar cliente</button>}</p>}
-    {!readOnly && <>
-      <label>Buscar cliente en el ERP<input type="search" value={input} maxLength={100} onChange={e => { setInput(e.target.value); setRequested(null); }} onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); search(); } }} /></label>
-      <button type="button" disabled={input.trim().length < 2 || (active && results.isFetching)} onClick={search}>Buscar en el ERP</button>
-      <label>Cliente *<select value={choices.some(client => client.id === selectedId) ? selectedId : ""} disabled={choices.length === 0} onChange={e => { const selected = choices.find(client => client.id === e.target.value); if (selected) onSelect(selected); }}>
-        <option value="" disabled>Seleccione un cliente del ERP</option>{choices.map(client => <option key={client.id} value={client.id}>{client.label}</option>)}
-      </select></label>
-      {active && results.isFetching && <p role="status">Buscando clientes en el ERP…</p>}
-      {active && <Feedback error={results.error} />}
-      {active && results.isSuccess && !results.isFetching && choices.length === 0 && <p role="status">No hay clientes del ERP que coincidan con la búsqueda.</p>}
-      <p className="texto-ayuda">Escribe al menos dos caracteres y selecciona un resultado del catálogo del ERP.</p>
-    </>}
+function ReferenceFields({ group, value, onChange, onUpload }: { group: "reglasNegocio" | "videos"; value: Adjunto[]; onChange: (items: Adjunto[]) => void; onUpload?: () => void }) {
+  const fieldId = useId();
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [addMode, setAddMode] = useState(false);
+  const [link, setLink] = useState({ label: "", url: "" });
+  const [error, setError] = useState("");
+  const video = group === "videos";
+  const title = video ? "Video de entrega" : "Reglas de negocio";
+  function add() {
+    try {
+      const url = new URL(link.url);
+      if (url.protocol !== "https:" || url.username || url.password || url.href.length > 2000) throw new Error();
+      onChange([...value, { id: crypto.randomUUID(), clase: "enlace", nombre: link.label.trim(), url: url.href }]);
+      setLink({ label: "", url: "" }); setError(""); setAddMode(false);
+    } catch { setError("Usa un enlace HTTPS válido, sin credenciales."); }
+  }
+  return <section className="qhdn-referencia-desarrollador" aria-labelledby={`${fieldId}-title`}>
+    <h3 id={`${fieldId}-title`}>{video ? "9." : "8."} {title}</h3>
+    <div className="qhdn-referencia-barra"><div className="qhdn-referencia-valores">
+      {value.length === 0 ? <p className="texto-ayuda">Sin referencias añadidas.</p> : <ul aria-label={video ? "Videos de entrega" : "Referencias de reglas de negocio"}>{value.map(item => <li key={item.id}><span>{item.clase === "archivo" ? <BotonDescargaPrivada id={item.id} name={item.nombre} /> : item.nombre || item.url}<small>{item.clase === "archivo" ? "Archivo" : "Enlace"}</small></span><button type="button" aria-label={`Quitar ${item.nombre || item.url || "archivo adjunto"}`} onClick={() => onChange(value.filter(other => other.id !== item.id))}>Quitar</button></li>)}</ul>}
+    </div><button type="button" className="qhdn-referencia-mas" aria-label={`Agregar referencia a ${title}`} aria-expanded={actionsOpen} aria-controls={actionsOpen ? `${fieldId}-actions` : undefined} onClick={() => setActionsOpen(!actionsOpen)}><Plus size={15} aria-hidden="true" /></button></div>
+    {actionsOpen && <div className="qhdn-fila qhdn-referencia-opciones" id={`${fieldId}-actions`}>
+      <button type="button" onClick={() => { setAddMode(true); setActionsOpen(false); setError(""); }}>Añadir enlace</button>
+      <button type="button" disabled={!onUpload} aria-describedby={!onUpload ? "storage-form" : undefined} onClick={() => { setActionsOpen(false); onUpload?.(); }}>Adjuntar archivo</button>
+    </div>}
+    {addMode && <div className="qhdn-referencia-enlace"><label>Nombre del enlace (opcional)<input value={link.label} maxLength={200} onChange={e => setLink({ ...link, label: e.target.value })} /></label><label>URL HTTPS<input type="url" value={link.url} maxLength={2000} onChange={e => { setLink({ ...link, url: e.target.value }); setError(""); }} /></label>
+      {error && <p className="qhdn-error-campo" role="alert">{error}</p>}<div className="qhdn-fila"><button type="button" disabled={!link.url.trim()} onClick={add}>Agregar enlace</button><button type="button" onClick={() => { setAddMode(false); setError(""); }}>Cancelar</button></div></div>}
   </section>;
+}
+
+function fieldRequirements(form: LiveDraftForm, clientLabel: string | null) {
+  const missing: string[] = [];
+  if (!form.tipo) missing.push("tipo");
+  if (!form.sistema) missing.push("sistema");
+  if (!form.rutas.length || form.rutas.some(r => r.niveles.some(n => !n.valor.trim()))) missing.push("rutas");
+  if (docVacio(form.queCambio)) missing.push("qué cambió");
+  if (!form.acciones.length) missing.push("acción requerida");
+  else if (form.acciones.some(a => docVacio(a.texto))) missing.push("detalle de las acciones");
+  if (form.tipo === "nuevo" && !clientLabel) missing.push("cliente del ERP");
+  if (form.tipo === "nuevo" && !form.asesorInicialId) missing.push("asesor inicial");
+  return missing;
 }
 function LoadForm({ me, correction = false }: { me: Me; correction?: boolean }) {
   const key = useContext(Scope);
@@ -134,60 +219,136 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
   const [form, setForm] = useState<LiveDraftForm>(() => entry ? formFromEntry(entry) : emptyForm());
   const [saved, setSaved] = useState<EntryDto | undefined>(entry); const [note, setNote] = useState<DocEnriquecido | null>(null); const [message, setMessage] = useState("");
   const [dirty, setDirty] = useState(false); const dirtyRef = useRef(dirty); dirtyRef.current = dirty; const saving = useRef(false);
-  const [link, setLink] = useState({ group: "reglasNegocio" as "reglasNegocio" | "videos", label: "", url: "" });
+  const [uploading, setUploading] = useState(false);
+  const uploadBusy = useRef(false);
+  const publishing = useRef(false);
+  const inFlightDraft = useRef<Promise<EntryDto>>();
+  const fileKeys = useRef(new Map<string, string>());
+  const rulesInput = useRef<HTMLInputElement>(null);
+  const videoInput = useRef<HTMLInputElement>(null);
   const [localError, setLocalError] = useState(""); const navigate = useNavigate();
+  const missingId = useId();
   const actions = useQuery({ queryKey: [...key, "required-actions"], queryFn: () => whatsNewApi.lookup<{ code: string; label: string; isOther: boolean }>("required-actions") });
   const support = useQuery({ queryKey: [...key, "support-users"], queryFn: () => whatsNewApi.lookup("support-users") });
   const op = useOperation(); const latest = useRef({ form, saved }); latest.current = { form, saved };
   function update(patch: Partial<LiveDraftForm>) { setForm(f => ({ ...f, ...patch })); setDirty(true); }
   const clientLabel = form.clientSelection === undefined ? saved?.clientName ?? null : form.clientSelection?.label ?? null;
   const saveRef = useRef<() => void>(() => {});
+  function persistDraft() {
+    if (inFlightDraft.current) return inFlightDraft.current;
+    const submitted = latest.current.form;
+    const selection = submitted.clientSelection;
+    const write = saveDraft(draftFromForm(submitted, selection === null ? null : selection?.id), latest.current.saved)
+      .then(result => {
+        latest.current.saved = result; setSaved(result); setDirty(latest.current.form !== submitted);
+        if (selection !== undefined) setForm(current => current.clientSelection === selection ? { ...current, clientSelection: undefined } : current);
+        return result;
+      }).finally(() => { if (inFlightDraft.current === write) inFlightDraft.current = undefined; });
+    inFlightDraft.current = write;
+    return write;
+  }
   async function save(publish = false, auto = false) {
-    if (saving.current || op.isPending || (auto && !dirtyRef.current) || correction) return;
+    if (saving.current || uploadBusy.current || op.isPending || (auto && !dirtyRef.current) || correction) return;
     saving.current = true;
+    publishing.current = publish;
     setLocalError(""); setMessage("");
     try {
-      const submittedForm = latest.current.form;
-      const selection = submittedForm.clientSelection;
-      const result = await op.mutateAsync(() => saveDraft(draftFromForm(submittedForm, selection === null ? null : selection?.id), latest.current.saved)) as EntryDto;
-      setSaved(result); latest.current.saved = result; setDirty(latest.current.form !== submittedForm);
-      if (selection !== undefined) setForm(current => current.clientSelection === selection ? { ...current, clientSelection: undefined } : current);
+      const result = await op.mutateAsync(persistDraft) as EntryDto;
       if (publish) { await op.mutateAsync(() => whatsNewApi.command(result.id, "publish", result.etag)); navigate(`${base}/${result.id}`); }
       else setMessage("Borrador guardado.");
     } catch { /* useMutation reports the controlled API error and retains form state */ }
-    finally { saving.current = false; }
+    finally { saving.current = false; publishing.current = false; }
+  }
+  async function upload(file: File, kind: TipoArchivoPrivado, target: DestinoArchivoPrivado) {
+    if (!me.storageAvailable || uploadBusy.current || publishing.current) throw new Error("No se puede iniciar otra carga en este momento.");
+    validarArchivoPrivado(file, kind);
+    uploadBusy.current = true; setUploading(true); setLocalError("");
+    try {
+      let current = inFlightDraft.current ? await inFlightDraft.current : latest.current.saved;
+      if (!current || (target !== "que_cambio" && current.type !== "nuevo")) {
+        if (correction) throw new Error("La entrada no admite esta referencia.");
+        current = await persistDraft();
+        setMessage("Borrador creado para recibir archivos. No se ha publicado.");
+      }
+      const fingerprint = JSON.stringify([kind, target, file.name, file.size, file.lastModified, file.type]);
+      const key = fileKeys.current.get(fingerprint) ?? crypto.randomUUID();
+      fileKeys.current.set(fingerprint, key);
+      const result = await subirArchivoPrivado(current.id, file, kind, target, key);
+      fileKeys.current.delete(fingerprint);
+      return result;
+    } finally { uploadBusy.current = false; setUploading(false); }
+  }
+  async function addReferenceFile(group: "reglasNegocio" | "videos", file?: File) {
+    if (!file) return;
+    try {
+      const media = await upload(file, group === "videos" ? "video" : "documento", group === "videos" ? "video" : "reglas_negocio");
+      setForm(current => current.tipo === "nuevo" ? { ...current, [group]: [...current[group], { id: media.fileId, clase: "archivo", nombre: media.name, url: "" }] } : current);
+      setDirty(true);
+    } catch (error) { setLocalError(errorMessage(error)); }
   }
   saveRef.current = () => { void save(false, true); };
   useEffect(() => { if (correction) return; const timer = setInterval(() => saveRef.current(), 30_000); return () => clearInterval(timer); }, [correction]);
-  function addLink() { try { const url = new URL(link.url); if (url.protocol !== "https:" || url.username || url.password) throw new Error(); update({ [link.group]: [...form[link.group], { id: crypto.randomUUID(), clase: "enlace", nombre: link.label.trim(), url: url.href }] }); setLink({ ...link, url: "", label: "" }); setLocalError(""); } catch { setLocalError("Usa un enlace HTTPS válido, sin credenciales."); } }
-  return <><Link to={base}>← Volver a mis entradas</Link><h1>{correction ? "Corregir y volver a publicar" : saved ? "Editar borrador" : "Nueva entrada"}</h1>
-    <Feedback error={op.error} />{localError && <p role="alert" className="alerta-error">{localError}</p>}<p role="status">{message}</p>
-    <div className="qhdn-formulario-grid"><form className="tarjeta qhdn-formulario" onSubmit={e => { e.preventDefault(); void save(); }} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) saveRef.current(); }}>
-      <fieldset disabled={correction || op.isPending} className="qhdn-fieldset"><legend>Tipo *</legend><div className="qhdn-radios">{types.map(t => <label key={t} className="qhdn-radio"><input type="radio" name="tipo" checked={form.tipo === t} onChange={() => update({ tipo: t, ...(t !== "nuevo" ? { clientSelection: null, asesorInicialId: "", reglasNegocio: [], videos: [] } : {}) })} />{ETIQUETAS_TIPO_CORTAS[t]}</label>)}</div></fieldset>
-      <fieldset disabled={correction || op.isPending} className="qhdn-fieldset"><legend>Sistema *</legend><div className="qhdn-radios">{[["sag_web", "SAG Web"], ["sag_clasico", "SAG Clásico"]].map(([v,l]) => <label className="qhdn-radio" key={v}><input type="radio" name="sistema" checked={form.sistema === v} onChange={() => update({ sistema: v as Sistema })} />{l}</label>)}</div></fieldset>
-      <p><strong>Desarrollador:</strong> {entry?.developer.displayName ?? me.user.displayName} <small>Siempre es quien creó la entrada; no se puede cambiar.</small></p>
-      <fieldset disabled={correction || op.isPending} className="qhdn-fieldset"><legend>Rutas *</legend><ConstructorRutas rutas={form.rutas} onChange={rutas => update({ rutas })} /></fieldset>
-      <section><h3 id="live-what">Qué cambió *</h3><EditorEnriquecido valor={form.queCambio} onChange={queCambio => update({ queCambio })} etiquetaId="live-what" perfil="medio" soloLectura={op.isPending} /></section>
-      <fieldset className="qhdn-fieldset" disabled={op.isPending}><legend>Acción requerida *</legend>{actions.isPending && <Loading />}<Feedback error={actions.error} />{actions.data?.map(a => <div key={a.code}><label className="qhdn-check"><input type="checkbox" checked={form.acciones.some(v => v.accionId === a.code)} onChange={e => update({ acciones: e.target.checked ? [...form.acciones, { accionId: a.code, nombre: a.label, texto: null }] : form.acciones.filter(v => v.accionId !== a.code) })} />{a.label}</label>{form.acciones.some(v => v.accionId === a.code) && <EditorEnriquecido valor={form.acciones.find(v => v.accionId === a.code)!.texto} onChange={texto => update({ acciones: form.acciones.map(v => v.accionId === a.code ? { ...v, texto } : v) })} tamano="compacto" ariaLabel={`Detalle de ${a.label}`} perfil="compacto" />}</div>)}</fieldset>
-      {form.tipo === "nuevo" && <fieldset className="qhdn-fieldset" disabled={correction || op.isPending}><legend>Solo para desarrollos nuevos</legend><ErpClientSelector name={clientLabel} selectedId={form.clientSelection?.id} readOnly={correction} onSelect={clientSelection => update({ clientSelection })} /><label>Asesor a cargo de las pruebas iniciales *<select value={form.asesorInicialId} onChange={e => update({ asesorInicialId: e.target.value })}><option value="">Seleccione un asesor</option>{support.data?.filter(u => u.id !== me.user.id && u.active !== false).map(u => <option key={u.id} value={u.id}>{u.displayName}</option>)}</select></label><Feedback error={support.error} />
-        <h4>Reglas de negocio y video de entrega (opcionales)</h4>{(["reglasNegocio", "videos"] as const).map(group => <ul key={group} aria-label={group === "videos" ? "Videos" : "Reglas de negocio"}>{form[group].map(a => <li key={a.id}>{a.nombre || a.url} <button type="button" onClick={() => update({ [group]: form[group].filter(v => v.id !== a.id) })}>Quitar</button></li>)}</ul>)}
-        <label>Referencia<select value={link.group} onChange={e => setLink({ ...link, group: e.target.value as typeof link.group })}><option value="reglasNegocio">Reglas de negocio</option><option value="videos">Video</option></select></label><label>Nombre del enlace<input value={link.label} maxLength={200} onChange={e => setLink({ ...link, label: e.target.value })} /></label><label>URL HTTPS<input type="url" value={link.url} maxLength={2000} onChange={e => setLink({ ...link, url: e.target.value })} /></label><button type="button" onClick={addLink}>Agregar enlace</button>
-      </fieldset>}
-      {correction && <section><h3 id="live-correction">Nota de corrección</h3><EditorEnriquecido valor={note} onChange={setNote} perfil="medio" etiquetaId="live-correction" /></section>}
-      <p className="texto-ayuda">{storagePending}</p><button type="button" disabled aria-describedby="storage-form">Adjuntar documento o video</button><span id="storage-form" className="sr-only">{storagePending}</span>
-      <div className="acciones-formulario">{correction ? <button type="button" className="primario" disabled={op.isPending} onClick={() => op.mutateAsync(() => whatsNewApi.command(entry!.id, "correct", entry!.etag, { whatChanged: form.queCambio, requiredActions: draftFromForm(form).requiredActions, correctionNote: note })).then(() => navigate(`${base}/${entry!.id}`)).catch(() => {})}>Corregir y volver a publicar</button> : <><button type="submit" disabled={op.isPending}>Guardar borrador</button><button type="button" className="primario" disabled={op.isPending || (form.tipo === "nuevo" && !clientLabel)} onClick={() => void save(true)}>Publicar a Soporte</button></>}</div>
-    </form><aside className="tarjeta qhdn-panel-lateral"><h3>¿Qué registrar?</h3><p>Nuevo: una opción o funcionalidad nueva. Mejora: cambia una función existente. Regla de negocio: modifica su comportamiento. SP crítico: ajuste técnico urgente. Rediseño: cambia la estructura o experiencia.</p><h3>Antes de publicar</h3><p>Describe qué cambió, dónde se encuentra y qué debe validar Soporte. Cada acción marcada necesita su propio detalle. No incluyas claves ni información sensible.</p><h3>Vista previa para Soporte</h3><EtiquetaTipo tipo={form.tipo} /><EtiquetaSistema sistema={form.sistema} /><ReadDoc value={form.queCambio} /></aside></div>
+  const missing = fieldRequirements(form, clientLabel);
+  const title = correction ? "Corregir y volver a publicar" : saved ? "Editar borrador" : "Nueva entrada";
+  return <>
+    <header className="qhdn-formulario-cabecera">
+      <Link to={base}>← Volver a mis entradas</Link>
+      <h1>{title} · Qué hay de nuevo</h1>
+      <div className="qhdn-etiquetas"><EtiquetaEstadoQhdn estado={saved?.status ?? "borrador"} />{saved?.number && <span className="qhdn-detalle-identificador">{saved.number}</span>}</div>
+    </header>
+    <Feedback error={op.error} />{localError && <p role="alert" className="alerta-error">{localError}</p>}
+    <div className="qhdn-formulario-grid qhdn-desarrollador-grid">
+      <form className="tarjeta qhdn-formulario qhdn-formulario-desarrollador" onSubmit={e => { e.preventDefault(); void save(); }} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) saveRef.current(); }}>
+        <h2>Datos del cambio</h2>
+        <fieldset disabled={correction || op.isPending || uploading} className="qhdn-fieldset"><legend>1. Tipo *</legend><div className="qhdn-radios qhdn-chips">{types.map(t => <label key={t} className={`qhdn-radio qhdn-chip qhdn-tipo-${t}`}><input type="radio" name="tipo" checked={form.tipo === t} onChange={() => update({ tipo: t, ...(t !== "nuevo" ? { clientSelection: null, asesorInicialId: "", reglasNegocio: [], videos: [] } : {}) })} />{ETIQUETAS_TIPO_CORTAS[t]}</label>)}</div></fieldset>
+        <fieldset disabled={correction || op.isPending} className="qhdn-fieldset"><legend>2. Sistema *</legend><div className="qhdn-radios qhdn-chips">{[["sag_web", "SAG Web"], ["sag_clasico", "SAG Clásico"]].map(([v,l]) => <label className="qhdn-radio qhdn-chip" key={v}><input type="radio" name="sistema" checked={form.sistema === v} onChange={() => update({ sistema: v as Sistema })} />{l}</label>)}</div></fieldset>
+        <p className="qhdn-autor"><strong>Desarrollador:</strong> {entry?.developer.displayName ?? me.user.displayName} <small>Es quien creó la entrada y no se puede cambiar.</small></p>
+        <fieldset disabled={correction || op.isPending} className="qhdn-fieldset"><legend>3. Rutas *</legend><ConstructorRutas rutas={form.rutas} onChange={rutas => update({ rutas })} /></fieldset>
+        <section className="qhdn-formulario-seccion"><h3 id="live-what">4. Qué cambió *</h3>
+          <p className="texto-ayuda">Explica qué cambió y en qué caso se nota. No incluyas claves ni otros datos sensibles.</p>
+          <EditorEnriquecido valor={form.queCambio} onChange={queCambio => update({ queCambio })} etiquetaId="live-what" perfil="medio" soloLectura={op.isPending && !uploading} archivosPrivados cargarArchivo={me.storageAvailable ? (file, kind) => upload(file, kind, "que_cambio") : undefined} />
+        </section>
+        <fieldset className="qhdn-fieldset" disabled={op.isPending}><legend>5. Acción requerida *</legend>
+          <p className="texto-ayuda">Marca las acciones y describe en cada una lo que debe hacer Soporte.</p>
+          {actions.isPending && <Loading />}<Feedback error={actions.error} />
+          {actions.data?.map(a => <div key={a.code} className="qhdn-accion-desarrollador"><label className="qhdn-check"><input type="checkbox" checked={form.acciones.some(v => v.accionId === a.code)} onChange={e => update({ acciones: e.target.checked ? [...form.acciones, { accionId: a.code, nombre: a.label, texto: null }] : form.acciones.filter(v => v.accionId !== a.code) })} />{a.label}</label>
+            {form.acciones.some(v => v.accionId === a.code) && <EditorEnriquecido valor={form.acciones.find(v => v.accionId === a.code)!.texto} onChange={texto => update({ acciones: form.acciones.map(v => v.accionId === a.code ? { ...v, texto } : v) })} tamano="compacto" ariaLabel={`Detalle de ${a.label}`} perfil="compacto" />}</div>)}
+        </fieldset>
+        {form.tipo === "nuevo" && <fieldset className="qhdn-fieldset qhdn-nuevo-desarrollador" disabled={correction || op.isPending}><legend>Solo para desarrollos nuevos</legend>
+          <div className="qhdn-pares-desarrollador">
+            <ErpClientCombobox name={clientLabel} readOnly={correction} scope={key} lookup={whatsNewApi.lookupErpClients} onSelect={clientSelection => update({ clientSelection })} />
+            <div><label><span aria-hidden="true">7. </span>Asesor a cargo de las pruebas iniciales *<select value={form.asesorInicialId} onChange={e => update({ asesorInicialId: e.target.value })}><option value="">Seleccione un asesor</option>{support.data?.filter(u => u.id !== me.user.id && u.active !== false).map(u => <option key={u.id} value={u.id}>{u.displayName}</option>)}</select></label><Feedback error={support.error} /></div>
+            <ReferenceFields group="reglasNegocio" value={form.reglasNegocio} onChange={reglasNegocio => update({ reglasNegocio })} onUpload={me.storageAvailable && !uploading ? () => rulesInput.current?.click() : undefined} />
+            <ReferenceFields group="videos" value={form.videos} onChange={videos => update({ videos })} onUpload={me.storageAvailable && !uploading ? () => videoInput.current?.click() : undefined} />
+          </div>
+          <input ref={rulesInput} type="file" aria-label="Documento de reglas de negocio" accept={aceptaDocumentoPrivado} hidden onChange={e => { void addReferenceFile("reglasNegocio", e.currentTarget.files?.[0]); e.currentTarget.value = ""; }} />
+          <input ref={videoInput} type="file" aria-label="Archivo de video de entrega" accept={tiposVideoPrivado.join(",")} hidden onChange={e => { void addReferenceFile("videos", e.currentTarget.files?.[0]); e.currentTarget.value = ""; }} />
+        </fieldset>}
+        {correction && <section className="qhdn-formulario-seccion"><h3 id="live-correction">Nota de corrección</h3><EditorEnriquecido valor={note} onChange={setNote} perfil="medio" etiquetaId="live-correction" /></section>}
+        {!me.storageAvailable && <p className="texto-ayuda" id="storage-form">{storagePending}</p>}
+        {uploading && <p className="texto-ayuda" id="storage-form" role="status">Subiendo archivo a almacenamiento privado…</p>}
+        <div className="qhdn-pie-formulario">
+          <p role="status" className="texto-ayuda">{message}</p>
+          <div className="acciones-formulario">{correction ? <button type="button" className="primario" disabled={op.isPending || uploading} onClick={() => op.mutateAsync(() => whatsNewApi.command(entry!.id, "correct", entry!.etag, { whatChanged: form.queCambio, requiredActions: draftFromForm(form).requiredActions, correctionNote: note })).then(() => navigate(`${base}/${entry!.id}`)).catch(() => {})}>Corregir y volver a publicar</button> : <><button type="submit" disabled={op.isPending || uploading}>Guardar borrador</button><button type="button" className="primario" disabled={op.isPending || uploading || missing.length > 0} aria-describedby={missing.length ? missingId : undefined} onClick={() => void save(true)}>Publicar a Soporte</button></>}</div>
+          {!correction && missing.length > 0 && <p id={missingId} className="texto-ayuda qhdn-campos-faltantes">Para publicar, completa: {missing.join(", ")}.</p>}
+        </div>
+      </form>
+      <aside className="qhdn-panel-lateral qhdn-lateral-desarrollador">
+        <section className="tarjeta qhdn-guia-desarrollador"><h2>¿Qué registrar?</h2><ul><li><strong>Nuevo:</strong> una opción o funcionalidad nueva.</li><li><strong>Mejora:</strong> un cambio a una función existente.</li><li><strong>Regla de negocio:</strong> un cambio de comportamiento.</li><li><strong>SP crítico:</strong> un ajuste técnico urgente.</li><li><strong>Rediseño:</strong> un cambio de estructura o experiencia.</li></ul><p>Indica dónde encontrar el cambio y qué debe validar Soporte.</p></section>
+        <section className="tarjeta qhdn-previa-desarrollador"><h2>Vista previa para Soporte</h2><div className="qhdn-etiquetas"><EtiquetaTipo tipo={form.tipo} /><EtiquetaSistema sistema={form.sistema} /></div><p className="texto-ayuda">{form.rutas[0] ? rutaTexto(form.rutas[0]) || "Sin ruta" : "Sin ruta"}</p><ReadDoc value={form.queCambio} privateMedia /></section>
+      </aside>
+    </div>
   </>;
 }
 
-function LiveEntry({ me }: { me: Me }) {
+function LiveEntry({ me, developerView }: { me: Me; developerView: boolean }) {
   const key = useContext(Scope);
   const { id = "" } = useParams(); const detail = useQuery({ queryKey: [...key, "entry", id], queryFn: () => whatsNewApi.detail(id) });
   if (detail.isPending) return <Loading />;
   if (detail.error) return <><Feedback error={detail.error} /><button onClick={() => detail.refetch()}>Recargar</button></>;
-  return <EntryContent me={me} entry={detail.data} />;
+  return <EntryContent me={me} entry={detail.data} developerView={developerView} />;
 }
-function EntryContent({ me, entry: e }: { me: Me; entry: EntryDto }) {
+function EntryContent({ me, entry: e, developerView }: { me: Me; entry: EntryDto; developerView: boolean }) {
   const key = useContext(Scope); const qc = useQueryClient(); const [noteSaved, setNoteSaved] = useState("");
   const op = useOperation(); const navigate = useNavigate(); const [confirm, setConfirm] = useState<string | null>(null); const [reason, setReason] = useState("");
   const [body, setBody] = useState<DocEnriquecido | null>(null); const [annul, setAnnul] = useState<string | null>(null);
@@ -195,7 +356,7 @@ function EntryContent({ me, entry: e }: { me: Me; entry: EntryDto }) {
   const tester = me.areas.includes("soporte") && can(me, "updates.whats_new.test");
   const manage = can(me, "configuration.whats_new.manage"); const author = e.developer.id === me.user.id && can(me, "updates.whats_new.author") && me.areas.includes("desarrollo");
   const contributors = [e.developer.id, ...e.log.filter(l => ["editar_borrador", "publicar", "corregir", "corregir_en_nombre"].includes(l.action)).map(l => l.byId)];
-  const mayTest = tester && !contributors.includes(me.user.id);
+  const mayTest = !developerView && tester && !contributors.includes(me.user.id);
   const noteDraft = useMutation({ mutationFn: (data: { roundId: string; etag: string; body: DocEnriquecido | null }) => api.put(`/whats-new/rounds/${data.roundId}/note-draft`, { body: data.body }, mutationOptions(data.etag)), onSuccess: async () => { setNoteSaved("Avance guardado automáticamente."); await qc.invalidateQueries({ queryKey: [...key, "entry", e.id] }); } });
   useEffect(() => { setBody(round?.noteDraft ?? null); setNoteSaved(""); }, [round?.id]);
   useEffect(() => {
@@ -204,21 +365,32 @@ function EntryContent({ me, entry: e }: { me: Me; entry: EntryDto }) {
     return () => clearTimeout(timer);
   }, [body, round?.etag, mine, mayTest, op.isPending, noteDraft.isPending]);
   function command(action: string, data: unknown = {}) { op.run(() => whatsNewApi.command(e.id, action, e.etag, data)); }
-  return <><Link to={base}>← Volver a la bandeja</Link><header className="pagina-encabezado"><h1>{e.number}</h1><div className="qhdn-etiquetas"><EtiquetaTipo tipo={e.type} /><EtiquetaSistema sistema={e.system} /><EtiquetaEstadoQhdn estado={e.status} /></div></header><Feedback error={op.error} /><div className="qhdn-fila">
-    {author && e.status === "borrador" && <><Link to={`${base}/${e.id}/editar`}>Editar borrador</Link><button disabled={op.isPending} onClick={() => command("publish")}>Publicar a Soporte</button><button className="peligro" onClick={() => setConfirm("delete")}>Eliminar borrador</button></>}
+  const findings = <><h3>Hallazgos {developerView && <span className="qhdn-conteo">{e.findings.length}</span>}</h3>{e.findings.length === 0 && <p>Sin hallazgos registrados.</p>}{e.findings.map(f => <article className={developerView ? "qhdn-hallazgo-detalle" : "tarjeta"} key={f.id}><h4>Hallazgo {f.number} · Ronda {f.roundNo}</h4><ReadDoc value={f.body} />{f.annulled ? <p>Anulado: {f.annulled.reason}</p> : mine && mayTest && f.roundNo === round.roundNo && <button onClick={() => { setAnnul(f.id); setConfirm("annul"); }}>Anular hallazgo</button>}</article>)}</>;
+  return <><Link className={developerView ? "qhdn-volver-desarrollador" : undefined} to={base}>{developerView ? "← Volver a mis entradas" : "← Volver a la bandeja"}</Link>
+    <header className={developerView ? "qhdn-encabezado qhdn-cabecera-detalle" : "pagina-encabezado"}>
+      <div><h1>{developerView ? "Detalle de la entrada" : e.number}</h1><div className="qhdn-etiquetas">{developerView && <span className="qhdn-detalle-identificador">{e.number}</span>}<EtiquetaTipo tipo={e.type} /><EtiquetaSistema sistema={e.system} /><EtiquetaEstadoQhdn estado={e.status} /></div></div>
+      {developerView && author && e.status === "borrador" && <Link className="qhdn-boton-primario-enlace" to={`${base}/${e.id}/editar`}>Continuar edición</Link>}
+    </header>
+    {developerView && (e.status !== "borrador" || !author) && <p className="alerta alerta-info qhdn-aviso-desarrollador"><strong>Solo lectura.</strong> {(author || manage) && ["sin_probar", "fallida"].includes(e.status) ? "Usa la acción de corrección para modificar el cambio y devolverlo a Soporte." : "En este estado no puedes editar la entrada."}</p>}
+    <Feedback error={op.error} /><div className="qhdn-fila qhdn-comandos-detalle">
+    {author && e.status === "borrador" && <>{!developerView && <Link to={`${base}/${e.id}/editar`}>Editar borrador</Link>}<button disabled={op.isPending} onClick={() => command("publish")}>Publicar a Soporte</button><button className="peligro" onClick={() => setConfirm("delete")}>Eliminar borrador</button></>}
     {(author || manage) && ["sin_probar", "fallida"].includes(e.status) && <Link to={`${base}/${e.id}/corregir`}>Corregir y volver a publicar</Link>}
-    {e.status === "sin_probar" && <button className="primario" disabled={!mayTest || op.isPending} onClick={() => command("take")}>Tomar para probar</button>}
-    {mine && <><button onClick={() => setConfirm("release")} disabled={op.isPending}>Soltar</button><button className="peligro" disabled={op.isPending || !e.findings.some(f => f.roundNo === round.roundNo && !f.annulled)} onClick={() => command("mark-failed")}>Marcar fallida</button><button className="primario" disabled={op.isPending || round.checklist.some(c => !c.checked)} onClick={() => command("mark-tested")}>Marcar probado</button></>}
-    {manage && round && !mine && <button onClick={() => setConfirm("force-release")}>Forzar Soltar</button>}{manage && e.status === "probado" && <button onClick={() => setConfirm("archive")}>Archivar</button>}
-  </div>{e.status === "sin_probar" && !mayTest && <p>Probar exige área Soporte y permiso de pruebas; quien creó o corrigió la entrada no puede probarla.</p>}{round && !mine && <p>En pruebas por {round.holderName}. Solo lectura.</p>}
-    <Feedback error={noteDraft.error} /><p role="status">{noteSaved}</p><div className="qhdn-formulario-grid"><section className="tarjeta"><p><strong>Desarrollador:</strong> {e.developer.displayName}</p><p><strong>Asesores que han probado:</strong> {e.participants.filter(p => p.role === "asesor").map(p => p.displayName).join(", ") || "Ninguno todavía"}</p>{e.clientName && <p><strong>Cliente:</strong> {e.clientName}</p>}
-      <h3>Dónde se encuentra</h3><ul>{e.routes.map((r,i) => <li key={i}>{[r.via === "barra_lateral" ? "Barra lateral" : "Barra de navegación", ...r.submenus, r.option].join(" › ")}</li>)}</ul><h3>Qué cambió</h3><ReadDoc value={e.whatChanged} />
+    {!developerView && e.status === "sin_probar" && <button className="primario" disabled={!mayTest || op.isPending} onClick={() => command("take")}>Tomar para probar</button>}
+    {!developerView && mine && <><button onClick={() => setConfirm("release")} disabled={op.isPending}>Soltar</button><button className="peligro" disabled={op.isPending || !e.findings.some(f => f.roundNo === round.roundNo && !f.annulled)} onClick={() => command("mark-failed")}>Marcar fallida</button><button className="primario" disabled={op.isPending || round.checklist.some(c => !c.checked)} onClick={() => command("mark-tested")}>Marcar probado</button></>}
+    {!developerView && manage && round && !mine && <button onClick={() => setConfirm("force-release")}>Forzar Soltar</button>}{!developerView && manage && e.status === "probado" && <button onClick={() => setConfirm("archive")}>Archivar</button>}
+  </div>{!developerView && e.status === "sin_probar" && !mayTest && <p>Probar exige área Soporte y permiso de pruebas; quien creó o corrigió la entrada no puede probarla.</p>}{round && !mine && <p>En pruebas por {round.holderName}. Solo lectura.</p>}
+    <Feedback error={noteDraft.error} />{!developerView && <p role="status">{noteSaved}</p>}<div className={developerView ? "qhdn-detalle-grid qhdn-desarrollador-grid" : "qhdn-formulario-grid"}><section className="tarjeta">
+      {developerView ? <><h2>Datos del cambio</h2><dl className="qhdn-datos">
+        <dt>Desarrollador</dt><dd>{e.developer.displayName}</dd><dt>Asesores que han probado</dt><dd>{e.participants.filter(p => p.role === "asesor").map(p => p.displayName).join(", ") || "Ninguno todavía"}</dd>
+        {e.clientName && <><dt>Cliente</dt><dd>{e.clientName}</dd></>}<dt>Creada</dt><dd><time dateTime={e.createdAt}>{prettyDate(e.createdAt)}</time></dd>
+      </dl></> : <><p><strong>Desarrollador:</strong> {e.developer.displayName}</p><p><strong>Asesores que han probado:</strong> {e.participants.filter(p => p.role === "asesor").map(p => p.displayName).join(", ") || "Ninguno todavía"}</p>{e.clientName && <p><strong>Cliente:</strong> {e.clientName}</p>}</>}
+      <h3>Dónde se encuentra</h3><ul>{e.routes.map((r,i) => <li key={i}>{[r.via === "barra_lateral" ? "Barra lateral" : "Barra de navegación", ...r.submenus, r.option].join(" › ")}</li>)}</ul><h3>Qué cambió</h3><ReadDoc value={e.whatChanged} privateMedia />
       <h3>Acción requerida</h3>{e.requiredActions.map(a => <section key={a.code}><h4>{a.label}</h4><ReadDoc value={a.detail} /></section>)}
-      {e.attachments.length > 0 && <section><h3>Referencias internas</h3><ul>{e.attachments.map((a,i) => <li key={i}>{a.group === "video" ? "Video" : "Reglas de negocio"}: {a.kind === "enlace" && /^https:\/\//i.test(a.url) ? <a href={a.url} target="_blank" rel="noopener noreferrer">{a.label || a.url}</a> : "Archivo no disponible: almacenamiento pendiente"}</li>)}</ul></section>}
-      {round && <section><h3>Mi checklist</h3><progress max={round.checklist.length || 1} value={round.checklist.filter(c => c.checked).length} aria-label="Avance del checklist" />{round.checklist.map(item => <label className="qhdn-check" key={item.itemNo}><input type="checkbox" checked={item.checked} disabled={!mine || !mayTest || op.isPending} onChange={() => op.run(() => api.patch(`/whats-new/rounds/${round.id}/checklist`, { items: [{ itemNo: item.itemNo, checked: !item.checked }] }, mutationOptions(round.etag)))} />{item.label}</label>)}<p>Para aprobar, completa el checklist. Para marcar fallida, registra al menos un hallazgo vigente de esta ronda.</p></section>}
+      {e.attachments.length > 0 && <section><h3>Referencias internas</h3><ul>{e.attachments.map((a,i) => <li key={i}>{a.group === "video" ? "Video" : "Reglas de negocio"}: {a.kind === "archivo" ? <BotonDescargaPrivada id={a.fileId} name={a.name || "Archivo adjunto"} /> : /^https:\/\//i.test(a.url) ? <a href={a.url} target="_blank" rel="noopener noreferrer">{a.label || a.url}</a> : "Enlace no disponible"}</li>)}</ul></section>}
+      {!developerView && round && <section><h3>Mi checklist</h3><progress max={round.checklist.length || 1} value={round.checklist.filter(c => c.checked).length} aria-label="Avance del checklist" />{round.checklist.map(item => <label className="qhdn-check" key={item.itemNo}><input type="checkbox" checked={item.checked} disabled={!mine || !mayTest || op.isPending} onChange={() => op.run(() => api.patch(`/whats-new/rounds/${round.id}/checklist`, { items: [{ itemNo: item.itemNo, checked: !item.checked }] }, mutationOptions(round.etag)))} />{item.label}</label>)}<p>Para aprobar, completa el checklist. Para marcar fallida, registra al menos un hallazgo vigente de esta ronda.</p></section>}
       {mine && mayTest && <section><h3 id="live-note">Notas y hallazgos</h3><EditorEnriquecido valor={body} onChange={setBody} perfil="medio" etiquetaId="live-note" /><div className="qhdn-fila"><button disabled={!body || op.isPending} onClick={() => op.mutateAsync(() => api.post(`/whats-new/rounds/${round.id}/notes`, { body }, mutationOptions(round.etag, true))).then(() => setBody(null)).catch(() => {})}>Guardar como nota</button><button disabled={!body || op.isPending} onClick={() => op.mutateAsync(() => api.post(`/whats-new/rounds/${round.id}/findings`, { body }, mutationOptions(round.etag, true))).then(() => setBody(null)).catch(() => {})}>Registrar hallazgo</button></div><p className="texto-ayuda">Registrar un hallazgo no envía correo.</p></section>}
-      <h3>Hallazgos</h3>{e.findings.length === 0 && <p>Sin hallazgos registrados.</p>}{e.findings.map(f => <article className="tarjeta" key={f.id}><h4>Hallazgo {f.number} · Ronda {f.roundNo}</h4><ReadDoc value={f.body} />{f.annulled ? <p>Anulado: {f.annulled.reason}</p> : mine && mayTest && f.roundNo === round.roundNo && <button onClick={() => { setAnnul(f.id); setConfirm("annul"); }}>Anular hallazgo</button>}</article>)}
-    </section><aside className="qhdn-panel-lateral"><ClientText me={me} entry={e} editable={can(me, "updates.whats_new.publish_client") && me.areas.includes("soporte") && !contributors.includes(me.user.id) && (mine || e.status === "probado")} /><div className="tarjeta"><h3>Historial y rondas de prueba</h3>{e.rounds.map(r => <details key={r.id}><summary>Ronda {r.roundNo} · {r.holderName} · {r.status}</summary><ul>{r.checklist.map(c => <li key={c.itemNo}>{c.checked ? "✓" : "○"} {c.label}</li>)}</ul>{r.notes.map(n => <ReadDoc key={n.id} value={n.body} />)}</details>)}<ol>{e.log.map((l,i) => <li key={i}><time>{new Date(l.at).toLocaleString("es-CO", { timeZone: "America/Bogota" })}</time> · {l.byId}: {l.action.replaceAll("_", " ")}{l.reason && ` · ${l.reason}`}</li>)}</ol></div></aside></div>
+      {!developerView && findings}
+    </section><aside className="qhdn-panel-lateral">{developerView ? <section className="tarjeta">{findings}</section> : <ClientText me={me} entry={e} editable={can(me, "updates.whats_new.publish_client") && me.areas.includes("soporte") && !contributors.includes(me.user.id) && (mine || e.status === "probado")} />}<div className="tarjeta"><h3>Historial y rondas de prueba</h3>{e.rounds.map(r => <details key={r.id}><summary>Ronda {r.roundNo} · {r.holderName} · {r.status}</summary><ul>{r.checklist.map(c => <li key={c.itemNo}>{c.checked ? "✓" : "○"} {c.label}</li>)}</ul>{r.notes.map(n => <ReadDoc key={n.id} value={n.body} />)}</details>)}<ol>{e.log.map((l,i) => <li key={i}><time>{new Date(l.at).toLocaleString("es-CO", { timeZone: "America/Bogota" })}</time> · {l.byId}: {l.action.replaceAll("_", " ")}{l.reason && ` · ${l.reason}`}</li>)}</ol></div></aside></div>
     <Dialogo titulo={confirm === "release" ? "Soltar y reiniciar la prueba" : "Confirmar acción"} abierto={!!confirm} onCerrar={() => { setConfirm(null); setReason(""); }}>{confirm === "release" ? <p>La entrada volverá a Sin probar y la próxima prueba empezará vacía. Se conserva la historia de esta ronda. No se enviará ningún correo.</p> : confirm === "delete" ? <p>Se eliminará este borrador. Esta acción no se puede deshacer.</p> : <label>Motivo (10 a 500 caracteres)<textarea value={reason} minLength={10} maxLength={500} onChange={ev => setReason(ev.target.value)} /></label>}<button className="primario" disabled={op.isPending || (!["release", "delete"].includes(confirm ?? "") && reason.trim().length < 10)} onClick={() => { const action = confirm!; if (action === "delete") op.mutateAsync(() => api.del(`/whats-new/entries/${e.id}`, mutationOptions(e.etag))).then(() => navigate(base)).catch(() => {}); else if (action === "annul") op.run(() => api.post(`/whats-new/findings/${annul}/annul`, { reason }, mutationOptions(round?.etag ?? e.etag, true))); else command(action, action === "release" ? {} : { reason }); setConfirm(null); setReason(""); }}>Confirmar</button></Dialogo>
   </>;
 }

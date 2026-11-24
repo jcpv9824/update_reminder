@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { EditorContent, useEditor, useEditorState, type Editor } from "@tiptap/react";
+import { Selection } from "@tiptap/pm/state";
 import {
   AtSign,
   Bold,
@@ -20,6 +21,7 @@ import {
 import type { DocEnriquecido, UsuarioPortal } from "../tipos";
 import { extensionesEditor, formatoTamano } from "./extensiones";
 import { useSubidaSimulada } from "./subidaSimulada";
+import { aceptaDocumentoPrivado, tiposImagenPrivada, type ArchivoPrivado } from "./archivosPrivados";
 
 // Build-time selection keeps the demo upload implementation out of release bundles.
 const useSubidaEditor = import.meta.env.DEV ? useSubidaSimulada : () => null;
@@ -31,6 +33,7 @@ const useSubidaEditor = import.meta.env.DEV ? useSubidaSimulada : () => null;
  */
 
 export type TamanoEditor = "mediano" | "compacto";
+type CargarArchivo = (archivo: File, tipo: "imagen" | "documento") => Promise<ArchivoPrivado>;
 
 type Props = {
   valor: DocEnriquecido | null;
@@ -49,6 +52,8 @@ type Props = {
   nombreBarra?: string;
   /** Producción: no se simulan cargas; perfil alineado al contrato del servidor. */
   perfil?: "medio" | "compacto" | "cliente";
+  archivosPrivados?: boolean;
+  cargarArchivo?: CargarArchivo;
 };
 
 const COLORES = [
@@ -82,13 +87,20 @@ export function EditorEnriquecido({
   usuariosMencion = [],
   nombreBarra,
   perfil,
+  archivosPrivados = false,
+  cargarArchivo,
 }: Props) {
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
   const onBlurRef = useRef(onBlur);
   onBlurRef.current = onBlur;
+  const cargarArchivoRef = useRef(cargarArchivo);
+  cargarArchivoRef.current = cargarArchivo;
+  const cursorPegado = useRef<number | null>(null);
+  const [pegandoImagen, setPegandoImagen] = useState(false);
+  const [errorPegado, setErrorPegado] = useState("");
 
-  const extensiones = useMemo(() => extensionesEditor({ placeholder, soloLectura, perfil }), [placeholder, soloLectura, perfil]);
+  const extensiones = useMemo(() => extensionesEditor({ placeholder, soloLectura, perfil, archivosPrivados }), [placeholder, soloLectura, perfil, archivosPrivados]);
 
   const editor = useEditor({
     extensions: extensiones,
@@ -96,9 +108,41 @@ export function EditorEnriquecido({
     editable: !soloLectura,
     shouldRerenderOnTransaction: false,
     editorProps: {
-      handlePaste: (_view, event) => {
-        if (perfil && event.clipboardData?.files.length) { event.preventDefault(); return true; }
-        return false;
+      handlePaste: (view, event) => {
+        const data = event.clipboardData;
+        if (!perfil || !data) return false;
+        const archivos = Array.from(data.files);
+        if (!archivos.length && data.items) for (const item of Array.from(data.items)) {
+          if (item.kind === "file") { const file = item.getAsFile(); if (file) archivos.push(file); }
+        }
+        if (!archivos.length) return false;
+        event.preventDefault();
+        const subir = cargarArchivoRef.current;
+        if (perfil !== "medio" || !archivosPrivados || !subir || soloLectura) {
+          setErrorPegado("No se pueden pegar imágenes en este editor.");
+          return true;
+        }
+        const imagen = archivos.find(file => tiposImagenPrivada.includes(file.type));
+        if (!imagen) { setErrorPegado("Pega una imagen PNG, JPG, GIF o WebP."); return true; }
+        if (cursorPegado.current !== null) return true;
+        cursorPegado.current = view.state.selection.from;
+        setErrorPegado(""); setPegandoImagen(true);
+        void subir(imagen, "imagen").then(file => {
+          if (view.isDestroyed || cursorPegado.current === null) return;
+          const pos = Math.min(cursorPegado.current, view.state.doc.content.size);
+          // Insert at the mapped paste point without overwriting any text typed during upload.
+          const typ = view.state.schema.nodes.image;
+          if (typ) {
+            const node = typ.create({ fileId: file.fileId, alt: file.name.slice(0, 200) });
+            const tx = view.state.tr.replaceRangeWith(pos, pos, node);
+            if (tx.doc.lastChild?.type === typ) tx.insert(tx.doc.content.size, view.state.schema.nodes.paragraph.create());
+            const after = Math.min(tx.mapping.map(pos, 1), tx.doc.content.size);
+            tx.setSelection(Selection.near(tx.doc.resolve(after), 1));
+            view.dispatch(tx);
+          }
+        }).catch(error => setErrorPegado(error instanceof Error ? error.message : "No se pudo guardar la imagen pegada."))
+          .finally(() => { cursorPegado.current = null; setPegandoImagen(false); });
+        return true;
       },
       attributes: atributos({
         class: `qhdn-editor-contenido${soloLectura ? " qhdn-editor-lectura" : ""}`,
@@ -111,6 +155,9 @@ export function EditorEnriquecido({
       }),
     },
     onUpdate: ({ editor: e }) => onChangeRef.current?.(e.getJSON()),
+    onTransaction: ({ transaction }) => {
+      if (cursorPegado.current !== null) cursorPegado.current = transaction.mapping.map(cursorPegado.current);
+    },
     onBlur: () => onBlurRef.current?.(),
   }, [extensiones, soloLectura, etiquetaId, descripcionId, invalido, ariaLabel]);
 
@@ -128,16 +175,18 @@ export function EditorEnriquecido({
 
   return (
     <div className={`qhdn-editor qhdn-editor-${tamano}${invalido ? " qhdn-editor-invalido" : ""}`}>
-      {editor && <BarraEditor editor={editor} usuariosMencion={usuariosMencion} nombre={nombreBarra ?? ariaLabel ?? "el texto"} perfil={perfil} />}
+      {editor && <BarraEditor editor={editor} usuariosMencion={usuariosMencion} nombre={nombreBarra ?? ariaLabel ?? "el texto"} perfil={perfil} cargarArchivo={archivosPrivados && perfil === "medio" ? cargarArchivo : undefined} />}
       <EditorContent editor={editor} />
+      {pegandoImagen && <p role="status">Guardando la imagen pegada…</p>}
+      {errorPegado && <p role="alert" className="qhdn-error-campo">{errorPegado}</p>}
     </div>
   );
 }
 
 /** Solo lectura: mismo esquema, sin barra. */
-export function VisorEnriquecido({ valor, ariaLabel }: { valor: DocEnriquecido | null; ariaLabel?: string }) {
+export function VisorEnriquecido({ valor, ariaLabel, archivosPrivados }: { valor: DocEnriquecido | null; ariaLabel?: string; archivosPrivados?: boolean }) {
   if (!valor) return <p className="texto-ayuda">Sin contenido.</p>;
-  return <EditorEnriquecido valor={valor} soloLectura ariaLabel={ariaLabel} />;
+  return <EditorEnriquecido valor={valor} soloLectura ariaLabel={ariaLabel} perfil={archivosPrivados ? "medio" : undefined} archivosPrivados={archivosPrivados} />;
 }
 
 type Panel = null | "enlace" | "color" | "mencion";
@@ -176,10 +225,12 @@ function BotonBarra({ indice, foco, setFoco, panelId, etiqueta, Icono, activo, c
   );
 }
 
-function BarraEditor({ editor, usuariosMencion, nombre, perfil }: { editor: Editor; usuariosMencion: UsuarioPortal[]; nombre: string; perfil?: "medio" | "compacto" | "cliente" }) {
+function BarraEditor({ editor, usuariosMencion, nombre, perfil, cargarArchivo }: { editor: Editor; usuariosMencion: UsuarioPortal[]; nombre: string; perfil?: "medio" | "compacto" | "cliente"; cargarArchivo?: CargarArchivo }) {
   const [panel, setPanel] = useState<Panel>(null);
   const [indiceFoco, setIndiceFoco] = useState(0);
   const [errorArchivo, setErrorArchivo] = useState<string | null>(null);
+  const [subiendoPrivado, setSubiendoPrivado] = useState(false);
+  const cargaEnCurso = useRef(false);
   const barraRef = useRef<HTMLDivElement>(null);
   const inputImagen = useRef<HTMLInputElement>(null);
   const inputArchivo = useRef<HTMLInputElement>(null);
@@ -229,9 +280,25 @@ function BarraEditor({ editor, usuariosMencion, nombre, perfil }: { editor: Edit
 
   const almacenamientoNoConectado = "El almacenamiento de archivos todavía no está conectado.";
   async function elegirArchivo(archivo: File | undefined, clase: "imagen" | "archivo") {
-    if (perfil || !subida) return setErrorArchivo(almacenamientoNoConectado);
     setErrorArchivo(null);
     if (!archivo) return;
+    if (cargarArchivo) {
+      if (cargaEnCurso.current) return;
+      cargaEnCurso.current = true;
+      setSubiendoPrivado(true);
+      try {
+        const guardado = await cargarArchivo(archivo, clase === "imagen" ? "imagen" : "documento");
+        if (editor.isDestroyed) return;
+        if (clase === "imagen") editor.chain().focus().insertContent([
+          { type: "image", attrs: { fileId: guardado.fileId, alt: guardado.name.slice(0, 200) } },
+          { type: "paragraph" },
+        ]).run();
+        else editor.chain().focus().insertContent([{ type: "adjuntoArchivo", attrs: { fileId: guardado.fileId, nombre: guardado.name.slice(0, 200), tamano: guardado.bytes } }, { type: "text", text: " " }]).run();
+      } catch (error) { setErrorArchivo(error instanceof Error ? error.message : "No se pudo subir el archivo."); }
+      finally { cargaEnCurso.current = false; setSubiendoPrivado(false); }
+      return;
+    }
+    if (perfil || !subida) return setErrorArchivo(almacenamientoNoConectado);
     if (clase === "imagen" && !TIPOS_IMAGEN.includes(archivo.type)) return setErrorArchivo("La imagen debe ser PNG, JPG, GIF o WebP.");
     if (archivo.size > (clase === "imagen" ? MAX_IMAGEN : MAX_ARCHIVO)) {
       return setErrorArchivo(`El archivo supera ${clase === "imagen" ? "5 MB" : "20 MB"}.`);
@@ -273,8 +340,8 @@ function BarraEditor({ editor, usuariosMencion, nombre, perfil }: { editor: Edit
       {(!perfil || perfil === "medio") && <BotonBarra {...comun} indice={sig()} etiqueta="Bloque de código" Icono={SquareCode} activo={estado?.codeBlock} onClick={() => editor.chain().focus().toggleCodeBlock().run()} />}
       <BotonBarra {...comun} indice={sig()} etiqueta="Color del texto" Icono={Palette} activo={panel === "color"} controla onClick={() => alternarPanel("color")} />
       <span className="qhdn-separador" aria-hidden="true" />
-      <BotonBarra {...comun} indice={sig()} etiqueta="Adjuntar archivo" Icono={Paperclip} onClick={() => perfil || !subida ? setErrorArchivo(almacenamientoNoConectado) : inputArchivo.current?.click()} />
-      <BotonBarra {...comun} indice={sig()} etiqueta="Insertar imagen" Icono={ImagePlus} onClick={() => perfil || !subida ? setErrorArchivo(almacenamientoNoConectado) : inputImagen.current?.click()} />
+      <BotonBarra {...comun} indice={sig()} etiqueta="Adjuntar archivo" Icono={Paperclip} onClick={() => { if (!cargaEnCurso.current) (cargarArchivo || (!perfil && subida)) ? inputArchivo.current?.click() : setErrorArchivo(almacenamientoNoConectado); }} />
+      <BotonBarra {...comun} indice={sig()} etiqueta="Insertar imagen" Icono={ImagePlus} onClick={() => { if (!cargaEnCurso.current) (cargarArchivo || (!perfil && subida)) ? inputImagen.current?.click() : setErrorArchivo(almacenamientoNoConectado); }} />
       {usuariosMencion.length > 0 && <BotonBarra {...comun} indice={sig()} etiqueta="Mencionar a un usuario" Icono={AtSign} activo={panel === "mencion"} controla onClick={() => alternarPanel("mencion")} />}
     </>
   );
@@ -284,8 +351,8 @@ function BarraEditor({ editor, usuariosMencion, nombre, perfil }: { editor: Edit
       <div ref={barraRef} role="toolbar" aria-label={`Formato de ${nombre}`} className="qhdn-barra" onKeyDown={alTeclear}>
         {contenido}
       </div>
-      <input ref={inputImagen} type="file" hidden accept={TIPOS_IMAGEN.join(",")} onChange={(e) => { void elegirArchivo(e.target.files?.[0], "imagen"); e.target.value = ""; }} />
-      <input ref={inputArchivo} type="file" hidden onChange={(e) => { void elegirArchivo(e.target.files?.[0], "archivo"); e.target.value = ""; }} />
+      <input ref={inputImagen} type="file" hidden accept={(cargarArchivo ? tiposImagenPrivada : TIPOS_IMAGEN).join(",")} onChange={(e) => { void elegirArchivo(e.target.files?.[0], "imagen"); e.target.value = ""; }} />
+      <input ref={inputArchivo} type="file" hidden accept={cargarArchivo ? aceptaDocumentoPrivado : undefined} onChange={(e) => { void elegirArchivo(e.target.files?.[0], "archivo"); e.target.value = ""; }} />
       {panel && (
         <div id={idPanel} className="qhdn-editor-panel">
           {panel === "enlace" && <PanelEnlace editor={editor} hrefActual={estado?.href ?? ""} onCerrar={() => setPanel(null)} />}
@@ -328,6 +395,7 @@ function BarraEditor({ editor, usuariosMencion, nombre, perfil }: { editor: Edit
           <progress max={100} value={subida.progreso} aria-label={`Progreso de ${subida.nombre}`} />
         </div>
       )}
+      {subiendoPrivado && <p role="status" aria-live="polite">Subiendo archivo a almacenamiento privado…</p>}
       {errorArchivo && <p className="qhdn-error-campo" role="alert">{errorArchivo}</p>}
     </div>
   );

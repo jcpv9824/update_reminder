@@ -10,7 +10,7 @@ import { access, requireDeveloper, requirePermission, type WhatsNewActor } from 
 import { LIMITS, WhatsNewError } from "./whatsNewModel";
 
 type ErpClientSelection = { search?: string; clientId?: string };
-const searchSchema = z.string().trim().max(100);
+const searchSchema = z.string().trim().min(3, "Escriba al menos 3 caracteres para buscar clientes.").max(100);
 
 export function selectWhatsNewErpClients(input: CatalogDirectoryInput, args: ErpClientSelection = {}) {
   const freshErp = input.erp.filter((source) => source.state === "verified" && input.allowedSourceIds.has(source.sourceId));

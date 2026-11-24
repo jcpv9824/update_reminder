@@ -3,6 +3,7 @@ import StarterKit from "@tiptap/starter-kit";
 import Image from "@tiptap/extension-image";
 import { Color, TextStyle } from "@tiptap/extension-text-style";
 import { Placeholder } from "@tiptap/extensions";
+import { AdjuntoPrivado, ImagenPrivada } from "./archivosPrivados";
 
 /* Extensiones del editor enriquecido. El mismo conjunto valida el JSON en el backend (documento 05). */
 
@@ -79,7 +80,7 @@ export function formatoTamano(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function extensionesEditor({ placeholder, soloLectura, perfil }: { placeholder?: string; soloLectura?: boolean; perfil?: "medio" | "compacto" | "cliente" } = {}): Extensions {
+export function extensionesEditor({ placeholder, soloLectura, perfil, archivosPrivados }: { placeholder?: string; soloLectura?: boolean; perfil?: "medio" | "compacto" | "cliente"; archivosPrivados?: boolean } = {}): Extensions {
   return [
     StarterKit.configure({
       heading: perfil === "compacto" ? false : { levels: [3] },
@@ -97,7 +98,8 @@ export function extensionesEditor({ placeholder, soloLectura, perfil }: { placeh
     }),
     TextStyle,
     Color,
-    ...(!perfil ? [Image.configure({ inline: false, allowBase64: false, HTMLAttributes: { class: "qhdn-imagen" } }), AdjuntoArchivo] : []),
+    ...(perfil === "medio" && archivosPrivados ? [ImagenPrivada, AdjuntoPrivado] :
+      !perfil ? [Image.configure({ inline: false, allowBase64: false, HTMLAttributes: { class: "qhdn-imagen" } }), AdjuntoArchivo] : []),
     ...(perfil !== "cliente" ? [Mencion] : []),
     Placeholder.configure({ placeholder: placeholder ?? "" }),
   ];

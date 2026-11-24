@@ -1,10 +1,10 @@
 import { api } from "../../api/client";
-import type { DatosFormulario, DocEnriquecido, EstadoEntrada, Sistema, TipoEntrada } from "./tipos";
+import type { Adjunto, DatosFormulario, DocEnriquecido, EstadoEntrada, Sistema, TipoEntrada } from "./tipos";
 
 export type Me = { user: { id: string; displayName: string; email: string }; views: string[]; defaultView: string | null; areas: string[]; permissions: string[]; publicEnabled: boolean; storageAvailable: boolean; clientCatalogAvailable: boolean };
 export type RouteDto = { via: "barra_lateral" | "barra_navegacion"; submenus: string[]; option: string };
 export type ActionDto = { code: string; label: string; detail: DocEnriquecido | null };
-export type AttachmentDto = { group: "reglas_negocio" | "video"; kind: "enlace"; url: string; label?: string | null } | { group: "reglas_negocio" | "video"; kind: "archivo"; fileId: string };
+export type AttachmentDto = { group: "reglas_negocio" | "video"; kind: "enlace"; url: string; label?: string | null } | { group: "reglas_negocio" | "video"; kind: "archivo"; fileId: string; name?: string };
 export type RoundDto = { id: string; roundNo: number; revisionNo: number; holderId: string; holderName: string; status: string; etag: string; takenAt: string | null; closedAt: string | null; checklist: { itemNo: number; label: string; checked: boolean }[]; notes: { id: string; body: DocEnriquecido; createdAt: string; createdById: string }[]; noteDraft: DocEnriquecido | null };
 export type EntryDto = { id: string; number: string; status: EstadoEntrada; type: TipoEntrada | null; system: Sistema | null; developer: { id: string; displayName: string }; clientName: string | null; initialTesterId: string | null; whatChanged: DocEnriquecido | null; summary: string | null; primaryRoute: string | null; routes: RouteDto[]; requiredActions: ActionDto[]; attachments: AttachmentDto[]; rounds: RoundDto[]; findings: { id: string; number: number; roundNo: number; body: DocEnriquecido; createdById: string; annulled: { reason: string; at: string } | null }[]; participants: { id: string; displayName: string; role: string }[]; log: { action: string; byId: string; at: string; reason: string | null }[]; revisions: { revisionNo: number; kind: string; correctionNote: DocEnriquecido | null; publishedAt: string }[]; clientText: { showToClients: boolean; title: string | null; body: DocEnriquecido | null; etag: string } | null; etag: string; createdAt: string; updatedAt: string; releaseMonth: string | null };
 export type Page<T> = { items: T[]; total: number; page: number; pageSize: number };
@@ -66,16 +66,31 @@ export function draftFromForm(data: DatosFormulario, clientId?: string | null) {
     routes: data.rutas.map(r => ({ via: r.niveles[0]?.valor === "Barra lateral" ? "barra_lateral" as const : "barra_navegacion" as const, submenus: r.niveles.slice(1, -1).map(l => l.valor.trim()), option: r.niveles.at(-1)?.valor.trim() ?? "" })),
     whatChanged: data.queCambio, requiredActions: data.acciones.map(a => ({ actionCode: a.accionId, detail: a.texto })),
     ...(isNew && clientId !== undefined ? { clientId } : {}), initialTesterId: isNew ? data.asesorInicialId || null : null,
-    attachments: isNew ? [...data.reglasNegocio.map(a => ({ group: "reglas_negocio" as const, kind: "enlace" as const, url: a.url, label: a.nombre })), ...data.videos.map(a => ({ group: "video" as const, kind: "enlace" as const, url: a.url, label: a.nombre }))] : [],
+    attachments: isNew ? [...data.reglasNegocio.map(a => referenceDto("reglas_negocio", a)), ...data.videos.map(a => referenceDto("video", a))] : [],
   };
 }
-export function formFromEntry(e: EntryDto): DatosFormulario { return { tipo: e.type, sistema: e.system, rutas: e.routes.map((r,i) => ({ id: `route-${i}`, niveles: [{ valor: r.via === "barra_lateral" ? "Barra lateral" : "Barra de navegación" }, ...r.submenus.map(valor => ({ valor })), { valor: r.option }] })), queCambio: e.whatChanged, acciones: e.requiredActions.map(a => ({ accionId: a.code, nombre: a.label, texto: a.detail })), cliente: e.clientName ?? "", asesorInicialId: e.initialTesterId ?? "", reglasNegocio: e.attachments.filter(a => a.group === "reglas_negocio" && a.kind === "enlace").map((a,i) => ({ id: `rules-${i}`, clase: "enlace", nombre: a.kind === "enlace" ? a.label ?? "" : "", url: a.kind === "enlace" ? a.url : "" })), videos: e.attachments.filter(a => a.group === "video" && a.kind === "enlace").map((a,i) => ({ id: `video-${i}`, clase: "enlace", nombre: a.kind === "enlace" ? a.label ?? "" : "", url: a.kind === "enlace" ? a.url : "" })) }; }
+function referenceDto(group: AttachmentDto["group"], a: Adjunto): AttachmentDto {
+  return a.clase === "archivo" ? { group, kind: "archivo", fileId: a.id } : { group, kind: "enlace", url: a.url, label: a.nombre };
+}
+function referenceFromDto(a: AttachmentDto, i: number): Adjunto {
+  return a.kind === "archivo"
+    ? { id: a.fileId, clase: "archivo", nombre: a.name || "Archivo adjunto", url: "" }
+    : { id: `${a.group}-${i}`, clase: "enlace", nombre: a.label ?? "", url: a.url };
+}
+export function formFromEntry(e: EntryDto): DatosFormulario { return { tipo: e.type, sistema: e.system, rutas: e.routes.map((r,i) => ({ id: `route-${i}`, niveles: [{ valor: r.via === "barra_lateral" ? "Barra lateral" : "Barra de navegación" }, ...r.submenus.map(valor => ({ valor })), { valor: r.option }] })), queCambio: e.whatChanged, acciones: e.requiredActions.map(a => ({ accionId: a.code, nombre: a.label, texto: a.detail })), cliente: e.clientName ?? "", asesorInicialId: e.initialTesterId ?? "", reglasNegocio: e.attachments.filter(a => a.group === "reglas_negocio").map(referenceFromDto), videos: e.attachments.filter(a => a.group === "video").map(referenceFromDto) }; }
 
-/** Rendering boundary: no network-bearing file nodes while storage is pending. Public content also excludes code and mentions, never copies private prose automatically. */
-export function safeDisplayDoc(doc: DocEnriquecido | null, publicProfile = false): DocEnriquecido | null {
+/** Private rendering accepts only file IDs, never a request URL from document content. */
+export function safeDisplayDoc(doc: DocEnriquecido | null, publicProfile = false, privateMedia = false): DocEnriquecido | null {
   if (!doc) return null;
   function clean(node: DocEnriquecido, depth: number): DocEnriquecido | null {
-    if (depth > 10 || ["image", "adjuntoArchivo"].includes(node.type ?? "") || (publicProfile && ["mencion", "codeBlock"].includes(node.type ?? ""))) return null;
+    if (depth > 10 || (publicProfile && ["mencion", "codeBlock"].includes(node.type ?? ""))) return null;
+    if (node.type === "image" || node.type === "adjuntoArchivo") {
+      const id: unknown = node.attrs?.fileId;
+      if (publicProfile || !privateMedia || typeof id !== "string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) return null;
+      const short = (value: unknown) => typeof value === "string" ? value.slice(0, 200) : undefined;
+      return node.type === "image" ? { type: "image", attrs: { fileId: id, alt: short(node.attrs?.alt) } }
+        : { type: "adjuntoArchivo", attrs: { fileId: id, nombre: short(node.attrs?.nombre) ?? "Archivo adjunto" } };
+    }
     if (publicProfile && node.marks?.some(m => m.type === "code")) return null;
     const allowed = ["doc", "paragraph", "text", "heading", "bulletList", "orderedList", "listItem", "blockquote", "hardBreak", "horizontalRule", "codeBlock", "mencion"];
     if (!allowed.includes(node.type ?? "")) return null;
@@ -90,4 +105,9 @@ export function safeDisplayDoc(doc: DocEnriquecido | null, publicProfile = false
   return clean(doc, 0);
 }
 export const storagePending = "El almacenamiento de archivos todavía no está conectado. Las imágenes, documentos y videos no se pueden subir ni descargar todavía.";
-export function errorMessage(error: unknown) { const e = error as Error & { status?: number }; return e.status === 409 ? "Otra persona modificó esta información. Recarga para ver la versión vigente; tus cambios no se han enviado." : e.message || "No fue posible completar la operación."; }
+export function errorMessage(error: unknown) {
+  const e = error as Error & { status?: number; data?: { code?: unknown } };
+  return e.status === 409 && (!e.data?.code || e.data.code === "version_desactualizada")
+    ? "Otra persona modificó esta información. Recarga para ver la versión vigente; tus cambios no se han enviado."
+    : e.message || "No fue posible completar la operación.";
+}

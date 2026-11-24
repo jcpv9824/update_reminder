@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { HttpRequest } from "@azure/functions";
 import { app } from "@azure/functions";
 vi.mock("@azure/functions", () => ({ app: { http: vi.fn() } }));
-import { httpBoundary, whatsNewRateLimit, type WhatsNewHttpDependencies } from "../functions/whatsNew";
+import { httpBoundary, parseWhatsNewMultipart, whatsNewRateLimit, withWhatsNewMediaSlot, type WhatsNewHttpDependencies } from "../functions/whatsNew";
 import { WhatsNewError } from "../lib/whatsNewModel";
 const actor = { id: "sales", email: "sales@example.invalid", displayName: "Ventas", permissions: new Set<string>(), areas: new Set<never>() };
 const req = {} as HttpRequest;
@@ -13,6 +13,7 @@ describe("Qué hay de nuevo HTTP boundary", () => {
     ["whatsNewEntry_draft", "PUT"], ["whatsNewEntry_client_text", "PUT"],
     ["whatsNewRound_checklist", "PATCH"], ["whatsNewRound_note_draft", "PUT"],
     ["whatsNewEntries", "POST"], ["whatsNewEntry_take", "POST"],
+    ["whatsNewUpload", "POST"], ["whatsNewFileRead", "GET"],
   ])("registers the actual %s transport as %s", (name, method) => {
     const registration = vi.mocked(app.http).mock.calls.find((call) => call[0] === name);
     expect(registration?.[1].methods).toContain(method);
@@ -22,6 +23,8 @@ describe("Qué hay de nuevo HTTP boundary", () => {
     ["POST", "/whats-new/entries", true, "whats_new_write", 30],
     ["POST", "/whats-new/reports/preview", true, "whats_new_preview", 10],
     ["GET", "/public/novedades", false, "whats_new_public", 120],
+    ["GET", "/api/whats-new/files/id", true, "whats_new_media_read", 32],
+    ["POST", "/api/whats-new/entries/id/uploads", true, "whats_new_media_write", 6],
   ])("selects actor-bounded limits for %s %s", (method, url, authenticated, scope, limit) => {
     expect(whatsNewRateLimit(method as string, url as string, authenticated as boolean)).toEqual({ scope, policy: { maxAttempts: limit, windowSeconds: 60, blockSeconds: 60 } });
   });
@@ -30,6 +33,28 @@ describe("Qué hay de nuevo HTTP boundary", () => {
     const response = await httpBoundary(handler, false, d)(req);
     expect(response.status).toBe(404); expect(d.authenticate).not.toHaveBeenCalled(); expect(handler).not.toHaveBeenCalled();
     expect(d.limit).not.toHaveBeenCalled();
+  });
+  it("parses a real multipart binary payload and rejects duplicate fields", async () => {
+    const form = new FormData();
+    form.set("kind", "documento"); form.set("target", "reglas_negocio");
+    form.set("file", new Blob(["%PDF-1.7 fake"], { type: "text/html" }), "reglas.pdf");
+    const request = () => new Request("https://example.invalid", { method: "POST", body: form }) as unknown as HttpRequest;
+    await expect(parseWhatsNewMultipart(request())).resolves.toMatchObject({
+      name: "reglas.pdf", mime: "application/pdf", target: "reglas_negocio",
+    });
+    form.append("target", "video");
+    await expect(parseWhatsNewMultipart(request())).rejects.toMatchObject({ status: 400 });
+  });
+  it("bounds concurrent private transfers and releases capacity after failure", async () => {
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const first = withWhatsNewMediaSlot(() => hold);
+    const second = withWhatsNewMediaSlot(() => hold);
+    try {
+      await expect(withWhatsNewMediaSlot(async () => "third")).rejects.toMatchObject({ status: 503 });
+    } finally { release(); await Promise.all([first, second]); }
+    await expect(withWhatsNewMediaSlot(async () => { throw new Error("failed"); })).rejects.toThrow("failed");
+    await expect(withWhatsNewMediaSlot(async () => "next")).resolves.toBe("next");
   });
   it("report read permits active authenticated users without option, area or recipient ACL", async () => {
     const d = deps(); const handler = vi.fn(async (_r, a) => ({ viewerId: a!.id }));
