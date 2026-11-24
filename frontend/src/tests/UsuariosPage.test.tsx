@@ -9,14 +9,17 @@ const apiMock = vi.hoisted(() => ({
   del: vi.fn<(path: string) => Promise<any>>(async () => ({})),
 }));
 const authState = vi.hoisted(() => ({
+  id: "admin",
   roles: ["super_admin"] as string[],
 }));
+const moduleState = vi.hoisted(() => ({ enabled: false }));
 
 vi.mock("../api/client", () => ({ api: apiMock }));
+vi.mock("../featureFlags", () => ({ get WHATS_NEW_ENABLED() { return moduleState.enabled; } }));
 vi.mock("../auth/AuthContext", () => ({
   useAuth: () => ({
     cargando: false,
-    usuario: { id: "admin", email: "admin@empresa.com", displayName: "Admin", roles: authState.roles },
+    usuario: { id: authState.id, email: "admin@empresa.com", displayName: "Admin", roles: authState.roles },
   }),
 }));
 
@@ -24,20 +27,25 @@ import UsuariosPage from "../pages/UsuariosPage";
 
 function renderPagina() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const contenido = () => (
     <QueryClientProvider client={qc}>
       <UsuariosPage />
     </QueryClientProvider>
   );
+  const vista = render(contenido());
+  return { ...vista, recargar: () => vista.rerender(contenido()) };
 }
 
 beforeEach(() => {
+  authState.id = "admin";
   authState.roles = ["super_admin"];
+  moduleState.enabled = false;
   apiMock.get.mockReset();
   apiMock.post.mockReset();
   apiMock.put.mockReset();
   apiMock.del.mockReset();
   apiMock.get.mockImplementation(async (path = "") => {
+    if (path.endsWith("/business-areas")) return { areas: [], etag: '"version-1"' };
     if (path.startsWith("/roles")) {
       return [
         {
@@ -118,6 +126,21 @@ describe("UsuariosPage", () => {
     await waitFor(() => expect(apiMock.put).toHaveBeenCalledWith("/users/user_1", {
       displayName: "Laura Pérez", active: true,
     }));
+  });
+
+  it("no arrastra un diálogo de áreas abierto a otro actor", async () => {
+    moduleState.enabled = true;
+    const { recargar } = renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: "Áreas de Laura Pérez" }));
+    expect(screen.getByRole("heading", { name: "Áreas de Laura Pérez" })).toBeInTheDocument();
+
+    authState.id = "otro-admin";
+    recargar();
+    expect(screen.queryByRole("heading", { name: "Áreas de Laura Pérez" })).toBeNull();
+
+    authState.id = "admin";
+    recargar();
+    expect(screen.queryByRole("heading", { name: "Áreas de Laura Pérez" })).toBeNull();
   });
 
   it("no muestra estado ni controles de segundo factor", async () => {

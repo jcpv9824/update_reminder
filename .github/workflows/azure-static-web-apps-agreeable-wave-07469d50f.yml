@@ -52,6 +52,8 @@ jobs:
         working-directory: frontend
         env:
           VITE_GUIDE_BUILDER_ENABLED: "true"
+          VITE_WHATS_NEW_ENABLED: "false"
+          VITE_WHATS_NEW_PROTOTYPE: "false"
           VITE_PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED: ${{ github.event_name == 'push' && vars.PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED == 'true' }}
         run: npm test && VITE_PORTAL_CATALOG_CLIENTS_READ_ENABLED=${{ github.event_name == 'push' }} VITE_PORTAL_CATALOG_DIRECTORY_V2_ENABLED=${{ github.event_name == 'push' && vars.PORTAL_CATALOG_DIRECTORY_V2_ENABLED == 'true' }} npm run build
 
@@ -84,6 +86,8 @@ jobs:
         env:
           VITE_API_BASE_URL: https://erpupdsch4645-api.azurewebsites.net/api
           VITE_GUIDE_BUILDER_ENABLED: "true"
+          VITE_WHATS_NEW_ENABLED: "false"
+          VITE_WHATS_NEW_PROTOTYPE: "false"
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_AGREEABLE_WAVE_07469D50F }}
           action: "upload"
@@ -92,7 +96,7 @@ jobs:
           app_location: "./frontend" # App source code path
           api_location: "" # Api source code path - optional
           output_location: "dist" # Built app content directory - optional
-          app_build_command: "VITE_API_BASE_URL=https://erpupdsch4645-api.azurewebsites.net/api VITE_GUIDE_BUILDER_ENABLED=true VITE_PORTAL_CATALOG_CLIENTS_READ_ENABLED=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }} VITE_PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED == 'true' }} VITE_PORTAL_CATALOG_DIRECTORY_V2_ENABLED=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PORTAL_CATALOG_DIRECTORY_V2_ENABLED == 'true' }} npm run build"
+          app_build_command: "VITE_API_BASE_URL=https://erpupdsch4645-api.azurewebsites.net/api VITE_GUIDE_BUILDER_ENABLED=true VITE_WHATS_NEW_ENABLED=false VITE_WHATS_NEW_PROTOTYPE=false VITE_PORTAL_CATALOG_CLIENTS_READ_ENABLED=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }} VITE_PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED == 'true' }} VITE_PORTAL_CATALOG_DIRECTORY_V2_ENABLED=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PORTAL_CATALOG_DIRECTORY_V2_ENABLED == 'true' }} npm run build"
           github_id_token: ${{ steps.idtoken.outputs.result }}
           ###### End of Repository/Build Configurations ######
 

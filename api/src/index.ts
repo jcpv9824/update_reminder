@@ -31,3 +31,4 @@ import "./functions/sendAdministrativeReminders";
 import "./functions/sendBlockedReminders";
 import "./functions/processEmailOutbox";
 import "./functions/runtimeStatus";
+import "./functions/whatsNew";

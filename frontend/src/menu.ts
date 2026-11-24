@@ -14,6 +14,8 @@ import {
   FileText,
   Gauge,
   KeyRound,
+  Megaphone,
+  Sparkles,
   Server,
   Settings,
   PlugZap,
@@ -21,7 +23,7 @@ import {
   Users,
   type LucideIcon,
 } from "lucide-react";
-import { GUIDE_BUILDER_UI_ENABLED } from "./featureFlags";
+import { GUIDE_BUILDER_UI_ENABLED, WHATS_NEW_ENABLED } from "./featureFlags";
 import type { RoleDefinition } from "./permissionModel";
 import { hasPermissionForRoleIds } from "./permissionAccess";
 
@@ -58,6 +60,9 @@ export const MODULOS: ModuloMenu[] = [
     elementos: [
       { ruta: "/tareas", etiqueta: "Tareas", permiso: "updates.tasks.view", Icono: BookOpenCheck },
       { ruta: "/frecuencias", etiqueta: "Programar Actualizaciones", permiso: "updates.schedules.view", Icono: CalendarPlus },
+      ...(WHATS_NEW_ENABLED
+        ? [{ ruta: "/actualizaciones/que-hay-de-nuevo", etiqueta: "Qué hay de nuevo", permiso: "updates.whats_new.view", Icono: Megaphone }]
+        : []),
     ],
   },
   {
@@ -77,6 +82,9 @@ export const MODULOS: ModuloMenu[] = [
       { ruta: "/usuarios", etiqueta: "Usuarios y Roles", permisos: ["configuration.users.view", "configuration.roles.view"], Icono: Users },
       { ruta: "/admin/formatos-impresion", etiqueta: "Formatos de Impresión", permiso: "configuration.print_formats.view", Icono: FileText },
       { ruta: "/configuracion/conexiones", etiqueta: "Conexiones", permiso: "configuration.integrations.view", Icono: PlugZap },
+      ...(WHATS_NEW_ENABLED
+        ? [{ ruta: "/configuracion/que-hay-de-nuevo", etiqueta: "Qué hay de nuevo", permiso: "configuration.whats_new.view", Icono: Sparkles }]
+        : []),
     ],
   },
   {

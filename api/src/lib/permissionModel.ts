@@ -93,6 +93,14 @@ export const PERMISSION_CATALOG: PermissionModule[] = [
         { id: "preview_scope", label: "Previsualizar Alcance" },
         { id: "generate_tasks", label: "Generar Tareas" },
       ]),
+      option("whats_new", "Qué hay de nuevo", "updates.whats_new", [
+        ACTIONS.view,
+        { id: "author", label: "Crear y editar entradas" },
+        { id: "test", label: "Probar entradas" },
+        { id: "publish_client", label: "Publicar a clientes" },
+        { id: "report", label: "Enviar reportes" },
+        { id: "view_all", label: "Ver todas (lectura)" },
+      ]),
     ],
   },
   {
@@ -158,6 +166,10 @@ export const PERMISSION_CATALOG: PermissionModule[] = [
         { id: "edit_database", label: "Editar Conexión de Base" },
         { id: "delete_database", label: "Eliminar Conexión de Base" },
         { id: "test_database", label: "Probar Conexión de Base" },
+      ]),
+      option("whats_new", "Qué hay de nuevo", "configuration.whats_new", [
+        ACTIONS.view,
+        { id: "manage", label: "Administrar" },
       ]),
     ],
   },

@@ -3,6 +3,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Trash2 } from "lucide-react";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { WHATS_NEW_ENABLED } from "../featureFlags";
+import UserBusinessAreasPanel from "../components/UserBusinessAreasPanel";
 import { Alerta, DialogoConfirmar, EtiquetaEstado, Modal, Paginacion } from "../components/Comunes";
 import { ETIQUETAS_ROLES, type AreaUsuario, type RespuestaPaginada } from "../types";
 import { hasPermissionForRoleIds } from "../permissionAccess";
@@ -52,6 +54,7 @@ export default function UsuariosPage() {
   const [editando, setEditando] = useState<Usuario | null>(null);
   const [reset, setReset] = useState<Usuario | null>(null);
   const [reenviar, setReenviar] = useState<Usuario | null>(null);
+  const [areasSeleccion, setAreasSeleccion] = useState<{ usuario: Usuario; actorScope: string } | null>(null);
   const [modalRolAbierto, setModalRolAbierto] = useState(false);
   const [rolEditando, setRolEditando] = useState<RoleDefinition | null>(null);
   const [rolAEliminar, setRolAEliminar] = useState<RoleDefinition | null>(null);
@@ -71,6 +74,10 @@ export default function UsuariosPage() {
   const puedeCrearUsuarios = hasPermissionForRoleIds(rolesUsuarioActual, "configuration.users.create", rolesDefinidos)
     && hasPermissionForRoleIds(rolesUsuarioActual, "configuration.users.assign_roles", rolesDefinidos);
   const puedeEditarUsuarios = hasPermissionForRoleIds(rolesUsuarioActual, "configuration.users.edit", rolesDefinidos);
+  const areasActorScope = WHATS_NEW_ENABLED && usuarioActual && puedeVerUsuarios
+    ? JSON.stringify([usuarioActual.id, rolesUsuarioActual, puedeEditarUsuarios])
+    : null;
+  const areasUsuario = areasActorScope && areasSeleccion?.actorScope === areasActorScope ? areasSeleccion.usuario : null;
   const puedeResetearPasswords = hasPermissionForRoleIds(rolesUsuarioActual, "configuration.users.reset_password", rolesDefinidos);
   const puedeReenviarCredenciales = hasPermissionForRoleIds(rolesUsuarioActual, "configuration.users.resend_credentials", rolesDefinidos);
   const puedeDesactivarUsuarios = hasPermissionForRoleIds(rolesUsuarioActual, "configuration.users.deactivate", rolesDefinidos);
@@ -88,6 +95,9 @@ export default function UsuariosPage() {
     if (pestana === "usuarios" && !puedeVerUsuarios && puedeVerRoles) setPestana("roles");
     if (pestana === "roles" && !puedeVerRoles && puedeVerUsuarios) setPestana("usuarios");
   }, [pestana, puedeVerRoles, puedeVerUsuarios]);
+  useEffect(() => {
+    setAreasSeleccion((previa) => previa?.actorScope === areasActorScope ? previa : null);
+  }, [areasActorScope]);
 
   const { data: paginaUsuarios, isLoading } = useQuery({
     queryKey: ["usuarios", "pagina", pagina],
@@ -167,6 +177,7 @@ export default function UsuariosPage() {
                   <td><EtiquetaEstado estado={u.active ? "active" : "inactive"} /></td>
                   <td className="acciones-tabla">
                     {puedeEditarUsuarios && <button onClick={() => setEditando(u)}>Editar</button>}
+                    {areasActorScope && <button aria-label={`Áreas de ${u.displayName}`} onClick={() => setAreasSeleccion({ usuario: u, actorScope: areasActorScope })}>Áreas</button>}
                     {puedeResetearPasswords && <button onClick={() => setReset(u)}>Restablecer contraseña</button>}
                     {puedeReenviarCredenciales && <button onClick={() => setReenviar(u)}>Reenviar contraseña</button>}
                     {u.active && puedeDesactivarUsuarios
@@ -218,6 +229,14 @@ export default function UsuariosPage() {
         </table>
       )}
 
+      {WHATS_NEW_ENABLED && areasActorScope && areasUsuario && (
+        <Modal titulo={`Áreas de ${areasUsuario.displayName}`} abierto onCerrar={() => setAreasSeleccion(null)}>
+          <UserBusinessAreasPanel key={`${areasActorScope}:${areasUsuario.id}`} actorScope={areasActorScope}
+            userId={areasUsuario.id} canEdit={puedeEditarUsuarios}
+            onSaved={() => setAreasSeleccion((previa) =>
+              previa?.actorScope === areasActorScope && previa.usuario.id === areasUsuario.id ? null : previa)} />
+        </Modal>
+      )}
       <Modal titulo="Nuevo usuario" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
         <FormularioCrear rolesDisponibles={rolesDisponibles} onSubmit={(v) => crear.mutate(v)} cargando={crear.isPending} />
       </Modal>

@@ -302,7 +302,8 @@ const readSnapshots = (v2: boolean) => `
 `;
 
 /** Service-only SELECTs against Portal SQL; never connects to ERP or SAG data sources. */
-export async function readSqlCatalogCustomerSnapshots(scope: CatalogCustomerSnapshotsReadScope): Promise<CatalogDirectoryInput> {
+export async function readSqlCatalogCustomerSnapshots(scope: CatalogCustomerSnapshotsReadScope,
+  transaction?: sql.Transaction): Promise<CatalogDirectoryInput> {
   const allowed = normalizedAuthorizedSources(scope);
   const v2 = scope.includeSagDirectory === true;
   if (v2 && (typeof scope.actorId !== "string" || !scope.actorId.trim() || scope.actorId.length > 128 ||
@@ -345,7 +346,8 @@ export async function readSqlCatalogCustomerSnapshots(scope: CatalogCustomerSnap
     };
     // A serializable read prevents ACL, profile or head changes between the
     // common graph and its exact immutable snapshot projection.
-    return v2 ? await runSqlTransaction(transaction => read(new sql.Request(transaction)))
+    return transaction ? await read(new sql.Request(transaction))
+      : v2 ? await runSqlTransaction(transaction => read(new sql.Request(transaction)))
       : await read((await getSqlPool()).request());
   } catch {
     // Driver errors and internal comparison material are never exposed or logged here.

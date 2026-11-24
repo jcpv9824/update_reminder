@@ -7,6 +7,10 @@ param(
 
   [switch]$IncludeCatalog,
 
+  [switch]$IncludeWhatsNew,
+
+  [switch]$WhatsNewOnly,
+
   [switch]$IncludeCatalogOwnerPublisher,
 
   [switch]$IncludeCatalogErpOwnerPublisher,
@@ -20,6 +24,11 @@ param(
 )
 
 $ErrorActionPreference='Stop'
+if($WhatsNewOnly -and (-not $IncludeWhatsNew -or $IncludeCatalog -or $IncludeCatalogOwnerPublisher -or
+   $IncludeCatalogErpOwnerPublisher -or $IncludeCatalogObservedInventory -or $IncludeCatalogDirectoryV2 -or
+   $IncludeScheduleLifecycle -or $AuthorizeScheduleProcedureGrants)){
+  throw 'Use -IncludeWhatsNew -WhatsNewOnly without catalog or schedule flags to apply only 060-063.'
+}
 if([bool]$IncludeScheduleLifecycle -ne [bool]$AuthorizeScheduleProcedureGrants){
   throw 'Schedule lifecycle requires a separate approval for the object-only EXECUTE grants (073, 077 and 081).'
 }
@@ -174,7 +183,28 @@ if($IncludeCatalog){
   }
 }
 
-foreach($migration in $migrations){
+$whatsNewMigrations=@()
+if($IncludeWhatsNew){
+  $whatsNewMigrations=@(
+    @{version='060';name='060_user_business_areas.sql'},
+    @{version='061';name='061_whats_new_configuration_and_permissions.sql'},
+    @{version='062';name='062_whats_new_entries_and_testing.sql'},
+    @{version='063';name='063_whats_new_reports_outbox.sql'}
+  )
+  # When requested, reject corrupt Novedades artifacts before any write.
+  $reviewed = if($WhatsNewOnly){ $whatsNewMigrations } else { $migrations+$whatsNewMigrations }
+  foreach($entry in $reviewed){
+    $name=[string]$entry.name
+    $path=Join-Path $sqlDirectory $name
+    if(-not (Test-Path -LiteralPath $path) -or -not $manifest.ContainsKey($name) -or
+       (Get-Sha256Hex $path) -cne $manifest[$name]){
+      throw "Novedades deployment package validation failed for $name."
+    }
+  }
+}
+
+function Invoke-ReviewedMigrations([array]$Entries){
+foreach($migration in $Entries){
   $version=[string]$migration.version
   $name=[string]$migration.name
   $path=Join-Path $sqlDirectory $name
@@ -217,6 +247,10 @@ COMMIT TRANSACTION;
   $null=Invoke-SessionSql -Sql $historySql -Mode write -TimeoutSeconds 120 -MaxRows 10
   Write-Host "PASS $version" -ForegroundColor Green
 }
+}
+
+if(-not $WhatsNewOnly){
+Invoke-ReviewedMigrations $migrations
 
 $verificationSql=@'
 SELECT
@@ -298,6 +332,7 @@ if($row.applied_count -ne 14 -or $row.trailing_domain_identities -ne 0 -or
 }
 
 Write-Host "$expectedDatabase migrations 017-030 are applied and verified." -ForegroundColor Green
+}
 
 if($IncludeCatalog){
   $catalogVerificationSql=@'
@@ -890,4 +925,45 @@ SELECT CASE WHEN
     }
     Write-Host "$expectedDatabase optional schedule lifecycle migrations 068 and 070-082 are applied and verified." -ForegroundColor Green
   }
+}
+
+# Novedades is independently opt-in. If the Catalog gate was requested too,
+# do not apply any Novedades migration until its existing verification passes.
+if($IncludeWhatsNew){
+  Invoke-ReviewedMigrations $whatsNewMigrations
+  $whatsNewVerificationSql=@'
+SELECT
+  (SELECT COUNT(*) FROM migration.schema_migrations
+    WHERE migration_version IN ('060','061','062','063') AND succeeded=1) AS migration_count,
+  (SELECT COUNT(*) FROM security.business_areas
+    WHERE area_code IN ('soporte','desarrollo','ventas','administrativa')) AS business_area_count,
+  CASE WHEN OBJECT_ID(N'security.user_business_areas',N'U') IS NOT NULL THEN 1 ELSE 0 END AS business_assignment_ready,
+  (SELECT COUNT(*) FROM whats_new.settings WHERE settings_key=1) AS settings_count,
+  (SELECT COUNT(*) FROM security.permissions WHERE option_key=N'whats_new' AND active=1) AS permission_count,
+  (SELECT COUNT(*) FROM security.role_permissions AS rp
+    JOIN security.permissions AS p ON p.permission_key=rp.permission_key
+    WHERE rp.role_id=N'super_admin' AND p.option_key=N'whats_new' AND p.active=1) AS super_admin_permission_count,
+  CASE WHEN OBJECT_ID(N'whats_new.entries',N'U') IS NOT NULL AND OBJECT_ID(N'whats_new.test_rounds',N'U') IS NOT NULL
+    AND OBJECT_ID(N'whats_new.idempotency_keys',N'U') IS NOT NULL AND OBJECT_ID(N'whats_new.reports',N'U') IS NOT NULL
+    AND OBJECT_ID(N'whats_new.report_entries',N'U') IS NOT NULL AND OBJECT_ID(N'whats_new.report_recipients',N'U') IS NOT NULL
+    THEN 1 ELSE 0 END AS workflow_ready,
+  (SELECT COUNT(*) FROM sys.triggers WHERE is_disabled=0 AND object_id IN
+    (OBJECT_ID(N'whats_new.TR_reports_append_only'),OBJECT_ID(N'whats_new.TR_report_entries_append_only'),
+     OBJECT_ID(N'whats_new.TR_report_recipients_append_only'))) AS report_guard_count,
+  (SELECT COUNT(*) FROM sys.check_constraints AS ck
+    WHERE ck.parent_object_id=OBJECT_ID(N'notifications.email_notifications') AND ck.name=N'CK_email_notifications_type'
+      AND ck.is_disabled=0 AND ck.is_not_trusted=0
+      AND NOT EXISTS(SELECT 1 FROM (VALUES(N'administrative_reminder'),(N'blocked_task_reminder'),(N'task_reminder'),
+        (N'overdue_alert'),(N'password_notification'),(N'task_status_notification'),(N'test_email'),
+        (N'masters_report'),(N'whats_new_report')) required(notification_type)
+        WHERE CHARINDEX(N''''+required.notification_type+N'''',ck.definition)=0)) AS outbox_ready;
+'@
+  $result=Invoke-SessionSql -Sql $whatsNewVerificationSql -Mode read -TimeoutSeconds 120 -MaxRows 1
+  $whatsNewRow=$result.resultSets[0].rows[0]
+  if($whatsNewRow.migration_count -ne 4 -or $whatsNewRow.business_area_count -ne 4 -or $whatsNewRow.business_assignment_ready -ne 1 -or
+     $whatsNewRow.settings_count -ne 1 -or $whatsNewRow.permission_count -ne 8 -or $whatsNewRow.super_admin_permission_count -ne 8 -or
+     $whatsNewRow.workflow_ready -ne 1 -or $whatsNewRow.report_guard_count -ne 3 -or $whatsNewRow.outbox_ready -ne 1){
+    throw 'Novedades migration post-verification failed.'
+  }
+  Write-Host "$expectedDatabase migrations 060-063 are applied and verified." -ForegroundColor Green
 }

@@ -154,7 +154,8 @@ function memberState(source: CatalogErpRevision, code: string | null): CatalogCu
   }
 }
 
-function buildCatalogCustomerDirectoryPage(input: CatalogDirectoryInput, query: CatalogDirectoryQuery, targetId?: string): CatalogDirectoryPage {
+function buildCatalogCustomerDirectoryPage(input: CatalogDirectoryInput, query: CatalogDirectoryQuery, targetId?: string,
+  accept?: (item: CatalogCustomerSummary) => boolean): CatalogDirectoryPage {
   const permitted = input.erp.filter(source => input.allowedSourceIds.has(source.sourceId));
   const bySourceId = new Map<string, CatalogErpRevision>();
   for (const source of permitted) {
@@ -288,15 +289,22 @@ function buildCatalogCustomerDirectoryPage(input: CatalogDirectoryInput, query: 
         sources: [], stateVaries: false, requiresReconciliation: false, sagOnly: true });
     }
   }
-  items.sort((a, b) => compareLabel(a.name, b.name) || compareOrdinal(a.id, b.id));
-  return { items: items.slice((page - 1) * pageSize, page * pageSize),
+  const eligible = accept ? items.filter(accept) : items;
+  eligible.sort((a, b) => compareLabel(a.name, b.name) || compareOrdinal(a.id, b.id));
+  return { items: eligible.slice((page - 1) * pageSize, page * pageSize),
     sources: permitted.map(publicSource).sort((a, b) => compareLabel(a.label, b.label) || compareOrdinal(a.sourceId, b.sourceId)),
     sag: { state: input.sag.state, verifiedAt: input.sag.verifiedAt },
-    partial: input.partial === true || incompleteErp || input.sag.state !== "verified", total: items.length, page, pageSize };
+    partial: input.partial === true || incompleteErp || input.sag.state !== "verified", total: eligible.length, page, pageSize };
 }
 
 export function buildCatalogCustomerDirectory(input: CatalogDirectoryInput, query: CatalogDirectoryQuery = {}): CatalogDirectoryPage {
   return buildCatalogCustomerDirectoryPage(input, query);
+}
+
+/** Workflow-specific narrowing is applied before pagination, without adding trusted options to HTTP queries. */
+export function selectCatalogCustomerDirectory(input: CatalogDirectoryInput, query: CatalogDirectoryQuery,
+  accept: (item: CatalogCustomerSummary) => boolean, targetId?: string): CatalogDirectoryPage {
+  return buildCatalogCustomerDirectoryPage(input, query, targetId, accept);
 }
 
 /** Detail is calculated across all authorized ERP sources, regardless of the list's filters. */
