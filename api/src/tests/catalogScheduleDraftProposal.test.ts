@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { HttpRequest } from "@azure/functions";
+import type sql from "mssql";
 import { describe, expect, it, vi } from "vitest";
 import { buildCatalogDraftScheduleDefinition, createNewCatalogDraftProposalHttp, normalizeCatalogDraftDefinition,
-  verifyStoredCatalogDraft, withCatalogDraftDefinitionForApproval } from "../lib/catalogScheduleDraftProposal";
+  readVerifiedCatalogDraft, verifyStoredCatalogDraft, withCatalogDraftDefinitionForApproval } from "../lib/catalogScheduleDraftProposal";
 
 const actor = { actorId: "actor", allowedKinds: ["domain"] as const, allowLicensing: false };
 const checkedAt = new Date("2030-06-22T12:00:00Z");
@@ -14,6 +15,33 @@ const req = (body: unknown) => new HttpRequest({ method: "POST", url: "http://lo
   body: { string: JSON.stringify(body) } });
 
 describe("pending new schedule proposal", () => {
+  it("reconstructs a role/once draft when SQL JSON omits empty child arrays without weakening its digest", async () => {
+    const id = "05d95fc4-21c3-4adc-8c8d-d23716fe679c";
+    const pins = [{ linkId: "19000000-0000-0000-0000-000000000000", physicalId: "27000000-0000-0000-0000-000000000000",
+      kind: "domain", include: true }];
+    const definition = normalizeCatalogDraftDefinition(doc)!;
+    const digest = createHash("sha256").update(JSON.stringify(["catalog-draft-proposal-v2", id, "qa", "actor", "Nueva",
+      "manual", doc.scope.date, "domain", "test", doc.scope.customerId, null,
+      pins.map(pin => [pin.linkId, pin.kind, pin.physicalId, pin.include]), definition])).digest("hex");
+    // Exact SQL FOR JSON projection: nullable scalars and empty child arrays may be absent.
+    const body = { id, environment: "qa", actorId: "actor", name: "Nueva", scope: doc.scope, moduleId: "", pins, digest,
+      assignmentMode: "role", domainRole: "domain_updater", frequency: "once" };
+    const query = vi.fn().mockResolvedValue({ recordset: [{ body: JSON.stringify(body) }] });
+    const request = { input: vi.fn().mockReturnThis(), query };
+    const tx = { request: () => request } as unknown as sql.Transaction;
+    const claim = { id, actorId: "actor", portalEnvironment: "qa" as const };
+    await expect(readVerifiedCatalogDraft(tx, claim)).resolves.toMatchObject({ id, definition, pins });
+    expect(query.mock.calls[0][0]).toContain("N'[]')) AS users");
+    expect(query.mock.calls[0][0]).toContain("N'[]')) AS weekdays");
+    for (const invalid of [{ users: null }, { users: {} }, { weekdays: null }, { weekdays: {} },
+      { weekdays: [{ weekday: 1 }] }, { users: [{ kind: "domain", id: "unexpected" }] },
+      { digest: "0".repeat(64) }, { pins: undefined }]) {
+      query.mockResolvedValueOnce({ recordset: [{ body: JSON.stringify({ ...body, ...invalid }) }] });
+      await expect(readVerifiedCatalogDraft(tx, claim)).resolves.toBeNull();
+    }
+    query.mockResolvedValueOnce({ recordset: [{ body: JSON.stringify({ ...body, users: [], weekdays: [] }) }] });
+    await expect(readVerifiedCatalogDraft(tx, claim)).resolves.toMatchObject({ id, definition });
+  });
   it("submits only the scoped DTO and cannot transmit approvals or active state", async () => {
     const save = vi.fn().mockResolvedValue({ id: "05d95fc4-21c3-4adc-8c8d-d23716fe679c", status: "pending_approval" });
     const handler = createNewCatalogDraftProposalHttp({ authorize: async () => actor, save, now: () => checkedAt });

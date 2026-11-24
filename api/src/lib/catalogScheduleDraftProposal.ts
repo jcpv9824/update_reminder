@@ -158,12 +158,12 @@ export async function readVerifiedCatalogDraft(tx: sql.Transaction, claim: { id:
             LOWER(CONVERT(char(36),ln.target_id)) AS physicalId,ln.kind,ln.included AS include
             FROM scheduling.catalog_schedule_draft_proposal_links ln WITH (HOLDLOCK)
             WHERE ln.proposal_id=p.proposal_id ORDER BY ln.link_id FOR JSON PATH)) AS pins,
-          JSON_QUERY((SELECT TOP (201) a.kind,u.source_id AS id
+          JSON_QUERY(COALESCE(NULLIF((SELECT TOP (201) a.kind,u.source_id AS id
             FROM scheduling.catalog_schedule_draft_proposal_assignees a WITH (HOLDLOCK)
             JOIN security.users u WITH (HOLDLOCK) ON u.user_key=a.user_key
-            WHERE a.proposal_id=p.proposal_id ORDER BY a.kind,a.user_key FOR JSON PATH)) AS users,
-          JSON_QUERY((SELECT w.weekday FROM scheduling.catalog_schedule_draft_proposal_weekdays w WITH (HOLDLOCK)
-            WHERE w.proposal_id=p.proposal_id ORDER BY w.weekday FOR JSON PATH)) AS weekdays
+            WHERE a.proposal_id=p.proposal_id ORDER BY a.kind,a.user_key FOR JSON PATH),N''),N'[]')) AS users,
+          JSON_QUERY(COALESCE(NULLIF((SELECT w.weekday FROM scheduling.catalog_schedule_draft_proposal_weekdays w WITH (HOLDLOCK)
+            WHERE w.proposal_id=p.proposal_id ORDER BY w.weekday FOR JSON PATH),N''),N'[]')) AS weekdays
         FROM scheduling.catalog_schedule_draft_proposals p WITH (UPDLOCK,HOLDLOCK)
         LEFT JOIN licensing.license_modules m WITH (HOLDLOCK) ON m.module_key=p.license_module_key
         WHERE p.proposal_id=@id AND p.portal_environment=@env AND p.requester_source_id=@actor COLLATE Latin1_General_100_BIN2
@@ -174,9 +174,11 @@ export async function readVerifiedCatalogDraft(tx: sql.Transaction, claim: { id:
   try { body = JSON.parse(recordset[0].body); } catch { return null; }
   if (!body || typeof body !== "object" || Array.isArray(body)) return null;
   const { weekdays: dates, ...row } = body as Record<string, unknown>;
+  // Empty child projections may be omitted by SQL JSON. Normalize only absence:
+  // explicit null/malformed values still fail, and the digest proves emptiness.
   return verifyStoredCatalogDraft({ domainRole: null, databaseRole: null, endDate: null, everyNWeeks: null, intervalDays: null,
-    dayOfMonth: null, ...row, moduleId: row.moduleId === "" ? null : row.moduleId,
-    days: Array.isArray(dates) ? dates.map(day => day?.weekday) : null });
+    dayOfMonth: null, users: [], ...row, moduleId: row.moduleId === "" ? null : row.moduleId,
+    days: dates === undefined ? [] : Array.isArray(dates) ? dates.map(day => day?.weekday) : null });
 }
 
 type VerifiedDraft = NonNullable<ReturnType<typeof verifyStoredCatalogDraft>>;

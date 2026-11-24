@@ -144,6 +144,8 @@ describe("activation snapshot transaction", () => {
     await expect(activateCatalogScheduleFromHistoryInTransaction(tx, historicalScope, resolve)).resolves.toBe("frozen");
     expect(query.mock.calls[1][0]).toMatch(/WHERE e\.catalog_source_key=b\.catalog_source_key AND e\.recorded_at<=@asOf\s+ORDER BY e\.head_event_key DESC/);
     expect(query.mock.calls[1][0]).toContain("AND h.attempt_status='succeeded'");
+    expect(query.mock.calls[1][0]).toContain("k.portal_environment=b.portal_environment COLLATE Latin1_General_100_BIN2");
+    expect(query.mock.calls[1][0]).toContain("DATALENGTH(k.portal_environment)=DATALENGTH(b.portal_environment)");
     expect(bindings.asOf).toEqual(due);
     expect(query.mock.calls[1][0]).toContain("l.registered_at<=@asOf AND (l.retired_at IS NULL OR l.retired_at>@asOf)");
     expect(resolve).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ asOf: due }), { heads, linkIds: [linkId], validUntil: heads[0].validUntil });

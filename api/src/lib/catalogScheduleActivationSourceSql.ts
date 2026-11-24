@@ -25,7 +25,9 @@ export const catalogScheduleActivationSourceSql = `
     AND p.active=1 AND p.status='active' AND p.encrypt_connection=1 AND p.password_configured=1
     AND b.validated_profile_version=p.row_version
   JOIN settings.catalog_match_key_registry k WITH (HOLDLOCK)
-    ON k.portal_environment=b.portal_environment AND k.match_key_version=@matchKeyVersion AND k.enrolled_at<=@asOf
+    ON k.portal_environment=b.portal_environment COLLATE Latin1_General_100_BIN2
+    AND DATALENGTH(k.portal_environment)=DATALENGTH(b.portal_environment)
+    AND k.match_key_version=@matchKeyVersion AND k.enrolled_at<=@asOf
   CROSS APPLY (
     SELECT TOP (1) e.revision_key,e.attempt_ordinal,e.attempt_status,e.attempted_at,e.recorded_at
     FROM settings.catalog_source_head_events e WITH (HOLDLOCK)
