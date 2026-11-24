@@ -1,7 +1,9 @@
 import { Node, mergeAttributes } from "@tiptap/core";
 import { NodeViewWrapper, ReactNodeViewRenderer, type NodeViewProps } from "@tiptap/react";
-import { useEffect, useState } from "react";
+import { MoveDiagonal } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../../../api/client";
+import { privateImageWidth, validPrivateImageWidth } from "../contrato";
 
 export type TipoArchivoPrivado = "imagen" | "documento" | "video";
 export type DestinoArchivoPrivado = "que_cambio" | "reglas_negocio" | "video";
@@ -61,10 +63,20 @@ export function BotonDescargaPrivada({ id, name }: { id: string; name: string })
   {error && <span role="alert"> No se pudo descargar. Vuelve a intentarlo.</span>}</span>;
 }
 
-function VistaImagenPrivada({ node }: NodeViewProps) {
+const MAX_ANCHO_INICIAL_IMAGEN = 640;
+
+function limitarAncho(width: number) {
+  return Math.max(privateImageWidth.min, Math.min(privateImageWidth.max, Math.round(width)));
+}
+
+function VistaImagenPrivada({ node, editor, updateAttributes }: NodeViewProps) {
   const id = node.attrs.fileId;
   const [attempt, setAttempt] = useState(0);
   const [media, setMedia] = useState<{ id: string; url?: string; attempt: number }>();
+  const [anchoTemporal, setAnchoTemporal] = useState<number>();
+  const [anchoNatural, setAnchoNatural] = useState<number>();
+  const imagen = useRef<HTMLImageElement>(null);
+  const arrastre = useRef<{ pointerId: number; x: number; width: number }>();
   useEffect(() => {
     if (!valido(id)) return;
     const control = new AbortController();
@@ -78,9 +90,62 @@ function VistaImagenPrivada({ node }: NodeViewProps) {
     return () => { control.abort(); if (url) URL.revokeObjectURL(url); };
   }, [id, attempt]);
   const texto = typeof node.attrs.alt === "string" ? node.attrs.alt : "";
-  return <NodeViewWrapper className="qhdn-imagen" contentEditable={false}>
+  const anchoGuardado = validPrivateImageWidth(node.attrs.width);
+  const ancho = anchoTemporal ?? anchoGuardado;
+  const anchoBase = () => limitarAncho(imagen.current?.getBoundingClientRect().width || anchoGuardado ||
+    Math.min(imagen.current?.naturalWidth || 320, MAX_ANCHO_INICIAL_IMAGEN));
+  const aplicarAncho = (width: number) => {
+    if (editor.isEditable && anchoGuardado !== width) updateAttributes({ width, height: null });
+  };
+  function cancelarArrastre(pointerId: number) {
+    if (arrastre.current?.pointerId !== pointerId) return;
+    arrastre.current = undefined;
+    setAnchoTemporal(undefined);
+  }
+  return <NodeViewWrapper className="qhdn-imagen-privada" contentEditable={false}>
     {!valido(id) ? <span>Imagen no disponible.</span> : media?.id !== id || media.attempt !== attempt ? <span role="status">Cargando imagen…</span>
-      : media.url ? <img src={media.url} alt={texto} loading="lazy" /> : <span role="status">Imagen no disponible. <button type="button" onClick={() => setAttempt(attempt + 1)}>Reintentar</button></span>}
+      : media.url ? <div className="qhdn-imagen-marco" style={ancho === undefined ? { maxWidth: `min(100%, ${MAX_ANCHO_INICIAL_IMAGEN}px)` } : undefined}>
+        <img ref={imagen} src={media.url} alt={texto} loading="lazy" width={ancho}
+          onLoad={() => setAnchoNatural(anchoBase())} />
+        {editor.isEditable && <button type="button" className="qhdn-imagen-redimensionar" role="slider"
+          aria-label={texto ? `Redimensionar imagen: ${texto}` : "Redimensionar imagen"}
+          title="Arrastra o usa las flechas para cambiar el ancho"
+          aria-valuemin={privateImageWidth.min} aria-valuemax={privateImageWidth.max}
+          aria-valuenow={ancho ?? anchoNatural ?? 320} aria-valuetext={`${ancho ?? anchoNatural ?? 320} píxeles de ancho`}
+          onKeyDown={event => {
+            const current = anchoGuardado ?? anchoBase();
+            const step = event.shiftKey ? 64 : 16;
+            const next = event.key === "ArrowLeft" || event.key === "ArrowDown" ? current - step
+              : event.key === "ArrowRight" || event.key === "ArrowUp" ? current + step
+              : event.key === "Home" ? privateImageWidth.min
+              : event.key === "End" ? privateImageWidth.max : undefined;
+            if (next === undefined) return;
+            event.preventDefault(); event.stopPropagation();
+            aplicarAncho(limitarAncho(next));
+          }}
+          onPointerDown={event => {
+            if (!event.isPrimary || event.button !== 0 || arrastre.current) return;
+            // Resize rather than initiating the editor node's native drag.
+            event.preventDefault();
+            event.currentTarget.focus({ preventScroll: true });
+            arrastre.current = { pointerId: event.pointerId, x: event.clientX, width: anchoBase() };
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }}
+          onPointerMove={event => {
+            const inicio = arrastre.current;
+            if (inicio?.pointerId === event.pointerId) setAnchoTemporal(limitarAncho(inicio.width + event.clientX - inicio.x));
+          }}
+          onPointerUp={event => {
+            const inicio = arrastre.current;
+            if (inicio?.pointerId !== event.pointerId) return;
+            cancelarArrastre(event.pointerId);
+            if (event.clientX !== inicio.x) aplicarAncho(limitarAncho(inicio.width + event.clientX - inicio.x));
+          }}
+          onPointerCancel={event => cancelarArrastre(event.pointerId)}
+          onLostPointerCapture={event => cancelarArrastre(event.pointerId)}>
+          <MoveDiagonal size={15} aria-hidden="true" />
+        </button>}
+      </div> : <span role="status">Imagen no disponible. <button type="button" onClick={() => setAttempt(attempt + 1)}>Reintentar</button></span>}
   </NodeViewWrapper>;
 }
 

@@ -80,6 +80,12 @@ function referenceFromDto(a: AttachmentDto, i: number): Adjunto {
 export function formFromEntry(e: EntryDto): DatosFormulario { return { tipo: e.type, sistema: e.system, rutas: e.routes.map((r,i) => ({ id: `route-${i}`, niveles: [{ valor: r.via === "barra_lateral" ? "Barra lateral" : "Barra de navegación" }, ...r.submenus.map(valor => ({ valor })), { valor: r.option }] })), queCambio: e.whatChanged, acciones: e.requiredActions.map(a => ({ accionId: a.code, nombre: a.label, texto: a.detail })), cliente: e.clientName ?? "", asesorInicialId: e.initialTesterId ?? "", reglasNegocio: e.attachments.filter(a => a.group === "reglas_negocio").map(referenceFromDto), videos: e.attachments.filter(a => a.group === "video").map(referenceFromDto) }; }
 
 /** Private rendering accepts only file IDs, never a request URL from document content. */
+// Keep the same bounds as the API rich-text image schema.
+export const privateImageWidth = { min: 16, max: 2000 } as const;
+export function validPrivateImageWidth(width: unknown): number | undefined {
+  return typeof width === "number" && Number.isInteger(width) && width >= privateImageWidth.min && width <= privateImageWidth.max ? width : undefined;
+}
+
 export function safeDisplayDoc(doc: DocEnriquecido | null, publicProfile = false, privateMedia = false): DocEnriquecido | null {
   if (!doc) return null;
   function clean(node: DocEnriquecido, depth: number): DocEnriquecido | null {
@@ -88,7 +94,8 @@ export function safeDisplayDoc(doc: DocEnriquecido | null, publicProfile = false
       const id: unknown = node.attrs?.fileId;
       if (publicProfile || !privateMedia || typeof id !== "string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) return null;
       const short = (value: unknown) => typeof value === "string" ? value.slice(0, 200) : undefined;
-      return node.type === "image" ? { type: "image", attrs: { fileId: id, alt: short(node.attrs?.alt) } }
+      const width = validPrivateImageWidth(node.attrs?.width);
+      return node.type === "image" ? { type: "image", attrs: { fileId: id, alt: short(node.attrs?.alt), ...(width === undefined ? {} : { width }) } }
         : { type: "adjuntoArchivo", attrs: { fileId: id, nombre: short(node.attrs?.nombre) ?? "Archivo adjunto" } };
     }
     if (publicProfile && node.marks?.some(m => m.type === "code")) return null;

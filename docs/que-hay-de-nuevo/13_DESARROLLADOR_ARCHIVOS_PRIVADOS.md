@@ -21,6 +21,34 @@ y no requiere reescribir la migración 062. El editor enriquecido se conserva.
 
 ## Contrato y límites
 
+### Guardado y presentación del borrador
+
+- El autoguardado espera 3 segundos desde la última edición. Cambiar de campo
+  no inicia una petición. El formulario y la barra de edición siguen activos
+  durante las escrituras del borrador; publicar a Soporte sí bloquea la edición
+  mientras se confirma lo enviado.
+- Solo se escribe un borrador a la vez. Una confirmación conserva el ETag para
+  la próxima escritura; las ediciones posteriores a la captura enviada quedan
+  pendientes. Un conflicto detiene el autoguardado sin reemplazar el texto
+  local. Ante un error de red se puede editar y reintentar, o guardar a mano.
+- Se conservan los objetos de imagen de la vista previa mientras cambia texto
+  cercano. El ancho inicial es el intrínseco, hasta 640 px; se ajusta al espacio
+  disponible. La esquina de la imagen admite arrastre y flechas. El tamaño
+  elegido queda en el documento como un ancho entre 16 y 2000 px; no cambia
+  el archivo ni se vuelve a subir. La vista previa de Soporte también respeta
+  este ancho sin desbordar su columna.
+- En Rutas, Vía tiene espacio para «Barra de navegación», los separadores
+  tienen el mismo espacio y la fila se apila en pantallas estrechas.
+
+Para repetir la prueba sin acceder a SQL, correo ni SeaweedFS, construir el
+frontend con `VITE_WHATS_NEW_ENABLED=true`, `VITE_WHATS_NEW_PROTOTYPE=false` y
+`VITE_API_BASE_URL=/api`. Ejecutar desde `frontend`
+`node scripts/verify-whats-new-slow-draft.mjs <directorio-build> 4176`.
+El servidor solo escucha en loopback, usa datos sintéticos y retarda cada
+escritura 6 segundos. La prueba del navegador comprueba foco, escritura,
+redimensionado, conservación del ancho y ETags consecutivos. El simulador no
+se copia al sitio desplegado.
+
 `WHATS_NEW_MEDIA_ENABLED=true` es independiente de `WHATS_NEW_ENABLED`. Requiere
 un proveedor SeaweedFS configurado. En QA se valida con un prefijo exclusivo
 del entorno, nunca con el prefijo productivo. No se activa un destino nuevo

@@ -164,10 +164,29 @@ export function EditorEnriquecido({
   // Si el valor cambia desde fuera (otra entrada, restablecer), se refleja sin emitir onChange.
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;
+    if (archivosPrivados && soloLectura && valor) {
+      // Keep unchanged private image node views mounted while the author types
+      // in the live preview. An all-document setContent would refetch the images.
+      try {
+        const current = editor.state.doc;
+        const next = editor.schema.nodeFromJSON(valor);
+        const start = current.content.findDiffStart(next.content);
+        if (start === null) return;
+        const end = current.content.findDiffEnd(next.content);
+        if (end) {
+          const overlap = Math.max(0, start - Math.min(end.a, end.b));
+          const tx = editor.state.tr.replace(start, end.a + overlap, next.slice(start, end.b + overlap));
+          if (tx.doc.eq(next)) {
+            editor.view.dispatch(tx.setMeta("preventUpdate", true).setMeta("addToHistory", false));
+            return;
+          }
+        }
+      } catch { /* use the normal tolerant parser for historical documents */ }
+    }
     const actual = JSON.stringify(editor.getJSON());
     const siguiente = JSON.stringify(valor ?? { type: "doc", content: [{ type: "paragraph" }] });
     if (actual !== siguiente) editor.commands.setContent(valor ?? "", { emitUpdate: false });
-  }, [editor, valor]);
+  }, [editor, valor, archivosPrivados, soloLectura]);
 
   if (soloLectura) {
     return <div className="qhdn-editor qhdn-editor-solo-lectura"><EditorContent editor={editor} /></div>;

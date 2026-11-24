@@ -39,8 +39,7 @@
 .qhdn-formulario-desarrollador .qhdn-chip:focus-within { outline: 2px solid var(--color-secondary); outline-offset: 2px; }
 .qhdn-formulario-desarrollador .qhdn-autor small { display: block; color: var(--color-text-muted); margin-top: 3px; }
 .qhdn-formulario-desarrollador .qhdn-constructor-rutas > .qhdn-boton-enlace { padding: 4px 8px; border: 1px solid var(--color-secondary); border-radius: 6px; }
-.qhdn-formulario-desarrollador .qhdn-nivel > div, .qhdn-formulario-desarrollador .qhdn-nivel:first-child { width: min(150px, 100%); }
-.qhdn-formulario-desarrollador .qhdn-ruta-niveles { column-gap: 8px; row-gap: 4px; }
+.qhdn-formulario-desarrollador .qhdn-ruta { --qhdn-ancho-nivel: 150px; }
 .qhdn-accion-desarrollador { border-bottom: 1px solid color-mix(in srgb, var(--color-border) 65%, var(--color-card)); padding: 4px 0 8px; }
 .qhdn-accion-desarrollador:last-child { border-bottom: 0; }
 .qhdn-accion-desarrollador > .qhdn-editor { margin: 4px 0 2px; }
@@ -215,12 +214,13 @@
   border: 1px solid var(--color-border); border-radius: 8px; padding: 10px 12px 8px; margin: 0 0 10px; min-inline-size: 0;
 }
 .qhdn-ruta legend { font-weight: 600; font-size: 13px; padding: 0 4px; color: var(--color-primary); }
-.qhdn-ruta-niveles { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
-.qhdn-nivel { display: flex; gap: 8px; align-items: flex-start; min-width: 0; }
-.qhdn-nivel > div, .qhdn-nivel > select { width: 170px; }
+.qhdn-ruta-niveles { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: flex-start; }
+.qhdn-nivel { position: relative; width: min(var(--qhdn-ancho-nivel, 170px), 100%); min-width: 0; }
+.qhdn-nivel:first-child { --qhdn-ancho-nivel: 200px; }
+.qhdn-nivel > div { min-width: 0; }
+.qhdn-nivel input, .qhdn-nivel select { width: 100%; min-width: 0; }
 .qhdn-nivel label { font-size: 12px; color: var(--color-text-muted); }
-.qhdn-nivel:first-child { flex-direction: column; gap: 0; width: 170px; }
-.qhdn-separador-ruta { margin-top: 26px; color: var(--color-text-muted); font-weight: 700; }
+.qhdn-separador-ruta { position: absolute; inset-inline-start: -14px; inset-block-end: 0; width: 14px; height: 34px; display: grid; place-items: center; color: var(--color-text-muted); font-weight: 700; pointer-events: none; }
 .qhdn-nivel-otro { margin-top: 4px; }
 .qhdn-ruta-acciones { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
 .qhdn-ruta-acciones button:not(.qhdn-boton-enlace) { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; font-size: 13px; }
@@ -291,6 +291,15 @@
 .qhdn-editor-contenido pre code { background: transparent; color: inherit; padding: 0; }
 .qhdn-editor-contenido a { text-decoration: underline; }
 .qhdn-editor-contenido img, .qhdn-imagen { max-width: 100%; height: auto; border-radius: 6px; border: 1px solid var(--color-border); display: block; margin: 6px 0; }
+.qhdn-imagen-privada { max-width: 100%; margin: 6px 0; }
+.qhdn-imagen-marco { position: relative; width: fit-content; max-width: 100%; }
+.qhdn-imagen-marco > img { margin: 0; }
+.qhdn-imagen-redimensionar {
+  position: absolute; inset-inline-end: 0; inset-block-end: 0; display: grid; place-items: center;
+  min-width: 24px; min-height: 24px; padding: 0; color: var(--color-primary);
+  border-color: var(--color-primary); background: var(--color-card); cursor: nwse-resize; touch-action: none;
+}
+.qhdn-imagen-redimensionar:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 .qhdn-editor-contenido img.ProseMirror-selectednode { outline: 2px solid var(--color-secondary); }
 .qhdn-editor-contenido p.is-editor-empty:first-child::before {
   content: attr(data-placeholder); color: var(--color-text-muted); float: left; height: 0; pointer-events: none;
@@ -431,7 +440,8 @@
 }
 @media (max-width: 720px) {
   .modal.qhdn-dialogo { min-width: 0; width: calc(100vw - 32px); }
-  .qhdn-nivel > div, .qhdn-nivel > select, .qhdn-nivel:first-child { width: 100%; }
+  .qhdn-nivel { width: 100%; }
+  .qhdn-separador-ruta { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   .qhdn-pagina *, .qhdn-novedades * { transition: none !important; animation: none !important; }

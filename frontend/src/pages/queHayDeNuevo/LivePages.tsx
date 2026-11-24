@@ -31,7 +31,8 @@ const can = (me: Me, permission: string) => me.permissions.includes(permission);
 function Feedback({ error }: { error: unknown }) { return error ? <div className="alerta-error" role="alert">{errorMessage(error)}</div> : null; }
 function Loading() { return <p role="status">Cargando...</p>; }
 function ReadDoc({ value, publicProfile = false, privateMedia = false }: { value: DocEnriquecido | null; publicProfile?: boolean; privateMedia?: boolean }) {
-  return <VisorEnriquecido valor={safeDisplayDoc(value, publicProfile, privateMedia)} archivosPrivados={privateMedia && !publicProfile} />;
+  const doc = useMemo(() => safeDisplayDoc(value, publicProfile, privateMedia), [value, publicProfile, privateMedia]);
+  return <VisorEnriquecido valor={doc} archivosPrivados={privateMedia && !publicProfile} />;
 }
 function PageControl({ page, total, size, onChange }: { page: number; total: number; size: number; onChange: (n: number) => void }) {
   return <div className="qhdn-fila" aria-label="Paginación"><button disabled={page <= 1} onClick={() => onChange(page - 1)}>Anterior</button><span role="status">Página {page} · {total} resultados</span><button disabled={page * size >= total} onClick={() => onChange(page + 1)}>Siguiente</button></div>;
@@ -218,7 +219,12 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
   const saveDraft = useMemo(() => createDraftSaveSession(), []);
   const [form, setForm] = useState<LiveDraftForm>(() => entry ? formFromEntry(entry) : emptyForm());
   const [saved, setSaved] = useState<EntryDto | undefined>(entry); const [note, setNote] = useState<DocEnriquecido | null>(null); const [message, setMessage] = useState("");
-  const [dirty, setDirty] = useState(false); const dirtyRef = useRef(dirty); dirtyRef.current = dirty; const saving = useRef(false);
+  const [editRevision, setEditRevision] = useState(0);
+  const [committedRevision, setCommittedRevision] = useState(0);
+  const [draftPending, setDraftPending] = useState(false);
+  const [draftError, setDraftError] = useState<unknown>(null);
+  const [conflict, setConflict] = useState(false);
+  const failedRevision = useRef<number>();
   const [uploading, setUploading] = useState(false);
   const uploadBusy = useRef(false);
   const publishing = useRef(false);
@@ -230,34 +236,70 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
   const missingId = useId();
   const actions = useQuery({ queryKey: [...key, "required-actions"], queryFn: () => whatsNewApi.lookup<{ code: string; label: string; isOther: boolean }>("required-actions") });
   const support = useQuery({ queryKey: [...key, "support-users"], queryFn: () => whatsNewApi.lookup("support-users") });
-  const op = useOperation(); const latest = useRef({ form, saved }); latest.current = { form, saved };
-  function update(patch: Partial<LiveDraftForm>) { setForm(f => ({ ...f, ...patch })); setDirty(true); }
+  const op = useOperation();
+  const [submitting, setSubmitting] = useState(false);
+  const latest = useRef({ form, saved, revision: 0, committed: 0, conflicted: false });
+  function update(patch: Partial<LiveDraftForm>) {
+    const state = latest.current;
+    state.form = { ...state.form, ...patch };
+    if (!correction) {
+      state.revision++;
+      setEditRevision(state.revision);
+      if (!state.conflicted) setDraftError(null);
+    }
+    setForm(state.form);
+  }
   const clientLabel = form.clientSelection === undefined ? saved?.clientName ?? null : form.clientSelection?.label ?? null;
   const saveRef = useRef<() => void>(() => {});
   function persistDraft() {
     if (inFlightDraft.current) return inFlightDraft.current;
-    const submitted = latest.current.form;
+    const state = latest.current;
+    const submitted = state.form;
+    const revision = state.revision;
     const selection = submitted.clientSelection;
-    const write = saveDraft(draftFromForm(submitted, selection === null ? null : selection?.id), latest.current.saved)
+    if (state.conflicted) return Promise.reject(new Error("El borrador tiene una versión más reciente."));
+    setDraftPending(true);
+    setDraftError(null);
+    const write = saveDraft(draftFromForm(submitted, selection === null ? null : selection?.id), state.saved)
       .then(result => {
-        latest.current.saved = result; setSaved(result); setDirty(latest.current.form !== submitted);
-        if (selection !== undefined) setForm(current => current.clientSelection === selection ? { ...current, clientSelection: undefined } : current);
+        state.saved = result;
+        state.committed = revision;
+        failedRevision.current = undefined;
+        setSaved(result);
+        setCommittedRevision(revision);
+        if (selection !== undefined && state.form.clientSelection === selection) {
+          state.form = { ...state.form, clientSelection: undefined };
+          setForm(state.form);
+        }
         return result;
-      }).finally(() => { if (inFlightDraft.current === write) inFlightDraft.current = undefined; });
+      }).catch((error: unknown) => {
+        failedRevision.current = state.revision;
+        const response = error as { status?: number; data?: { code?: unknown } };
+        if (response.status === 409 && (!response.data?.code || response.data.code === "version_desactualizada")) {
+          state.conflicted = true;
+          setConflict(true);
+        }
+        setDraftError(error);
+        throw error;
+      }).finally(() => {
+        if (inFlightDraft.current === write) inFlightDraft.current = undefined;
+        setDraftPending(false);
+      });
     inFlightDraft.current = write;
     return write;
   }
   async function save(publish = false, auto = false) {
-    if (saving.current || uploadBusy.current || op.isPending || (auto && !dirtyRef.current) || correction) return;
-    saving.current = true;
-    publishing.current = publish;
-    setLocalError(""); setMessage("");
+    const state = latest.current;
+    if (inFlightDraft.current || publishing.current || uploadBusy.current || state.conflicted || correction
+      || (auto && (state.revision === state.committed || failedRevision.current === state.revision))) return;
+    if (publish) { publishing.current = true; setSubmitting(true); }
+    if (!auto) setLocalError("");
     try {
-      const result = await op.mutateAsync(persistDraft) as EntryDto;
+      const result = await persistDraft();
       if (publish) { await op.mutateAsync(() => whatsNewApi.command(result.id, "publish", result.etag)); navigate(`${base}/${result.id}`); }
       else setMessage("Borrador guardado.");
-    } catch { /* useMutation reports the controlled API error and retains form state */ }
-    finally { saving.current = false; publishing.current = false; }
+    } catch { /* draft and publish errors are displayed without replacing local edits */ }
+    finally { if (publish) { publishing.current = false; setSubmitting(false); } }
   }
   async function upload(file: File, kind: TipoArchivoPrivado, target: DestinoArchivoPrivado) {
     if (!me.storageAvailable || uploadBusy.current || publishing.current) throw new Error("No se puede iniciar otra carga en este momento.");
@@ -282,12 +324,41 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
     if (!file) return;
     try {
       const media = await upload(file, group === "videos" ? "video" : "documento", group === "videos" ? "video" : "reglas_negocio");
-      setForm(current => current.tipo === "nuevo" ? { ...current, [group]: [...current[group], { id: media.fileId, clase: "archivo", nombre: media.name, url: "" }] } : current);
-      setDirty(true);
+      const current = latest.current.form;
+      if (current.tipo === "nuevo") update({ [group]: [...current[group], { id: media.fileId, clase: "archivo", nombre: media.name, url: "" }] });
     } catch (error) { setLocalError(errorMessage(error)); }
   }
   saveRef.current = () => { void save(false, true); };
-  useEffect(() => { if (correction) return; const timer = setInterval(() => saveRef.current(), 30_000); return () => clearInterval(timer); }, [correction]);
+  const dirty = editRevision !== committedRevision;
+  useEffect(() => {
+    if (!dirty || correction || draftPending || uploading || submitting || conflict || failedRevision.current === editRevision) return;
+    const timer = window.setTimeout(() => saveRef.current(), 3_000);
+    return () => window.clearTimeout(timer);
+  }, [dirty, editRevision, correction, draftPending, uploading, submitting, conflict]);
+  useEffect(() => {
+    if (!dirty) return;
+    // The debounce leaves a brief unsaved window; never discard it on a reload silently.
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    // BrowserRouter's in-app links don't fire beforeunload (including the sidebar).
+    const warnLink = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
+      if (!link || link.hasAttribute("download") || (link.target && link.target !== "_self")) return;
+      const destination = new URL(link.href, location.href);
+      if (destination.origin !== location.origin || destination.pathname === location.pathname) return;
+      if (!window.confirm("Hay cambios sin guardar. ¿Quieres salir del borrador?")) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    window.addEventListener("beforeunload", warn);
+    document.addEventListener("click", warnLink, true);
+    return () => {
+      window.removeEventListener("beforeunload", warn);
+      document.removeEventListener("click", warnLink, true);
+    };
+  }, [dirty]);
+  const formLocked = submitting || op.isPending;
   const missing = fieldRequirements(form, clientLabel);
   const title = correction ? "Corregir y volver a publicar" : saved ? "Editar borrador" : "Nueva entrada";
   return <>
@@ -296,25 +367,25 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
       <h1>{title} · Qué hay de nuevo</h1>
       <div className="qhdn-etiquetas"><EtiquetaEstadoQhdn estado={saved?.status ?? "borrador"} />{saved?.number && <span className="qhdn-detalle-identificador">{saved.number}</span>}</div>
     </header>
-    <Feedback error={op.error} />{localError && <p role="alert" className="alerta-error">{localError}</p>}
+    <Feedback error={op.error || draftError} />{localError && <p role="alert" className="alerta-error">{localError}</p>}
     <div className="qhdn-formulario-grid qhdn-desarrollador-grid">
-      <form className="tarjeta qhdn-formulario qhdn-formulario-desarrollador" onSubmit={e => { e.preventDefault(); void save(); }} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) saveRef.current(); }}>
+      <form className="tarjeta qhdn-formulario qhdn-formulario-desarrollador" onSubmit={e => { e.preventDefault(); void save(); }}>
         <h2>Datos del cambio</h2>
-        <fieldset disabled={correction || op.isPending || uploading} className="qhdn-fieldset"><legend>1. Tipo *</legend><div className="qhdn-radios qhdn-chips">{types.map(t => <label key={t} className={`qhdn-radio qhdn-chip qhdn-tipo-${t}`}><input type="radio" name="tipo" checked={form.tipo === t} onChange={() => update({ tipo: t, ...(t !== "nuevo" ? { clientSelection: null, asesorInicialId: "", reglasNegocio: [], videos: [] } : {}) })} />{ETIQUETAS_TIPO_CORTAS[t]}</label>)}</div></fieldset>
-        <fieldset disabled={correction || op.isPending} className="qhdn-fieldset"><legend>2. Sistema *</legend><div className="qhdn-radios qhdn-chips">{[["sag_web", "SAG Web"], ["sag_clasico", "SAG Clásico"]].map(([v,l]) => <label className="qhdn-radio qhdn-chip" key={v}><input type="radio" name="sistema" checked={form.sistema === v} onChange={() => update({ sistema: v as Sistema })} />{l}</label>)}</div></fieldset>
+        <fieldset disabled={correction || formLocked || uploading} className="qhdn-fieldset"><legend>1. Tipo *</legend><div className="qhdn-radios qhdn-chips">{types.map(t => <label key={t} className={`qhdn-radio qhdn-chip qhdn-tipo-${t}`}><input type="radio" name="tipo" checked={form.tipo === t} onChange={() => update({ tipo: t, ...(t !== "nuevo" ? { clientSelection: null, asesorInicialId: "", reglasNegocio: [], videos: [] } : {}) })} />{ETIQUETAS_TIPO_CORTAS[t]}</label>)}</div></fieldset>
+        <fieldset disabled={correction || formLocked} className="qhdn-fieldset"><legend>2. Sistema *</legend><div className="qhdn-radios qhdn-chips">{[["sag_web", "SAG Web"], ["sag_clasico", "SAG Clásico"]].map(([v,l]) => <label className="qhdn-radio qhdn-chip" key={v}><input type="radio" name="sistema" checked={form.sistema === v} onChange={() => update({ sistema: v as Sistema })} />{l}</label>)}</div></fieldset>
         <p className="qhdn-autor"><strong>Desarrollador:</strong> {entry?.developer.displayName ?? me.user.displayName} <small>Es quien creó la entrada y no se puede cambiar.</small></p>
-        <fieldset disabled={correction || op.isPending} className="qhdn-fieldset"><legend>3. Rutas *</legend><ConstructorRutas rutas={form.rutas} onChange={rutas => update({ rutas })} /></fieldset>
+        <fieldset disabled={correction || formLocked} className="qhdn-fieldset"><legend>3. Rutas *</legend><ConstructorRutas rutas={form.rutas} onChange={rutas => update({ rutas })} /></fieldset>
         <section className="qhdn-formulario-seccion"><h3 id="live-what">4. Qué cambió *</h3>
           <p className="texto-ayuda">Explica qué cambió y en qué caso se nota. No incluyas claves ni otros datos sensibles.</p>
-          <EditorEnriquecido valor={form.queCambio} onChange={queCambio => update({ queCambio })} etiquetaId="live-what" perfil="medio" soloLectura={op.isPending && !uploading} archivosPrivados cargarArchivo={me.storageAvailable ? (file, kind) => upload(file, kind, "que_cambio") : undefined} />
+          <EditorEnriquecido valor={form.queCambio} onChange={queCambio => update({ queCambio })} etiquetaId="live-what" perfil="medio" soloLectura={formLocked} archivosPrivados cargarArchivo={me.storageAvailable ? (file, kind) => upload(file, kind, "que_cambio") : undefined} />
         </section>
-        <fieldset className="qhdn-fieldset" disabled={op.isPending}><legend>5. Acción requerida *</legend>
+        <fieldset className="qhdn-fieldset" disabled={formLocked}><legend>5. Acción requerida *</legend>
           <p className="texto-ayuda">Marca las acciones y describe en cada una lo que debe hacer Soporte.</p>
           {actions.isPending && <Loading />}<Feedback error={actions.error} />
           {actions.data?.map(a => <div key={a.code} className="qhdn-accion-desarrollador"><label className="qhdn-check"><input type="checkbox" checked={form.acciones.some(v => v.accionId === a.code)} onChange={e => update({ acciones: e.target.checked ? [...form.acciones, { accionId: a.code, nombre: a.label, texto: null }] : form.acciones.filter(v => v.accionId !== a.code) })} />{a.label}</label>
-            {form.acciones.some(v => v.accionId === a.code) && <EditorEnriquecido valor={form.acciones.find(v => v.accionId === a.code)!.texto} onChange={texto => update({ acciones: form.acciones.map(v => v.accionId === a.code ? { ...v, texto } : v) })} tamano="compacto" ariaLabel={`Detalle de ${a.label}`} perfil="compacto" />}</div>)}
+            {form.acciones.some(v => v.accionId === a.code) && <EditorEnriquecido valor={form.acciones.find(v => v.accionId === a.code)!.texto} onChange={texto => update({ acciones: form.acciones.map(v => v.accionId === a.code ? { ...v, texto } : v) })} tamano="compacto" ariaLabel={`Detalle de ${a.label}`} perfil="compacto" soloLectura={formLocked} />}</div>)}
         </fieldset>
-        {form.tipo === "nuevo" && <fieldset className="qhdn-fieldset qhdn-nuevo-desarrollador" disabled={correction || op.isPending}><legend>Solo para desarrollos nuevos</legend>
+        {form.tipo === "nuevo" && <fieldset className="qhdn-fieldset qhdn-nuevo-desarrollador" disabled={correction || formLocked}><legend>Solo para desarrollos nuevos</legend>
           <div className="qhdn-pares-desarrollador">
             <ErpClientCombobox name={clientLabel} readOnly={correction} scope={key} lookup={whatsNewApi.lookupErpClients} onSelect={clientSelection => update({ clientSelection })} />
             <div><label><span aria-hidden="true">7. </span>Asesor a cargo de las pruebas iniciales *<select value={form.asesorInicialId} onChange={e => update({ asesorInicialId: e.target.value })}><option value="">Seleccione un asesor</option>{support.data?.filter(u => u.id !== me.user.id && u.active !== false).map(u => <option key={u.id} value={u.id}>{u.displayName}</option>)}</select></label><Feedback error={support.error} /></div>
@@ -324,12 +395,12 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
           <input ref={rulesInput} type="file" aria-label="Documento de reglas de negocio" accept={aceptaDocumentoPrivado} hidden onChange={e => { void addReferenceFile("reglasNegocio", e.currentTarget.files?.[0]); e.currentTarget.value = ""; }} />
           <input ref={videoInput} type="file" aria-label="Archivo de video de entrega" accept={tiposVideoPrivado.join(",")} hidden onChange={e => { void addReferenceFile("videos", e.currentTarget.files?.[0]); e.currentTarget.value = ""; }} />
         </fieldset>}
-        {correction && <section className="qhdn-formulario-seccion"><h3 id="live-correction">Nota de corrección</h3><EditorEnriquecido valor={note} onChange={setNote} perfil="medio" etiquetaId="live-correction" /></section>}
+        {correction && <section className="qhdn-formulario-seccion"><h3 id="live-correction">Nota de corrección</h3><EditorEnriquecido valor={note} onChange={setNote} perfil="medio" etiquetaId="live-correction" soloLectura={formLocked} /></section>}
         {!me.storageAvailable && <p className="texto-ayuda" id="storage-form">{storagePending}</p>}
         {uploading && <p className="texto-ayuda" id="storage-form" role="status">Subiendo archivo a almacenamiento privado…</p>}
         <div className="qhdn-pie-formulario">
-          <p role="status" className="texto-ayuda">{message}</p>
-          <div className="acciones-formulario">{correction ? <button type="button" className="primario" disabled={op.isPending || uploading} onClick={() => op.mutateAsync(() => whatsNewApi.command(entry!.id, "correct", entry!.etag, { whatChanged: form.queCambio, requiredActions: draftFromForm(form).requiredActions, correctionNote: note })).then(() => navigate(`${base}/${entry!.id}`)).catch(() => {})}>Corregir y volver a publicar</button> : <><button type="submit" disabled={op.isPending || uploading}>Guardar borrador</button><button type="button" className="primario" disabled={op.isPending || uploading || missing.length > 0} aria-describedby={missing.length ? missingId : undefined} onClick={() => void save(true)}>Publicar a Soporte</button></>}</div>
+          <p role="status" className="texto-ayuda">{draftPending ? "Guardando borrador…" : dirty ? "Cambios sin guardar." : message}</p>
+          <div className="acciones-formulario">{correction ? <button type="button" className="primario" disabled={formLocked || uploading} onClick={() => op.mutateAsync(() => whatsNewApi.command(entry!.id, "correct", entry!.etag, { whatChanged: form.queCambio, requiredActions: draftFromForm(form).requiredActions, correctionNote: note })).then(() => navigate(`${base}/${entry!.id}`)).catch(() => {})}>Corregir y volver a publicar</button> : <><button type="submit" disabled={formLocked || draftPending || uploading || conflict}>Guardar borrador</button><button type="button" className="primario" disabled={formLocked || draftPending || uploading || conflict || missing.length > 0} aria-describedby={missing.length ? missingId : undefined} onClick={() => void save(true)}>Publicar a Soporte</button></>}</div>
           {!correction && missing.length > 0 && <p id={missingId} className="texto-ayuda qhdn-campos-faltantes">Para publicar, completa: {missing.join(", ")}.</p>}
         </div>
       </form>

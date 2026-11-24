@@ -155,4 +155,91 @@ describe("Qué hay de nuevo · editor privado", () => {
     expect(screen.queryByRole("button", { name: "Descargar guia.pdf" })).not.toBeInTheDocument();
     expect(getBlob).not.toHaveBeenCalled();
   });
+
+  it("permite redimensionar una imagen privada con teclado o arrastre y conserva el ancho en vista previa sin volver a descargarla mientras edita", async () => {
+    const initial: DocEnriquecido = { type: "doc", content: [
+      { type: "image", attrs: { fileId: IMAGE, alt: "Diagrama redimensionable", width: 320 } },
+      { type: "paragraph", content: [{ type: "text", text: "Este texto no se modifica" }] },
+    ] };
+    getBlob.mockResolvedValue(new Blob(["fixture"], { type: "image/png" }));
+    const onChange = vi.fn<(doc: DocEnriquecido) => void>();
+    function ControlledEditor() {
+      const [value, setValue] = useState(initial);
+      return <EditorEnriquecido valor={value} onChange={doc => { setValue(doc); onChange(doc); }}
+        ariaLabel="Qué cambió" perfil="medio" archivosPrivados />;
+    }
+    const screenEditor = render(<ControlledEditor />);
+    const original = await screen.findByRole("img", { name: "Diagrama redimensionable" });
+    const handle = await screen.findByRole("slider", { name: /Redimensionar imagen/i });
+    expect(original).toHaveAttribute("width", "320");
+    expect(original.parentElement?.style.maxWidth).toBe("");
+    fireEvent.keyDown(handle, { key: "ArrowLeft" });
+    await waitFor(() => expect(original).toHaveAttribute("width", "304"));
+
+    class PointerEventForTest extends MouseEvent {
+      pointerId: number;
+      isPrimary: boolean;
+      constructor(type: string, options: PointerEventInit) {
+        super(type, options);
+        this.pointerId = options.pointerId ?? 0;
+        this.isPrimary = options.isPrimary ?? true;
+      }
+    }
+    vi.stubGlobal("PointerEvent", PointerEventForTest);
+    Object.assign(handle, { setPointerCapture: vi.fn() });
+    fireEvent.pointerDown(handle, { clientX: 400, pointerId: 7, button: 0 });
+    fireEvent.pointerMove(handle, { clientX: 478, pointerId: 7 });
+    expect(original).toHaveAttribute("width", "382");
+    // Rotation/reflow can cancel a drag; the in-progress size was not written.
+    expect(onChange).toHaveBeenCalledTimes(1);
+    fireEvent.pointerUp(handle, { clientX: 478, pointerId: 7 });
+    expect(handle.setPointerCapture).toHaveBeenCalledWith(7);
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(2));
+    fireEvent.pointerDown(handle, { clientX: 478, pointerId: 8, button: 0 });
+    fireEvent.pointerMove(handle, { clientX: 540, pointerId: 8 });
+    fireEvent.pointerCancel(handle, { pointerId: 8 });
+    expect(original).toHaveAttribute("width", "382");
+    expect(onChange).toHaveBeenCalledTimes(2);
+    expect(getBlob).toHaveBeenCalledTimes(1);
+
+    const saved = onChange.mock.lastCall![0];
+    expect(descendants(saved)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "image", attrs: expect.objectContaining({ fileId: IMAGE, width: 382, height: null }) }),
+      expect.objectContaining({ type: "text", text: "Este texto no se modifica" }),
+    ]));
+    expect(JSON.stringify(saved)).not.toContain(BLOB_URL);
+    screenEditor.unmount();
+    render(<VisorEnriquecido valor={safeDisplayDoc(saved, false, true)} archivosPrivados />);
+    expect(await screen.findByRole("img", { name: "Diagrama redimensionable" })).toHaveAttribute("width", "382");
+    expect(screen.queryByRole("slider")).not.toBeInTheDocument();
+  });
+
+  it("limita una imagen sin ancho guardado a 640px sin agrandar imágenes pequeñas", async () => {
+    getBlob.mockResolvedValue(new Blob(["fixture"], { type: "image/png" }));
+    const value: DocEnriquecido = { type: "doc", content: [
+      { type: "image", attrs: { fileId: IMAGE, alt: "Diagrama pegado" } },
+    ] };
+    render(<EditorEnriquecido valor={value} perfil="medio" archivosPrivados />);
+    const image = await screen.findByRole("img", { name: "Diagrama pegado" });
+    const handle = await screen.findByRole("slider", { name: /Redimensionar imagen/i });
+    expect(image).not.toHaveAttribute("width");
+    expect(image.parentElement?.style.maxWidth).toBe("min(100%, 640px)");
+    Object.defineProperty(image, "naturalWidth", { value: 240, configurable: true });
+    fireEvent.load(image);
+    expect(handle).toHaveAttribute("aria-valuenow", "240");
+    Object.defineProperty(image, "naturalWidth", { value: 1280 });
+    fireEvent.load(image);
+    expect(handle).toHaveAttribute("aria-valuenow", "640");
+  });
+
+  it("solo deja pasar al visor privado un ancho numérico en el rango admitido por el API", () => {
+    const input = (width: unknown): DocEnriquecido => ({ type: "doc", content: [
+      { type: "image", attrs: { fileId: IMAGE, alt: "Figura privada", width } },
+    ] });
+    for (const width of ["300", -1, 15, 16.2, 2001, Infinity]) {
+      expect(safeDisplayDoc(input(width), false, true)?.content?.[0].attrs).not.toHaveProperty("width");
+    }
+    expect(safeDisplayDoc(input(640), false, true)?.content?.[0].attrs).toHaveProperty("width", 640);
+    expect(safeDisplayDoc(input(640), true, true)?.content).toEqual([]);
+  });
 });

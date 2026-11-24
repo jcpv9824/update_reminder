@@ -1,17 +1,94 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { Editor } from "@tiptap/react";
 import { api } from "../api/client";
 import { LiveWhatsNewPage, LivePublicPage, LiveReportPage, LiveConfigPage, ReportDialog } from "../pages/queHayDeNuevo/LivePages";
 vi.mock("../api/client", () => ({ api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), del: vi.fn(), getText: vi.fn() } }));
 vi.mock("../auth/AuthContext", () => ({ useAuth: () => ({ cargando: false, usuario: { id: "s", roles: ["custom"], displayName: "Asesora" } }) }));
 const get = vi.mocked(api.get);
 function mount(ui: React.ReactElement, path = "/", pattern = "*") { return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><MemoryRouter initialEntries={[path]}><Routes><Route path={pattern} element={ui} /></Routes></MemoryRouter></QueryClientProvider>); }
-afterEach(() => { cleanup(); vi.resetAllMocks(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.resetAllMocks(); });
 const author = { user: { id: "s", displayName: "Desarrollo", email: "s@test.co" }, areas: ["desarrollo"], permissions: ["updates.whats_new.view", "updates.whats_new.author"], views: ["desarrollador"], defaultView: "desarrollador", clientCatalogAvailable: true };
 const newEntryPath = "/actualizaciones/que-hay-de-nuevo/nueva";
+const draftPath = "/actualizaciones/que-hay-de-nuevo/slow-draft/editar";
+const draftDetail = {
+  id: "slow-draft", number: "QN-100", type: "mejora", system: "sag_web", status: "borrador",
+  developer: { id: "s", displayName: "Desarrollo" }, clientName: null, whatChanged: null,
+  routes: [{ via: "barra_lateral", submenus: ["Pedidos"], option: "Consultar" }],
+  requiredActions: [], attachments: [], etag: '"v1"',
+};
+const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
 describe("Qué hay de nuevo · API real", () => {
+  it("mantiene editor, foco y controles durante seis segundos de autoguardado y luego guarda los cambios con el ETag nuevo", async () => {
+    get.mockImplementation(async path => path === "/whats-new/me" ? author : path === "/whats-new/entries/slow-draft" ? draftDetail : []);
+    const put = vi.mocked(api.put);
+    put.mockImplementationOnce(() => new Promise(resolve => setTimeout(() => resolve({ ...draftDetail, etag: '"v2"' }), 6_000)));
+    put.mockResolvedValue({ ...draftDetail, etag: '"v3"' });
+    mount(<LiveWhatsNewPage />, draftPath, "/actualizaciones/que-hay-de-nuevo/*");
+    const option = await screen.findByRole("textbox", { name: "Opción" });
+    const editor = screen.getByRole("textbox", { name: /Qué cambió/ }) as HTMLElement & { editor: Editor };
+    vi.useFakeTimers();
+    act(() => option.focus());
+    fireEvent.change(option, { target: { value: "Consultar p" } });
+    await tick(1_000);
+    fireEvent.change(option, { target: { value: "Consultar pedidos" } });
+    await tick(2_999);
+    expect(put).not.toHaveBeenCalled();
+    await tick(1);
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(option).toBeEnabled();
+    expect(option).toHaveFocus();
+    expect(screen.getByRole("textbox", { name: /Qué cambió/ })).toBe(editor);
+    expect(editor).toHaveAttribute("contenteditable", "true");
+    expect(screen.getByRole("button", { name: "Negrita" })).toBeEnabled();
+    act(() => editor.focus());
+    act(() => { editor.editor.commands.insertContent("Este texto se escribió durante el guardado."); });
+    fireEvent.change(option, { target: { value: "Consultar y exportar pedidos" } });
+    expect(editor).toHaveFocus();
+    await tick(5_999);
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(editor).toHaveAttribute("contenteditable", "true");
+    await tick(1);
+    expect(screen.getByRole("textbox", { name: /Qué cambió/ })).toBe(editor);
+    expect(editor).toHaveFocus();
+    await tick(3_000);
+    expect(put).toHaveBeenCalledTimes(2);
+    expect(put).toHaveBeenNthCalledWith(1, "/whats-new/entries/slow-draft/draft", expect.objectContaining({
+      routes: [expect.objectContaining({ option: "Consultar pedidos" })],
+    }), { headers: { "If-Match": '"v1"' } });
+    expect(put).toHaveBeenNthCalledWith(2, "/whats-new/entries/slow-draft/draft", expect.objectContaining({
+      routes: [expect.objectContaining({ option: "Consultar y exportar pedidos" })],
+      whatChanged: expect.objectContaining({ content: [expect.objectContaining({
+        content: [expect.objectContaining({ text: "Este texto se escribió durante el guardado." })],
+      })] }),
+    }), { headers: { "If-Match": '"v2"' } });
+    for (const path of ["/whats-new/me", "/whats-new/entries/slow-draft", "/whats-new/lookups/required-actions", "/whats-new/lookups/support-users"]) {
+      expect(get.mock.calls.filter(([requested]) => requested.split("?")[0] === path), path).toHaveLength(1);
+    }
+  });
+
+  it("no guarda al perder foco y un conflicto detiene el autoguardado sin borrar las ediciones locales", async () => {
+    get.mockImplementation(async path => path === "/whats-new/me" ? author : path === "/whats-new/entries/slow-draft" ? draftDetail : []);
+    const put = vi.mocked(api.put).mockRejectedValue(Object.assign(new Error("Version conflict"), { status: 409, data: { code: "version_desactualizada" } }));
+    mount(<LiveWhatsNewPage />, draftPath, "/actualizaciones/que-hay-de-nuevo/*");
+    const option = await screen.findByRole("textbox", { name: "Opción" });
+    vi.useFakeTimers();
+    fireEvent.change(option, { target: { value: "Edición local" } });
+    fireEvent.blur(option, { relatedTarget: screen.getByRole("link", { name: /Volver a mis entradas/ }) });
+    await tick(1_000);
+    expect(put).not.toHaveBeenCalled();
+    await tick(2_000);
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("alert")).toHaveTextContent(/otra persona modificó/i);
+    expect(option).toHaveValue("Edición local");
+    expect(option).toBeEnabled();
+    fireEvent.change(option, { target: { value: "Edición local sin perder" } });
+    await tick(60_000);
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(option).toHaveValue("Edición local sin perder");
+  });
   it("busca solo en ERP y guarda el identificador seleccionado, nunca el texto de búsqueda ni el nombre", async () => {
     get.mockImplementation(async path => path === "/whats-new/me" ? author : path === "/whats-new/lookups/clients?q=alp" ? [{ id: "erp-id-1", label: "Alpina ERP" }] : []);
     vi.mocked(api.post).mockResolvedValue({ id: "entry-id-1", clientName: "Alpina ERP", etag: '"v1"' });
