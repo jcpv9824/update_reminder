@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type sql from "mssql";
 import { runSqlTransaction } from "./sqlTransaction";
 import { writeSqlAuditLog } from "./auditSqlWriter";
-import { assertCanSeeEntry, requireDeveloper, requireTester, requireView, requirePermission, access, type WhatsNewActor } from "./whatsNewAccess";
+import { assertCanSeeEntry, mayDeleteEntries, requireDeveloper, requireTester, requireView, requirePermission, access, type WhatsNewActor } from "./whatsNewAccess";
 import { z } from "zod";
 import { WhatsNewError, VIA_LABELS } from "./whatsNewModel";
 import { query, readEntry, requireEtag, contextFor, participantDto, readWhatsNewMediaStates, type Db, type Params, type EntryDetail } from "./whatsNewSqlRepository";
@@ -178,7 +178,7 @@ export async function mutate(args: { actor: WhatsNewActor; operation: Operation;
   else if (operation === "correct") requirePermission(actor, (a) => access.developer(a) || access.manage(a));
   else if (operation === "client-text") requirePermission(actor, (a) => access.tester(a) || access.publishClient(a));
   else if (operation === "annul") requirePermission(actor, (a) => access.tester(a) || access.manage(a));
-  else if (operation === "delete") requirePermission(actor, (a) => access.developer(a) || access.manage(a));
+  else if (operation === "delete") requirePermission(actor, mayDeleteEntries);
   if (["publish", "take", "release", "mark-tested", "mark-failed", "delete"].includes(operation)) z.object({}).strict().parse(body);
   const idem = !["draft", "delete", "client-text", "checklist", "note-draft"].includes(operation);
   const idemKey = idem ? assertIdempotencyKey(args.idempotencyKey) : null;
@@ -195,7 +195,7 @@ export async function mutate(args: { actor: WhatsNewActor; operation: Operation;
         const [visible] = await query(db, `SELECT e.status,d.source_id developerId
           FROM whats_new.entries e JOIN security.users d ON d.user_key=e.developer_user_key
           WHERE e.source_id=@id;`, { id: detail.id });
-        assertCanSeeEntry(actor, visible ? { status: visible.status, developerId: visible.developerId } : null);
+        assertCanSeeEntry(actor, visible && visible.status !== "eliminada" ? { status: visible.status, developerId: visible.developerId } : null);
         // Older snapshots may contain the internal grouping key. Preserve the
         // original response values, but never replay SQL-only participant fields.
         if (detail.participants) detail.participants = detail.participants.map(participantDto);

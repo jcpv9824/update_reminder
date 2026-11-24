@@ -9,6 +9,7 @@ import { WhatsNewError } from "../lib/whatsNewModel";
 import { areasFor, query } from "../lib/whatsNewSqlRepository";
 import { mutate, assertIdempotencyKey, type Operation } from "../lib/whatsNewSqlWriteRepository";
 import * as service from "../lib/whatsNewService";
+import { listSavedReports, readSavedReport, savePrivateReport, withdrawSavedReport } from "../lib/whatsNewSavedReports";
 import { buildObjectContentDisposition } from "../lib/objectStorage";
 import {
   WHATS_NEW_UPLOAD_BODY_MAX, assertWhatsNewMediaSize, inspectWhatsNewMedia, parseWhatsNewMediaFields,
@@ -22,7 +23,7 @@ export function whatsNewRateLimit(method: string, url: string, authenticated: bo
   const mediaRead = authenticated && method === "GET" && /\/whats-new\/files\/[^/]+$/.test(path);
   if (mediaUpload || mediaRead) return { scope: mediaUpload ? "whats_new_media_write" : "whats_new_media_read",
     policy: { maxAttempts: mediaUpload ? 6 : 32, windowSeconds: 60, blockSeconds: 60 } };
-  const preview = authenticated && url.includes("/reports/preview");
+  const preview = authenticated && method === "POST" && /\/reports\/(preview|saved)$/.test(path);
   const write = authenticated && method !== "GET";
   return { scope: !authenticated ? "whats_new_public" : preview ? "whats_new_preview" : write ? "whats_new_write" : "whats_new_read",
     policy: { maxAttempts: preview ? 10 : write ? 30 : 120, windowSeconds: 60, blockSeconds: 60 } };
@@ -110,8 +111,26 @@ register("whatsNewReportsCreate", "whats-new/reports", ["POST"], async (r, a) =>
   }
   return service.pendingStorage(); // no snapshot, outbox or partial SQL writes while disconnected
 });
-// The HTTP boundary validates any active persisted user; report reading intentionally has no option/area/recipient ACL.
-register("whatsNewReportRead", "whats-new/reports/{id}", ["GET"], async () => service.pendingStorage());
+register("whatsNewSavedReports", "whats-new/reports/saved", ["GET", "POST"], async (r, a) => {
+  if (r.method === "GET") return listSavedReports(a!, filters(r));
+  requirePermission(a!, access.savedReports);
+  const key = assertIdempotencyKey(r.headers.get("idempotency-key"));
+  const result = await savePrivateReport(a!, await body(r), key);
+  return { response: { status: result.replayed ? 200 : 201, jsonBody: { id: result.id },
+    headers: result.replayed ? { "Idempotency-Replayed": "true" } : {} } };
+});
+register("whatsNewReportRead", "whats-new/reports/{id}", ["GET", "DELETE"], async (r, a) => {
+  if (r.method === "DELETE") {
+    requirePermission(a!, access.savedReports);
+    z.object({}).strict().parse(await body(r));
+    await withdrawSavedReport(a!, param(r));
+    return { response: { status: 204 } };
+  }
+  return { response: { status: 200, body: await readSavedReport(a!, param(r)), headers: {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Security-Policy": "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  } } };
+});
 export async function parseWhatsNewMultipart(req: HttpRequest) {
   const contentType = req.headers.get("content-type") ?? "";
   const declared = req.headers.get("content-length");

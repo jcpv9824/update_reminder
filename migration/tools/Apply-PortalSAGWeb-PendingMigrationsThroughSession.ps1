@@ -10,6 +10,8 @@ param(
   [switch]$IncludeWhatsNew,
 
   [switch]$WhatsNewOnly,
+  [switch]$WhatsNewRetentionOnly,
+  [switch]$AuthorizeRetentionProduction,
 
   [switch]$IncludeCatalogOwnerPublisher,
 
@@ -24,6 +26,17 @@ param(
 )
 
 $ErrorActionPreference='Stop'
+if($WhatsNewRetentionOnly -and ($IncludeWhatsNew -or $WhatsNewOnly -or $IncludeCatalog -or
+    $IncludeCatalogOwnerPublisher -or $IncludeCatalogErpOwnerPublisher -or $IncludeCatalogObservedInventory -or
+    $IncludeCatalogDirectoryV2 -or $IncludeScheduleLifecycle -or $AuthorizeScheduleProcedureGrants)){
+  throw 'Use -WhatsNewRetentionOnly without other migration flags to apply only 083.'
+}
+if($AuthorizeRetentionProduction -and (-not $WhatsNewRetentionOnly -or $Environment -ne 'production')){
+  throw '-AuthorizeRetentionProduction is only valid for production migration 083.'
+}
+if($WhatsNewRetentionOnly -and $Environment -eq 'production' -and -not $AuthorizeRetentionProduction){
+  throw 'Migration 083 requires separate production authorization.'
+}
 if($WhatsNewOnly -and (-not $IncludeWhatsNew -or $IncludeCatalog -or $IncludeCatalogOwnerPublisher -or
    $IncludeCatalogErpOwnerPublisher -or $IncludeCatalogObservedInventory -or $IncludeCatalogDirectoryV2 -or
    $IncludeScheduleLifecycle -or $AuthorizeScheduleProcedureGrants)){
@@ -247,6 +260,37 @@ COMMIT TRANSACTION;
   $null=Invoke-SessionSql -Sql $historySql -Mode write -TimeoutSeconds 120 -MaxRows 10
   Write-Host "PASS $version" -ForegroundColor Green
 }
+}
+
+if($WhatsNewRetentionOnly){
+  $prerequisites=@('060_user_business_areas.sql','061_whats_new_configuration_and_permissions.sql',
+    '062_whats_new_entries_and_testing.sql','063_whats_new_reports_outbox.sql')
+  foreach($name in $prerequisites){
+    $version=$name.Substring(0,3)
+    $result=Invoke-SessionSql -Mode read -TimeoutSeconds 120 -MaxRows 1 -Sql ("SELECT CONVERT(varchar(64),script_sha256,2) hash FROM migration.schema_migrations WHERE migration_version='$version' AND succeeded=1;")
+    $row=$result.resultSets[0].rows | Select-Object -First 1
+    if (-not $row -or -not $manifest.ContainsKey($name) -or ([string]$row.hash).ToLowerInvariant() -cne $manifest[$name]){
+      throw "Migration 083 requires the exact applied migration $version. Nothing was written."
+    }
+  }
+  if($Environment -eq 'production'){
+    & (Join-Path $PSScriptRoot 'Assert-PortalSAGWeb-RecentProductionBackup.ps1') -SessionDirectory $SessionDirectory
+  }
+  Invoke-ReviewedMigrations @(@{version='083';name='083_whats_new_retention.sql'})
+  $ok=Invoke-SessionSql -Mode read -TimeoutSeconds 120 -MaxRows 1 -Sql @'
+SELECT CASE WHEN
+  EXISTS (SELECT 1 FROM migration.schema_migrations WHERE migration_version='083' AND succeeded=1)
+  AND OBJECT_ID(N'whats_new.report_withdrawals',N'U') IS NOT NULL
+  AND (SELECT COUNT(*) FROM sys.triggers WHERE is_disabled=0 AND object_id IN(
+    OBJECT_ID(N'whats_new.TR_reports_append_only'),OBJECT_ID(N'whats_new.TR_report_withdrawals_append_only')))=2
+  AND (SELECT COUNT(*) FROM sys.check_constraints WHERE is_disabled=0 AND is_not_trusted=0
+    AND ((parent_object_id=OBJECT_ID(N'whats_new.entries') AND name IN (N'CK_entries_approved',N'CK_entries_archived'))
+      OR (parent_object_id=OBJECT_ID(N'whats_new.reports') AND name=N'CK_whats_new_reports_counts')))=3
+  THEN 1 ELSE 0 END AS retention_ready;
+'@
+  if($ok.resultSets[0].rows[0].retention_ready -ne 1){throw 'Migration 083 post-verification failed.'}
+  Write-Host "$expectedDatabase migration 083 is applied and verified." -ForegroundColor Green
+  return
 }
 
 if(-not $WhatsNewOnly){

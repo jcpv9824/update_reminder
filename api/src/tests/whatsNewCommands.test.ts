@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { decideCreate, decideTake, decideRelease, decideMarkTested, decideMarkFailed, decidePublish, decideSaveDraft, DraftInSchema,
+import { decideCreate, decideDelete, decideTake, decideRelease, decideMarkTested, decideMarkFailed, decidePublish, decideSaveDraft, DraftInSchema,
   type CommandContext, type EntryState } from "../lib/whatsNewCommands";
+import { buildActor, canSeeEntry } from "../lib/whatsNewAccess";
 import { PERMISSIONS } from "../lib/whatsNewModel";
+import { DEFAULT_ROLE_DEFINITIONS } from "../lib/permissionModel";
 
 export const doc = { type: "doc" as const, content: [{ type: "paragraph", content: [{ type: "text", text: "Cambio" }] }] };
 export const context = (): CommandContext => ({
@@ -19,6 +21,52 @@ export const entry = (): EntryState => ({
 function held(): EntryState { return { ...entry(), status: "en_pruebas", currentRoundNo: 1, openRound: { id: "round", roundNo: 1, revisionNo: 1, holderId: "tester", checklist: [{ itemNo: 1, label: "Probar", checked: false }] } }; }
 
 describe("Qué hay de nuevo domain gates", () => {
+  it("lets the developer retire an owned approved entry without rewriting its approval history", () => {
+    const ctx = context(); ctx.actor.id = "developer";
+    ctx.actor.areas = new Set(["desarrollo"]);
+    ctx.actor.permissions = new Set([PERMISSIONS.view, PERMISSIONS.author]);
+    const result = decideDelete(ctx, { ...entry(), status: "probado" });
+    expect(result.status).toBe("eliminada");
+    expect(result.effects).toEqual([
+      { kind: "entry.patch", patch: { status: "eliminada", deletedAt: ctx.now } },
+      expect.objectContaining({ kind: "log.insert", action: "eliminar", from: "probado", to: "eliminada" }),
+      expect.objectContaining({ kind: "audit", action: "whats_new_entry_deleted" }),
+    ]);
+  });
+  it("lets the active support holder retire the entry and closes only the open round", () => {
+    const ctx = context();
+    ctx.actor.areas = new Set(["soporte"]);
+    ctx.actor.permissions = new Set([PERMISSIONS.view, PERMISSIONS.test]);
+    const state = { ...held(), initialTesterId: "somebody-else" };
+    const result = decideDelete(ctx, state);
+    expect(result.effects).toContainEqual({ kind: "round.close", roundNo: 1, status: "soltada", forcedReason: null });
+    expect(result.effects).toContainEqual(expect.objectContaining({ kind: "log.insert", action: "eliminar", roundNo: 1 }));
+    expect(state.openRound?.checklist).toHaveLength(1);
+    expect(() => decideDelete(ctx, { ...state, initialTesterId: ctx.actor.id, openRound: { ...state.openRound!, holderId: "other-holder" } }))
+      .toThrow("permiso");
+  });
+  it("lets only assigned support retire an unclaimed publication, never another person's draft", () => {
+    const ctx = context();
+    ctx.actor.areas = new Set(["soporte"]);
+    ctx.actor.permissions = new Set([PERMISSIONS.view, PERMISSIONS.test]);
+    const state = { ...entry(), initialTesterId: ctx.actor.id };
+    expect(decideDelete(ctx, state).status).toBe("eliminada");
+    expect(() => decideDelete(ctx, { ...state, status: "borrador" })).toThrow("permiso");
+    expect(() => decideDelete(ctx, { ...state, initialTesterId: null })).toThrow("permiso");
+    ctx.actor.areas = new Set();
+    expect(() => decideDelete(ctx, state)).toThrow("permiso");
+  });
+  it("does not treat manage or view_all as super_admin and limits withdrawn history to the real role", () => {
+    const ctx = context(); ctx.actor.areas = new Set();
+    const state = { ...entry(), status: "archivada" as const };
+    const removed = { ...state, status: "eliminada" as const };
+    expect(() => decideDelete(ctx, state)).toThrow("permiso");
+    expect(canSeeEntry(ctx.actor, removed)).toBe(false);
+    ctx.actor = buildActor({ id: "owner", displayName: "Owner", email: "owner@example.invalid", roles: ["super_admin"] }, DEFAULT_ROLE_DEFINITIONS, []);
+    expect(decideDelete(ctx, state).status).toBe("eliminada");
+    expect(canSeeEntry(ctx.actor, removed)).toBe(true);
+    expect(() => decideDelete(ctx, removed)).toThrow("no permite");
+  });
   it("requires both author permission and Desarrollo area", () => {
     const ctx = context(); ctx.actor.areas = new Set(["soporte"]);
     expect(() => decideCreate(ctx)).toThrow("Desarrollo");

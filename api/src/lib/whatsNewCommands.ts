@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { access, assertMayTest, requireDeveloper, requirePermission, requireTester, type WhatsNewActor } from "./whatsNewAccess";
+import { access, assertMayTest, canDeleteEntry, requireDeveloper, requirePermission, requireTester, type WhatsNewActor } from "./whatsNewAccess";
 import {
   ENTRY_TYPES, LIMITS, SYSTEM_CODES, WhatsNewError, bogotaMonth,
   type AreaCode, type EntryStatus, type EntryType, type FileTarget, type LogAction, type SystemCode,
@@ -483,14 +483,19 @@ export function decidePublish(ctx: CommandContext, state: EntryState): CommandRe
 }
 
 export function decideDelete(ctx: CommandContext, state: EntryState): CommandResult {
-  if (!access.manage(ctx.actor)) assertDeveloperOwner(ctx, state);
   const to = nextStatus("eliminar", state.status);
+  requirePermission(ctx.actor, (actor) => canDeleteEntry(actor, state));
+  const openRound = state.openRound;
+  if (state.status === "en_pruebas" && !openRound) {
+    throw new WhatsNewError(409, "estado_no_permite_accion", "La entrada no tiene la ronda abierta esperada.");
+  }
   return {
     status: to,
     result: {},
     effects: [
       { kind: "entry.patch", patch: { status: to, deletedAt: ctx.now } },
-      log(state, "eliminar", to),
+      ...(openRound ? [{ kind: "round.close" as const, roundNo: openRound.roundNo, status: "soltada" as const, forcedReason: null }] : []),
+      log(state, "eliminar", to, { roundNo: openRound?.roundNo }),
       { kind: "audit", action: "whats_new_entry_deleted", metadata: { fromStatus: state.status, toStatus: to } },
     ],
   };

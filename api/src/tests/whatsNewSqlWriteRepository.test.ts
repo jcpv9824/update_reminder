@@ -12,6 +12,49 @@ import { context, entry } from "./whatsNewCommands.test";
 
 describe("Qué hay de nuevo transactional write boundary", () => {
   beforeEach(() => { f.query.mockReset(); f.readEntry.mockReset(); f.contextFor.mockReset(); f.audit.mockReset(); f.client.mockReset(); f.committed = false; f.rolledBack = false; });
+  function prepareWithdrawal() {
+    const ctx = context();
+    ctx.actor.areas = new Set(["soporte"]);
+    ctx.actor.permissions = new Set([PERMISSIONS.view, PERMISSIONS.test]);
+    const state = { ...entry(), status: "en_pruebas" as const, openRound: { id: "open-round", roundNo: 4, revisionNo: 1, holderId: ctx.actor.id, checklist: [] } };
+    f.query.mockResolvedValue([]);
+    f.contextFor.mockResolvedValue(ctx);
+    f.readEntry.mockResolvedValueOnce({ state, detail: { id: state.id, etag: state.etag, rounds: [] } })
+      .mockResolvedValueOnce({ state: { ...state, status: "eliminada", openRound: null }, detail: { id: state.id, etag: '"withdrew"', status: "eliminada" } });
+    return { ctx, state, args: { actor: ctx.actor, operation: "delete" as const, id: state.id, body: {}, etag: state.etag, idempotencyKey: null } };
+  }
+  it("withdraws under the parent lock and writes only the tombstone, round closure and history", async () => {
+    const { args, state } = prepareWithdrawal();
+    await expect(mutate(args)).resolves.toMatchObject({ detail: { status: "eliminada" } });
+    expect(f.readEntry.mock.calls[0].slice(1)).toEqual([state.id, true]);
+    const writes = f.query.mock.calls.map((call) => call[1] as string);
+    expect(writes).toEqual([
+      expect.stringContaining("UPDATE whats_new.entries SET status=@p0,deleted_at=@p1"),
+      expect.stringContaining("UPDATE whats_new.test_rounds SET status=@status"),
+      expect.stringContaining("INSERT whats_new.entry_log"),
+    ]);
+    expect(f.audit).toHaveBeenCalledOnce();
+    expect(f.audit).toHaveBeenCalledWith(f.readEntry.mock.calls[0][0], expect.objectContaining({ action: "whats_new_entry_deleted" }));
+    expect(f.committed).toBe(true);
+  });
+  it("rejects a stale entry version without touching its history or open round", async () => {
+    const { args } = prepareWithdrawal();
+    await expect(mutate({ ...args, etag: '"stale-second-tab"' }))
+      .rejects.toMatchObject({ status: 409, code: "version_desactualizada" });
+    expect(f.query).not.toHaveBeenCalled();
+    expect(f.audit).not.toHaveBeenCalled();
+    expect(f.rolledBack).toBe(true);
+  });
+  it("does not disclose or mutate another developer's draft to assigned Support", async () => {
+    const { args, state } = prepareWithdrawal();
+    f.readEntry.mockReset().mockResolvedValueOnce({
+      state: { ...state, status: "borrador", openRound: null, initialTesterId: args.actor.id },
+      detail: { id: state.id, etag: state.etag },
+    });
+    await expect(mutate(args)).rejects.toMatchObject({ status: 404 });
+    expect(f.query).not.toHaveBeenCalled();
+    expect(f.audit).not.toHaveBeenCalled();
+  });
   it("writes the canonical ERP name inside the draft transaction and never an input label", async () => {
     const ctx = context();
     const state = { ...entry(), type: "nuevo" as const, status: "borrador" as const, developerId: ctx.actor.id };

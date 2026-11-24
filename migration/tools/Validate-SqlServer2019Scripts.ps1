@@ -89,7 +89,8 @@ $expected = @(
   '079_catalog_schedule_draft_review_receipts.sql',
   '080_catalog_schedule_draft_materialization.sql',
   '081_catalog_schedule_draft_runtime_execute.sql',
-  '082_catalog_schedule_activation_seals.sql'
+  '082_catalog_schedule_activation_seals.sql',
+  '083_whats_new_retention.sql'
 )
 
 $resolvedSqlDirectory = (Resolve-Path -LiteralPath $SqlDirectory).Path
@@ -126,7 +127,7 @@ foreach ($name in $expected) {
       '072_catalog_schedule_copy_intents.sql','073_catalog_historical_schedule_company_locations.sql','074_catalog_schedule_population_sag_v2.sql',
       '075_catalog_schedule_copy_proposals.sql','076_catalog_schedule_copy_review_receipts.sql','077_catalog_schedule_copy_review_consumption.sql',
       '078_catalog_schedule_draft_proposals.sql','079_catalog_schedule_draft_review_receipts.sql','080_catalog_schedule_draft_materialization.sql',
-      '082_catalog_schedule_activation_seals.sql')) {
+      '082_catalog_schedule_activation_seals.sql','083_whats_new_retention.sql')) {
       # The outer parser sees these fixed module definitions only as string
       # literals; independently parse each batch that SQL Server will compile.
       $moduleText=[System.IO.File]::ReadAllText($path)
@@ -141,6 +142,7 @@ foreach ($name in $expected) {
         elseif($name -eq '079_catalog_schedule_draft_review_receipts.sql'){3}
         elseif($name -eq '080_catalog_schedule_draft_materialization.sql'){3}
         elseif($name -eq '082_catalog_schedule_activation_seals.sql'){4}
+        elseif($name -eq '083_whats_new_retention.sql'){1}
         elseif($name -cin @('066_catalog_sag_database_names.sql','067_catalog_sag_customer_directory.sql')){3}else{4}
       if($modules.Count -ne $expectedModules){
         throw "Expected exactly $expectedModules fixed module definitions in $name."

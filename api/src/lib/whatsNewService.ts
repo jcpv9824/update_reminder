@@ -3,7 +3,7 @@ import { z } from "zod";
 import { getSqlPool } from "./sql";
 import { runSqlTransaction } from "./sqlTransaction";
 import { writeSqlAuditLog } from "./auditSqlWriter";
-import { access, assertCanSeeEntry, requireDeveloper, requirePermission, requireView, viewsFor, type WhatsNewActor } from "./whatsNewAccess";
+import { access, assertCanSeeEntry, canDeleteEntry, requireDeveloper, requirePermission, requireView, viewsFor, type WhatsNewActor } from "./whatsNewAccess";
 import { AREA_CODES, ENTRY_TYPES, SYSTEM_CODES, WhatsNewError, bogotaDayStartUtc, bogotaMonth, bogotaMonthStartUtc, formatEntryNumber, normalizeForCompare } from "./whatsNewModel";
 import { query, readEntry, readEntries, requireEtag, etag, effectiveAreaSql, supportAreaPredicateSql, type Db, type Params, type EntryDetail } from "./whatsNewSqlRepository";
 import { extractPlainText, toClientProfile, validateRichDoc, RICH_LIMITS } from "./whatsNewRichText";
@@ -19,7 +19,7 @@ export const ListSchema = z.object({ scope: z.enum(["mine", "all"]).default("min
   tab: z.enum(["sin_probar", "en_pruebas", "probadas", "todas", "borradores", "publicadas"]).optional(), result: z.enum(["sin_errores", "fallidas", "ambas"]).default("ambas"),
   month: month.optional(), assignedToMe: z.enum(["true", "false"]).optional(), page: integer(1, 100_000), pageSize: integer(25, 50) }).strict();
 
-export async function listEntries(actor: WhatsNewActor, input: unknown, queue = false, db?: Db) {
+export async function listEntries(actor: WhatsNewActor, input: unknown, queue = false, db?: Db, developerOnly = false) {
   requireView(actor);
   // Option access alone does not grant a record-reading view. Check current
   // permissions/areas before opening the pool or counting any entries.
@@ -31,6 +31,7 @@ export async function listEntries(actor: WhatsNewActor, input: unknown, queue = 
   }
   if (queue) requirePermission(actor, (a) => access.tester(a) || access.viewAll(a) || access.manage(a) || tab === "probadas" && access.report(a));
   const where = ["e.status<>'eliminada'"];
+  if (developerOnly) where.push("d.source_id=@actor");
   if (!access.manage(actor)) where.push(access.developer(actor) ? "(e.status<>'borrador' OR d.source_id=@actor)" : "e.status<>'borrador'");
   if (!queue && (f.scope === "mine" || !access.viewAll(actor) && !access.manage(actor))) where.push("d.source_id=@actor");
   if (queue) {
@@ -61,14 +62,18 @@ export async function listEntries(actor: WhatsNewActor, input: unknown, queue = 
     summary: row.what_changed_summary as string | null, primaryRoute: row.primary_route_text as string | null, initialTesterId: row.tester_id as string | null,
     holder: row.holder_id ? { id: row.holder_id as string, displayName: row.holder_name as string } : null, checklistDone: Number(row.checklist_done), checklistTotal: Number(row.checklist_total),
     openFindings: Number(row.open_findings_count), etag: etag(row.row_version), createdAt: row.created_at.toISOString() as string, updatedAt: row.updated_at.toISOString() as string,
-    resultAt: (row.result_at?.toISOString() ?? null) as string | null, releaseMonth: row.release_month as string | null }));
+    resultAt: (row.result_at?.toISOString() ?? null) as string | null, releaseMonth: row.release_month as string | null,
+    canDelete: canDeleteEntry(actor, { status: row.status as EntryDetail["status"], developerId: row.developer_id,
+      initialTesterId: row.tester_id, openRound: row.holder_id ? { holderId: row.holder_id } : null }) }));
   const tabCounts = { todas: Number(count.total), borradores: Number(count.borradores ?? 0), publicadas: Number(count.publicadas ?? 0) };
   return { items, total: queue ? tabCounts.todas : tabCounts[tab as keyof typeof tabCounts], page: f.page, pageSize: f.pageSize,
     ...(!queue && { tabCounts }) };
 }
 
 export async function getEntry(actor: WhatsNewActor, id: string) {
-  const current = await readEntry(await getSqlPool(), id); assertCanSeeEntry(actor, current?.state ?? null); return current!.detail;
+  const current = await readEntry(await getSqlPool(), id);
+  assertCanSeeEntry(actor, current?.state ?? null);
+  return { ...current!.detail, canDelete: canDeleteEntry(actor, current!.state) };
 }
 export async function readConfig(actor: WhatsNewActor) {
   requirePermission(actor, access.configView);
@@ -84,7 +89,7 @@ export async function me(actor: WhatsNewActor) {
   const views = viewsFor(actor);
   return { user: { id: actor.id, displayName: actor.displayName, email: actor.email }, views, defaultView: views[0] ?? null,
     areas: [...actor.areas], permissions: [...actor.permissions], publicEnabled: !!settings.public_enabled, storageAvailable: whatsNewMediaAvailable(),
-    clientCatalogAvailable: canReadWhatsNewErpClients(actor) };
+    clientCatalogAvailable: canReadWhatsNewErpClients(actor), superAdmin: access.superAdmin(actor), canUseSavedReports: access.savedReports(actor) };
 }
 export async function lookups(actor: WhatsNewActor, kind: string, q = "") {
   if (kind === "clients") return lookupWhatsNewErpClients(actor, q);
@@ -221,16 +226,24 @@ export function renderReport(entries: EntryDetail[]) {
     <h3>Bitácora</h3><ul>${e.log.map((l) => `<li>${escapeHtml(l.at)} · ${escapeHtml(l.byId)} · ${escapeHtml(l.action)} · ${escapeHtml(l.reason)}</li>`).join("")}</ul></article>`).join("")}</body></html>`;
 }
 export async function previewReport(actor: WhatsNewActor, input: unknown) {
-  requirePermission(actor, access.report); const body = ReportInput.parse(input);
+  const { entries: _entries, ...preview } = await reportSnapshot(actor, input);
+  return preview;
+}
+
+export async function reportSnapshot(actor: WhatsNewActor, input: unknown) {
+  requirePermission(actor, a => access.report(a) || access.developer(a));
+  const body = ReportInput.parse(input);
+  const developerOnly = !access.report(actor);
   return runSqlTransaction(async (db) => {
     const filters = { ...body.filters, scope: "all", tab: "probadas", result: body.include === "aprobadas" ? "sin_errores" : body.include === "fallidas" ? "fallidas" : "ambas", page: 1, pageSize: 50 };
     // Report permission is sufficient for result reading; do not grant the user queue mutation authority.
     const reportActor = { ...actor, permissions: new Set([...actor.permissions, "updates.whats_new.view_all"]) };
-    const first = await listEntries(reportActor, filters, true, db);
+    const first = await listEntries(reportActor, filters, true, db, developerOnly);
     if (first.total > 200) throw new WhatsNewError(422, "reporte_muy_grande", "El reporte supera 200 entradas. Filtre por mes.");
     const summaries = [...first.items];
-    for (let page = 2; summaries.length < first.total; page++) summaries.push(...(await listEntries(reportActor, { ...filters, page }, true, db)).items);
-    const entries = await readEntries(db, summaries.map((s) => s.id));
-    return { html: renderReport(entries), entryCount: entries.length, approvedCount: entries.filter((e) => e.status !== "fallida").length, failedCount: entries.filter((e) => e.status === "fallida").length };
+    for (let page = 2; summaries.length < first.total; page++) summaries.push(...(await listEntries(reportActor, { ...filters, page }, true, db, developerOnly)).items);
+    const entries = (await readEntries(db, summaries.map((s) => s.id))).filter(e => ["probado", "archivada", "fallida"].includes(e.status));
+    return { html: renderReport(entries), entryCount: entries.length, approvedCount: entries.filter((e) => e.status !== "fallida").length,
+      failedCount: entries.filter((e) => e.status === "fallida").length, entries };
   });
 }

@@ -51,3 +51,4 @@ migration/sql/079_catalog_schedule_draft_review_receipts.sql text eol=lf
 migration/sql/080_catalog_schedule_draft_materialization.sql text eol=lf
 migration/sql/081_catalog_schedule_draft_runtime_execute.sql text eol=lf
 migration/sql/082_catalog_schedule_activation_seals.sql text eol=lf
+migration/sql/083_whats_new_retention.sql text eol=lf

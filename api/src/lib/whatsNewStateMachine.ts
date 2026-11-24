@@ -3,13 +3,13 @@ import { STATUS_LABELS, WhatsNewError, type EntryStatus } from "./whatsNewModel"
 /* Máquina de estados de la entrada (`03` §5, decisiones de segunda ronda).
 
    borrador ─publicar─▶ sin_probar ─tomar─▶ en_pruebas ─marcar_probado─▶ probado ─archivar─▶ archivada
-       │                  ▲   ▲                │  │
-   eliminar              │   └──── soltar ─────┘  └─marcar_fallida─▶ fallida
-       ▼                  └──── corregir (sin_probar o fallida) ──────────┘
-   eliminada
+                           ▲   ▲                │  │
+                           │   └──── soltar ─────┘  └─marcar_fallida─▶ fallida
+                           └──── corregir (sin_probar o fallida) ──────────┘
 
    - Soltar y forzar_soltar devuelven a sin_probar: la prueba empieza de nuevo y no se envía nada.
    - Corregir siempre termina en sin_probar (nunca en borrador).
+   - Eliminar es un retiro auditado desde cualquier estado activo. No borra el historial.
    - Cualquier otro par (estado, acción) es 409 sin efectos. */
 
 export type EntryAction =
@@ -20,7 +20,7 @@ export type EntryAction =
 export const TRANSITIONS: Record<EntryAction, { from: EntryStatus[]; to: EntryStatus | null }> = {
   guardar_borrador: { from: ["borrador"], to: null },
   publicar: { from: ["borrador"], to: "sin_probar" },
-  eliminar: { from: ["borrador"], to: "eliminada" },
+  eliminar: { from: ["borrador", "sin_probar", "en_pruebas", "probado", "fallida", "archivada"], to: "eliminada" },
   corregir: { from: ["sin_probar", "fallida"], to: "sin_probar" },
   tomar: { from: ["sin_probar"], to: "en_pruebas" },
   soltar: { from: ["en_pruebas"], to: "sin_probar" },

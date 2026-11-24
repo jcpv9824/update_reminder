@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { Plus } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import { Link, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
@@ -9,7 +9,7 @@ import { Dialogo, EtiquetaEstadoQhdn, EtiquetaSistema, EtiquetaTipo } from "./co
 import { EditorEnriquecido, VisorEnriquecido } from "./componentes/EditorEnriquecido";
 import { ErpClientCombobox } from "./componentes/ErpClientCombobox";
 import { docVacio, ETIQUETAS_ESTADO_QHDN, ETIQUETAS_TIPO_CORTAS, rutaTexto, rutaVacia } from "./logica";
-import { createDraftSaveSession, draftFromForm, errorMessage, formFromEntry, mutationOptions, safeDisplayDoc, storagePending, whatsNewApi, type ConfigDto, type EntryDto, type EntrySummary, type ErpClientLookup, type Me, type Page, type ReportInput, type ReportPreview } from "./contrato";
+import { createDraftSaveSession, draftFromForm, errorMessage, formFromEntry, mutationOptions, safeDisplayDoc, storagePending, whatsNewApi, type ConfigDto, type EntryDto, type EntrySummary, type ErpClientLookup, type Me, type Page, type ReportInput, type ReportPreview, type SavedReport } from "./contrato";
 import { aceptaDocumentoPrivado, BotonDescargaPrivada, subirArchivoPrivado, tiposVideoPrivado, validarArchivoPrivado, type DestinoArchivoPrivado, type TipoArchivoPrivado } from "./componentes/archivosPrivados";
 import type { Adjunto, DatosFormulario, DocEnriquecido, Sistema, TipoEntrada } from "./tipos";
 import "./queHayDeNuevo.css";
@@ -37,6 +37,40 @@ function ReadDoc({ value, publicProfile = false, privateMedia = false }: { value
 function PageControl({ page, total, size, onChange }: { page: number; total: number; size: number; onChange: (n: number) => void }) {
   return <div className="qhdn-fila" aria-label="Paginación"><button disabled={page <= 1} onClick={() => onChange(page - 1)}>Anterior</button><span role="status">Página {page} · {total} resultados</span><button disabled={page * size >= total} onClick={() => onChange(page + 1)}>Siguiente</button></div>;
 }
+function RemoveButton({ label, disabled, onClick }: { label: string; disabled?: boolean; onClick: () => void }) {
+  return <button type="button" className="peligro qhdn-icono-eliminar" aria-label={label} title={label} disabled={disabled} onClick={onClick}><Trash2 size={16} aria-hidden="true" /></button>;
+}
+function RemovalDialog({ title, children, remove, onRemoved, onClose }: { title: string; children: ReactNode; remove: () => Promise<void>; onRemoved: () => void; onClose: () => void }) {
+  const lock = useRef(false);
+  const operation = useMutation({ mutationFn: remove, onSuccess: onRemoved });
+  return <Dialogo titulo={title} abierto onCerrar={() => { if (!lock.current) onClose(); }}>
+    {children}
+    <Feedback error={operation.error} />
+    {operation.isPending && <p role="status">Eliminando…</p>}
+    <div className="acciones-formulario">
+      <button type="button" data-autofoco disabled={operation.isPending} onClick={onClose}>Cancelar</button>
+      <button type="button" className="peligro" disabled={operation.isPending} onClick={() => {
+        if (lock.current) return;
+        lock.current = true;
+        void operation.mutateAsync().catch(() => {}).finally(() => { lock.current = false; });
+      }}>Confirmar eliminación</button>
+    </div>
+  </Dialogo>;
+}
+function RemoveEntryDialog({ entry, onClose, unsaved = false }: { entry: EntryDto; onClose: () => void; unsaved?: boolean }) {
+  const key = useContext(Scope);
+  const qc = useQueryClient();
+  const navigate = useNavigate();
+  return <RemovalDialog title="Eliminar entrada" remove={() => whatsNewApi.deleteEntry(entry.id, entry.etag)} onClose={onClose} onRemoved={() => {
+    // Mark the active detail stale without refetching it before leaving. Lists
+    // and the queue refetch when mounted, immediately dropping the entry.
+    for (const kind of ["entry", "entries", "queue"]) void qc.invalidateQueries({ queryKey: kind === "entry" ? [...key, kind, entry.id] : [...key, kind], refetchType: "none" });
+    navigate(base, { replace: true });
+  }}>
+    <p>Se retirará la entrada {entry.number} de las listas y de la publicación pública, si estaba visible. Se conserva el historial y no se enviarán correos.</p>
+    {unsaved && <p>Los cambios locales sin guardar no formarán parte del historial.</p>}
+  </RemovalDialog>;
+}
 function useOperation() {
   const key = useContext(Scope);
   const qc = useQueryClient();
@@ -57,15 +91,18 @@ function PrivateWhatsNew() {
   const dev = actor.areas.includes("desarrollo") && can(actor, "updates.whats_new.author");
   const test = actor.areas.includes("soporte") && can(actor, "updates.whats_new.test");
   const read = actor.views.includes("lectura");
-  const view = chosen && ((chosen === "desarrollador" && dev) || (chosen === "asesor" && test)) ? chosen : dev ? "desarrollador" : test ? "asesor" : read ? "lectura" : null;
-  if (!can(actor, "updates.whats_new.view") || (!dev && !test && !read)) return <div className="alerta-error" role="alert">No tienes un área y permisos habilitados para esta opción. Solicita acceso al administrador.</div>;
-  return <div className="qhdn-pagina">{dev && test && <div className="qhdn-visiones"><div className="qhdn-selector-vision" role="group" aria-label="Visión"><button aria-pressed={view === "desarrollador"} onClick={() => setChosen("desarrollador")}>Desarrollador</button><button aria-pressed={view === "asesor"} onClick={() => setChosen("asesor")}>Asesor</button></div></div>}
+  const browseEntries = dev || actor.superAdmin === true;
+  const view = chosen && ((chosen === "desarrollador" && browseEntries) || (chosen === "asesor" && test))
+    ? chosen : dev ? "desarrollador" : test ? "asesor" : browseEntries ? "desarrollador" : read ? "lectura" : null;
+  if (!can(actor, "updates.whats_new.view") || !view) return <div className="alerta-error" role="alert">No tienes un área y permisos habilitados para esta opción. Solicita acceso al administrador.</div>;
+  return <div className="qhdn-pagina">{browseEntries && test && <div className="qhdn-visiones"><div className="qhdn-selector-vision" role="group" aria-label="Visión"><button aria-pressed={view === "desarrollador"} onClick={() => setChosen("desarrollador")}>{dev ? "Desarrollador" : "Entradas del equipo"}</button><button aria-pressed={view === "asesor"} onClick={() => setChosen("asesor")}>Asesor</button></div></div>}
     <Routes>
       <Route path="nueva" element={dev ? <LiveForm me={actor} /> : <p role="alert">No tienes permiso para crear entradas.</p>} />
       <Route path=":id/editar" element={dev ? <LoadForm me={actor} /> : <p role="alert">No tienes permiso para editar entradas.</p>} />
       <Route path=":id/corregir" element={dev || can(actor, "configuration.whats_new.manage") ? <LoadForm me={actor} correction /> : <p role="alert">No tienes permiso para corregir entradas.</p>} />
+      <Route path="reportes" element={actor.canUseSavedReports ? <SavedReports /> : <p role="alert">No tienes permiso para ver los reportes guardados.</p>} />
       <Route path=":id" element={<LiveEntry me={actor} developerView={view === "desarrollador"} />} />
-      <Route index element={view === "desarrollador" ? <DeveloperList me={actor} /> : <LiveList me={actor} support />} />
+      <Route index element={view === "desarrollador" ? <DeveloperList me={actor} canCreate={dev} /> : <LiveList me={actor} support />} />
     </Routes>
   </div>;
 }
@@ -81,14 +118,14 @@ function statusDetail(row: EntrySummary) {
   if (row.openFindings > 0) return `${row.openFindings} ${row.openFindings === 1 ? "hallazgo vigente" : "hallazgos vigentes"}`;
   return null;
 }
-function DeveloperList({ me }: { me: Me }) {
+function DeveloperList({ me, canCreate }: { me: Me; canCreate: boolean }) {
   const key = useContext(Scope);
   const tabsId = useId();
   const [tab, setTab] = useState<DeveloperTab>("todas");
-  const [scope, setScope] = useState("mine");
+  const [scope, setScope] = useState(me.superAdmin && !canCreate ? "all" : "mine");
   const [type, setType] = useState(""); const [system, setSystem] = useState(""); const [status, setStatus] = useState("");
   const [q, setQ] = useState(""); const [page, setPage] = useState(1);
-  const mayListTeam = can(me, "updates.whats_new.view_all") || can(me, "configuration.whats_new.manage");
+  const mayListTeam = me.superAdmin === true || can(me, "updates.whats_new.view_all") || can(me, "configuration.whats_new.manage");
   const showAuthor = mayListTeam && scope === "all";
   const filters = { tab, scope: showAuthor ? "all" : "mine", type, system, status, q, page, pageSize: 20 };
   const entries = useQuery({ queryKey: [...key, "entries", filters], queryFn: async (): Promise<DeveloperPage> => whatsNewApi.list(filters) });
@@ -96,8 +133,11 @@ function DeveloperList({ me }: { me: Me }) {
   const change = (set: (v: string) => void, value: string) => { set(value); setPage(1); };
   return <>
     <header className="qhdn-encabezado">
-      <h1>Qué hay de nuevo · Mis entradas</h1>
-      <Link className="qhdn-boton-primario-enlace" to={`${base}/nueva`}><Plus size={16} aria-hidden="true" /> Nueva entrada</Link>
+      <h1>Qué hay de nuevo · {canCreate ? "Mis entradas" : "Entradas del equipo"}</h1>
+      <div className="qhdn-fila">
+        {me.canUseSavedReports && <Link className="qhdn-enlace-reportes" to={`${base}/reportes`}>Reportes guardados</Link>}
+        {canCreate && <Link className="qhdn-boton-primario-enlace" to={`${base}/nueva`}><Plus size={16} aria-hidden="true" /> Nueva entrada</Link>}
+      </div>
     </header>
     <p className="alerta alerta-info qhdn-aviso-desarrollador">Las entradas publicadas se consultan en solo lectura. El detalle muestra el avance de las pruebas y sus hallazgos; puedes corregir una entrada propia cuando el estado lo permite.</p>
     <div className="qhdn-filtros-desarrollador" role="search" aria-label="Filtrar mis entradas">
@@ -120,7 +160,7 @@ function DeveloperList({ me }: { me: Me }) {
           <thead><tr><th scope="col">Tipo</th><th scope="col">Ruta</th><th scope="col">Qué cambió</th><th scope="col">Sistema</th>{showAuthor && <th scope="col">Desarrollador</th>}<th scope="col">Estado</th><th scope="col">Creada</th><th scope="col">Acción</th></tr></thead>
           <tbody>{entries.data.items.map(e => {
             const detail = statusDetail(e);
-            const continueDraft = e.status === "borrador" && e.developer.id === me.user.id;
+            const continueDraft = canCreate && e.status === "borrador" && e.developer.id === me.user.id;
             return <tr key={e.id}><td><EtiquetaTipo tipo={e.type} /></td><td className="qhdn-celda-ruta">{e.primaryRoute || "—"}<small className="qhdn-detalle-estado">{e.number}</small></td>
               <td className="qhdn-celda-resumen">{e.summary || <span className="texto-ayuda">Sin descripción</span>}</td><td><EtiquetaSistema sistema={e.system} /></td>{showAuthor && <td>{e.developer.displayName}</td>}
               <td><EtiquetaEstadoQhdn estado={e.status} />{detail && <small className="qhdn-detalle-estado">{detail}</small>}</td><td><time dateTime={e.createdAt}>{prettyDate(e.createdAt)}</time></td>
@@ -135,6 +175,7 @@ function DeveloperList({ me }: { me: Me }) {
 
 function LiveList({ me, support }: { me: Me; support: boolean }) {
   const key = useContext(Scope);
+  const navigate = useNavigate();
   const reportOnly = !can(me, "updates.whats_new.test") && !can(me, "updates.whats_new.view_all") && !can(me, "configuration.whats_new.manage") && can(me, "updates.whats_new.report");
   const [tab, setTab] = useState(reportOnly ? "probadas" : "sin_probar");
   const [result, setResult] = useState("ambas");
@@ -144,7 +185,7 @@ function LiveList({ me, support }: { me: Me; support: boolean }) {
   const filters = support ? { tab, result: tab === "probadas" ? result : undefined, type, system, month, q, page, pageSize: 20 } : { scope, type, system, status, q, page, pageSize: 20 };
   const entries = useQuery({ queryKey: [...key, support ? "queue" : "entries", filters], queryFn: () => whatsNewApi.list(filters, support) });
   function change(fn: () => void) { fn(); setPage(1); }
-  return <><div className="pagina-encabezado"><div><h1>Qué hay de nuevo</h1><p>{support ? "Bandeja de pruebas" : "Mis entradas"}</p></div>{!support && <Link className="qhdn-boton-primario-enlace" to={`${base}/nueva`}>Nueva entrada</Link>}</div>
+  return <><div className="pagina-encabezado"><div><h1>Qué hay de nuevo</h1><p>{support ? "Bandeja de pruebas" : "Mis entradas"}</p></div>{!support && <Link className="qhdn-boton-primario-enlace" to={`${base}/nueva`}>Nueva entrada</Link>}{me.canUseSavedReports && <Link className="qhdn-enlace-reportes" to={`${base}/reportes`}>Reportes guardados</Link>}</div>
     {support && <div className="qhdn-pestanas" role="tablist" aria-label="Pruebas">{[["sin_probar", "Sin probar"], ["en_pruebas", "En pruebas"], ["probadas", "Probadas"]].map(([value,label]) => <button role="tab" aria-selected={tab === value} key={value} disabled={reportOnly && value !== "probadas"} onClick={() => change(() => setTab(value))}>{label}</button>)}</div>}
     <div className="tarjeta qhdn-fila">
       {!support && <label>Ver<select value={scope} onChange={e => change(() => setScope(e.target.value))}><option value="mine">Mis entradas</option>{can(me, "updates.whats_new.view_all") && <option value="all">Todo el equipo</option>}</select></label>}
@@ -155,9 +196,9 @@ function LiveList({ me, support }: { me: Me; support: boolean }) {
       {support && tab === "probadas" && <label>Resultado<select value={result} onChange={e => change(() => setResult(e.target.value))}><option value="ambas">Ambas</option><option value="sin_errores">Sin errores</option><option value="fallidas">Fallidas</option></select></label>}
       <label>Buscar<input type="search" value={q} maxLength={100} onChange={e => change(() => setQ(e.target.value))} /></label>
     </div>
-    {support && tab === "probadas" && can(me, "updates.whats_new.report") && <button className="primario" onClick={() => setReport(true)}>Enviar reporte</button>}
+    {support && tab === "probadas" && can(me, "updates.whats_new.report") && <button className="primario" type="button" onClick={() => setReport(true)}>{me.canUseSavedReports ? "Preparar reporte privado" : "Vista previa del reporte"}</button>}
     {entries.isPending ? <Loading /> : entries.error ? <><Feedback error={entries.error} /><button onClick={() => entries.refetch()}>Reintentar</button></> : <><div className="qhdn-tabla-contenedor"><table aria-label={support ? "Bandeja de pruebas" : "Mis entradas"}><thead><tr><th>Entrada</th><th>Tipo / Sistema</th><th>Qué cambió</th><th>Desarrollador</th><th>Estado</th></tr></thead><tbody>{entries.data.items.map(e => <tr key={e.id}><td><Link to={`${base}/${e.id}`}>{e.number}</Link></td><td><EtiquetaTipo tipo={e.type} /> <EtiquetaSistema sistema={e.system} /></td><td>{e.summary || "Borrador sin contenido"}<small className="qhdn-detalle-estado">{e.primaryRoute}</small></td><td>{e.developer?.displayName}</td><td><EtiquetaEstadoQhdn estado={e.status} /></td></tr>)}</tbody></table></div>{entries.data.items.length === 0 && <p>No hay entradas con estos filtros.</p>}<PageControl page={page} total={entries.data.total} size={20} onChange={setPage} /></>}
-    {report && <ReportDialog filters={{ type, system, month, q }} onClose={() => setReport(false)} />}
+    {report && <ReportDialog filters={{ type, system, month, q }} result={result} onClose={() => setReport(false)} onSaved={me.canUseSavedReports ? id => navigate(`${base}/reportes/${encodeURIComponent(id)}`) : undefined} />}
   </>;
 }
 
@@ -182,7 +223,7 @@ function ReferenceFields({ group, value, onChange, onUpload }: { group: "reglasN
   return <section className="qhdn-referencia-desarrollador" aria-labelledby={`${fieldId}-title`}>
     <h3 id={`${fieldId}-title`}>{video ? "9." : "8."} {title}</h3>
     <div className="qhdn-referencia-barra"><div className="qhdn-referencia-valores">
-      {value.length === 0 ? <p className="texto-ayuda">Sin referencias añadidas.</p> : <ul aria-label={video ? "Videos de entrega" : "Referencias de reglas de negocio"}>{value.map(item => <li key={item.id}><span>{item.clase === "archivo" ? <BotonDescargaPrivada id={item.id} name={item.nombre} /> : item.nombre || item.url}<small>{item.clase === "archivo" ? "Archivo" : "Enlace"}</small></span><button type="button" aria-label={`Quitar ${item.nombre || item.url || "archivo adjunto"}`} onClick={() => onChange(value.filter(other => other.id !== item.id))}>Quitar</button></li>)}</ul>}
+      {value.length === 0 ? <p className="texto-ayuda">Sin referencias añadidas.</p> : <ul aria-label={video ? "Videos de entrega" : "Referencias de reglas de negocio"}>{value.map(item => <li key={item.id}><span>{item.clase === "archivo" ? <BotonDescargaPrivada id={item.id} name={item.nombre} /> : item.nombre || item.url}<small>{item.clase === "archivo" ? "Archivo" : "Enlace"}</small></span><RemoveButton label={`Quitar ${item.nombre || item.url || "archivo adjunto"}`} onClick={() => onChange(value.filter(other => other.id !== item.id))} /></li>)}</ul>}
     </div><button type="button" className="qhdn-referencia-mas" aria-label={`Agregar referencia a ${title}`} aria-expanded={actionsOpen} aria-controls={actionsOpen ? `${fieldId}-actions` : undefined} onClick={() => setActionsOpen(!actionsOpen)}><Plus size={15} aria-hidden="true" /></button></div>
     {actionsOpen && <div className="qhdn-fila qhdn-referencia-opciones" id={`${fieldId}-actions`}>
       <button type="button" onClick={() => { setAddMode(true); setActionsOpen(false); setError(""); }}>Añadir enlace</button>
@@ -222,6 +263,7 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
   const [editRevision, setEditRevision] = useState(0);
   const [committedRevision, setCommittedRevision] = useState(0);
   const [draftPending, setDraftPending] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const [draftError, setDraftError] = useState<unknown>(null);
   const [conflict, setConflict] = useState(false);
   const failedRevision = useRef<number>();
@@ -290,7 +332,7 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
   }
   async function save(publish = false, auto = false) {
     const state = latest.current;
-    if (inFlightDraft.current || publishing.current || uploadBusy.current || state.conflicted || correction
+    if (removing || inFlightDraft.current || publishing.current || uploadBusy.current || state.conflicted || correction
       || (auto && (state.revision === state.committed || failedRevision.current === state.revision))) return;
     if (publish) { publishing.current = true; setSubmitting(true); }
     if (!auto) setLocalError("");
@@ -331,10 +373,10 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
   saveRef.current = () => { void save(false, true); };
   const dirty = editRevision !== committedRevision;
   useEffect(() => {
-    if (!dirty || correction || draftPending || uploading || submitting || conflict || failedRevision.current === editRevision) return;
+    if (!dirty || correction || removing || draftPending || uploading || submitting || conflict || failedRevision.current === editRevision) return;
     const timer = window.setTimeout(() => saveRef.current(), 3_000);
     return () => window.clearTimeout(timer);
-  }, [dirty, editRevision, correction, draftPending, uploading, submitting, conflict]);
+  }, [dirty, editRevision, correction, removing, draftPending, uploading, submitting, conflict]);
   useEffect(() => {
     if (!dirty) return;
     // The debounce leaves a brief unsaved window; never discard it on a reload silently.
@@ -359,6 +401,7 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
     };
   }, [dirty]);
   const formLocked = submitting || op.isPending;
+  const mayRemove = !correction && saved?.status === "borrador" && (saved.canDelete ?? entry?.canDelete) === true;
   const missing = fieldRequirements(form, clientLabel);
   const title = correction ? "Corregir y volver a publicar" : saved ? "Editar borrador" : "Nueva entrada";
   return <>
@@ -400,7 +443,15 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
         {uploading && <p className="texto-ayuda" id="storage-form" role="status">Subiendo archivo a almacenamiento privado…</p>}
         <div className="qhdn-pie-formulario">
           <p role="status" className="texto-ayuda">{draftPending ? "Guardando borrador…" : dirty ? "Cambios sin guardar." : message}</p>
-          <div className="acciones-formulario">{correction ? <button type="button" className="primario" disabled={formLocked || uploading} onClick={() => op.mutateAsync(() => whatsNewApi.command(entry!.id, "correct", entry!.etag, { whatChanged: form.queCambio, requiredActions: draftFromForm(form).requiredActions, correctionNote: note })).then(() => navigate(`${base}/${entry!.id}`)).catch(() => {})}>Corregir y volver a publicar</button> : <><button type="submit" disabled={formLocked || draftPending || uploading || conflict}>Guardar borrador</button><button type="button" className="primario" disabled={formLocked || draftPending || uploading || conflict || missing.length > 0} aria-describedby={missing.length ? missingId : undefined} onClick={() => void save(true)}>Publicar a Soporte</button></>}</div>
+          <div className="acciones-formulario">
+            {mayRemove && <RemoveButton label="Eliminar entrada" disabled={formLocked || draftPending || uploading} onClick={() => {
+              if (!inFlightDraft.current && !uploadBusy.current && !publishing.current) setRemoving(true);
+            }} />}
+            {correction ? <button type="button" className="primario" disabled={formLocked || uploading} onClick={() => op.mutateAsync(() => whatsNewApi.command(entry!.id, "correct", entry!.etag, { whatChanged: form.queCambio, requiredActions: draftFromForm(form).requiredActions, correctionNote: note })).then(() => navigate(`${base}/${entry!.id}`)).catch(() => {})}>Corregir y volver a publicar</button> : <>
+              <button type="submit" disabled={formLocked || draftPending || uploading || conflict}>Guardar borrador</button>
+              <button type="button" className="primario" disabled={formLocked || draftPending || uploading || conflict || missing.length > 0} aria-describedby={missing.length ? missingId : undefined} onClick={() => void save(true)}>Publicar a Soporte</button>
+            </>}
+          </div>
           {!correction && missing.length > 0 && <p id={missingId} className="texto-ayuda qhdn-campos-faltantes">Para publicar, completa: {missing.join(", ")}.</p>}
         </div>
       </form>
@@ -409,6 +460,7 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
         <section className="tarjeta qhdn-previa-desarrollador"><h2>Vista previa para Soporte</h2><div className="qhdn-etiquetas"><EtiquetaTipo tipo={form.tipo} /><EtiquetaSistema sistema={form.sistema} /></div><p className="texto-ayuda">{form.rutas[0] ? rutaTexto(form.rutas[0]) || "Sin ruta" : "Sin ruta"}</p><ReadDoc value={form.queCambio} privateMedia /></section>
       </aside>
     </div>
+    {removing && saved && <RemoveEntryDialog entry={saved} unsaved={dirty} onClose={() => setRemoving(false)} />}
   </>;
 }
 
@@ -421,20 +473,22 @@ function LiveEntry({ me, developerView }: { me: Me; developerView: boolean }) {
 }
 function EntryContent({ me, entry: e, developerView }: { me: Me; entry: EntryDto; developerView: boolean }) {
   const key = useContext(Scope); const qc = useQueryClient(); const [noteSaved, setNoteSaved] = useState("");
-  const op = useOperation(); const navigate = useNavigate(); const [confirm, setConfirm] = useState<string | null>(null); const [reason, setReason] = useState("");
+  const op = useOperation(); const [confirm, setConfirm] = useState<string | null>(null); const [reason, setReason] = useState("");
+  const [removing, setRemoving] = useState(false);
   const [body, setBody] = useState<DocEnriquecido | null>(null); const [annul, setAnnul] = useState<string | null>(null);
   const round = e.rounds.find(r => r.status === "tomada"); const mine = round?.holderId === me.user.id;
   const tester = me.areas.includes("soporte") && can(me, "updates.whats_new.test");
   const manage = can(me, "configuration.whats_new.manage"); const author = e.developer.id === me.user.id && can(me, "updates.whats_new.author") && me.areas.includes("desarrollo");
   const contributors = [e.developer.id, ...e.log.filter(l => ["editar_borrador", "publicar", "corregir", "corregir_en_nombre"].includes(l.action)).map(l => l.byId)];
-  const mayTest = !developerView && tester && !contributors.includes(me.user.id);
+  const removed = e.status === "eliminada";
+  const mayTest = !removed && !developerView && tester && !contributors.includes(me.user.id);
   const noteDraft = useMutation({ mutationFn: (data: { roundId: string; etag: string; body: DocEnriquecido | null }) => api.put(`/whats-new/rounds/${data.roundId}/note-draft`, { body: data.body }, mutationOptions(data.etag)), onSuccess: async () => { setNoteSaved("Avance guardado automáticamente."); await qc.invalidateQueries({ queryKey: [...key, "entry", e.id] }); } });
   useEffect(() => { setBody(round?.noteDraft ?? null); setNoteSaved(""); }, [round?.id]);
   useEffect(() => {
-    if (!round || !mine || !mayTest || noteDraft.isPending || noteDraft.error || op.isPending || JSON.stringify(body) === JSON.stringify(round.noteDraft)) return;
+    if (!round || !mine || !mayTest || removing || noteDraft.isPending || noteDraft.error || op.isPending || JSON.stringify(body) === JSON.stringify(round.noteDraft)) return;
     const timer = setTimeout(() => noteDraft.mutate({ roundId: round.id, etag: round.etag, body }), 1500);
     return () => clearTimeout(timer);
-  }, [body, round?.etag, mine, mayTest, op.isPending, noteDraft.isPending]);
+  }, [body, round?.etag, mine, mayTest, removing, op.isPending, noteDraft.isPending]);
   function command(action: string, data: unknown = {}) { op.run(() => whatsNewApi.command(e.id, action, e.etag, data)); }
   const findings = <><h3>Hallazgos {developerView && <span className="qhdn-conteo">{e.findings.length}</span>}</h3>{e.findings.length === 0 && <p>Sin hallazgos registrados.</p>}{e.findings.map(f => <article className={developerView ? "qhdn-hallazgo-detalle" : "tarjeta"} key={f.id}><h4>Hallazgo {f.number} · Ronda {f.roundNo}</h4><ReadDoc value={f.body} />{f.annulled ? <p>Anulado: {f.annulled.reason}</p> : mine && mayTest && f.roundNo === round.roundNo && <button onClick={() => { setAnnul(f.id); setConfirm("annul"); }}>Anular hallazgo</button>}</article>)}</>;
   return <><Link className={developerView ? "qhdn-volver-desarrollador" : undefined} to={base}>{developerView ? "← Volver a mis entradas" : "← Volver a la bandeja"}</Link>
@@ -444,11 +498,12 @@ function EntryContent({ me, entry: e, developerView }: { me: Me; entry: EntryDto
     </header>
     {developerView && (e.status !== "borrador" || !author) && <p className="alerta alerta-info qhdn-aviso-desarrollador"><strong>Solo lectura.</strong> {(author || manage) && ["sin_probar", "fallida"].includes(e.status) ? "Usa la acción de corrección para modificar el cambio y devolverlo a Soporte." : "En este estado no puedes editar la entrada."}</p>}
     <Feedback error={op.error} /><div className="qhdn-fila qhdn-comandos-detalle">
-    {author && e.status === "borrador" && <>{!developerView && <Link to={`${base}/${e.id}/editar`}>Editar borrador</Link>}<button disabled={op.isPending} onClick={() => command("publish")}>Publicar a Soporte</button><button className="peligro" onClick={() => setConfirm("delete")}>Eliminar borrador</button></>}
+    {author && e.status === "borrador" && <>{!developerView && <Link to={`${base}/${e.id}/editar`}>Editar borrador</Link>}<button disabled={op.isPending} onClick={() => command("publish")}>Publicar a Soporte</button></>}
+    {!removed && e.canDelete === true && <RemoveButton label="Eliminar entrada" disabled={op.isPending || noteDraft.isPending} onClick={() => setRemoving(true)} />}
     {(author || manage) && ["sin_probar", "fallida"].includes(e.status) && <Link to={`${base}/${e.id}/corregir`}>Corregir y volver a publicar</Link>}
     {!developerView && e.status === "sin_probar" && <button className="primario" disabled={!mayTest || op.isPending} onClick={() => command("take")}>Tomar para probar</button>}
-    {!developerView && mine && <><button onClick={() => setConfirm("release")} disabled={op.isPending}>Soltar</button><button className="peligro" disabled={op.isPending || !e.findings.some(f => f.roundNo === round.roundNo && !f.annulled)} onClick={() => command("mark-failed")}>Marcar fallida</button><button className="primario" disabled={op.isPending || round.checklist.some(c => !c.checked)} onClick={() => command("mark-tested")}>Marcar probado</button></>}
-    {!developerView && manage && round && !mine && <button onClick={() => setConfirm("force-release")}>Forzar Soltar</button>}{!developerView && manage && e.status === "probado" && <button onClick={() => setConfirm("archive")}>Archivar</button>}
+    {!removed && !developerView && mine && <><button onClick={() => setConfirm("release")} disabled={op.isPending}>Soltar</button><button className="peligro" disabled={op.isPending || !e.findings.some(f => f.roundNo === round.roundNo && !f.annulled)} onClick={() => command("mark-failed")}>Marcar fallida</button><button className="primario" disabled={op.isPending || round.checklist.some(c => !c.checked)} onClick={() => command("mark-tested")}>Marcar probado</button></>}
+    {!removed && !developerView && manage && round && !mine && <button onClick={() => setConfirm("force-release")}>Forzar Soltar</button>}{!developerView && manage && e.status === "probado" && <button onClick={() => setConfirm("archive")}>Archivar</button>}
   </div>{!developerView && e.status === "sin_probar" && !mayTest && <p>Probar exige área Soporte y permiso de pruebas; quien creó o corrigió la entrada no puede probarla.</p>}{round && !mine && <p>En pruebas por {round.holderName}. Solo lectura.</p>}
     <Feedback error={noteDraft.error} />{!developerView && <p role="status">{noteSaved}</p>}<div className={developerView ? "qhdn-detalle-grid qhdn-desarrollador-grid" : "qhdn-formulario-grid"}><section className="tarjeta">
       {developerView ? <><h2>Datos del cambio</h2><dl className="qhdn-datos">
@@ -461,8 +516,9 @@ function EntryContent({ me, entry: e, developerView }: { me: Me; entry: EntryDto
       {!developerView && round && <section><h3>Mi checklist</h3><progress max={round.checklist.length || 1} value={round.checklist.filter(c => c.checked).length} aria-label="Avance del checklist" />{round.checklist.map(item => <label className="qhdn-check" key={item.itemNo}><input type="checkbox" checked={item.checked} disabled={!mine || !mayTest || op.isPending} onChange={() => op.run(() => api.patch(`/whats-new/rounds/${round.id}/checklist`, { items: [{ itemNo: item.itemNo, checked: !item.checked }] }, mutationOptions(round.etag)))} />{item.label}</label>)}<p>Para aprobar, completa el checklist. Para marcar fallida, registra al menos un hallazgo vigente de esta ronda.</p></section>}
       {mine && mayTest && <section><h3 id="live-note">Notas y hallazgos</h3><EditorEnriquecido valor={body} onChange={setBody} perfil="medio" etiquetaId="live-note" /><div className="qhdn-fila"><button disabled={!body || op.isPending} onClick={() => op.mutateAsync(() => api.post(`/whats-new/rounds/${round.id}/notes`, { body }, mutationOptions(round.etag, true))).then(() => setBody(null)).catch(() => {})}>Guardar como nota</button><button disabled={!body || op.isPending} onClick={() => op.mutateAsync(() => api.post(`/whats-new/rounds/${round.id}/findings`, { body }, mutationOptions(round.etag, true))).then(() => setBody(null)).catch(() => {})}>Registrar hallazgo</button></div><p className="texto-ayuda">Registrar un hallazgo no envía correo.</p></section>}
       {!developerView && findings}
-    </section><aside className="qhdn-panel-lateral">{developerView ? <section className="tarjeta">{findings}</section> : <ClientText me={me} entry={e} editable={can(me, "updates.whats_new.publish_client") && me.areas.includes("soporte") && !contributors.includes(me.user.id) && (mine || e.status === "probado")} />}<div className="tarjeta"><h3>Historial y rondas de prueba</h3>{e.rounds.map(r => <details key={r.id}><summary>Ronda {r.roundNo} · {r.holderName} · {r.status}</summary><ul>{r.checklist.map(c => <li key={c.itemNo}>{c.checked ? "✓" : "○"} {c.label}</li>)}</ul>{r.notes.map(n => <ReadDoc key={n.id} value={n.body} />)}</details>)}<ol>{e.log.map((l,i) => <li key={i}><time>{new Date(l.at).toLocaleString("es-CO", { timeZone: "America/Bogota" })}</time> · {l.byId}: {l.action.replaceAll("_", " ")}{l.reason && ` · ${l.reason}`}</li>)}</ol></div></aside></div>
-    <Dialogo titulo={confirm === "release" ? "Soltar y reiniciar la prueba" : "Confirmar acción"} abierto={!!confirm} onCerrar={() => { setConfirm(null); setReason(""); }}>{confirm === "release" ? <p>La entrada volverá a Sin probar y la próxima prueba empezará vacía. Se conserva la historia de esta ronda. No se enviará ningún correo.</p> : confirm === "delete" ? <p>Se eliminará este borrador. Esta acción no se puede deshacer.</p> : <label>Motivo (10 a 500 caracteres)<textarea value={reason} minLength={10} maxLength={500} onChange={ev => setReason(ev.target.value)} /></label>}<button className="primario" disabled={op.isPending || (!["release", "delete"].includes(confirm ?? "") && reason.trim().length < 10)} onClick={() => { const action = confirm!; if (action === "delete") op.mutateAsync(() => api.del(`/whats-new/entries/${e.id}`, mutationOptions(e.etag))).then(() => navigate(base)).catch(() => {}); else if (action === "annul") op.run(() => api.post(`/whats-new/findings/${annul}/annul`, { reason }, mutationOptions(round?.etag ?? e.etag, true))); else command(action, action === "release" ? {} : { reason }); setConfirm(null); setReason(""); }}>Confirmar</button></Dialogo>
+    </section><aside className="qhdn-panel-lateral">{developerView ? <section className="tarjeta">{findings}</section> : <ClientText me={me} entry={e} editable={!removed && can(me, "updates.whats_new.publish_client") && me.areas.includes("soporte") && !contributors.includes(me.user.id) && (mine || e.status === "probado")} />}<div className="tarjeta"><h3>Historial y rondas de prueba</h3>{e.rounds.map(r => <details key={r.id}><summary>Ronda {r.roundNo} · {r.holderName} · {r.status}</summary><ul>{r.checklist.map(c => <li key={c.itemNo}>{c.checked ? "✓" : "○"} {c.label}</li>)}</ul>{r.notes.map(n => <ReadDoc key={n.id} value={n.body} />)}</details>)}<ol>{e.log.map((l,i) => <li key={i}><time>{new Date(l.at).toLocaleString("es-CO", { timeZone: "America/Bogota" })}</time> · {l.byId}: {l.action.replaceAll("_", " ")}{l.reason && ` · ${l.reason}`}</li>)}</ol></div></aside></div>
+    <Dialogo titulo={confirm === "release" ? "Soltar y reiniciar la prueba" : "Confirmar acción"} abierto={!!confirm} onCerrar={() => { setConfirm(null); setReason(""); }}>{confirm === "release" ? <p>La entrada volverá a Sin probar y la próxima prueba empezará vacía. Se conserva la historia de esta ronda. No se enviará ningún correo.</p> : <label>Motivo (10 a 500 caracteres)<textarea value={reason} minLength={10} maxLength={500} onChange={ev => setReason(ev.target.value)} /></label>}<button className="primario" disabled={op.isPending || (confirm !== "release" && reason.trim().length < 10)} onClick={() => { const action = confirm!; if (action === "annul") op.run(() => api.post(`/whats-new/findings/${annul}/annul`, { reason }, mutationOptions(round?.etag ?? e.etag, true))); else command(action, action === "release" ? {} : { reason }); setConfirm(null); setReason(""); }}>Confirmar</button></Dialogo>
+    {removing && <RemoveEntryDialog entry={e} onClose={() => setRemoving(false)} unsaved={Boolean(mine && round && JSON.stringify(body) !== JSON.stringify(round.noteDraft))} />}
   </>;
 }
 
@@ -474,12 +530,83 @@ function ClientText({ entry: source, editable }: { me: Me; entry: EntryDto; edit
 }
 
 function ReportFrame({ html, title }: { html: string; title: string }) { return <iframe className="qhdn-reporte-frame" title={title} srcDoc={html} sandbox="" referrerPolicy="no-referrer" />; }
-export function ReportDialog({ filters, onClose }: { filters: Record<string, string>; onClose: () => void }) {
+export function ReportDialog({ filters, onClose, onSaved, result }: { filters: Record<string, string>; onClose: () => void; onSaved?: (id: string) => void; result?: string }) {
+  const [include, setInclude] = useState<ReportInput["include"]>(result === "sin_errores" ? "aprobadas" : result === "fallidas" ? "fallidas" : "todas");
+  const [month, setMonth] = useState(filters.month ?? "");
+  const [preview, setPreview] = useState<ReportPreview | null>(null);
+  const key = useRef<{ payload: string; value: string }>();
+  const inFlight = useRef(false);
+  const input: ReportInput = { include, filters: Object.fromEntries(Object.entries({ ...filters, month }).filter(([, value]) => value.trim() !== "")) };
+  const previewOp = useMutation({ mutationFn: whatsNewApi.preview, onSuccess: setPreview });
+  const saveOp = useMutation({ mutationFn: (body: ReportInput) => {
+    const payload = JSON.stringify(body);
+    if (key.current?.payload !== payload) key.current = { payload, value: crypto.randomUUID() };
+    return whatsNewApi.saveReport(body, key.current.value);
+  }, onSuccess: ({ id }) => onSaved?.(id) });
+  const busy = previewOp.isPending || saveOp.isPending;
+  function run(kind: "preview" | "save") {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    if (kind === "preview") saveOp.reset();
+    else previewOp.reset();
+    const op = kind === "preview" ? previewOp : saveOp;
+    void op.mutateAsync(input).catch(() => {}).finally(() => { inFlight.current = false; });
+  }
+  return <Dialogo titulo={onSaved ? "Preparar reporte privado" : "Vista previa del reporte"} abierto onCerrar={() => { if (!inFlight.current) onClose(); }} className="qhdn-dialogo-reporte">
+    <fieldset disabled={busy}><legend>Qué incluir</legend>{([["todas", "Todas"], ["aprobadas", "Solo aprobadas"], ["fallidas", "Solo fallidas"]] as const).map(([value, label]) => <label className="qhdn-radio" key={value}><input type="radio" name="include" value={value} checked={include === value} onChange={() => { setInclude(value); setPreview(null); }} />{label}</label>)}</fieldset>
+    <label>Mes del reporte (opcional)<input type="month" value={month} disabled={busy} onChange={event => { setMonth(event.target.value); setPreview(null); }} /></label>
+    <p className="texto-ayuda">{onSaved ? "El reporte se guarda en el Portal de forma privada. No se envían correos." : "La vista previa no guarda un reporte ni envía correos."}</p>
+    <Feedback error={previewOp.error || saveOp.error} />
+    {busy && <p role="status">{saveOp.isPending ? "Guardando reporte…" : "Preparando vista previa…"}</p>}
+    <div className="qhdn-fila">
+      <button type="button" disabled={busy} onClick={() => run("preview")}>Ver vista previa</button>
+      {onSaved && <button type="button" className="primario" disabled={busy || preview?.entryCount === 0} onClick={() => run("save")}>Guardar reporte privado</button>}
+    </div>
+    {preview && <><p>{preview.entryCount} entradas · {preview.approvedCount} aprobadas · {preview.failedCount} fallidas</p><ReportFrame html={preview.html} title="Vista previa del reporte" /></>}
+  </Dialogo>;
+}
+function SavedReports() {
   const key = useContext(Scope);
-  const [include, setInclude] = useState<ReportInput["include"]>("todas"); const [selected, setSelected] = useState<string[]>([]); const [search, setSearch] = useState(""); const [preview, setPreview] = useState<ReportPreview | null>(null);
-  const recipients = useQuery({ queryKey: [...key, "recipients", search], queryFn: () => whatsNewApi.lookup("recipients", search) });
-  const op = useMutation<ReportPreview | { id: string }, Error, "preview" | "send">({ mutationFn: (action) => action === "preview" ? whatsNewApi.preview({ include, filters }) : whatsNewApi.send({ include, filters, recipientIds: selected }), onSuccess: (result, action) => { if (action === "preview") setPreview(result as ReportPreview); } });
-  return <Dialogo titulo="Enviar reporte de Probadas" abierto onCerrar={onClose} className="qhdn-dialogo-reporte"><fieldset><legend>Qué incluir</legend>{[["todas", "Todas"], ["aprobadas", "Solo aprobadas"], ["fallidas", "Solo fallidas"]].map(([v,l]) => <label className="qhdn-radio" key={v}><input type="radio" name="include" value={v} checked={include === v} onChange={() => { setInclude(v as ReportInput["include"]); setPreview(null); }} />{l}</label>)}</fieldset><label>Buscar destinatarios<input type="search" value={search} maxLength={100} onChange={e => setSearch(e.target.value)} /></label><fieldset><legend>Usuarios activos del portal</legend>{recipients.isPending ? <Loading /> : recipients.data?.filter(u => u.active !== false).map(u => <label className="qhdn-check" key={u.id}><input type="checkbox" checked={selected.includes(u.id)} disabled={!selected.includes(u.id) && selected.length >= 30} onChange={e => setSelected(ids => e.target.checked ? [...ids, u.id] : ids.filter(id => id !== u.id))} />{u.displayName} {u.email && `· ${u.email}`}</label>)}</fieldset><p role="status">{selected.length} de 30 destinatarios seleccionados. Elige al menos uno.</p><p className="texto-ayuda">El reporte completo requiere iniciar sesión; cualquier usuario activo del portal puede abrirlo.</p><Feedback error={recipients.error || op.error} /><p className="alerta-info">El envío todavía no está disponible: el almacenamiento de archivos no está conectado. La vista previa HTML sí está disponible.</p><div className="qhdn-fila"><button disabled={op.isPending} onClick={() => op.mutate("preview")}>Ver reporte</button><button disabled={op.isPending || selected.length === 0 || selected.length > 30} onClick={() => op.mutate("send")}>Enviar a {selected.length} personas</button></div>{preview && <><p>{preview.entryCount} entradas · {preview.approvedCount} aprobadas · {preview.failedCount} fallidas</p><ReportFrame html={preview.html} title="Vista previa del reporte" /></>}</Dialogo>;
+  const qc = useQueryClient();
+  const navigate = useNavigate();
+  const [page, setPage] = useState(1);
+  const [preparing, setPreparing] = useState(false);
+  const [removing, setRemoving] = useState<SavedReport | null>(null);
+  const [feedback, setFeedback] = useState("");
+  const reports = useQuery({ queryKey: [...key, "saved-reports", page], queryFn: () => whatsNewApi.savedReports(page) });
+  return <>
+    <Link to={base}>← Volver a Qué hay de nuevo</Link>
+    <header className="qhdn-encabezado"><h1>Reportes guardados</h1><button className="primario" type="button" onClick={() => setPreparing(true)}>Preparar reporte privado</button></header>
+    <p className="texto-ayuda">Los reportes son privados. Guardar o eliminar un reporte no envía correos.</p>
+    {feedback && <p role="status">{feedback}</p>}
+    {reports.isPending ? <Loading /> : reports.error ? <><Feedback error={reports.error} /><button type="button" onClick={() => void reports.refetch()}>Reintentar</button></> : <>
+      {reports.data.items.length === 0 ? <p className="tarjeta">No hay reportes guardados.</p> :
+        <div className="qhdn-tabla-contenedor"><table><caption className="sr-only">Reportes privados guardados</caption>
+          <thead><tr><th scope="col">Fecha</th><th scope="col">Autor</th><th scope="col">Entradas</th><th scope="col">Acciones</th></tr></thead>
+          <tbody>{reports.data.items.map(report => <tr key={report.id}>
+            <td><time dateTime={report.generatedAt}>{prettyDate(report.generatedAt)}</time></td>
+            <td>{report.generatedBy.displayName}</td>
+            <td>{report.entryCount} · {report.approvedCount} aprobadas · {report.failedCount} fallidas</td>
+            <td><div className="acciones-tabla">
+              <Link className="qhdn-enlace-reportes" to={`${base}/reportes/${encodeURIComponent(report.id)}`}>Abrir reporte</Link>
+              {report.canDelete && <RemoveButton label="Eliminar reporte" onClick={() => { setFeedback(""); setRemoving(report); }} />}
+            </div></td>
+          </tr>)}</tbody>
+        </table></div>}
+      <PageControl page={page} total={reports.data.total} size={reports.data.pageSize} onChange={setPage} />
+    </>}
+    {preparing && <ReportDialog filters={{}} onClose={() => setPreparing(false)} onSaved={id => {
+      void qc.invalidateQueries({ queryKey: [...key, "saved-reports"] });
+      navigate(`${base}/reportes/${encodeURIComponent(id)}`);
+    }} />}
+    {removing && <RemovalDialog title="Eliminar reporte" onClose={() => setRemoving(null)} remove={() => whatsNewApi.deleteReport(removing.id)} onRemoved={() => {
+      qc.removeQueries({ queryKey: [...key, "report", removing.id], exact: true });
+      if (reports.data?.items.length === 1 && page > 1) setPage(page - 1);
+      void qc.invalidateQueries({ queryKey: [...key, "saved-reports"] });
+      setRemoving(null);
+      setFeedback("Reporte eliminado.");
+    }}><p>El reporte guardado por {removing.generatedBy.displayName} el {prettyDate(removing.generatedAt)} dejará de aparecer y su enlace ya no abrirá. Se conserva el historial; no se enviarán correos.</p></RemovalDialog>}
+  </>;
 }
 export function LiveReportPage() {
   return <PrivateScope><PrivateReport /></PrivateScope>;
@@ -487,7 +614,7 @@ export function LiveReportPage() {
 function PrivateReport() {
   const key = useContext(Scope);
   const { id = "" } = useParams(); const report = useQuery({ queryKey: [...key, "report", id], queryFn: () => api.getText(`/whats-new/reports/${encodeURIComponent(id)}`, { credentials: "include" }), retry: false });
-  return <main className="qhdn-pagina qhdn-reporte-completo"><h1>Reporte de pruebas</h1>{report.isPending ? <Loading /> : report.error ? <Feedback error={report.error} /> : <ReportFrame html={report.data} title="Reporte completo" />}</main>;
+  return <main className="qhdn-pagina qhdn-reporte-completo"><Link to={`${base}/reportes`}>← Volver a reportes guardados</Link><h1>Reporte de pruebas</h1>{report.isPending ? <Loading /> : report.error ? <Feedback error={report.error} /> : <ReportFrame html={report.data} title="Reporte completo" />}</main>;
 }
 
 export function LiveConfigPage() {

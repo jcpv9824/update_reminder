@@ -234,23 +234,93 @@ describe("Qué hay de nuevo · API real", () => {
     expect(get.mock.calls.every(([p]) => p.startsWith("/public/novedades?"))).toBe(true);
     expect(screen.queryByRole("navigation", { name: "Navegación principal" })).toBeNull();
   });
-  it("el reporte se abre sin consultar área ni permisos de la opción", async () => {
+  it("abre el reporte en un iframe aislado y delega su autorización al endpoint", async () => {
     vi.mocked(api.getText).mockResolvedValue("<!doctype html><html><body>Reporte congelado</body></html>");
     mount(<LiveReportPage />, "/reportes/r", "/reportes/:id");
     expect(await screen.findByTitle("Reporte completo")).toHaveAttribute("sandbox", "");
     expect(api.getText).toHaveBeenCalledWith("/whats-new/reports/r", { credentials: "include" });
     expect(get).not.toHaveBeenCalled();
   });
-  it("reportes usa destinatarios activos del portal y muestra 503 sin fingir un envío", async () => {
-    get.mockResolvedValue([{ id: "sales", displayName: "Persona de Ventas", email: "ventas@test.co", active: true }, { id: "inactive", displayName: "Inactivo", active: false }]);
-    vi.mocked(api.post).mockRejectedValue(Object.assign(new Error("El almacenamiento de archivos todavía no está conectado."), { status: 503 }));
-    mount(<ReportDialog filters={{}} onClose={() => {}} />);
-    expect(screen.getByLabelText("Buscar destinatarios")).toHaveAttribute("maxlength", "100");
-    fireEvent.click(await screen.findByRole("checkbox", { name: /Persona de Ventas/ }));
-    expect(screen.queryByRole("checkbox", { name: "Inactivo" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Enviar a 1 personas" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("El almacenamiento de archivos todavía no está conectado.");
-    expect(api.post).toHaveBeenCalledWith("/whats-new/reports", { include: "todas", filters: {}, recipientIds: ["sales"] }, expect.objectContaining({ headers: expect.objectContaining({ "Idempotency-Key": expect.any(String) }) }));
-    expect(screen.queryByText(/Reporte enviado/)).toBeNull();
+  it("guarda un reporte privado con confirmación real sin pedir destinatarios ni llamar al envío", async () => {
+    const onSaved = vi.fn();
+    const post = vi.mocked(api.post);
+    post.mockResolvedValueOnce({ html: "<p>Vista previa</p>", entryCount: 1, approvedCount: 1, failedCount: 0 });
+    post.mockResolvedValueOnce({ id: "saved-r" });
+    mount(<ReportDialog filters={{}} onClose={() => {}} onSaved={onSaved} />);
+    expect(screen.queryByLabelText("Buscar destinatarios")).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Ver vista previa" }));
+    expect(await screen.findByTitle("Vista previa del reporte")).toHaveAttribute("sandbox", "");
+    fireEvent.click(screen.getByRole("button", { name: "Guardar reporte privado" }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith("saved-r"));
+    expect(post).toHaveBeenCalledWith("/whats-new/reports/saved", { include: "todas", filters: {} }, expect.objectContaining({ headers: expect.objectContaining({ "Idempotency-Key": expect.any(String) }) }));
+    expect(post.mock.calls.some(([path]) => path === "/whats-new/reports")).toBe(false);
+    expect(get).not.toHaveBeenCalled();
+  });
+  it("permite eliminar una entrada desde un borrador guardado solo tras confirmación y conserva su ETag", async () => {
+    get.mockImplementation(async path => path === "/whats-new/me" ? author : path === "/whats-new/entries/slow-draft" ? { ...draftDetail, canDelete: true } : path.startsWith("/whats-new/entries?") ? { items: [], total: 0, page: 1, pageSize: 20 } : []);
+    vi.mocked(api.del).mockResolvedValue(undefined);
+    mount(<LiveWhatsNewPage />, draftPath, "/actualizaciones/que-hay-de-nuevo/*");
+    fireEvent.click(await screen.findByRole("button", { name: "Eliminar entrada" }));
+    const dialog = screen.getByRole("dialog", { name: "Eliminar entrada" });
+    expect(dialog).toHaveTextContent(/se conserva el historial/i);
+    expect(api.del).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Confirmar eliminación" }));
+    await waitFor(() => expect(api.del).toHaveBeenCalledWith("/whats-new/entries/slow-draft", { headers: { "If-Match": '"v1"' } }));
+    expect(await screen.findByRole("heading", { name: /Mis entradas/ })).toBeInTheDocument();
+  });
+  it("no ofrece eliminar un borrador si el servidor no lo autoriza", async () => {
+    get.mockImplementation(async path => path === "/whats-new/me" ? author : path === "/whats-new/entries/slow-draft" ? { ...draftDetail, canDelete: false } : []);
+    mount(<LiveWhatsNewPage />, draftPath, "/actualizaciones/que-hay-de-nuevo/*");
+    expect(await screen.findByRole("heading", { name: /Editar borrador/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Eliminar entrada" })).toBeNull();
+  });
+  it("permite a super_admin sin área localizar y retirar un borrador ajeno desde el detalle, sin editarlo", async () => {
+    const admin = { ...author, areas: [], views: ["lectura"], superAdmin: true, canUseSavedReports: true };
+    const otherDraft = {
+      ...draftDetail, id: "other-draft", developer: { id: "other", displayName: "Otra persona" }, canDelete: true,
+      createdAt: "2026-11-24T15:00:00Z", rounds: [], findings: [], log: [], participants: [], revisions: [],
+    };
+    get.mockImplementation(async path => path === "/whats-new/me" ? admin : path === "/whats-new/entries/other-draft" ? otherDraft : { items: [otherDraft], total: 1, page: 1, pageSize: 20 });
+    vi.mocked(api.del).mockResolvedValue(undefined);
+    mount(<LiveWhatsNewPage />, "/actualizaciones/que-hay-de-nuevo", "/actualizaciones/que-hay-de-nuevo/*");
+    expect(await screen.findByRole("heading", { name: /Entradas del equipo/ })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Nueva entrada" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Reportes guardados" })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("link", { name: "Ver detalle de QN-100" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Eliminar entrada" }));
+    expect(screen.queryByRole("link", { name: "Continuar edición" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar eliminación" }));
+    await waitFor(() => expect(api.del).toHaveBeenCalledWith("/whats-new/entries/other-draft", { headers: { "If-Match": '"v1"' } }));
+  });
+  it("ofrece reportes guardados también en Soporte solo por capacidad del servidor", async () => {
+    const support = { ...author, areas: ["soporte"], permissions: ["updates.whats_new.view", "updates.whats_new.test", "updates.whats_new.report"], views: ["asesor"], canUseSavedReports: true };
+    get.mockImplementation(async path => path === "/whats-new/me" ? support : { items: [], total: 0, page: 1, pageSize: 20 });
+    mount(<LiveWhatsNewPage />, "/actualizaciones/que-hay-de-nuevo", "/actualizaciones/que-hay-de-nuevo/*");
+    expect(await screen.findByRole("link", { name: "Reportes guardados" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Probadas" }));
+    fireEvent.click(screen.getByRole("button", { name: "Preparar reporte privado" }));
+    expect(screen.getByRole("button", { name: "Guardar reporte privado" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Enviar/ })).toBeNull();
+  });
+  it("elimina un reporte guardado solo si el servidor lo permite, y nunca cuando se cancela", async () => {
+    const owner = { ...author, canUseSavedReports: true };
+    let deleted = false;
+    const reports = [
+      { id: "saved-r", generatedAt: "2026-11-24T15:00:00Z", generatedBy: owner.user, entryCount: 1, approvedCount: 1, failedCount: 0, canDelete: true },
+      { id: "blocked-r", generatedAt: "2026-11-24T14:00:00Z", generatedBy: { id: "other", displayName: "Otra persona" }, entryCount: 1, approvedCount: 1, failedCount: 0, canDelete: false },
+    ];
+    get.mockImplementation(async path => path === "/whats-new/me" ? owner : { items: deleted ? reports.slice(1) : reports, total: deleted ? 1 : 2, page: 1, pageSize: 20 });
+    vi.mocked(api.del).mockImplementation(async () => { deleted = true; });
+    mount(<LiveWhatsNewPage />, "/actualizaciones/que-hay-de-nuevo/reportes", "/actualizaciones/que-hay-de-nuevo/*");
+    const deleteButton = await screen.findByRole("button", { name: "Eliminar reporte" });
+    expect(screen.getAllByRole("button", { name: "Eliminar reporte" })).toHaveLength(1);
+    fireEvent.click(deleteButton);
+    expect(screen.getByRole("dialog", { name: "Eliminar reporte" })).toHaveTextContent(/se conserva el historial/i);
+    fireEvent.click(screen.getByRole("button", { name: "Cancelar" }));
+    expect(api.del).not.toHaveBeenCalled();
+    fireEvent.click(deleteButton);
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar eliminación" }));
+    await waitFor(() => expect(api.del).toHaveBeenCalledWith("/whats-new/reports/saved-r"));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Eliminar reporte" })).toBeNull());
   });
 });

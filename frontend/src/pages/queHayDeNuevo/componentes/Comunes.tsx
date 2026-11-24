@@ -82,7 +82,8 @@ export function EtiquetaSistema({ sistema }: { sistema: Sistema | null }) {
   return <span className="qhdn-sistema">{sistema ? ETIQUETAS_SISTEMA[sistema] : "Sin sistema"}</span>;
 }
 
-export function EtiquetaEstadoQhdn({ estado }: { estado: EstadoEntrada }) {
+export function EtiquetaEstadoQhdn({ estado }: { estado: EstadoEntrada | "eliminada" }) {
+  if (estado === "eliminada") return <span className={`estado ${CLASE_ESTADO.archivada}`}>Eliminada</span>;
   return <span className={`estado ${CLASE_ESTADO[estado]}`}>{ETIQUETAS_ESTADO_QHDN[estado]}</span>;
 }
 

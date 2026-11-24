@@ -2,14 +2,26 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ query: vi.fn(), pool: {}, getPool: vi.fn(), readEntry: vi.fn() }));
 vi.mock("../lib/sql", () => ({ getSqlPool: mocks.getPool }));
 vi.mock("../lib/whatsNewSqlRepository", async (original) => ({ ...await original<typeof import("../lib/whatsNewSqlRepository")>(), query: mocks.query, readEntry: mocks.readEntry }));
-import { ListSchema, PublicFilters, ReportSendInput, listEntries, lookups, me, pendingStorage, publicDateRange, publicProjection, renderReport } from "../lib/whatsNewService";
+import { ListSchema, PublicFilters, ReportSendInput, getEntry, listEntries, lookups, me, pendingStorage, publicDateRange, publicProjection, renderReport } from "../lib/whatsNewService";
 import { requestFingerprint, assertIdempotencyKey } from "../lib/whatsNewSqlWriteRepository";
 import { requireEtag } from "../lib/whatsNewSqlRepository";
-import { context } from "./whatsNewCommands.test";
+import { context, entry } from "./whatsNewCommands.test";
 import { canSeeEntry } from "../lib/whatsNewAccess";
 
 describe("Qué hay de nuevo service contracts", () => {
   beforeEach(() => { mocks.query.mockReset(); mocks.readEntry.mockReset(); mocks.getPool.mockReset().mockResolvedValue(mocks.pool); });
+  it("gives only the actual responsible actor the withdrawal control and guards retired history", async () => {
+    const actor = context().actor;
+    const state = { ...entry(), initialTesterId: actor.id };
+    const details = { id: state.id, status: state.status };
+    mocks.readEntry.mockResolvedValueOnce({ state, detail: details })
+      .mockResolvedValueOnce({ state: { ...state, initialTesterId: "unrelated" }, detail: details })
+      .mockResolvedValue({ state: { ...state, status: "eliminada" }, detail: { ...details, status: "eliminada" } });
+    await expect(getEntry(actor, state.id)).resolves.toMatchObject({ canDelete: true });
+    await expect(getEntry(actor, state.id)).resolves.toMatchObject({ canDelete: false });
+    await expect(getEntry(actor, state.id)).rejects.toMatchObject({ status: 404 });
+    await expect(getEntry({ ...actor, superAdmin: true }, state.id)).resolves.toMatchObject({ canDelete: false, status: "eliminada" });
+  });
   it.each([
     { permissions: ["updates.whats_new.view"], areas: ["desarrollo"] as const },
     { permissions: ["updates.whats_new.view", "updates.whats_new.author"], areas: [] as const },

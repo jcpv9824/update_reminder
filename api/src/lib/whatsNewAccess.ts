@@ -13,6 +13,8 @@ export type WhatsNewActor = {
   displayName: string;
   permissions: ReadonlySet<string>;
   areas: ReadonlySet<AreaCode>;
+  /** Actual protected role, obtained from the active server-side user profile. */
+  superAdmin?: boolean;
 };
 
 export type WhatsNewView = "desarrollador" | "asesor" | "lectura";
@@ -22,12 +24,15 @@ export function buildActor(user: CurrentUser, roleDefinitions: RoleDefinition[],
   for (const key of [...Object.values(PERMISSIONS), "configuration.users.view", "configuration.users.edit", "clients.clients.view"]) {
     if (hasPermissionWithRoleDefinitions(user, key, roleDefinitions)) permissions.add(key);
   }
-  return { id: user.id, email: user.email, displayName: user.displayName, permissions, areas: new Set(areas) };
+  return { id: user.id, email: user.email, displayName: user.displayName, permissions, areas: new Set(areas),
+    superAdmin: user.roles.includes("super_admin") };
 }
 
 const has = (actor: WhatsNewActor, key: string) => actor.permissions.has(key);
+const superAdmin = (actor: WhatsNewActor) => actor.superAdmin === true;
 
 export const access = {
+  superAdmin,
   view: (actor: WhatsNewActor) => has(actor, PERMISSIONS.view),
   /** Visión Desarrollador: `author` + área Desarrollo. */
   developer: (actor: WhatsNewActor) => has(actor, PERMISSIONS.view) && has(actor, PERMISSIONS.author) && actor.areas.has("desarrollo"),
@@ -38,6 +43,8 @@ export const access = {
   viewAll: (actor: WhatsNewActor) => has(actor, PERMISSIONS.view) && has(actor, PERMISSIONS.viewAll),
   configView: (actor: WhatsNewActor) => has(actor, PERMISSIONS.configView) || has(actor, PERMISSIONS.manage),
   manage: (actor: WhatsNewActor) => has(actor, PERMISSIONS.manage),
+  savedReports: (actor: WhatsNewActor): boolean => superAdmin(actor) || access.developer(actor)
+    || (access.report(actor) && access.tester(actor)),
 };
 
 export function viewsFor(actor: WhatsNewActor): WhatsNewView[] {
@@ -72,15 +79,33 @@ export function requirePermission(actor: WhatsNewActor, check: (actor: WhatsNewA
 /**
  * Quién puede ver una entrada (`06` §4):
  * - borrador: solo su desarrollador y `manage` (los demás reciben 404, no 403);
- * - eliminada: solo `manage`;
+ * - eliminada: solo el rol protegido super_admin, para consultar su historial;
  * - publicada: `view` y alguna visión (desarrollador, asesor, lectura) o `manage`.
  */
 export function canSeeEntry(actor: WhatsNewActor, entry: { status: EntryStatus; developerId: string }): boolean {
   if (!access.view(actor)) return false;
+  if (entry.status === "eliminada") return access.superAdmin(actor);
   if (access.manage(actor)) return true;
-  if (entry.status === "eliminada") return false;
   if (entry.status === "borrador") return entry.developerId === actor.id && access.developer(actor);
   return viewsFor(actor).length > 0;
+}
+
+export function mayDeleteEntries(actor: WhatsNewActor): boolean {
+  return access.view(actor) && (access.superAdmin(actor) || access.developer(actor) || access.tester(actor));
+}
+
+type EntryDeletionContext = {
+  status: EntryStatus;
+  developerId: string;
+  initialTesterId: string | null;
+  openRound: { holderId: string } | null;
+};
+/** Assignment gives Support deletion rights only while no other advisor holds the round. */
+export function canDeleteEntry(actor: WhatsNewActor, entry: EntryDeletionContext): boolean {
+  if (!mayDeleteEntries(actor) || entry.status === "eliminada") return false;
+  if (access.superAdmin(actor) || (access.developer(actor) && entry.developerId === actor.id)) return true;
+  if (!access.tester(actor) || entry.status === "borrador") return false;
+  return (entry.openRound ? entry.openRound.holderId : entry.initialTesterId) === actor.id;
 }
 
 export function assertCanSeeEntry(actor: WhatsNewActor, entry: { status: EntryStatus; developerId: string } | null): void {
