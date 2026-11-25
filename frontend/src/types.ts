@@ -338,6 +338,7 @@ export type Tarea = {
   targetName: string;
   scheduleId: string;
   rootScheduleId?: string;
+  displayScheduleId?: string;
   assignedRole: string;
   assignedUserIds: string[];
   status: EstadoTarea;

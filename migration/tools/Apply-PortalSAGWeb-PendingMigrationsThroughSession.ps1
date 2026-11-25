@@ -12,6 +12,8 @@ param(
   [switch]$WhatsNewOnly,
   [switch]$WhatsNewRetentionOnly,
   [switch]$AuthorizeRetentionProduction,
+  [switch]$CatalogSagExactDomainOnly,
+  [switch]$AuthorizeCatalogSagExactDomainProduction,
 
   [switch]$IncludeCatalogOwnerPublisher,
 
@@ -26,6 +28,18 @@ param(
 )
 
 $ErrorActionPreference='Stop'
+if($CatalogSagExactDomainOnly -and ($IncludeWhatsNew -or $WhatsNewOnly -or $WhatsNewRetentionOnly -or
+    $AuthorizeRetentionProduction -or $IncludeCatalog -or $IncludeCatalogOwnerPublisher -or
+    $IncludeCatalogErpOwnerPublisher -or $IncludeCatalogObservedInventory -or $IncludeCatalogDirectoryV2 -or
+    $IncludeScheduleLifecycle -or $AuthorizeScheduleProcedureGrants)){
+  throw 'Use -CatalogSagExactDomainOnly without other migration flags to apply only 084.'
+}
+if($AuthorizeCatalogSagExactDomainProduction -and (-not $CatalogSagExactDomainOnly -or $Environment -ne 'production')){
+  throw '-AuthorizeCatalogSagExactDomainProduction is only valid for production migration 084.'
+}
+if($CatalogSagExactDomainOnly -and $Environment -eq 'production' -and -not $AuthorizeCatalogSagExactDomainProduction){
+  throw 'Migration 084 requires separate production authorization.'
+}
 if($WhatsNewRetentionOnly -and ($IncludeWhatsNew -or $WhatsNewOnly -or $IncludeCatalog -or
     $IncludeCatalogOwnerPublisher -or $IncludeCatalogErpOwnerPublisher -or $IncludeCatalogObservedInventory -or
     $IncludeCatalogDirectoryV2 -or $IncludeScheduleLifecycle -or $AuthorizeScheduleProcedureGrants)){
@@ -260,6 +274,38 @@ COMMIT TRANSACTION;
   $null=Invoke-SessionSql -Sql $historySql -Mode write -TimeoutSeconds 120 -MaxRows 10
   Write-Host "PASS $version" -ForegroundColor Green
 }
+}
+
+if($CatalogSagExactDomainOnly){
+  foreach($name in @('056_catalog_sag_target_link_proof.sql','057_catalog_sag_target_runtime_gate.sql',
+      '073_catalog_historical_schedule_company_locations.sql')){
+    $version=$name.Substring(0,3)
+    $result=Invoke-SessionSql -Mode read -TimeoutSeconds 120 -MaxRows 1 -Sql ("SELECT CONVERT(varchar(64),script_sha256,2) hash FROM migration.schema_migrations WHERE migration_version='$version' AND succeeded=1;")
+    $row=$result.resultSets[0].rows | Select-Object -First 1
+    if (-not $row -or -not $manifest.ContainsKey($name) -or ([string]$row.hash).ToLowerInvariant() -cne $manifest[$name]){
+      throw "Migration 084 requires the exact applied migration $version. Nothing was written."
+    }
+  }
+  if($Environment -eq 'production'){
+    & (Join-Path $PSScriptRoot 'Assert-PortalSAGWeb-RecentProductionBackup.ps1') -SessionDirectory $SessionDirectory
+  }
+  Invoke-ReviewedMigrations @(@{version='084';name='084_catalog_sag_target_exact_domain.sql'})
+  $ok=Invoke-SessionSql -Mode read -TimeoutSeconds 120 -MaxRows 1 -Sql @'
+SELECT CASE WHEN
+  EXISTS (SELECT 1 FROM migration.schema_migrations WHERE migration_version='084' AND succeeded=1)
+  AND (SELECT COUNT(*) FROM sys.sql_modules WHERE object_id IN (
+    OBJECT_ID(N'settings.verify_catalog_sag_target_link_internal',N'P'),
+    OBJECT_ID(N'settings.read_catalog_sag_target_link_candidates',N'P'))
+    AND CHARINDEX(N'DATALENGTH(sag_customer.domain_candidate)=LEN(route.label)',definition COLLATE Latin1_General_100_BIN2)>0)=2
+  AND EXISTS (SELECT 1 FROM sys.sql_modules
+    WHERE object_id=OBJECT_ID(N'settings.verify_catalog_historical_schedule_company_locations',N'P')
+      AND CHARINDEX(N'LOWER(CONVERT(char(16),CONVERT(binary(8),b.row_version),2)),LOWER(CONVERT(char(16),CONVERT(binary(8),p.row_version),2))',
+        definition COLLATE Latin1_General_100_BIN2)>0)
+  THEN 1 ELSE 0 END AS exact_domain_ready;
+'@
+  if($ok.resultSets[0].rows[0].exact_domain_ready -ne 1){throw 'Migration 084 post-verification failed.'}
+  Write-Host "$expectedDatabase migration 084 is applied and verified." -ForegroundColor Green
+  return
 }
 
 if($WhatsNewRetentionOnly){

@@ -31,7 +31,11 @@ describe("Workflow tasks SQL mapping", () => {
       sources: [{ scheduleId: "schedule-1", scheduleType: "special" }, { scheduleId: "schedule-2", scheduleType: "licensing" }],
     });
     expect(toPublicTask(task)).not.toHaveProperty("catalogPlannedOnly");
+    expect(toPublicTask(task)).not.toHaveProperty("displayScheduleId");
     expect(toPublicTask(mapSqlWorkflowTask({ ...row, catalog_planned_only: true }))).toHaveProperty("catalogPlannedOnly", true);
+    const copyRemains = toPublicTask(mapSqlWorkflowTask({ ...row, display_schedule_source_id: "schedule-2" }));
+    expect(copyRemains).toMatchObject({ scheduleId: "schedule-1", rootScheduleId: "schedule-1", displayScheduleId: "schedule-2" });
+    expect(copyRemains).not.toHaveProperty("sources");
   });
 
   it("counts consolidated logical target/date identities instead of physical aliases", () => {
@@ -92,6 +96,17 @@ describe("current task SQL visibility", () => {
     expect(projectionOrder).not.toContain("@clientId");
     expect(projectionOrder).not.toContain("@domainId");
     expect(statement.match(/FROM core\.catalog_operational_link_evidence/g)).toHaveLength(1);
+  });
+
+  it("projects the primary or stable surviving schedule only from live attachments on the visible link", async () => {
+    await readSqlWorkflowTasks({ today: "2026-11-17" });
+    const statement: string = mock.query.mock.calls[0][0];
+    const projection = statement.slice(statement.indexOf("SELECT TOP (1) schedule.source_id"), statement.indexOf(") AS display_schedule"));
+    expect(projection).toContain("FROM workflow.catalog_task_execution_sources attachment");
+    expect(projection).toContain("attachment.catalog_execution_link_key=active_catalog_link.catalog_execution_link_key");
+    expect(projection).toContain("attachment.detached_at IS NULL AND schedule.deleted_at IS NULL AND schedule.active=1");
+    expect(projection).toContain("task.status NOT IN ('completed','cancelled')");
+    expect(projection).toMatch(/ORDER BY CASE WHEN schedule\.schedule_key=task\.primary_schedule_key THEN 0 ELSE 1 END,\s+schedule\.schedule_key/);
   });
 
   it.each([{ clientId: "c" }, { domainId: "d" }, { clientId: "c", domainId: "d" }])("keeps historical and legacy snapshot filters for %j", async filters => {

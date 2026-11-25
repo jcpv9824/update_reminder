@@ -30,7 +30,7 @@ import {
 import { readSqlClients } from "../lib/clientsSqlRepository";
 import { readSqlDomains, readSqlPublicDatabases } from "../lib/coreMastersSqlRepository";
 import { readSqlLicenseModules } from "../lib/licensingSqlRepository";
-import { getTaskGenerationMode, runCatalogGeneration } from "../lib/catalogGenerationRuntime";
+import { generateCatalogActivationDay, getTaskGenerationMode, runCatalogGeneration } from "../lib/catalogGenerationRuntime";
 import { createCatalogScheduleChoicesHttp } from "../lib/catalogScheduleChoices";
 import { readSqlCatalogScheduleChoices } from "../lib/catalogScheduleChoicesSqlRepository";
 import { readAuthorizedCatalogSourceIds } from "../lib/catalogSourceAccessSqlRepository";
@@ -171,7 +171,8 @@ const activateNewCatalogDraftProposal = createCatalogScheduleCopyActivateHttp({
   subject: "programación",
   authorize: authorizeCatalogCopy,
   activate: (actor, proposalId, reviewId) => activateReviewedCatalogDraft({ ...actor, proposalId, reviewId,
-    checkedAt: new Date(), portalEnvironment: scheduleCatalogEnvironment(), matchKeyVersion: catalogScheduleMatchVersion() }),
+    checkedAt: new Date(), portalEnvironment: scheduleCatalogEnvironment(), matchKeyVersion: catalogScheduleMatchVersion() },
+  undefined, generateCatalogActivationDay),
 });
 app.http("activateNewCatalogDraftProposal", {
   route: "schedules/catalog-draft-proposals/{proposalId}/activate", methods: ["POST"], authLevel: "anonymous",
@@ -213,10 +214,12 @@ const activateCatalogCopyProposal = createCatalogScheduleCopyActivateHttp({
     // proposal, actor scope, operation and reservations under the day locks.
     const proposal = await runSqlTransaction(tx => readStoredCatalogCopyProposalInTransaction(tx, proposalId, portalEnvironment));
     if (!proposal || proposal.requesterId !== actor.actorId) return null;
-    return materializeReviewedCatalogCopyProposal({ actorId: actor.actorId, allowedKinds: actor.allowedKinds,
+    const result = await materializeReviewedCatalogCopyProposal({ actorId: actor.actorId, allowedKinds: actor.allowedKinds,
       allowLicensing: actor.allowLicensing, proposalId, reviewId, scheduleId: proposal.scheduleId,
       date: proposal.date, checkedAt: new Date(), portalEnvironment, matchKeyVersion: catalogScheduleMatchVersion() },
     { id: actor.actorId, email: actor.actorEmail });
+    if (result) await generateCatalogActivationDay(proposal.date);
+    return result;
   },
 });
 app.http("activateCatalogScheduleCopyProposal", {

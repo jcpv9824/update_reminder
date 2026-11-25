@@ -29,7 +29,6 @@ type GrupoResumen = {
   asignadoAlActual: boolean;
   rolHabilitaActual: boolean;
   targetType: "domain" | "database";
-  rootScheduleId?: string;
   scheduleName?: string;
   tareas: Tarea[];
   total: number;
@@ -371,7 +370,8 @@ function ColumnaTareas({ titulo, targetType, usuario, usuariosMap, definicionesR
   );
 }
 
-function rootScheduleIdTarea(tarea: Tarea): string {
+function programacionParaMostrar(tarea: Tarea): string {
+  if (tarea.displayScheduleId) return tarea.displayScheduleId;
   if (tarea.rootScheduleId) return tarea.rootScheduleId;
   return tarea.scheduleId.split("__")[0] || tarea.scheduleId;
 }
@@ -388,13 +388,13 @@ function agruparTareas(
   const mapa = new Map<string, Tarea[]>();
   for (const tarea of tareas) {
     const responsable = claveResponsable(tarea);
-    const rootId = rootScheduleIdTarea(tarea);
-    const key = [tarea.taskDate, responsable, targetType, rootId].join(sep);
+    const scheduleId = programacionParaMostrar(tarea);
+    const key = [tarea.taskDate, responsable, targetType, scheduleId].join(sep);
     mapa.set(key, [...(mapa.get(key) ?? []), tarea]);
   }
 
   return Array.from(mapa.entries()).map(([key, items]) => {
-    const [fecha, responsableClave, , rootScheduleId] = key.split(sep);
+    const [fecha, responsableClave, , scheduleId] = key.split(sep);
     const completadasOk = items.filter((t) => t.status === "completed" && !t.completedWithProblems).length;
     const completadasConProblemas = items.filter((t) => (t.status === "completed" && t.completedWithProblems) || t.status === "failed").length;
     const pendientes = items.filter((t) => t.status !== "completed" && t.status !== "cancelled").length;
@@ -411,8 +411,7 @@ function agruparTareas(
       asignadoAlActual,
       rolHabilitaActual,
       targetType,
-      rootScheduleId,
-      scheduleName: nombresProgramacion.get(rootScheduleId),
+      scheduleName: nombresProgramacion.get(scheduleId),
       tareas: items.sort((a, b) => a.clientName.localeCompare(b.clientName) || a.targetName.localeCompare(b.targetName)),
       total: items.length,
       completadasOk,

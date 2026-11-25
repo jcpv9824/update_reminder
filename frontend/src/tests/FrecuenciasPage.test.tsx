@@ -97,6 +97,78 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("FrecuenciasPage", () => {
+  const legacyReads = ["/clients", "/domains", "/databases", "/license-modules", "/settings/email-alerts"];
+
+  it("en catálogo consulta los detalles sin editar y ofrece duplicar sin cargar maestros anteriores", async () => {
+    vi.stubEnv("VITE_PORTAL_CATALOG_SCHEDULE_UI_ENABLED", "true");
+    const original = frecuencia({ name: "Programación de prueba", clientName: "Cliente registrado" });
+    const first = apiMock.get.getMockImplementation()!;
+    apiMock.get.mockImplementation((path: string) => path.startsWith("/schedules?origin=special")
+      ? Promise.resolve({ items: [original], page: 1, pageSize: 10, total: 1 }) : first(path));
+    renderPagina();
+    fireEvent.click(await screen.findByRole("button", { name: "Ver detalles" }));
+    expect(screen.getByRole("heading", { name: "Detalles de la actualización programada" })).toBeInTheDocument();
+    expect(screen.getByText(/la programación original es de solo lectura/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Editar" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Duplicar esta programación" }));
+    expect(screen.getByRole("heading", { name: "Duplicar actualización programada" })).toBeInTheDocument();
+    for (const path of legacyReads) expect(apiMock.get).not.toHaveBeenCalledWith(path);
+    expect(apiMock.put).not.toHaveBeenCalled();
+    expect(apiMock.post).not.toHaveBeenCalled();
+  });
+
+  it.each(["customer", "domain"])("no previsualiza ni usa el maestro anterior si falla la consulta de catálogo %s", async (failingKind) => {
+    vi.stubEnv("VITE_PORTAL_CATALOG_SCHEDULE_UI_ENABLED", "true");
+    vi.stubEnv("VITE_PORTAL_CATALOG_DRAFT_PREVIEW_ENABLED", "true");
+    const first = apiMock.get.getMockImplementation()!;
+    const customerId = "d832a70e-b525-42fa-ab14-a4d54ea5158c";
+    apiMock.get.mockImplementation((path: string) => {
+      if (!path.startsWith("/schedules/catalog-choices?")) return first(path);
+      if (new URLSearchParams(path.split("?")[1]).get("kind") === failingKind) return Promise.reject(new Error("Unavailable"));
+      return Promise.resolve({ state: "verified", page: 1, pageSize: 25, total: 1,
+        items: [{ id: customerId, customerId, customerName: "Cliente actual", eligibility: "observed_only" }] });
+    });
+    renderPagina();
+    fireEvent.click(screen.getByRole("button", { name: "Nueva actualización programada" }));
+    const scope = within(await screen.findByRole("region", { name: "Alcance del catálogo de SAG Web" }));
+    if (failingKind === "domain") {
+      await scope.findByRole("option", { name: "Cliente actual" });
+      fireEvent.change(scope.getByLabelText("Cliente del catálogo"), { target: { value: customerId } });
+    }
+    expect(await scope.findByRole("alert")).toHaveTextContent("No se pudo verificar el catálogo");
+    expect(scope.getByRole("button", { name: "Previsualizar alcance operativo" })).toBeDisabled();
+    expect(scope.queryByRole("option", { name: "Cliente Uno" })).not.toBeInTheDocument();
+    for (const path of legacyReads) expect(apiMock.get).not.toHaveBeenCalledWith(path);
+    expect(apiMock.post).not.toHaveBeenCalled();
+  });
+
+  it("no asigna roles de respaldo ni guarda una solicitud si falla la consulta de roles", async () => {
+    for (const flag of ["SCHEDULE_UI", "DRAFT_PREVIEW", "DRAFT_PROPOSALS"])
+      vi.stubEnv(`VITE_PORTAL_CATALOG_${flag}_ENABLED`, "true");
+    const first = apiMock.get.getMockImplementation()!;
+    apiMock.get.mockImplementation((path: string) => {
+      if (path === "/roles") return Promise.reject(new Error("Unavailable"));
+      if (!path.startsWith("/schedules/catalog-choices?")) return first(path);
+      return Promise.resolve({ state: "verified", page: 1, pageSize: 25, total: 1, items: [],
+        licenseOptions: [{ code: "I", name: "Inventario" }] });
+    });
+    apiMock.post.mockResolvedValue({ previewId: "preview-firmada", coverage: "verified",
+      groups: [{ id: "group", kind: "database", state: "ready", label: "Base verificada", links: [] }] });
+    renderPagina();
+    fireEvent.click(screen.getByRole("button", { name: "Nueva actualización programada" }));
+    expect(await screen.findByText(/no se pudieron consultar los roles/i)).toBeInTheDocument();
+    const scope = within(await screen.findByRole("region", { name: "Alcance del catálogo de SAG Web" }));
+    fireEvent.change(scope.getByLabelText("Tipo de alcance"), { target: { value: "licensing" } });
+    await scope.findByRole("option", { name: "Inventario (I)" });
+    fireEvent.change(scope.getByLabelText("Licencia del catálogo"), { target: { value: "I" } });
+    fireEvent.click(scope.getByRole("button", { name: "Previsualizar alcance operativo" }));
+    fireEvent.change(await scope.findByLabelText("Nombre de la programación"), { target: { value: "No se puede guardar" } });
+    expect(scope.getByRole("button", { name: "Guardar solicitud de programación" })).toBeDisabled();
+    expect(scope.getByLabelText("Rol para bases de datos")).toHaveValue("");
+    expect(apiMock.post).toHaveBeenCalledTimes(1);
+    expect(apiMock.put).not.toHaveBeenCalled();
+  });
+
   it("consulta clientes, dominios y bases por su relación exacta en el formulario del catálogo", async () => {
     vi.stubEnv("VITE_PORTAL_CATALOG_SCHEDULE_UI_ENABLED", "true");
     const customerId = "d832a70e-b525-42fa-ab14-a4d54ea5158c";

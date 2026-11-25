@@ -17,7 +17,8 @@ const dependencies = { transaction: runSqlTransaction, read: readVerifiedCatalog
     process.env.PORTAL_CATALOG_SAG_V2_ENABLED?.trim() === "true" ? loadCatalogSagTargetProofKey(env, version) : null };
 
 /** Separate requester and reviewer. Locks, approval, pins, audit and any due snapshot commit together. */
-export async function activateReviewedCatalogDraft(input: Input, io = dependencies) {
+export async function activateReviewedCatalogDraft(input: Input, io = dependencies,
+  onSameDayCommitted?: (date: string) => Promise<void>) {
   const { actorId, portalEnvironment, proposalId, reviewId, matchKeyVersion, checkedAt } = input;
   if (!uuid.test(proposalId) || !uuid.test(reviewId) || !Number.isFinite(checkedAt.valueOf())) return null;
   const draft = await io.transaction(tx => io.read(tx, { id: proposalId, actorId, portalEnvironment }));
@@ -37,8 +38,9 @@ export async function activateReviewedCatalogDraft(input: Input, io = dependenci
   if (scope.date === today && draft.pins.some(pin => pin.kind === "database" && pin.include)) {
     try { key = await io.locationKey(portalEnvironment, matchKeyVersion); } catch { /* The historical proof still must pass. */ }
   }
+  let result: Awaited<ReturnType<typeof materializeReviewedCatalogDraftInTransaction>> | null;
   try {
-    return await io.approve({ actorId, allowedKinds: input.allowedKinds, allowLicensing: input.allowLicensing,
+    result = await io.approve({ actorId, allowedKinds: input.allowedKinds, allowLicensing: input.allowLicensing,
       checkedAt, portalEnvironment, matchKeyVersion, scope }, draft, (tx, built, proof) =>
       io.persist(tx, built, { environment: portalEnvironment, proposalId: proof.proposalId, reviewId,
         actor: { id: actorId, email: input.actorEmail }, catalogValidUntil: proof.validUntil }, {
@@ -51,4 +53,9 @@ export async function activateReviewedCatalogDraft(input: Input, io = dependenci
         },
       }));
   } finally { key?.fill(0); }
+  if (result && scope.date === today && draft.definition.frequency !== "manual" && onSameDayCommitted) {
+    try { await onSameDayCommitted(scope.date); }
+    catch { /* The schedule already committed; generation can retry. */ }
+  }
+  return result;
 }

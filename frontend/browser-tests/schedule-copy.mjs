@@ -27,6 +27,14 @@ const original = { id: "schedule-original", name: "Original QA local", clientId:
   }).format(new Date()), timezone: "America/Bogota", assignedRole: "domain_updater", origin: "special", active: true };
 const copyName = "Copia QA local";
 const eligibleDomain = "a".repeat(64), eligibleDb = "b".repeat(64), conflictingDomain = "c".repeat(64);
+const customerId = "52930966-a4e4-447f-8bbd-cf0feb0aa724", choiceId = "d".repeat(64);
+const customer = { id: customerId, customerId, customerName: "Cliente de catálogo ficticio", eligibility: "observed_only" };
+const domain = { ...customer, id: choiceId, domain: "qa-schedule.example.test", environment: "test" };
+const database = { ...domain, id: "e".repeat(64), database: "BASE_CATALOGO_QA" };
+const draftPreview = { previewId: "synthetic-draft-preview", coverage: "verified", groups: [
+  { id: "draft-db", kind: "database", state: "ready", label: database.database,
+    links: [{ id: eligibleDb, customerName: customer.customerName, environment: "test" }] },
+] };
 const preview = { previewId: "synthetic-loopback-only-preview", coverage: "verified", groups: [
   { kind: "domain", label: "Dominio libre", physicalTargetId: "free-host", links: [{ id: eligibleDomain, label: "Dominio libre", verified: true }] },
   { kind: "database", label: "Base libre", physicalTargetId: "free-db", links: [{ id: eligibleDb, label: "Base libre", verified: true }] },
@@ -65,9 +73,26 @@ try {
       if (api === "/schedules/catalog-draft-proposals") {
         return json({ items: [{ id: draftId, name: draftName, date: original.startDate, status: draftStage }] });
       }
-      if (api === "/settings/email-alerts") return json({ remindersEnabled: true });
-      if (["/clients", "/domains", "/databases", "/users", "/roles", "/license-modules"].includes(api)) return json([]);
+      if (api === "/schedules/catalog-choices") {
+        const params = url.searchParams, kind = params.get("kind");
+        const selectedScope = params.get("moduleCode") === "I" || (params.get("customerId") === customerId &&
+          (kind !== "database" || params.get("domain") === domain.domain));
+        const matchesEnvironment = params.get("environment") === "test";
+        const items = kind === "customer" ? [customer] : selectedScope && matchesEnvironment
+          ? kind === "domain" ? [domain] : kind === "database" ? [database] : []
+          : [];
+        return json({ state: "verified", page: 1, pageSize: 25, total: kind === "license" ? 1 : items.length, items,
+          ...(kind === "license" && { licenseOptions: [{ code: "I", name: "Inventario" }] }) });
+      }
+      if (api === "/users") return json([]);
+      if (api === "/roles") return json([{ id: "database_updater", name: "Actualizador de Bases de Datos", permissions: ["updates.tasks.view"],
+        taskVisibility: { domain: "none", database: "assigned" }, system: true, active: true }]);
     }
+    if (method === "POST" && api === "/schedules/catalog-draft-preview") return json(draftPreview);
+    if (method === "POST" && api === "/schedules/catalog-draft-proposals") return json({
+      id: req.postDataJSON()?.scope?.mode === "manual" ? "2d0a3ebd-a6d9-4950-9a2c-c91500c2f04c" : "cdd7c306-b51b-4111-a5bd-01ee910722b8",
+      status: "pending_approval",
+    }, 202);
     if (method === "POST" && api === "/schedules/schedule-original/catalog-copy-proposals") {
       stage = "pending_approval";
       return json({ proposalId, status: stage }, 202);
@@ -90,7 +115,11 @@ try {
 
   await page.goto(`${origin}/browser-tests/schedule-copy.html`);
   const originalRow = page.getByRole("row").filter({ hasText: original.name });
-  await originalRow.getByRole("button", { name: "Duplicar" }).click();
+  await originalRow.getByRole("button", { name: "Ver detalles" }).click();
+  const readOnly = page.locator(".modal").filter({ has: page.getByRole("heading", { name: "Detalles de la actualización programada" }) });
+  await readOnly.getByText(/la programación original es de solo lectura/i).waitFor();
+  assert.equal(await readOnly.getByRole("textbox").count(), 0);
+  await readOnly.getByRole("button", { name: "Duplicar esta programación" }).click();
   const dialog = page.locator(".modal").filter({ has: page.getByRole("heading", { name: "Duplicar actualización programada" }) });
   await dialog.getByRole("button", { name: "Trabajar con las restantes" }).click();
   assert.equal(await dialog.getByRole("checkbox", { name: "Dominio libre" }).isChecked(), true);
@@ -150,6 +179,42 @@ try {
   assert.equal(mutations.length, 4);
   assert.deepEqual(unhandled, []);
   console.log("PASS browser: new schedule receipt only in the request body and active state confirmed via refreshed list (synthetic API)");
+  console.log("PASS browser: catalog opens read-only schedule details and never queries legacy directory or email settings (synthetic API)");
+
+  await page.locator(".modal").getByRole("button", { name: "Cerrar" }).click();
+  for (const mode of ["manual", "licensing"]) {
+    await page.getByRole("button", { name: "Nueva actualización programada" }).click();
+    const form = page.getByRole("region", { name: "Alcance del catálogo de SAG Web" });
+    const future = new Date(`${original.startDate}T00:00:00Z`);
+    future.setUTCDate(future.getUTCDate() + 2);
+    const date = mode === "licensing" ? future.toISOString().slice(0, 10) : original.startDate;
+    if (mode === "licensing") await form.getByLabel("Fecha de inicio").fill(date);
+    await form.getByLabel("Tipo de alcance").selectOption(mode);
+    await form.getByLabel("Ambiente").selectOption("test");
+    await form.getByLabel("Objetivo de la actualización").selectOption("database");
+    if (mode === "manual") {
+      await form.getByLabel("Cliente del catálogo").selectOption(customerId);
+      await form.getByLabel("Dominio del catálogo").selectOption(choiceId);
+    } else await form.getByLabel("Licencia del catálogo").selectOption("I");
+    await form.getByText(database.database, { exact: true }).waitFor();
+    await form.getByRole("button", { name: "Previsualizar alcance operativo" }).click();
+    await form.getByRole("checkbox", { name: `Seleccionar ${database.database}` }).waitFor();
+    assert.equal(await form.getByLabel("Fecha de inicio").inputValue(), date);
+    const scope = { mode, date, target: "database", environment: "test",
+      ...(mode === "manual" ? { customerId, domainChoiceId: choiceId } : { moduleCode: "I" }) };
+    assert.deepEqual(mutations.at(-1), { method: "POST", api: "/schedules/catalog-draft-preview", body: scope });
+    const name = `Programación QA ${mode}`;
+    await form.getByLabel("Nombre de la programación").fill(name);
+    await form.getByRole("button", { name: "Guardar solicitud de programación" }).click();
+    await form.getByText(/pendiente de aprobación.*no se crearon tareas/i).waitFor();
+    assert.deepEqual(mutations.at(-1), { method: "POST", api: "/schedules/catalog-draft-proposals",
+      body: { name, previewId: draftPreview.previewId, linkIds: [eligibleDb], scope, calendar: { frequencyType: "once" },
+        assignment: { mode: "role", databaseRole: "database_updater" } } });
+    await page.locator(".modal").getByRole("button", { name: "Cerrar" }).click();
+  }
+  assert.equal(mutations.length, 8);
+  assert.deepEqual(unhandled, []);
+  console.log("PASS browser: manual client/domain/database and licensing/environment selections save only the requested catalog scope (synthetic API)");
 } finally {
   await browser?.close();
   await server.close();

@@ -129,7 +129,7 @@ SELECT LOWER(CONVERT(char(36),l.link_id)) AS linkId,l.target_kind AS kind,l.link
   physical.validUntil AS physicalValidUntil,physical.retiredAt AS physicalRetiredAt,
   v2.includePins AS v2LocationReaderReady,
   CASE WHEN v2.includePins=1 THEN physical.linkId END AS physicalLinkId,
-  CASE WHEN v2.includePins=1 THEN LOWER(CONVERT(char(16),ap.row_version,2)) END AS v2ProfileVersion,
+  CASE WHEN v2.includePins=1 THEN LOWER(CONVERT(char(16),CONVERT(binary(8),ap.row_version),2)) END AS v2ProfileVersion,
   CASE WHEN v2.includePins=1 THEN sag.sourceId END AS v2SagSourceId,
   CASE WHEN v2.includePins=1 THEN CONVERT(varchar(20),sag.revisionId) END AS v2SagRevisionId,
   CASE WHEN v2.includePins=1 THEN sag.customerRecordId END AS v2SagCustomerRecordId,

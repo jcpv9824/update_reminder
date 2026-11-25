@@ -184,6 +184,19 @@ async function evaluateCatalogGeneration(request: Request, io: typeof dependenci
   } catch { return incomplete(date, "unverified", manualIntentsSaved); }
 }
 
+/** Best-effort, single-day generation after a reviewed activation has committed. */
+export async function generateCatalogActivationDay(date: string, io = dependencies,
+  env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  try {
+    if (env.PORTAL_CATALOG_SCHEDULE_LIFECYCLE_ENABLED !== "true" || getTaskGenerationMode(env) !== "catalog") return;
+    const now = io.now();
+    if (!Number.isFinite(now.valueOf()) || date !== new Date(now.valueOf() - utcOffsetMs).toISOString().slice(0, 10)) return;
+    // Use the canonical roster for conflict resolution; do not append manual intents,
+    // evaluate future dates, run the activation/closure sweeps or dispatch notifications.
+    await evaluateCatalogGeneration({ trigger: "refresh", body: { date } }, io, env);
+  } catch { /* Saving succeeded; the existing timer/refresh can retry task generation. */ }
+}
+
 /** Closure is independent of today's eight-date window and runs once per invocation. */
 export async function runCatalogGeneration(request: Request, io = dependencies,
   env: NodeJS.ProcessEnv = process.env, activate = runCatalogScheduleActivationSweep): Promise<CatalogGenerationResult> {

@@ -98,6 +98,7 @@ describe("atomic closure of one catalogue schedule", () => {
     expect(m.query.mock.calls[1]).toEqual([readCatalogFrozenOnceClosureProofSql, m.tx,
       { ...candidate, portalEnvironment: "qa" }]);
     expect(readCatalogFrozenOnceClosureProofSql).toContain("f.evidence_state='eligible' AND NOT EXISTS (");
+    expect(readCatalogFrozenOnceClosureProofSql).toContain("LOWER(CONVERT(char(16),CONVERT(binary(8),s.row_version),2)) AS scheduleVersion");
     expect(readCatalogFrozenOnceClosureProofSql).toContain("TRY_CONVERT(uniqueidentifier,e.verified_target_id)=f.verified_target_id");
     expect(readCatalogFrozenOnceClosureProofSql).toContain("t.completed_at>=a.attached_at");
     expect(readCatalogFrozenOnceClosureProofSql).toContain("explicitCompletionSuccess");

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { getTaskGenerationMode, runCatalogGeneration } from "../lib/catalogGenerationRuntime";
+import { generateCatalogActivationDay, getTaskGenerationMode, runCatalogGeneration } from "../lib/catalogGenerationRuntime";
 
 const env = { PORTAL_CATALOG_GENERATION_MODE: "catalog", PORTAL_SAG_ENVIRONMENT: "qa",
   PORTAL_CATALOG_READ_ENABLED: "true", PORTAL_CATALOG_CUTOFF_ENABLED: "true", PORTAL_CATALOG_MATCH_KEY_VERSION: "7" };
@@ -18,6 +18,29 @@ const deps = () => ({
 });
 
 describe("catalog generation activation boundary", () => {
+  const lifecycleEnv = { ...env, PORTAL_CATALOG_SCHEDULE_LIFECYCLE_ENABLED: "true" };
+
+  it("evaluates exactly today's Bogotá roster after a committed activation, without intents or sweeps", async () => {
+    const io = deps();
+    await generateCatalogActivationDay(day, io, lifecycleEnv);
+    expect(io.generate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ date: day, cutoffAt }));
+    expect(io.appendIntents).not.toHaveBeenCalled();
+    expect(io.closeOnce).not.toHaveBeenCalled();
+  });
+
+  it("does not advance future days, run without readiness, or fail a committed activation", async () => {
+    const io = deps();
+    await generateCatalogActivationDay("2030-06-23", io, lifecycleEnv);
+    await generateCatalogActivationDay("2030-06-21", io, lifecycleEnv);
+    await generateCatalogActivationDay(day, io, env);
+    await generateCatalogActivationDay(day, io, { ...lifecycleEnv, PORTAL_CATALOG_GENERATION_MODE: "legacy" });
+    await generateCatalogActivationDay(day, io, { ...lifecycleEnv, PORTAL_CATALOG_CUTOFF_ENABLED: "false" });
+    expect(io.generate).not.toHaveBeenCalled();
+    io.generate.mockRejectedValueOnce(new Error("temporary generation failure"));
+    await expect(generateCatalogActivationDay(day, io, lifecycleEnv)).resolves.toBeUndefined();
+    expect(io.generate).toHaveBeenCalledOnce();
+  });
+
   it("runs the historical sweep once before generation, and only on enabled background invocations", async () => {
     const io = deps();
     const activeEnv = { ...env, PORTAL_CATALOG_SCHEDULE_LIFECYCLE_ENABLED: "true", PORTAL_CATALOG_SCHEDULE_COPY_WRITE_ENABLED: "false" };

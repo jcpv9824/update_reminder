@@ -40,6 +40,7 @@ export function toPublicTask(task: UpdateTask) {
     targetName: task.targetName,
     scheduleId: task.scheduleId,
     rootScheduleId: task.rootScheduleId,
+    ...(task.displayScheduleId ? { displayScheduleId: task.displayScheduleId } : {}),
     assignedRole: task.assignedRole,
     assignedUserIds: task.assignedUserIds ?? [],
     status: task.status,

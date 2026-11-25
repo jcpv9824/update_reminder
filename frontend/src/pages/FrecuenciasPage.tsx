@@ -13,6 +13,8 @@ import CopiaProgramacionCatalogo from "../components/CopiaProgramacionCatalogo";
 import SolicitudesCopiaCatalogo from "../components/SolicitudesCopiaCatalogo";
 
 const DIAS_LISTA = Object.keys(DIAS_SEMANA);
+const SIN_ROLES: RoleDefinition[] = [];
+const SIN_USUARIOS: Usuario[] = [];
 
 type EmailAlertsResumen = {
   remindersEnabled: boolean;
@@ -36,18 +38,21 @@ export default function FrecuenciasPage() {
   const [exito, setExito] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const { data: clientes = [] } = useQuery({ queryKey: ["clientes"], queryFn: () => api.get<Cliente[]>("/clients") });
-  const { data: dominios = [] } = useQuery({ queryKey: ["dominios"], queryFn: () => api.get<Dominio[]>("/domains") });
-  const { data: bds = [] } = useQuery({ queryKey: ["bases-de-datos"], queryFn: () => api.get<BaseDeDatos[]>("/databases") });
-  const { data: usuarios = [] } = useQuery({ queryKey: ["usuarios"], queryFn: () => api.get<Usuario[]>("/users") });
-  const { data: roles = DEFAULT_ROLE_DEFINITIONS } = useQuery({ queryKey: ["roles"], queryFn: () => api.get<RoleDefinition[]>("/roles") });
-  const { data: modulosLicencia = [] } = useQuery({ queryKey: ["license-modules"], queryFn: () => api.get<ModuloLicencia[]>("/license-modules") });
+  const { data: clientes = [] } = useQuery({ queryKey: ["clientes"], queryFn: () => api.get<Cliente[]>("/clients"), enabled: !alcanceCatalogo });
+  const { data: dominios = [] } = useQuery({ queryKey: ["dominios"], queryFn: () => api.get<Dominio[]>("/domains"), enabled: !alcanceCatalogo });
+  const { data: bds = [] } = useQuery({ queryKey: ["bases-de-datos"], queryFn: () => api.get<BaseDeDatos[]>("/databases"), enabled: !alcanceCatalogo });
+  const usuariosConsulta = useQuery({ queryKey: ["usuarios"], queryFn: () => api.get<Usuario[]>("/users") });
+  const rolesConsulta = useQuery({ queryKey: ["roles"], queryFn: () => api.get<RoleDefinition[]>("/roles") });
+  const usuarios = usuariosConsulta.data ?? SIN_USUARIOS;
+  const roles = rolesConsulta.data ?? DEFAULT_ROLE_DEFINITIONS;
+  const { data: modulosLicencia = [] } = useQuery({ queryKey: ["license-modules"], queryFn: () => api.get<ModuloLicencia[]>("/license-modules"), enabled: !alcanceCatalogo });
   const { data: emailSettings } = useQuery({
     queryKey: ["email-alerts-summary"],
     queryFn: () => api.get<EmailAlertsResumen>("/settings/email-alerts"),
+    enabled: !alcanceCatalogo,
     retry: false,
   });
-  const { data: paginaFrecuencias, isLoading } = useQuery({
+  const { data: paginaFrecuencias, isLoading, isError: listaNoDisponible } = useQuery({
     queryKey: ["frecuencias", "special", pagina, busqueda],
     queryFn: () => {
       const params = new URLSearchParams({ origin: "special", page: String(pagina), pageSize: "10" });
@@ -90,9 +95,9 @@ export default function FrecuenciasPage() {
       </div>
       {exito && <Alerta tipo="exito">{exito}</Alerta>}
       {error && <Alerta tipo="error">{error}</Alerta>}
-      <p className="texto-ayuda">
-        Defina actualizaciones recurrentes o únicas, manuales o por licenciamiento. Para incluir bases de un dominio, use el alcance y marque "Incluir todas las bases activas de este dominio" o seleccione bases puntuales.
-      </p>
+      <p className="texto-ayuda">{alcanceCatalogo
+        ? "Defina actualizaciones recurrentes o únicas con los clientes, dominios y bases del catálogo de SAG Web. Revise el alcance antes de elegir los destinos."
+        : 'Defina actualizaciones recurrentes o únicas, manuales o por licenciamiento. Para incluir bases de un dominio, use el alcance y marque "Incluir todas las bases activas de este dominio" o seleccione bases puntuales.'}</p>
       <div className="barra-filtros">
         <div className="campo">
           <label>Buscar</label>
@@ -100,7 +105,9 @@ export default function FrecuenciasPage() {
         </div>
       </div>
 
-      {isLoading ? <div className="cargando">Cargando...</div> : (
+      {isLoading ? <div className="cargando">Cargando...</div> : listaNoDisponible ? (
+        <Alerta tipo="error">No se pudo consultar la lista de actualizaciones programadas.</Alerta>
+      ) : (
         <>
           {programacionesEspeciales.length === 0 ? (
             <div className="vacio">
@@ -130,7 +137,7 @@ export default function FrecuenciasPage() {
                           <td>{resumenSalud(f)}</td>
                           <td><EtiquetaEstado estado={f.active ? "active" : "inactive"} /></td>
                           <td className="celda-acciones"><div className="acciones-tabla">
-                            <button onClick={() => setEditando(f)}>Editar</button>
+                            <button onClick={() => setEditando(f)}>{alcanceCatalogo ? "Ver detalles" : "Editar"}</button>
                             <button onClick={() => setDuplicando(f)}>Duplicar</button>
                             {f.active
                               ? <button className="advertencia" onClick={() => desactivar.mutate(f.id)}>Desactivar</button>
@@ -150,8 +157,14 @@ export default function FrecuenciasPage() {
       )}
 
       <Modal titulo="Nueva actualización programada" abierto={modalAbierto} onCerrar={() => setModalAbierto(false)}>
-        {alcanceCatalogo ? <AlcanceCatalogoProgramacion roles={roles} usuarios={usuarios}
-          onOpenRequests={solicitudesDisponibles ? () => { setModalAbierto(false); setSolicitudesAbiertas(true); } : undefined} />
+        {alcanceCatalogo ? <>
+          {(rolesConsulta.isError || usuariosConsulta.isError) && <Alerta tipo="error">
+            No se pudieron consultar {rolesConsulta.isError && usuariosConsulta.isError ? "los roles ni los usuarios" : rolesConsulta.isError ? "los roles" : "los usuarios"} para asignar responsables. El modo de asignación afectado no está disponible.
+          </Alerta>}
+          <AlcanceCatalogoProgramacion roles={rolesConsulta.isError ? SIN_ROLES : rolesConsulta.data ?? SIN_ROLES}
+            usuarios={usuariosConsulta.isError ? SIN_USUARIOS : usuarios}
+            onOpenRequests={solicitudesDisponibles ? () => { setModalAbierto(false); setSolicitudesAbiertas(true); } : undefined} />
+        </>
           : <FormularioFrecuencia clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} roles={roles} modulosLicencia={modulosLicencia} emailSettings={emailSettings} cargando={crear.isPending} onSubmit={(v) => crear.mutate(v)} />}
       </Modal>
       {solicitudesDisponibles && solicitudesAbiertas && <Modal titulo="Mis solicitudes de programación" abierto
@@ -176,8 +189,18 @@ export default function FrecuenciasPage() {
           />
         ))}
       </Modal>
-      <Modal titulo="Editar actualización programada" abierto={!!editando} onCerrar={() => setEditando(null)}>
-        {editando && <FormularioFrecuencia inicial={editando} clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} roles={roles} modulosLicencia={modulosLicencia} emailSettings={emailSettings} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />}
+      <Modal titulo={alcanceCatalogo ? "Detalles de la actualización programada" : "Editar actualización programada"} abierto={!!editando} onCerrar={() => setEditando(null)}>
+        {editando && (alcanceCatalogo ? <>
+          <dl>
+            <dt>Nombre</dt><dd>{editando.name ?? "Actualización programada"}</dd>
+            <dt>Cliente registrado</dt><dd>{editando.clientName}</dd>
+            <dt>Frecuencia</dt><dd>{ETIQUETAS_FRECUENCIA[editando.frequencyType]}</dd>
+            <dt>Inicio</dt><dd>{editando.startDate}</dd>
+            <dt>Estado</dt><dd><EtiquetaEstado estado={editando.active ? "active" : "inactive"} /></dd>
+          </dl>
+          <p>La programación original es de solo lectura aquí. Use Duplicar para preparar otra programación sin modificar la original.</p>
+          <button type="button" className="secundario" onClick={() => { setDuplicando(editando); setEditando(null); }}>Duplicar esta programación</button>
+        </> : <FormularioFrecuencia inicial={editando} clientes={clientes} dominios={dominios} bds={bds} usuarios={usuarios} roles={roles} modulosLicencia={modulosLicencia} emailSettings={emailSettings} cargando={actualizar.isPending} onSubmit={(v) => actualizar.mutate({ id: editando.id, body: v })} />)}
       </Modal>
 
       <DialogoConfirmar

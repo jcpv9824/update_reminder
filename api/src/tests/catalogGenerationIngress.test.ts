@@ -6,7 +6,7 @@ const fakes = vi.hoisted(() => ({
   timers: new Map<string, (timer: Timer, ctx: InvocationContext) => Promise<void>>(),
   mode: vi.fn(), catalog: vi.fn(), cutoff: vi.fn(), audit: vi.fn(), authenticate: vi.fn(), profile: vi.fn(),
   schedules: vi.fn(), clients: vi.fn(), modules: vi.fn(), domains: vi.fn(), databases: vi.fn(), tasks: vi.fn(),
-  deleteSchedule: vi.fn(),
+  deleteSchedule: vi.fn(), generateActivationDay: vi.fn(), readCopyProposal: vi.fn(), materializeCopy: vi.fn(),
 }));
 vi.mock("@azure/functions", () => ({
   app: {
@@ -16,7 +16,8 @@ vi.mock("@azure/functions", () => ({
       fakes.timers.set(name, config.handler),
   },
 }));
-vi.mock("../lib/catalogGenerationRuntime", () => ({ getTaskGenerationMode: fakes.mode, runCatalogGeneration: fakes.catalog }));
+vi.mock("../lib/catalogGenerationRuntime", () => ({ getTaskGenerationMode: fakes.mode, runCatalogGeneration: fakes.catalog,
+  generateCatalogActivationDay: fakes.generateActivationDay }));
 vi.mock("../lib/catalogTaskCutoffWorker", () => ({ runCatalogTaskCutoffSweep: fakes.cutoff }));
 vi.mock("../lib/audit", () => ({ writeAuditLog: fakes.audit }));
 vi.mock("../lib/auth", () => ({ requireUser: fakes.authenticate, loadUserProfile: fakes.profile }));
@@ -29,13 +30,19 @@ vi.mock("../lib/licensingSqlRepository", () => ({ readSqlLicenseModules: fakes.m
 vi.mock("../lib/coreMastersSqlRepository", () => ({ readSqlDomains: fakes.domains, readSqlPublicDatabases: fakes.databases }));
 vi.mock("../lib/workflowTasksSqlRepository", () => ({ readSqlWorkflowTasks: fakes.tasks }));
 vi.mock("../lib/schedulingSqlWriteRepository", () => ({ deleteSqlSchedule: fakes.deleteSchedule }));
+vi.mock("../lib/catalogScheduleCopyProposal", async importOriginal => ({
+  ...(await importOriginal<typeof import("../lib/catalogScheduleCopyProposal")>()),
+  readStoredCatalogCopyProposalInTransaction: fakes.readCopyProposal,
+}));
+vi.mock("../lib/catalogScheduleSaveCopy", () => ({ materializeReviewedCatalogCopyProposal: fakes.materializeCopy }));
+vi.mock("../lib/sqlTransaction", () => ({ runSqlTransaction: async (use: (tx: object) => Promise<unknown>) => use({}) }));
 import "../functions/schedules";
 import "../functions/generateDailyUpdateTasks";
 
 const admin = { id: "trusted-operator", email: "operator@example.invalid", roles: ["super_admin"] };
 const ctx = () => ({ log: vi.fn(), warn: vi.fn(), error: vi.fn() }) as unknown as InvocationContext;
 const request = (body: string = "") => ({
-  params: { id: "saved-schedule" }, query: new URLSearchParams(), text: vi.fn(async () => body),
+  params: { id: "saved-schedule" }, query: new URLSearchParams(), headers: new Headers(), text: vi.fn(async () => body),
   json: vi.fn(async () => JSON.parse(body)),
 }) as unknown as HttpRequest;
 const evaluated = {
@@ -192,6 +199,39 @@ describe("catalog generation ingress", () => {
     expect(fakes.deleteSchedule).toHaveBeenCalledOnce();
     expect(fakes.catalog).toHaveBeenCalledExactlyOnceWith({ trigger: "schedule-change" });
     expect(fakes.clients).not.toHaveBeenCalled();
+  });
+
+  it("starts generation only after the requester's copy materializes, using the verified proposal date", async () => {
+    const proposalId = "7a9b6b25-aaf9-4dd3-ac93-43c4dd899a95";
+    const reviewId = "05d95fc4-21c3-4adc-8c8d-d23716fe679c";
+    const date = "2026-11-18";
+    const req = () => Object.assign(request(JSON.stringify({ reviewId })), { params: { proposalId } });
+    const flags = ["SCHEDULE_UI", "DIRECTORY_V2", "COPY_PROPOSALS", "SCHEDULE_COPY_WRITE", "SCHEDULE_LIFECYCLE"];
+    for (const flag of flags) vi.stubEnv(`PORTAL_CATALOG_${flag}_ENABLED`, "true");
+    vi.stubEnv("PORTAL_SAG_ENVIRONMENT", "qa");
+    vi.stubEnv("PORTAL_CATALOG_MATCH_KEY_VERSION", "1");
+    try {
+      fakes.readCopyProposal.mockResolvedValueOnce({ requesterId: "other", scheduleId: "saved-schedule", date })
+        .mockResolvedValue({ requesterId: admin.id, scheduleId: "saved-schedule", date });
+      expect((await invoke("activateCatalogScheduleCopyProposal", req())).status).toBe(409);
+      expect(fakes.materializeCopy).not.toHaveBeenCalled();
+      fakes.materializeCopy.mockRejectedValueOnce(Object.assign(new Error("held"), { status: 409 }));
+      expect((await invoke("activateCatalogScheduleCopyProposal", req())).status).toBe(409);
+      expect(fakes.generateActivationDay).not.toHaveBeenCalled();
+
+      const order: string[] = [];
+      fakes.materializeCopy.mockImplementationOnce(async () => {
+        await Promise.resolve();
+        order.push("committed");
+        return { id: "catalog-copy", status: "created" };
+      });
+      fakes.generateActivationDay.mockImplementationOnce(async () => { order.push("generation"); });
+      expect(await invoke("activateCatalogScheduleCopyProposal", req())).toMatchObject({
+        status: 201, jsonBody: { id: "catalog-copy", status: "created" },
+      });
+      expect(fakes.generateActivationDay).toHaveBeenCalledExactlyOnceWith(date);
+      expect(order).toEqual(["committed", "generation"]);
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it("continues to invoke only the legacy engine in explicitly legacy mode", async () => {

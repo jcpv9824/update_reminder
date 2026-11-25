@@ -410,6 +410,8 @@ export type UpdateTask = {
   // de expansión como `__domain_`/`__db_`/`__db_inherited_`). Es la "FK"
   // estable hacia updateSchedules.id; lista para migración a SQL (índice).
   rootScheduleId?: string;
+  /** UI grouping for current catalog tasks only; never use as execution provenance. */
+  displayScheduleId?: string;
   assignedRole: string;
   assignedUserIds: string[];
   status: TaskStatus;

@@ -37,7 +37,7 @@ BEGIN
     CONVERT(nvarchar(150),NULL) AS clientId WHERE 1=0;
   RETURN;
 END;
-SELECT s.source_id AS scheduleId,LOWER(CONVERT(char(16),s.row_version,2)) AS scheduleVersion,c.source_id AS clientId
+SELECT s.source_id AS scheduleId,LOWER(CONVERT(char(16),CONVERT(binary(8),s.row_version),2)) AS scheduleVersion,c.source_id AS clientId
 FROM scheduling.update_schedules s WITH (UPDLOCK,HOLDLOCK)
 JOIN core.clients c WITH (HOLDLOCK) ON c.client_key=s.client_key
 JOIN scheduling.catalog_schedule_activation_snapshots frozen WITH (HOLDLOCK)

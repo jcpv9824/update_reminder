@@ -1,6 +1,31 @@
 # Plan de QA previo a la activación de la programación del catálogo
 
-**Estado:** diseñado; no constituye un resultado de ejecución. La certificación
+## Ensayo de Programar Actualizaciones en QA aislado (2026-11-24 Bogotá)
+
+Se probó el candidato de la rama `fix/programaciones-catalogo-qa` sobre
+`6d0e034` en navegador, Azure Functions local y PortalSAGWeb-TEST desechable
+(SQL Server 2019, compatibilidad 150, conexión SQL con TLS). Se usaron solo
+fuentes, usuarios, operación y clave de prueba sintéticos; la única
+sustitución del proveedor fue la lectura de esa clave de ubicación. No se
+contactó a ERP, SAG Admin, Azure Key Vault ni SMTP. Los temporizadores de
+correo estuvieron deshabilitados y la cola aislada quedó con cero envíos.
+
+| Caso | Resultado observado |
+| --- | --- |
+| Cliente → dominio → base y ambientes | La base se selecciona bajo el dominio exacto en Pruebas; el filtro Producción no trae esos datos. |
+| Programación manual y por licencia del mismo día | Una programación de dominio manual y otra por licencia entraron al tablero sin esperar el temporizador. |
+| Base por licencia compartida entre dos dominios | La revisión fijó dos vínculos y un responsable; SQL y la pantalla mostraron una sola tarea pendiente para la base física. Los dos vínculos siguen asociados. |
+| Programación semanal futura | Conservó fecha, licencia, día de semana y responsable; sin tareas ni alcance congelado antes de su inicio. |
+| Conflictos, copia y retiro | Una reserva aparece en la vista previa real y no se selecciona. El ensayo de navegador con API sintética verificó que **Trabajar con las restantes** elige solo los destinos libres y acreditados cuando hay una mezcla. Una copia compatible del mismo día compartió una tarea real con la original. Borrar la original conservó su historial, retiró su vínculo operativo y dejó una sola tarea pendiente, visible con el nombre de la copia. |
+| Repetición de recibos | Tres intentos de reutilizar recibos ya consumidos devolvieron 409 sin duplicar tareas. |
+| Tiempo de corte y recordatorios | SQL: 8/8 comprobaciones de sellado con reversión y 6/6 de retirada de avisos en tablas de prueba, sin tocar la cola compartida. |
+| Migración 084 | Analizador SQL Server 2019, SHA-256, prueba con reversión, aplicación y repetición sin cambios. La prueba de ubicación aceptó cada dominio exacto y rechazó evidencia de otro dominio o ausente. |
+
+La vista previa y las comprobaciones de QA no sustituyen la certificación de
+fuentes y permisos en producción. No se publicó ni se cambió configuración
+de producción o QA alojado en este ensayo.
+
+**Estado del plan de activación en producción:** aún no aprobado. La certificación
 debe hacerse sobre el candidato exacto, con un API no productivo y SQL Server
 2019 de QA, y antes de aprobar el corte. Las pruebas deben usar datos
 sintéticos autorizados y terminar con verificación de cero residuos.

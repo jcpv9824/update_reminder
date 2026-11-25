@@ -14,10 +14,11 @@ const input = { ...actor, portalEnvironment: "qa" as const, proposalId, reviewId
 const manual = { mode: "manual", date: startDate, target: "database", environment: "test", customerId: proposalId } as const;
 const pin = { linkId: "link", kind: "database" as const, physicalId: "same-db", include: true };
 
-function fixtures() {
+function fixtures(frequency = "once") {
   const tx = { heldDayLocks: true }, readonly = { read: true };
   const record = { id: `catalog-draft-${proposalId}`, startDate };
-  const draft = { id: proposalId, actorId: "author", environment: "qa", scope: manual, pins: [pin] };
+  const draft = { id: proposalId, actorId: "author", environment: "qa", scope: { ...manual },
+    pins: [pin], definition: { frequency } };
   const version = "0000000000000001", operationId = "CHANGE-1234";
   const approval = { approvedAt, validUntil, operationId };
   const locationKey = Buffer.from("fixture proof key");
@@ -42,6 +43,27 @@ function fixtures() {
 }
 
 describe("activation for reviewed new catalog schedules", () => {
+  it("runs same-day automatic generation only after commit and preserves success when generation fails", async () => {
+    const { io, record, commit, locationKey } = fixtures();
+    const order: string[] = [];
+    commit.mockImplementation(() => { order.push("commit"); });
+    const generate = vi.fn(async () => { order.push("generate"); throw new Error("transient"); });
+    await expect(activateReviewedCatalogDraft(input, io, generate)).resolves.toEqual({ id: record.id, status: "created" });
+    expect(generate).toHaveBeenCalledExactlyOnceWith(startDate);
+    expect(order).toEqual(["commit", "generate"]);
+    expect(locationKey.every(byte => byte === 0)).toBe(true);
+  });
+
+  it("does not trigger generation for a manual frequency or when approval rolls back", async () => {
+    const generate = vi.fn();
+    const manualFrequency = fixtures("manual");
+    await expect(activateReviewedCatalogDraft(input, manualFrequency.io, generate)).resolves.toMatchObject({ status: "created" });
+    const failed = fixtures();
+    failed.io.historical.mockResolvedValue("held");
+    await expect(activateReviewedCatalogDraft(input, failed.io, generate)).rejects.toMatchObject({ status: 409 });
+    expect(generate).not.toHaveBeenCalled();
+  });
+
   it("uses one reserved write transaction and only SQL-stamped approval for same-day freeze", async () => {
     const { io, tx, readonly, record, commit, rollback, version, operationId, locationKey } = fixtures();
     await expect(activateReviewedCatalogDraft(input, io)).resolves.toEqual({ id: record.id, status: "created" });

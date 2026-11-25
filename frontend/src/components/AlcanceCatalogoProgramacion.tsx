@@ -29,10 +29,11 @@ function useOpciones(tipo: Tipo, filtros: Filtros, page: number, enabled: boolea
 }
 
 type Opciones = ReturnType<typeof useOpciones>;
-const disponible = (query: Opciones) => !query.isError && query.data?.state !== "unavailable";
+const disponible = (query: Opciones) => !query.isError &&
+  (query.data?.state === "verified" || query.data?.state === "partial");
 function EstadoCatalogo({ query }: { query: Opciones }) {
   if (query.isPending) return <p role="status">Consultando opciones del catálogo…</p>;
-  if (query.isError || query.data?.state === "unavailable") return <p role="alert">No se pudo verificar el catálogo para estos filtros.</p>;
+  if (!disponible(query)) return <p role="alert">No se pudo verificar el catálogo para estos filtros.</p>;
   if (query.data?.state === "partial") return <p role="status">Datos parciales: se muestran solo las coincidencias confirmadas.</p>;
   if (query.data?.total === 0) return <p role="status">No hay coincidencias para estos filtros.</p>;
   return null;
@@ -99,7 +100,7 @@ function AlcanceManual({ environment, prepare }: { environment?: Ambiente; prepa
     </div>}
     {clienteVigente && dominioVigente && dominioVigente.domain && dominioVigente.environment &&
       <Destinos key={dominioVigente.id} tipo="database" filtros={{ customerId, environment: dominioVigente.environment, domain: dominioVigente.domain }} />}
-    {prepare && <button type="button" disabled={!clienteVigente || prepare.busy || Boolean(domain && !dominioVigente)}
+    {prepare && <button type="button" disabled={!clienteVigente || !disponible(dominios) || prepare.busy || Boolean(domain && !dominioVigente)}
       onClick={() => prepare.show({ mode: "manual", customerId, ...(dominioVigente && { domainChoiceId: dominioVigente.id }) })}>
       Previsualizar alcance operativo
     </button>}

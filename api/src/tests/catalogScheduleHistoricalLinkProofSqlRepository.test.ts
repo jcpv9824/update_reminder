@@ -222,6 +222,7 @@ describe("certified historical schedule link proof", () => {
     expect(statement).toContain("domainRecord.domain_candidate COLLATE Latin1_General_100_BIN2=LOWER(safeDomain.label)");
     expect(statement).toContain("pt.registered_at<=@asOf");
     expect(statement).toContain("pt.verified_at<=@asOf");
+    expect(statement).toContain("LOWER(CONVERT(char(16),CONVERT(binary(8),ap.row_version),2)) END AS v2ProfileVersion");
     expect(statement).toContain("p.updated_at<=@asOf");
     expect(statement).toContain("d.updated_at<=@asOf");
     expect(statement).not.toMatch(/password_secret_name|sql_user_id|catalog_sag_company_location_(observations|seals)|SYSUTCDATETIME\(\).*verified_until/i);

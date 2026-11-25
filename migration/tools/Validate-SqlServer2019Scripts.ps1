@@ -90,7 +90,8 @@ $expected = @(
   '080_catalog_schedule_draft_materialization.sql',
   '081_catalog_schedule_draft_runtime_execute.sql',
   '082_catalog_schedule_activation_seals.sql',
-  '083_whats_new_retention.sql'
+  '083_whats_new_retention.sql',
+  '084_catalog_sag_target_exact_domain.sql'
 )
 
 $resolvedSqlDirectory = (Resolve-Path -LiteralPath $SqlDirectory).Path
@@ -123,6 +124,45 @@ foreach ($name in $expected) {
   }
 
   if ($parseErrors.Count -eq 0) {
+    if ($name -ceq '084_catalog_sag_target_exact_domain.sql') {
+      $rewrite=[System.IO.File]::ReadAllText($path)
+      $anchor=[regex]::Match($rewrite,"DECLARE @anchor084 nvarchar\(256\)=N'((?:[^']|'')*)';")
+      $predicate=[regex]::Match($rewrite,"DECLARE @predicate084 nvarchar\(1000\)=N'((?:[^']|'')*)';")
+      $historyAnchor=[regex]::Match($rewrite,"DECLARE @historicalAnchor084 nvarchar\(256\)=N'((?:[^']|'')*)';")
+      $historyReplacement=[regex]::Match($rewrite,"DECLARE @historicalReplacement084 nvarchar\(256\)=N'((?:[^']|'')*)';")
+      if (-not ($anchor.Success -and $predicate.Success -and $historyAnchor.Success -and $historyReplacement.Success)) {
+        throw "Missing the reviewed module rewrites in $name."
+      }
+      $earlier=@(
+        @{file='056_catalog_sag_target_link_proof.sql'; procedure='verify_catalog_sag_target_link_internal'},
+        @{file='057_catalog_sag_target_runtime_gate.sql'; procedure='read_catalog_sag_target_link_candidates'},
+        @{file='073_catalog_historical_schedule_company_locations.sql'; procedure='verify_catalog_historical_schedule_company_locations'; historical=$true}
+      )
+      foreach($target in $earlier) {
+        if($target.historical) {
+          $literal=$historyAnchor.Groups[1].Value.Replace("''","'")
+          $replacement=$historyReplacement.Groups[1].Value.Replace("''","'")
+        } else {
+          $literal=$anchor.Groups[1].Value.Replace("''","'")
+          $replacement=$literal+$predicate.Groups[1].Value.Replace("''","'")
+        }
+        $source=[System.IO.File]::ReadAllText((Join-Path $resolvedSqlDirectory $target.file))
+        $body=[regex]::Match($source,"EXEC sys\.sp_executesql N'(CREATE OR ALTER PROCEDURE settings\."+
+          $target.procedure+"\b(?:[^']|'')*)';").Groups[1].Value.Replace("''","'")
+        $bodyHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::Unicode.GetBytes($body.Replace("`r",''))))
+        if ([regex]::Matches($body,[regex]::Escape($literal)).Count -ne 1 -or -not $rewrite.Contains("0x$bodyHash")) {
+          throw "Unexpected predecessor definition or rewrite anchor: $($target.procedure)."
+        }
+        $moduleReader=[System.IO.StringReader]::new($body.Replace($literal,$replacement))
+        try {
+          $moduleErrors=$null
+          $null=$parser.Parse($moduleReader,[ref]$moduleErrors)
+        } finally { $moduleReader.Dispose() }
+        if($moduleErrors.Count){
+          throw "Invalid rewritten SQL Server 2019 module $($target.procedure): $($moduleErrors[0].Message)"
+        }
+      }
+    }
     if ($name -cin @('064_catalog_sag_owner_publisher.sql','065_catalog_erp_owner_publisher.sql','066_catalog_sag_database_names.sql','067_catalog_sag_customer_directory.sql',
       '072_catalog_schedule_copy_intents.sql','073_catalog_historical_schedule_company_locations.sql','074_catalog_schedule_population_sag_v2.sql',
       '075_catalog_schedule_copy_proposals.sql','076_catalog_schedule_copy_review_receipts.sql','077_catalog_schedule_copy_review_consumption.sql',

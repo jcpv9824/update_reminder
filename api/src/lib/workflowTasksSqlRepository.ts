@@ -23,6 +23,7 @@ export type TaskRow = {
   target_source_id: string;
   target_name: string;
   primary_schedule_source_id: string | null;
+  display_schedule_source_id?: string | null;
   assigned_role: string;
   status: UpdateTask["status"];
   result: string | null;
@@ -74,6 +75,7 @@ export function mapSqlWorkflowTask(row: TaskRow): UpdateTask {
     targetName: row.target_name,
     scheduleId: row.primary_schedule_source_id ?? "",
     rootScheduleId: row.primary_schedule_source_id ?? undefined,
+    ...(row.display_schedule_source_id ? { displayScheduleId: row.display_schedule_source_id } : {}),
     assignedRole: row.assigned_role,
     assignedUserIds: assignees.map((entry) => entry.id),
     sources: sources.map((entry) => ({
@@ -208,7 +210,7 @@ export async function readSqlWorkflowTasks(filters: WorkflowTaskFilters): Promis
       COALESCE(active_catalog_link.domain_name,task.domain_name_snapshot) AS domain_name,
       task.target_type,COALESCE(active_catalog_link.target_id,task.target_source_id) AS target_source_id,
       COALESCE(active_catalog_link.target_name,task.target_name_snapshot) AS target_name,
-      task.primary_schedule_source_id,task.assigned_role,task.status,task.result,task.notes,
+      task.primary_schedule_source_id,display_schedule.display_schedule_source_id,task.assigned_role,task.status,task.result,task.notes,
       task.completed_at,task.completed_by,task.completed_with_problems,task.problem_note,task.completion_note,
       task.blocked_at,task.blocked_by,task.block_reason,task.resolved_at,task.resolved_by,task.resolution_comment,
       task.reopened_at,task.reopened_by,task.reopen_reason,
@@ -222,6 +224,16 @@ export async function readSqlWorkflowTasks(filters: WorkflowTaskFilters): Promis
         ORDER BY source.is_primary DESC,source.created_at,source.schedule_source_id FOR JSON PATH),N'[]') AS sources_json
     FROM workflow.update_tasks task
     ${catalogTaskActiveLinkProjectionSql}
+    OUTER APPLY (
+      SELECT TOP (1) schedule.source_id AS display_schedule_source_id
+      FROM workflow.catalog_task_execution_sources attachment
+      JOIN scheduling.update_schedules schedule ON schedule.schedule_key=attachment.schedule_key
+      WHERE attachment.catalog_execution_link_key=active_catalog_link.catalog_execution_link_key
+        AND attachment.detached_at IS NULL AND schedule.deleted_at IS NULL AND schedule.active=1
+        AND task.status NOT IN ('completed','cancelled')
+      ORDER BY CASE WHEN schedule.schedule_key=task.primary_schedule_key THEN 0 ELSE 1 END,
+        schedule.schedule_key
+    ) AS display_schedule
     WHERE ${conditions.join(" AND ")}
     ORDER BY task.task_date,task.target_type,task.target_name_snapshot,task.source_id;
   `);

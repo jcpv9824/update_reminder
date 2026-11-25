@@ -351,16 +351,15 @@ export async function updateSqlSchedule(before: UpdateSchedule, after: UpdateSch
   return runSqlTransaction(async (transaction) => {
     const key = await scheduleKey(transaction, before.id);
     if (!key) return null;
-    const gate = await transaction.request().input("scheduleKey", sql.BigInt, key).query<{ frozen: boolean }>(`
-      SELECT CONVERT(bit,CASE WHEN catalog_activation_enabled=1 AND
-          (SYSUTCDATETIME()>=DATEADD(hour,5,CONVERT(datetime2(3),start_date))
-           OR EXISTS (SELECT 1 FROM scheduling.catalog_schedule_activation_snapshots a WHERE a.schedule_key=s.schedule_key))
-        THEN 1 ELSE 0 END) AS frozen
+    // Enrollment is durable DB state, not inferred from a source ID or the current
+    // feature flags. Legacy edits would invalidate reviewed catalog scope and assignments.
+    const gate = await transaction.request().input("scheduleKey", sql.BigInt, key).query<{ enrolled: boolean }>(`
+      SELECT s.catalog_activation_enabled AS enrolled
       FROM scheduling.update_schedules s
       WHERE s.schedule_key=@scheduleKey AND s.deleted_at IS NULL;
     `);
     if (!gate.recordset[0]) return null;
-    if (gate.recordset[0].frozen) throw Object.assign(new Error("El alcance está congelado. Duplica la programación para hacer cambios."), { status: 409 });
+    if (gate.recordset[0].enrolled) throw Object.assign(new Error("Duplica la programación del catálogo para hacer cambios sin alterar su revisión."), { status: 409 });
     const owner = await resolveScheduleOwner(transaction, after);
     let cancelledTasks = 0;
     if (before.frequencyType === "once" && after.frequencyType === "once" && before.startDate !== after.startDate) {

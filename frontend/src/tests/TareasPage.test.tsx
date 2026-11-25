@@ -246,6 +246,21 @@ describe("TareasPage (vista unificada)", () => {
     expect(screen.getByText(/Actualización: Actualización puntual/i)).toBeInTheDocument();
   });
 
+  it("agrupa la tarea consolidada con la copia activa cuando se elimina su programación original", async () => {
+    usuarioMock.roles = ["admin"];
+    apiMock.get.mockImplementation(async (path = "") => {
+      if (path === "/schedules") return [{ id: "active-copy", name: "Copia activa" }];
+      if (path.includes("targetType=domain")) return [
+        tarea({ id: "shared-task", scheduleId: "deleted-original", rootScheduleId: "deleted-original", displayScheduleId: "active-copy" }),
+        tarea({ id: "copy-task", scheduleId: "active-copy", rootScheduleId: "active-copy", displayScheduleId: "active-copy" }),
+      ];
+      return [];
+    });
+    renderPagina();
+    expect(await screen.findByText("Actualización: Copia activa")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /Ver detalle/i })).toHaveLength(1);
+  });
+
   it.each(["domain", "database"] as const)("muestra el destino futuro de catálogo (%s) sin exponer acciones", async (targetType) => {
     usuarioMock.roles = ["admin"];
     const fechaFutura = sumarDiasIso(hoyIso(), 4);
