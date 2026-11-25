@@ -8,10 +8,17 @@ y no requiere reescribir la migración 062. El editor enriquecido se conserva.
 - **Cliente:** un único combobox. No consulta hasta tres caracteres útiles,
   busca automáticamente en el catálogo autorizado del ERP, y exige elegir una
   opción. Al editar conserva el cliente guardado mientras no se cambie. El
-  servidor vuelve a verificar la opción antes de guardar.
+  texto de ayuda no desplaza la lista: el desplegable empieza cuatro píxeles
+  debajo del campo. La espera desde la última tecla es de 120 ms, y las
+  búsquedas sustituidas se cancelan. El servidor comprueba las fuentes
+  autorizadas en cada búsqueda y vuelve a verificar la opción antes de guardar.
 - **Qué cambió:** se conserva la barra de formato. Insertar imagen, pegar una
   imagen del portapapeles y adjuntar documentos usan el mismo canal privado. Pegar
   inserta la imagen en el punto de pegado sin reemplazar el texto existente.
+  En una imagen al nivel principal, «Escribir al lado» abre un párrafo editable
+  a la derecha. Enter lleva a un párrafo debajo; Mayús+Enter añade una línea
+  junto a la imagen. Si el ancho es reducido, los elementos se apilan. El
+  tamaño, las marcas de texto y el orden se conservan al guardar y reabrir.
 - **Reglas de negocio** y **Video de entrega** disponen de un botón «+» cada una.
   Cada zona admite varios enlaces HTTPS y/o archivos; un enlace no inicia una
   subida. Los campos se muestran en paralelo cuando hay espacio.
@@ -20,6 +27,13 @@ y no requiere reescribir la migración 062. El editor enriquecido se conserva.
   guardar para vincular definitivamente el archivo con la entrada.
 
 ## Contrato y límites
+
+El nodo privado `imageWithText` solo admite una imagen interna y un párrafo
+en ese orden. No admite atributos propios, URLs externas ni apariciones en
+el perfil de clientes. Una versión anterior del editor no puede reemplazar
+el contenido de un borrador ya guardado con este formato: recibe un aviso
+para recargar. Si se revierte el API después de guardar el formato nuevo, no
+editar esos borradores con el código anterior hasta recuperar la compatibilidad.
 
 ### Guardado y presentación del borrador
 

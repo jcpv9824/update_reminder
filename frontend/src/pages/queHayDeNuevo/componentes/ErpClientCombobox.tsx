@@ -3,13 +3,13 @@ import { useQuery } from "@tanstack/react-query";
 import type { ErpClientLookup } from "../contrato";
 
 const minimumLength = 3;
-const debounceMs = 250;
+const debounceMs = 120;
 
 export function ErpClientCombobox({ name, readOnly, scope, lookup, onSelect }: {
   name: string | null;
   readOnly: boolean;
   scope: string[];
-  lookup: (q: string) => Promise<ErpClientLookup[]>;
+  lookup: (q: string, signal?: AbortSignal) => Promise<ErpClientLookup[]>;
   onSelect: (choice: ErpClientLookup | null) => void;
 }) {
   const id = useId();
@@ -25,7 +25,7 @@ export function ErpClientCombobox({ name, readOnly, scope, lookup, onSelect }: {
   const isCurrent = valid && request?.term === term;
   const result = useQuery({
     queryKey: [...scope, "erp-clients", id, request?.term, request?.serial],
-    queryFn: () => lookup(request!.term),
+    queryFn: ({ signal }) => lookup(request!.term, signal),
     enabled: isCurrent,
     retry: false,
     refetchOnWindowFocus: false,
@@ -87,6 +87,7 @@ export function ErpClientCombobox({ name, readOnly, scope, lookup, onSelect }: {
 
   return <div className="qhdn-erp-cliente" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) close(); }}>
     <label htmlFor={id}><span aria-hidden="true">6. </span>Cliente *</label>
+    <div className="qhdn-erp-ancla">
     <div className="qhdn-erp-campo">
       <input ref={inputRef} id={id} role="combobox" aria-autocomplete="list" aria-expanded={popup}
         aria-controls={popup ? `${id}-list` : undefined}
@@ -101,7 +102,6 @@ export function ErpClientCombobox({ name, readOnly, scope, lookup, onSelect }: {
         }} />
       {name && <button type="button" onClick={() => { onSelect(null); close(); inputRef.current?.focus(); }} aria-label="Quitar cliente">Quitar</button>}
     </div>
-    <p id={`${id}-help`} className="texto-ayuda">Escribe al menos 3 caracteres y selecciona un cliente del ERP.</p>
     {popup && <div className="qhdn-erp-desplegable">
       {valid && (!isCurrent || result.isFetching) && <p role="status">Buscando…</p>}
       {isCurrent && result.isError && <div className="qhdn-erp-error"><p role="alert">No se pudo consultar el catálogo del ERP.</p>
@@ -113,5 +113,7 @@ export function ErpClientCombobox({ name, readOnly, scope, lookup, onSelect }: {
           onMouseDown={event => event.preventDefault()} onClick={() => choose(choice)}>{choice.label}</li>)}
       </ul>
     </div>}
+    </div>
+    <p id={`${id}-help`} className="texto-ayuda">Escribe al menos 3 caracteres y selecciona un cliente del ERP.</p>
   </div>;
 }

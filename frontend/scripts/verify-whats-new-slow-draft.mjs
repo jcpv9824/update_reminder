@@ -2,6 +2,8 @@
 // VITE_WHATS_NEW_PROTOTYPE=false and VITE_API_BASE_URL=/api. No live services or
 // credentials are used. Stop the server to discard the synthetic draft.
 // Usage: node scripts/verify-whats-new-slow-draft.mjs [dist-directory] [port]
+// Optional: QA_WHATS_NEW_DRAFT_TYPE=nuevo QA_WHATS_NEW_PUT_MS=120
+// QA_WHATS_NEW_ERP_MS=120 QA_WHATS_NEW_ERP_SLOW_TERM=and QA_WHATS_NEW_ERP_SLOW_MS=900
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
@@ -10,20 +12,41 @@ import { deflateSync } from "node:zlib";
 const root = resolve(process.argv[2] ?? "dist");
 const port = Number(process.argv[3] ?? 4176);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Port must be 1024–65535");
+function delaySetting(key, fallback) {
+  const delay = Number(process.env[key] ?? fallback);
+  if (!Number.isInteger(delay) || delay < 0 || delay > 30_000) throw new Error(`${key} must be 0–30000 ms`);
+  return delay;
+}
+const writeDelay = delaySetting("QA_WHATS_NEW_PUT_MS", 6_000);
+const erpDelay = delaySetting("QA_WHATS_NEW_ERP_MS", 120);
+const erpSlowDelay = delaySetting("QA_WHATS_NEW_ERP_SLOW_MS", 900);
+const normalizeTerm = value => value.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().trim();
+const erpSlowTerm = normalizeTerm(process.env.QA_WHATS_NEW_ERP_SLOW_TERM ?? "");
+const draftType = process.env.QA_WHATS_NEW_DRAFT_TYPE ?? "mejora";
+if (!['mejora', 'nuevo'].includes(draftType)) throw new Error("QA_WHATS_NEW_DRAFT_TYPE must be mejora or nuevo");
 const html = await readFile(resolve(root, "index.html"));
 const entryId = "11111111-1111-4111-8111-111111111111";
 const fileId = "22222222-2222-4222-8222-222222222222";
 const user = { id: "fixture-dev", displayName: "Desarrollador QA sintético", email: "fixture@example.test", roles: ["super_admin"], active: true };
 const editorPath = `/actualizaciones/que-hay-de-nuevo/${entryId}/editar`;
 const entryPath = `/api/whats-new/entries/${entryId}`;
+const erpLookupPath = "/api/whats-new/lookups/clients";
+const erpChoices = [
+  { id: "erp-qa-andes", label: "Andes Equipos QA" },
+  { id: "erp-qa-andina", label: "Andina Industrial QA" },
+  { id: "erp-qa-andino", label: "Andino Servicios QA" },
+  { id: "erp-qa-bogota", label: "Bogotá Laboratorio QA" },
+  { id: "erp-qa-medellin", label: "Medellín Comercial QA" },
+];
 let version = 1;
 let activeWrites = 0;
 let maxActiveWrites = 0;
 let conflictNext = false;
 const requests = [];
-const reads = { me: 0, entry: 0, requiredActions: 0, supportUsers: 0, image: 0 };
+const erpRequests = [];
+const reads = { me: 0, entry: 0, requiredActions: 0, supportUsers: 0, image: 0, erp: 0 };
 let draft = {
-  id: entryId, number: "QA-NOVEDADES-01", type: "mejora", system: "sag_web", status: "borrador", developer: user,
+  id: entryId, number: "QA-NOVEDADES-01", type: draftType, system: "sag_web", status: "borrador", developer: user,
   clientName: null, routes: [{ via: "barra_lateral", submenus: ["Pedidos"], option: "Consultar" }],
   whatChanged: { type: "doc", content: [
     { type: "paragraph", content: [{ type: "text", text: "Texto original de QA." }] },
@@ -94,19 +117,39 @@ const json = (res, data, status = 200) => res.writeHead(status, { "Content-Type"
 const mime = { ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".woff2": "font/woff2" };
 
 async function handle(req, res) {
-  const path = new URL(req.url, "http://127.0.0.1").pathname;
+  const url = new URL(req.url, "http://127.0.0.1");
+  const path = url.pathname;
   const method = req.method;
-  if (path === "/__qa/draft-status" && method === "GET") return json(res, { version, activeWrites, maxActiveWrites, reads, requests, draft });
+  if (path === "/__qa/draft-status" && method === "GET") return json(res, { version, activeWrites, maxActiveWrites, reads, requests, erpRequests, draft });
   if (path === "/__qa/conflict-next" && method === "POST") { conflictNext = true; return json(res, { conflictNext }); }
   if (path === "/api/auth/refresh" && method === "POST") return json(res, { token: "loopback-browser-qa-fixture" });
   if (path === "/api/me" && method === "GET") return json(res, { authenticated: true, registered: true, active: true, user });
   if (path === "/api/roles" && method === "GET") return json(res, []);
   if (path === "/api/whats-new/me" && method === "GET") {
     reads.me++;
-    return json(res, { user, areas: ["desarrollo"], permissions: ["updates.whats_new.view", "updates.whats_new.author"], views: ["desarrollador"], defaultView: "desarrollador", storageAvailable: true, clientCatalogAvailable: false });
+    return json(res, { user, areas: ["desarrollo"], permissions: ["updates.whats_new.view", "updates.whats_new.author"], views: ["desarrollador"], defaultView: "desarrollador", storageAvailable: true, clientCatalogAvailable: true });
   }
   if (path === "/api/whats-new/lookups/required-actions" && method === "GET") { reads.requiredActions++; return json(res, []); }
   if (path === "/api/whats-new/lookups/support-users" && method === "GET") { reads.supportUsers++; return json(res, []); }
+  if (path === erpLookupPath && method === "GET") {
+    reads.erp++;
+    const term = normalizeTerm(url.searchParams.get("q") ?? "");
+    const record = { term, start: Date.now(), status: null, count: 0, aborted: false };
+    erpRequests.push(record);
+    try {
+      if (term.length < 3 || term.length > 100) {
+        record.status = 400;
+        return json(res, { code: "solicitud_invalida", error: "Escriba al menos 3 caracteres para buscar clientes." }, 400);
+      }
+      const matches = erpChoices.filter(choice => normalizeTerm(choice.label).includes(term));
+      await new Promise(resolve => setTimeout(resolve, term === erpSlowTerm ? erpSlowDelay : erpDelay));
+      record.aborted = res.destroyed;
+      if (record.aborted) return;
+      record.status = 200;
+      record.count = matches.length;
+      return json(res, matches);
+    } finally { record.end = Date.now(); }
+  }
   if (path === entryPath && method === "GET") { reads.entry++; return json(res, draft); }
   if (path === `/api/whats-new/files/${fileId}` && method === "GET") {
     reads.image++;
@@ -126,13 +169,20 @@ async function handle(req, res) {
     activeWrites++;
     maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
     try {
-      await new Promise(resolve => setTimeout(resolve, 6_000));
+      await new Promise(resolve => setTimeout(resolve, writeDelay));
       if (conflictNext || record.ifMatch !== draft.etag) {
         conflictNext = false; record.status = 409;
         return json(res, { code: "version_desactualizada", message: "Conflicto simulado de QA." }, 409);
       }
+      const { clientId, ...content } = body;
+      const selected = erpChoices.find(choice => choice.id === clientId);
+      if (clientId != null && !selected) {
+        record.status = 400;
+        return json(res, { code: "cliente_erp_no_disponible", error: "Seleccione un cliente disponible del ERP." }, 400);
+      }
       record.status = 200;
-      draft = { ...draft, ...body, etag: `"v${++version}"` };
+      const clientName = (content.type ?? draft.type) !== "nuevo" || clientId === null ? null : selected?.label ?? draft.clientName;
+      draft = { ...draft, ...content, clientName, etag: `"v${++version}"` };
       return json(res, draft);
     } finally { record.end = Date.now(); activeWrites--; }
   }
@@ -148,6 +198,6 @@ createServer((req, res) => {
   if (req.headers.host !== `127.0.0.1:${port}` && req.headers.host !== `localhost:${port}`) return json(res, { code: "fixture_loopback_only" }, 403);
   void handle(req, res).catch(() => { if (!res.headersSent) json(res, { code: "fixture_error" }, 500); else res.end(); });
 }).listen(port, "127.0.0.1", () => {
-  process.stdout.write(`QA fixture (6s per PUT): http://127.0.0.1:${port}${editorPath}\n`);
+  process.stdout.write(`QA fixture (${writeDelay} ms per PUT, ${erpDelay} ms ERP, draft ${draftType}): http://127.0.0.1:${port}${editorPath}\n`);
   process.stdout.write(`Synthetic persistence/status: http://127.0.0.1:${port}/__qa/draft-status\n`);
 });

@@ -4,6 +4,7 @@ import { MoveDiagonal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../../api/client";
 import { privateImageWidth, validPrivateImageWidth } from "../contrato";
+import { escribirAlLado, permiteTextoLateral } from "./imagenConTexto";
 
 export type TipoArchivoPrivado = "imagen" | "documento" | "video";
 export type DestinoArchivoPrivado = "que_cambio" | "reglas_negocio" | "video";
@@ -69,7 +70,7 @@ function limitarAncho(width: number) {
   return Math.max(privateImageWidth.min, Math.min(privateImageWidth.max, Math.round(width)));
 }
 
-function VistaImagenPrivada({ node, editor, updateAttributes }: NodeViewProps) {
+function VistaImagenPrivada({ node, editor, getPos, updateAttributes }: NodeViewProps) {
   const id = node.attrs.fileId;
   const [attempt, setAttempt] = useState(0);
   const [media, setMedia] = useState<{ id: string; url?: string; attempt: number }>();
@@ -102,7 +103,8 @@ function VistaImagenPrivada({ node, editor, updateAttributes }: NodeViewProps) {
     arrastre.current = undefined;
     setAnchoTemporal(undefined);
   }
-  return <NodeViewWrapper className="qhdn-imagen-privada" contentEditable={false}>
+  const permiteAlLado = valido(id) && permiteTextoLateral(editor, getPos());
+  return <NodeViewWrapper className={`qhdn-imagen-privada${permiteAlLado ? " qhdn-imagen-privada-con-accion" : ""}`} contentEditable={false}>
     {!valido(id) ? <span>Imagen no disponible.</span> : media?.id !== id || media.attempt !== attempt ? <span role="status">Cargando imagen…</span>
       : media.url ? <div className="qhdn-imagen-marco" style={ancho === undefined ? { maxWidth: `min(100%, ${MAX_ANCHO_INICIAL_IMAGEN}px)` } : undefined}>
         <img ref={imagen} src={media.url} alt={texto} loading="lazy" width={ancho}
@@ -113,9 +115,12 @@ function VistaImagenPrivada({ node, editor, updateAttributes }: NodeViewProps) {
           aria-valuemin={privateImageWidth.min} aria-valuemax={privateImageWidth.max}
           aria-valuenow={ancho ?? anchoNatural ?? 320} aria-valuetext={`${ancho ?? anchoNatural ?? 320} píxeles de ancho`}
           onKeyDown={event => {
-            const current = anchoGuardado ?? anchoBase();
+            const smaller = event.key === "ArrowLeft" || event.key === "ArrowDown";
+            // In the side-by-side view a previously wide image may be clamped
+            // by its column. Shrink from its visible width, not a hidden one.
+            const current = smaller ? Math.min(anchoGuardado ?? Infinity, anchoBase()) : anchoGuardado ?? anchoBase();
             const step = event.shiftKey ? 64 : 16;
-            const next = event.key === "ArrowLeft" || event.key === "ArrowDown" ? current - step
+            const next = smaller ? current - step
               : event.key === "ArrowRight" || event.key === "ArrowUp" ? current + step
               : event.key === "Home" ? privateImageWidth.min
               : event.key === "End" ? privateImageWidth.max : undefined;
@@ -146,6 +151,11 @@ function VistaImagenPrivada({ node, editor, updateAttributes }: NodeViewProps) {
           <MoveDiagonal size={15} aria-hidden="true" />
         </button>}
       </div> : <span role="status">Imagen no disponible. <button type="button" onClick={() => setAttempt(attempt + 1)}>Reintentar</button></span>}
+    {permiteAlLado && <button type="button" className="qhdn-imagen-escribir-al-lado"
+      aria-label={texto ? `Escribir al lado de la imagen: ${texto}` : "Escribir al lado de la imagen"}
+      onClick={() => escribirAlLado(editor, getPos())}>
+      Escribir al lado
+    </button>}
   </NodeViewWrapper>;
 }
 

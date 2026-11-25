@@ -38,7 +38,8 @@ const defaults: WhatsNewHttpDependencies = {
   authenticate: async (req) => {
     const user = await requireUser(req); const profile = await loadUserProfile(user);
     if (!profile) throw new WhatsNewError(401, "no_autenticado", "No autenticado.");
-    return buildActor(profile, await loadRoleDefinitions(), await areasFor(profile.id));
+    const [roleDefinitions, areas] = await Promise.all([loadRoleDefinitions(), areasFor(profile.id)]);
+    return buildActor(profile, roleDefinitions, areas);
   },
   limit: (req, actor) => {
     const { scope, policy } = whatsNewRateLimit(req.method, req.url, !!actor);

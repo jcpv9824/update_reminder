@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { Editor } from "@tiptap/react";
+import { Fragment } from "@tiptap/pm/model";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorEnriquecido, VisorEnriquecido } from "../pages/queHayDeNuevo/componentes/EditorEnriquecido";
 import { safeDisplayDoc } from "../pages/queHayDeNuevo/contrato";
@@ -241,5 +242,75 @@ describe("Qué hay de nuevo · editor privado", () => {
     }
     expect(safeDisplayDoc(input(640), false, true)?.content?.[0].attrs).toHaveProperty("width", 640);
     expect(safeDisplayDoc(input(640), true, true)?.content).toEqual([]);
+  });
+
+  it("permite escribir al lado de una imagen conservada y que Enter continúe debajo sin sobrescribir texto existente", async () => {
+    getBlob.mockResolvedValue(new Blob(["fixture"], { type: "image/png" }));
+    const input: DocEnriquecido = { type: "doc", content: [
+      { type: "image", attrs: { fileId: IMAGE, alt: "Diagrama", width: 320 } },
+      { type: "paragraph", content: [{ type: "text", text: "Texto histórico" }] },
+    ] };
+    const changes = vi.fn<(doc: DocEnriquecido) => void>();
+    function ControlledEditor() {
+      const [value, setValue] = useState(input);
+      return <EditorEnriquecido valor={value} onChange={doc => { setValue(doc); changes(doc); }}
+        ariaLabel="Qué cambió" perfil="medio" archivosPrivados />;
+    }
+    const ui = render(<ControlledEditor />);
+    const textbox = await screen.findByRole("textbox", { name: "Qué cambió" }) as HTMLElement & { editor: Editor };
+    fireEvent.click(await screen.findByRole("button", { name: "Escribir al lado de la imagen: Diagrama" }));
+    expect(textbox).toHaveFocus();
+    expect(textbox.editor.state.selection.$from.parent.type.name).toBe("paragraph");
+    expect(textbox.editor.state.selection.$from.node(1).type.name).toBe("imageWithText");
+    const paired = Fragment.from(textbox.editor.state.doc.firstChild!);
+    expect(textbox.editor.schema.topNodeType.validContent(paired)).toBe(true);
+    expect(textbox.editor.schema.nodes.blockquote.validContent(paired)).toBe(false);
+    act(() => {
+      textbox.editor.commands.insertContent({ type: "text", text: "Nota al lado", marks: [{ type: "bold" }] });
+    });
+    expect(fireEvent.keyDown(textbox, { key: "Enter" })).toBe(false);
+    expect(textbox.editor.state.selection.$from.depth).toBe(1);
+    act(() => { textbox.editor.commands.insertContent("Continúa debajo"); });
+    const saved = changes.mock.lastCall![0];
+    expect(saved.content).toEqual([
+      { type: "imageWithText", content: [
+        expect.objectContaining({ type: "image", attrs: expect.objectContaining({ fileId: IMAGE, width: 320 }) }),
+        { type: "paragraph", content: [{ type: "text", text: "Nota al lado", marks: [{ type: "bold" }] }] },
+      ] },
+      { type: "paragraph", content: [{ type: "text", text: "Continúa debajo" }] },
+      { type: "paragraph", content: [{ type: "text", text: "Texto histórico" }] },
+    ]);
+    expect(JSON.stringify(saved)).not.toContain(BLOB_URL);
+    expect(JSON.stringify(safeDisplayDoc(saved, true, true))).not.toContain("Nota al lado");
+    ui.unmount();
+    render(<VisorEnriquecido valor={safeDisplayDoc(saved, false, true)} archivosPrivados />);
+    const figure = (await screen.findByRole("img", { name: "Diagrama" })).closest(".qhdn-imagen-con-texto");
+    expect(figure).toContainElement(screen.getByText("Nota al lado"));
+    expect(figure).not.toContainElement(screen.getByText("Continúa debajo"));
+    expect(screen.queryByRole("button", { name: /Escribir al lado/ })).not.toBeInTheDocument();
+  });
+
+  it("al quitar solo la imagen deja su texto como un párrafo normal y no repite la descarga", async () => {
+    getBlob.mockResolvedValue(new Blob(["fixture"], { type: "image/png" }));
+    const value: DocEnriquecido = { type: "doc", content: [{
+      type: "imageWithText", content: [
+        { type: "image", attrs: { fileId: IMAGE, alt: "Imagen acompañada" } },
+        { type: "paragraph", content: [{ type: "text", text: "No borrar este texto" }] },
+      ],
+    }] };
+    const changes = vi.fn();
+    render(<EditorEnriquecido valor={value} onChange={changes} ariaLabel="Qué cambió" perfil="medio" archivosPrivados />);
+    const textbox = await screen.findByRole("textbox", { name: "Qué cambió" }) as HTMLElement & { editor: Editor };
+    await screen.findByRole("img", { name: "Imagen acompañada" });
+    expect(screen.queryByRole("button", { name: /Escribir al lado/ })).not.toBeInTheDocument();
+    await act(async () => {
+      textbox.editor.commands.setNodeSelection(1);
+      expect(fireEvent.keyDown(textbox, { key: "Delete" })).toBe(false);
+    });
+    const saved = changes.mock.lastCall![0] as DocEnriquecido;
+    expect(saved.content?.[0]).toEqual({ type: "paragraph", content: [{ type: "text", text: "No borrar este texto" }] });
+    expect(descendants(saved).some(n => n.type === "image" || n.type === "imageWithText")).toBe(false);
+    await waitFor(() => expect(screen.queryByRole("img", { name: "Imagen acompañada" })).not.toBeInTheDocument());
+    expect(getBlob).toHaveBeenCalledTimes(1);
   });
 });

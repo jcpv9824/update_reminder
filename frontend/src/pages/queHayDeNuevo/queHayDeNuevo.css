@@ -58,11 +58,11 @@
 .qhdn-nuevo-desarrollador > legend { padding-inline: 5px; color: var(--color-primary); }
 .qhdn-pares-desarrollador { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .qhdn-pares-desarrollador > * { min-width: 0; }
-.qhdn-erp-cliente { position: relative; }
+.qhdn-erp-ancla { position: relative; }
 .qhdn-erp-campo { display: flex; gap: 4px; align-items: stretch; }
 .qhdn-erp-campo input { flex: 1; min-width: 0; margin: 0; }
 .qhdn-erp-campo button { padding-inline: 6px; }
-.qhdn-erp-desplegable { position: absolute; z-index: 5; inset-inline: 0; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-card); box-shadow: 0 4px 8px rgb(0 0 0 / .09); }
+.qhdn-erp-desplegable { position: absolute; z-index: 5; inset-inline: 0; top: calc(100% + 4px); border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-card); box-shadow: 0 4px 8px rgb(0 0 0 / .09); }
 .qhdn-erp-desplegable > p, .qhdn-erp-error { padding: 8px; margin: 0; }
 .qhdn-erp-error p { color: var(--color-error); margin: 0 0 4px; }
 .qhdn-erp-error small { display: block; margin-top: 4px; color: var(--color-text-muted); }
@@ -300,6 +300,22 @@
 .qhdn-imagen-privada { max-width: 100%; margin: 6px 0; }
 .qhdn-imagen-marco { position: relative; width: fit-content; max-width: 100%; }
 .qhdn-imagen-marco > img { margin: 0; }
+.qhdn-imagen-privada-con-accion { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
+.qhdn-imagen-escribir-al-lado { justify-self: start; color: var(--color-primary); }
+.qhdn-imagen-con-texto { container-type: inline-size; margin: 6px 0 10px; }
+.qhdn-imagen-con-texto-fila { display: grid; grid-template-columns: fit-content(54%) minmax(0, 1fr); gap: 12px; align-items: start; }
+.qhdn-imagen-con-texto-fila > * { min-width: 0; }
+.qhdn-imagen-con-texto-fila > .react-renderer .qhdn-imagen-privada { margin: 0; }
+.qhdn-editor-contenido .qhdn-imagen-con-texto-fila > p { margin: 0; min-height: 1.45em; }
+.qhdn-editor-contenido[contenteditable="true"] .qhdn-imagen-con-texto-fila > p {
+  min-height: 2.25em; padding: 4px 6px; border: 1px dashed var(--color-border); border-radius: 4px; cursor: text;
+}
+.qhdn-editor-contenido[contenteditable="true"] .qhdn-imagen-con-texto-fila > p:has(> br.ProseMirror-trailingBreak:only-child)::before {
+  content: "Texto al lado de la imagen"; color: var(--color-text-muted); float: left; height: 0; pointer-events: none;
+}
+@container (max-width: 380px) {
+  .qhdn-imagen-con-texto-fila { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+}
 .qhdn-imagen-redimensionar {
   position: absolute; inset-inline-end: 0; inset-block-end: 0; display: grid; place-items: center;
   min-width: 24px; min-height: 24px; padding: 0; color: var(--color-primary);

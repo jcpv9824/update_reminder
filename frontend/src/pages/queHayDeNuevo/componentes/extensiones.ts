@@ -4,6 +4,7 @@ import Image from "@tiptap/extension-image";
 import { Color, TextStyle } from "@tiptap/extension-text-style";
 import { Placeholder } from "@tiptap/extensions";
 import { AdjuntoPrivado, ImagenPrivada } from "./archivosPrivados";
+import { DocumentoConImagenLateral, ImagenConTexto } from "./imagenConTexto";
 
 /* Extensiones del editor enriquecido. El mismo conjunto valida el JSON en el backend (documento 05). */
 
@@ -81,8 +82,10 @@ export function formatoTamano(bytes: number): string {
 }
 
 export function extensionesEditor({ placeholder, soloLectura, perfil, archivosPrivados }: { placeholder?: string; soloLectura?: boolean; perfil?: "medio" | "compacto" | "cliente"; archivosPrivados?: boolean } = {}): Extensions {
+  const imagenLateral = perfil === "medio" && archivosPrivados;
   return [
     StarterKit.configure({
+      document: imagenLateral ? false : undefined,
       heading: perfil === "compacto" ? false : { levels: [3] },
       blockquote: perfil === "compacto" ? false : undefined,
       codeBlock: perfil && perfil !== "medio" ? false : undefined,
@@ -98,7 +101,7 @@ export function extensionesEditor({ placeholder, soloLectura, perfil, archivosPr
     }),
     TextStyle,
     Color,
-    ...(perfil === "medio" && archivosPrivados ? [ImagenPrivada, AdjuntoPrivado] :
+    ...(imagenLateral ? [DocumentoConImagenLateral, ImagenPrivada, ImagenConTexto, AdjuntoPrivado] :
       !perfil ? [Image.configure({ inline: false, allowBase64: false, HTMLAttributes: { class: "qhdn-imagen" } }), AdjuntoArchivo] : []),
     ...(perfil !== "cliente" ? [Mencion] : []),
     Placeholder.configure({ placeholder: placeholder ?? "" }),

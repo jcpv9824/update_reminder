@@ -40,8 +40,10 @@ async function readClients(actor: WhatsNewActor, args: ErpClientSelection, trans
     const run = async (db: sql.Transaction) => {
       const allowedSourceIds = await readAuthorizedCatalogSourceIdsInTransaction(db, { actorId: actor.id, environment });
       if (!allowedSourceIds.size) return [];
+      const includeSagDirectory = catalogDirectoryV2Enabled();
       const input = await readSqlCatalogCustomerSnapshots({
-        environment, allowedSourceIds, matchKeyVersion, actorId: actor.id, includeSagDirectory: catalogDirectoryV2Enabled(),
+        environment, allowedSourceIds, matchKeyVersion, actorId: actor.id, includeSagDirectory,
+        erpAutocomplete: includeSagDirectory && transaction === undefined && args.search !== undefined,
       }, db);
       if (!input.erp.some((source) => source.state === "verified" && allowedSourceIds.has(source.sourceId))) throw unavailable();
       return selectWhatsNewErpClients(input, args);

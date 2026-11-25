@@ -74,6 +74,17 @@ describe("Qué hay de nuevo domain gates", () => {
     expect(() => decideCreate(ctx)).toThrow("permisos");
   });
   it("rejects author assignment from the body", () => { expect(DraftInSchema.safeParse({ developerId: "other" }).success).toBe(false); });
+  it("prevents an old editor from dropping an existing image-side layout while allowing intentional removal", () => {
+    const ctx = context(); ctx.actor.id = "developer";
+    const state: EntryState = { ...entry(), status: "borrador", whatChanged: { type: "doc", content: [
+      { type: "imageWithText", content: [{ type: "image", attrs: { fileId: ctx.newId() } }, ...doc.content] },
+    ] } };
+    expect(() => decideSaveDraft(ctx, state, { whatChanged: doc })).toThrow(expect.objectContaining({ status: 409, code: "editor_desactualizado" }));
+    expect(decideSaveDraft(ctx, state, { whatChanged: doc, editorLayoutVersion: 1 }).effects[0])
+      .toMatchObject({ kind: "entry.patch", patch: { whatChanged: doc } });
+    expect(decideSaveDraft(ctx, state, { system: "sag_clasico" }).effects[0])
+      .toMatchObject({ kind: "entry.patch", patch: { system: "sag_clasico" } });
+  });
   it("accepts only opaque ERP selection IDs, never a free client name", () => {
     expect(DraftInSchema.safeParse({ clientName: "Empresa según el navegador" }).success).toBe(false);
     expect(DraftInSchema.safeParse({ clientId: "123456789" }).success).toBe(false);

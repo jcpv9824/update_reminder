@@ -9,7 +9,7 @@ import { Dialogo, EtiquetaEstadoQhdn, EtiquetaSistema, EtiquetaTipo } from "./co
 import { EditorEnriquecido, VisorEnriquecido } from "./componentes/EditorEnriquecido";
 import { ErpClientCombobox } from "./componentes/ErpClientCombobox";
 import { docVacio, ETIQUETAS_ESTADO_QHDN, ETIQUETAS_TIPO_CORTAS, rutaTexto, rutaVacia } from "./logica";
-import { createDraftSaveSession, draftFromForm, errorMessage, formFromEntry, mutationOptions, safeDisplayDoc, storagePending, whatsNewApi, type ConfigDto, type EntryDto, type EntrySummary, type ErpClientLookup, type Me, type Page, type ReportInput, type ReportPreview, type SavedReport } from "./contrato";
+import { createDraftSaveSession, draftFromForm, errorMessage, formFromEntry, mutationOptions, richLayoutVersion, safeDisplayDoc, storagePending, whatsNewApi, type ConfigDto, type EntryDto, type EntrySummary, type ErpClientLookup, type Me, type Page, type ReportInput, type ReportPreview, type SavedReport } from "./contrato";
 import { aceptaDocumentoPrivado, BotonDescargaPrivada, subirArchivoPrivado, tiposVideoPrivado, validarArchivoPrivado, type DestinoArchivoPrivado, type TipoArchivoPrivado } from "./componentes/archivosPrivados";
 import type { Adjunto, DatosFormulario, DocEnriquecido, Sistema, TipoEntrada } from "./tipos";
 import "./queHayDeNuevo.css";
@@ -447,7 +447,7 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
             {mayRemove && <RemoveButton label="Eliminar entrada" disabled={formLocked || draftPending || uploading} onClick={() => {
               if (!inFlightDraft.current && !uploadBusy.current && !publishing.current) setRemoving(true);
             }} />}
-            {correction ? <button type="button" className="primario" disabled={formLocked || uploading} onClick={() => op.mutateAsync(() => whatsNewApi.command(entry!.id, "correct", entry!.etag, { whatChanged: form.queCambio, requiredActions: draftFromForm(form).requiredActions, correctionNote: note })).then(() => navigate(`${base}/${entry!.id}`)).catch(() => {})}>Corregir y volver a publicar</button> : <>
+            {correction ? <button type="button" className="primario" disabled={formLocked || uploading} onClick={() => op.mutateAsync(() => whatsNewApi.command(entry!.id, "correct", entry!.etag, { whatChanged: form.queCambio, requiredActions: draftFromForm(form).requiredActions, correctionNote: note, ...richLayoutVersion(entry!.whatChanged) })).then(() => navigate(`${base}/${entry!.id}`)).catch(() => {})}>Corregir y volver a publicar</button> : <>
               <button type="submit" disabled={formLocked || draftPending || uploading || conflict}>Guardar borrador</button>
               <button type="button" className="primario" disabled={formLocked || draftPending || uploading || conflict || missing.length > 0} aria-describedby={missing.length ? missingId : undefined} onClick={() => void save(true)}>Publicar a Soporte</button>
             </>}

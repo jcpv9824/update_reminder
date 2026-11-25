@@ -10,7 +10,7 @@ import {
 } from "./catalogCustomerDirectory";
 import type { CatalogEnvironment, CatalogSourceRole } from "./catalogSourceConfiguration";
 import { getSqlPool } from "./sql";
-import { catalogReconciledIdentitySql } from "./catalogReconciledIdentitySql";
+import { catalogReconciledIdentityHeadsSql, catalogReconciledIdentitySql } from "./catalogReconciledIdentitySql";
 import { runSqlTransaction } from "./sqlTransaction";
 
 const maxSources = 32;
@@ -29,6 +29,8 @@ export interface CatalogCustomerSnapshotsReadScope {
   actorId?: string;
   /** Trusted runtime policy; not a browser-selected option. */
   includeSagDirectory?: boolean;
+  /** Trusted V2 Novedades GET only. Its eligibility never relies on SAG matches. */
+  erpAutocomplete?: boolean;
 }
 
 export interface CatalogReconciledDirectoryRow {
@@ -246,7 +248,7 @@ export function mapCatalogCustomerSnapshots(
   return result;
 }
 
-const readSnapshots = (v2: boolean) => `
+const readSnapshots = (v2: boolean, erpAutocomplete = false) => `
   SET NOCOUNT ON;
   DECLARE @now datetime2(3)=SYSUTCDATETIME();
   DECLARE @eligible TABLE (
@@ -289,16 +291,33 @@ const readSnapshots = (v2: boolean) => `
   IF (SELECT SUM(CONVERT(bigint,expected_rows)) FROM @eligible)>@rowLimit
     THROW 53310, N'Catalog exceeds its read safety bound.', 1;
 
-  SELECT source_id, display_name, source_role, revision_state, observed_at, expected_rows, expected_scopes FROM @eligible;
+  SELECT source_id, display_name, source_role, revision_state, observed_at, expected_rows, expected_scopes FROM @eligible
+  ${erpAutocomplete ? "WHERE source_role='erp-customers'" : ""};
 
   SELECT e.source_id, r.source_record_id, LOWER(CONVERT(char(36), c.customer_id)) AS customer_id, r.official_name,
     r.active_code, r.issuer, r.document_type, r.document_number_token
   FROM @eligible AS e JOIN core.catalog_customer_revision_rows AS r ON r.revision_key=e.snapshot_key
   LEFT JOIN core.catalog_customer_ids AS c ON c.catalog_customer_key=r.catalog_customer_key
+  ${erpAutocomplete ? "WHERE e.source_role='erp-customers'" : ""}
   ORDER BY e.source_id,r.source_record_id;
 
   SELECT e.source_id, s.issuer, s.document_type
-  FROM @eligible AS e JOIN core.catalog_customer_revision_scopes AS s ON s.revision_key=e.snapshot_key;
+  FROM @eligible AS e JOIN core.catalog_customer_revision_scopes AS s ON s.revision_key=e.snapshot_key
+  ${erpAutocomplete ? "WHERE e.source_role='erp-customers'" : ""};
+`;
+
+// V2 does not certify negative Web presence; the Novedades suggestions only
+// exclude those negatives and never include SAG-only records. Reuse the exact
+// live authorization and verified-head guard without materializing the graph.
+// The immutable sealed counts still enforce the full reconciliation's bounds.
+export const catalogErpAutocompleteSql = `
+  ${catalogReconciledIdentityHeadsSql}
+  IF @observedActor IS NOT NULL AND @observedSagReady=1
+    AND (@observedIsSuper=1 OR EXISTS(SELECT 1 FROM @observedSelected))
+    AND EXISTS (SELECT 1 FROM @observedHeads GROUP BY source_role
+      HAVING SUM(CONVERT(bigint,expected_rows))>@rowLimit)
+      THROW 54976,N'Catalog inventory bounds exceeded.',1;
+  ${readSnapshots(true, true)}
 `;
 
 /** Service-only SELECTs against Portal SQL; never connects to ERP or SAG data sources. */
@@ -306,6 +325,7 @@ export async function readSqlCatalogCustomerSnapshots(scope: CatalogCustomerSnap
   transaction?: sql.Transaction): Promise<CatalogDirectoryInput> {
   const allowed = normalizedAuthorizedSources(scope);
   const v2 = scope.includeSagDirectory === true;
+  const erpAutocomplete = v2 && scope.erpAutocomplete === true;
   if (v2 && (typeof scope.actorId !== "string" || !scope.actorId.trim() || scope.actorId.length > 128 ||
       /\p{C}/u.test(scope.actorId))) fail();
   if (!allowed.size && !v2) return mapCatalogCustomerSnapshots(scope, [], [], []);
@@ -321,19 +341,20 @@ export async function readSqlCatalogCustomerSnapshots(scope: CatalogCustomerSnap
           .input("sourceIds", sql.NVarChar(2048), JSON.stringify([...allowed]))
           .input("selectedSourceIds", sql.NVarChar(sql.MAX), null);
       }
-      const result = await request.query(v2 ? `
+      const result = await request.query(erpAutocomplete ? catalogErpAutocompleteSql : v2 ? `
         ${catalogReconciledIdentitySql}
         ${readSnapshots(true)}
         SELECT customer_id,customer_name AS display_name,source_record_id AS sag_record_id,sag_only FROM @observedIdentity;
         SELECT @observedSagReady AS sag_ready,@observedPartial AS partial;
       ` : readSnapshots(false));
-      if (!Array.isArray(result.recordsets) || result.recordsets.length !== (v2 ? 5 : 3) ||
+      const expectsGraph = v2 && !erpAutocomplete;
+      if (!Array.isArray(result.recordsets) || result.recordsets.length !== (expectsGraph ? 5 : 3) ||
           !result.recordsets.every(Array.isArray)) fail();
       const [headers, records, scopes] = result.recordsets as unknown as [
         CatalogSnapshotHeaderRow[], CatalogSnapshotCustomerRow[], CatalogSnapshotCoverageRow[],
       ];
       let reconciled: CatalogReconciledDirectoryProjection | undefined;
-      if (v2) {
+      if (expectsGraph) {
         const extraSets = result.recordsets as unknown as unknown[][];
         const status = extraSets[4];
         if (status.length !== 1) fail();
@@ -342,7 +363,8 @@ export async function readSqlCatalogCustomerSnapshots(scope: CatalogCustomerSnap
         reconciled = { rows: extraSets[3] as CatalogReconciledDirectoryRow[],
           sagReady: row.sag_ready, partial: row.partial };
       }
-      return mapCatalogCustomerSnapshots(scope, headers, records, scopes, reconciled);
+      return mapCatalogCustomerSnapshots(erpAutocomplete ? { ...scope, includeSagDirectory: false } : scope,
+        headers, records, scopes, reconciled);
     };
     // A serializable read prevents ACL, profile or head changes between the
     // common graph and its exact immutable snapshot projection.

@@ -54,6 +54,10 @@ let stage = "resolve QA actor";
   const user = await loadUserProfile({ id: "qa-probe-lookup-only", email, displayName: "", roles: [] });
   assert.ok(user, "QA actor profile unavailable");
   const actor = buildActor(user, await loadRoleDefinitions(), await areasFor(user.id));
+  // Only in this guarded SQL/SeaweedFS QA fixture, model a developer for
+  // the existing QA super_admin without changing that account or its area.
+  const imageLayout = process.env.WHATS_NEW_QA_IMAGE_LAYOUT === "true";
+  if (imageLayout && access.superAdmin(actor) && !access.developer(actor)) actor.areas = new Set([...actor.areas, "desarrollo"]);
   assert.ok(access.developer(actor), "Existing QA account does not have developer authority");
   const off = async () => { const data = await publicNews({}); assert.equal(data.enabled, false); assert.equal(data.items.length, 0); };
   await off();
@@ -85,10 +89,14 @@ let stage = "resolve QA actor";
   }
   stage = "save and reopen draft";
   const [image, rule, video] = uploads;
+  const privateImage = { type: "image", attrs: { fileId: image.fileId, alt: "QA", width: 416 } };
+  const imageContent = imageLayout ? [{ type: "imageWithText", content: [privateImage, { type: "paragraph",
+    content: [{ type: "text", text: "Texto junto a la captura", marks: [{ type: "italic" }] }] }] },
+  { type: "paragraph", content: [{ type: "text", text: "Texto debajo de la captura" }] }] : [privateImage];
   const edited = { ...draft, attachments: [
     { group: "reglas_negocio", kind: "archivo", fileId: rule.fileId },
     { group: "video", kind: "archivo", fileId: video.fileId },
-  ], whatChanged: { ...draft.whatChanged, content: [...draft.whatChanged.content, { type: "image", attrs: { fileId: image.fileId, alt: "QA" } }] } };
+  ], whatChanged: { ...draft.whatChanged, content: [...draft.whatChanged.content, ...imageContent] } };
   await mutate({ actor, operation: "draft", id: created.id, body: edited, etag: created.etag, idempotencyKey: null });
   const reopened = await getEntry(actor, created.id);
   assert.equal(reopened.status, "borrador");
@@ -96,6 +104,11 @@ let stage = "resolve QA actor";
   assert.match(JSON.stringify(reopened.whatChanged), /"type":"bold"/);
   assert.match(JSON.stringify(reopened.whatChanged), new RegExp(image.fileId, "i"));
   assert.doesNotMatch(JSON.stringify(reopened.whatChanged), /"src"|"href"|https?:\/\//);
+  if (imageLayout) {
+    assert.deepEqual(reopened.whatChanged.content.slice(1), imageContent);
+    await assert.rejects(mutate({ actor, operation: "draft", id: created.id, body: { whatChanged: draft.whatChanged },
+      etag: reopened.etag, idempotencyKey: null }), error => error.status === 409 && error.code === "editor_desactualizado");
+  }
   for (const [i, file] of uploads.entries()) {
     assert.equal(checksum((await readWhatsNewMedia(actor, file.fileId)).bytes), checksum(fixtures[i].bytes));
   }
@@ -107,7 +120,7 @@ let stage = "resolve QA actor";
   assert.equal(Number(counts.hits), 3);
   assert.equal(Number(counts.promoted), 3);
   await off();
-  console.log(JSON.stringify({ result: "PASS", qaDatabase: env.db, privateFilesReopened: 3, idempotentReplays: 3, persistedFormatting: true, publicEnabled: false, fixtureRemainsDraft: true }));
+  console.log(JSON.stringify({ result: "PASS", qaDatabase: env.db, privateFilesReopened: 3, idempotentReplays: 3, persistedFormatting: true, imageLayout, publicEnabled: false, fixtureRemainsDraft: true }));
 })().catch(error => {
   const name = typeof error?.code === "string" && /^[a-z0-9_]{1,45}$/i.test(error.code) ? error.code : undefined;
   console.error(JSON.stringify({ result: "FAIL", stage, code: name, sqlNumber: Number.isInteger(error?.number) ? error.number : undefined }));

@@ -45,7 +45,7 @@ export const RICH_LIMITS = {
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ALLOWED_OBJECT_KEYS = new Set(["type", "attrs", "marks", "text", "content"]);
 const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
-const BLOCKS = new Set(["paragraph", "heading", "bulletList", "orderedList", "blockquote", "codeBlock", "horizontalRule", "image"]);
+const BLOCKS = new Set(["paragraph", "heading", "bulletList", "orderedList", "blockquote", "codeBlock", "horizontalRule", "image", "imageWithText"]);
 const INLINES = new Set(["text", "hardBreak", "mencion", "adjuntoArchivo"]);
 
 type AttrRule = (value: unknown) => boolean;
@@ -67,6 +67,7 @@ const NODE_RULES: Record<string, { profiles: RichProfile[]; attrs: Record<string
   horizontalRule: { profiles: ["medio", "cliente"], attrs: {} },
   hardBreak: { profiles: ["medio", "compacto", "cliente"], attrs: {} },
   text: { profiles: ["medio", "compacto", "cliente"], attrs: {} },
+  imageWithText: { profiles: ["medio"], attrs: {} },
   image: {
     profiles: ["medio", "cliente"],
     attrs: {
@@ -191,6 +192,13 @@ export function validateRichDoc(input: unknown, profile: RichProfile, maxJsonCha
     if (!rule.profiles.includes(profile)) throw invalid(path, `tipo_no_permitido:${type}`);
     if (type === "doc" && parentType !== null) throw invalid(path, "doc_anidado");
     if (parentType === null && type !== "doc") throw invalid(path, "doc");
+    if (type === "imageWithText") {
+      const children = node.content as Array<{ type?: unknown } | null> | undefined;
+      if (parentType !== "doc" || !Array.isArray(children) || children.length !== 2
+        || children[0]?.type !== "image" || children[1]?.type !== "paragraph") {
+        throw invalid(path, "imagen_con_texto");
+      }
+    }
 
     // Ubicación: bloques dentro de doc/blockquote/listItem; en línea dentro de párrafo/encabezado/código.
     if (parentType) {
@@ -380,6 +388,7 @@ export function extractPlainText(doc: RichDoc, options: { forReport?: boolean } 
       const listIndex = node.type === "orderedList" ? start + index : undefined;
       // Los ítems se sangran respecto de su lista (indent-1 → 0 para el primer nivel).
       stack.push({ node: child, indent: child.type === "listItem" ? nextIndent - 1 : nextIndent, listIndex });
+      if (node.type === "imageWithText" && index === 1) stack.push({ close: "\n" });
     }
   }
   return parts.join("")
@@ -421,7 +430,7 @@ export function toClientProfile(doc: RichDoc): RichDoc {
     if (!node.content) continue;
     const next: RichNode[] = [];
     for (const child of node.content) {
-      if (child.type === "mencion" || child.type === "adjuntoArchivo" || child.type === "image") continue;
+      if (child.type === "mencion" || child.type === "adjuntoArchivo" || child.type === "image" || child.type === "imageWithText") continue;
       if (child.type === "codeBlock") {
         continue;
       }

@@ -101,6 +101,26 @@ describe("customer catalog published snapshots", () => {
     expect(statement).toContain("core.catalog_sag_customer_directory_rows");
     expect(statement).not.toMatch(/p\.(?:server_host|server_port|login_name|password_secret_name)\b/);
   });
+
+  it("reads only verified ERP bodies for the V2 Novedades picker under the same live authorization gates", async () => {
+    sqlMocks.input.mockReturnThis();
+    const tx = {};
+    sqlMocks.query.mockResolvedValueOnce({ recordsets: [[headers[0]], [records[0]], []] });
+    const result = await readSqlCatalogCustomerSnapshots({
+      ...scope, actorId: "actor-autocomplete", includeSagDirectory: true, erpAutocomplete: true,
+    }, tx as never);
+    expect(result.erp[0].customers[0].customerId).toBe(publicId);
+    expect(result.sag.state).toBe("unavailable");
+    expect(sqlMocks.input.mock.calls.some(([name, _type, value]) => name === "actorId" && value === "actor-autocomplete")).toBe(true);
+    const statement = sqlMocks.query.mock.calls.at(-1)![0] as string;
+    expect(statement).toContain("security.catalog_source_readers");
+    expect(statement).toContain("role.protected_role=1");
+    expect(statement).toContain("captured.revision_key=r.revision_key");
+    expect(statement).toContain("r.verified_until>@observedNow");
+    expect(statement).toContain("WHERE e.source_role='erp-customers'");
+    expect(statement).not.toMatch(/INSERT @observed(?:Erp|Sag|Identity)\b/);
+    expect(statement).not.toMatch(/p\.(?:server_host|server_port|login_name|password_secret_name)\b/);
+  });
   it("joins matching protected tokens by scope without exposing the original value, token or SAG records", () => {
     const input = mapCatalogCustomerSnapshots(scope, headers, records, coverage);
     const page = buildCatalogCustomerDirectory(input);

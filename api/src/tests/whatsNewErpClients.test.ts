@@ -26,6 +26,8 @@ describe("authenticated ERP selection boundary", () => {
     vi.stubEnv("PORTAL_CATALOG_CLIENTS_READ_ENABLED", "true");
     vi.stubEnv("PORTAL_CATALOG_READ_ENABLED", "false");
     vi.stubEnv("PORTAL_CATALOG_MATCH_KEY_VERSION", "1");
+    vi.stubEnv("PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED", "false");
+    vi.stubEnv("PORTAL_CATALOG_DIRECTORY_V2_ENABLED", "false");
     mock.sources.mockReset().mockResolvedValue(input.allowedSourceIds);
     mock.snapshot.mockReset().mockResolvedValue(input);
     mock.transaction.mockReset().mockImplementation(async (fn) => fn(db));
@@ -57,6 +59,22 @@ describe("authenticated ERP selection boundary", () => {
     await expect(resolveWhatsNewErpClientName(actor(), "a", db)).resolves.toBe("Ágil ERP");
     await expect(resolveWhatsNewErpClientName(actor(), "g", db)).rejects.toMatchObject({ status: 400, code: "cliente_erp_no_disponible" });
     expect(mock.transaction).not.toHaveBeenCalled();
+  });
+
+  it("uses a live ERP-only projection for V2 lookup, but not in the save transaction", async () => {
+    vi.stubEnv("PORTAL_CATALOG_OBSERVED_INVENTORY_ENABLED", "true");
+    vi.stubEnv("PORTAL_CATALOG_DIRECTORY_V2_ENABLED", "true");
+    await expect(lookupWhatsNewErpClients(actor(), "agil")).resolves.toEqual([{ id: "a", label: "Ágil ERP" }]);
+    expect(mock.snapshot).toHaveBeenLastCalledWith(expect.objectContaining({
+      actorId: "actor", includeSagDirectory: true, erpAutocomplete: true,
+    }), db);
+    await expect(resolveWhatsNewErpClientName(actor(), "a", db)).resolves.toBe("Ágil ERP");
+    expect(mock.snapshot).toHaveBeenLastCalledWith(expect.objectContaining({
+      actorId: "actor", includeSagDirectory: true, erpAutocomplete: false,
+    }), db);
+    mock.sources.mockResolvedValue(new Set());
+    await expect(lookupWhatsNewErpClients(actor(), "agil")).resolves.toEqual([]);
+    expect(mock.snapshot).toHaveBeenCalledTimes(2);
   });
 });
 const input: CatalogDirectoryInput = {
@@ -95,5 +113,14 @@ describe("Novedades ERP client selector", () => {
     const [fresh, ...rest] = input.erp;
     expect(selectWhatsNewErpClients({ ...input, erp: [{ ...fresh, customers: [...manyOutside, ...fresh.customers] }, ...rest] }))
       .toHaveLength(2);
+  });
+
+  it("needs no SAG body for V2 selection: positives and unknowns have the same eligibility", () => {
+    const v2 = { ...input, sag: { ...input.sag, completeScopes: [] } };
+    const lean = { ...v2, sag: { ...v2.sag, state: "unavailable" as const, documents: [] } };
+    for (const search of ["agil", "ERP", "fuera", "inactivo", "solo", "a"]) {
+      expect(selectWhatsNewErpClients(lean, { search })).toEqual(selectWhatsNewErpClients(v2, { search }));
+    }
+    expect(selectWhatsNewErpClients(lean, { search: "fuera" })).toEqual([{ id: "c", label: "Fuera" }]);
   });
 });

@@ -20,15 +20,17 @@ export type SavedReport = { id: string; generatedAt: string; generatedBy: { id: 
 type Filters = Record<string, string | number | undefined>;
 const query = (filters: Filters) => new URLSearchParams(Object.entries(filters).filter(([,v]) => v !== undefined && v !== "").map(([k,v]) => [k, String(v)])).toString();
 export function mutationOptions(etag?: string, persistent = false, idempotencyKey?: string) { return { headers: { ...(etag ? { "If-Match": etag } : {}), ...(persistent ? { "Idempotency-Key": idempotencyKey ?? crypto.randomUUID() } : {}) } }; }
+export const richLayoutVersion = (doc: DocEnriquecido | null | undefined) =>
+  doc?.content?.some(node => node.type === "imageWithText") ? { editorLayoutVersion: 1 as const } : {};
 export const whatsNewApi = {
   me: () => api.get<Me>("/whats-new/me"),
   list: (filters: Filters, queue = false) => api.get<Page<EntrySummary>>(`/whats-new/${queue ? "queue" : "entries"}?${query(filters)}`),
   detail: (id: string) => api.get<EntryDto>(`/whats-new/entries/${encodeURIComponent(id)}`),
   deleteEntry: (id: string, etag: string) => api.del<void>(`/whats-new/entries/${encodeURIComponent(id)}`, mutationOptions(etag)),
-  draft: (body: ReturnType<typeof draftFromForm>, entry?: EntryDto, createKey?: string) => entry ? api.put<EntryDto>(`/whats-new/entries/${entry.id}/draft`, body, mutationOptions(entry.etag)) : api.post<EntryDto>("/whats-new/entries", body, mutationOptions(undefined, true, createKey)),
+  draft: (body: ReturnType<typeof draftFromForm>, entry?: EntryDto, createKey?: string) => entry ? api.put<EntryDto>(`/whats-new/entries/${entry.id}/draft`, { ...body, ...richLayoutVersion(entry.whatChanged) }, mutationOptions(entry.etag)) : api.post<EntryDto>("/whats-new/entries", body, mutationOptions(undefined, true, createKey)),
   command: (id: string, action: string, etag: string, body: unknown = {}) => api.post<EntryDto>(`/whats-new/entries/${encodeURIComponent(id)}/${action}`, body, mutationOptions(etag, true)),
   lookup: <T = UserLookup>(kind: string, q = "") => api.get<T[]>(`/whats-new/lookups/${kind}?${query({ q })}`),
-  lookupErpClients: (q: string) => api.get<ErpClientLookup[]>(`/whats-new/lookups/clients?${query({ q })}`),
+  lookupErpClients: (q: string, signal?: AbortSignal) => api.get<ErpClientLookup[]>(`/whats-new/lookups/clients?${query({ q })}`, { signal }),
   preview: (body: ReportInput) => api.post<ReportPreview>("/whats-new/reports/preview", body),
   savedReports: (page: number) => api.get<Page<SavedReport>>(`/whats-new/reports/saved?${query({ page, pageSize: 20 })}`),
   saveReport: (body: ReportInput, key: string) => api.post<{ id: string }>("/whats-new/reports/saved", body, mutationOptions(undefined, true, key)),
@@ -94,6 +96,14 @@ export function safeDisplayDoc(doc: DocEnriquecido | null, publicProfile = false
   if (!doc) return null;
   function clean(node: DocEnriquecido, depth: number): DocEnriquecido | null {
     if (depth > 10 || (publicProfile && ["mencion", "codeBlock"].includes(node.type ?? ""))) return null;
+    if (node.type === "imageWithText") {
+      const children = node.content;
+      if (depth !== 1 || publicProfile || !children || children.length !== 2 ||
+        children[0]?.type !== "image" || children[1]?.type !== "paragraph") return null;
+      const paragraph = clean(children[1], depth + 1);
+      const image = clean(children[0], depth + 1);
+      return paragraph && image ? { type: "imageWithText", content: [image, paragraph] } : paragraph;
+    }
     if (node.type === "image" || node.type === "adjuntoArchivo") {
       const id: unknown = node.attrs?.fileId;
       if (publicProfile || !privateMedia || typeof id !== "string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) return null;

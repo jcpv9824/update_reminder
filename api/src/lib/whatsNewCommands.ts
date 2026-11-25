@@ -142,6 +142,7 @@ export const DraftInSchema = z.object({
   system: z.enum(SYSTEM_CODES).nullable().optional(),
   routes: z.array(RouteInputSchema).max(LIMITS.routes).optional(),
   whatChanged: RichIn.optional(),
+  editorLayoutVersion: z.literal(1).optional(),
   requiredActions: z.array(z.object({ actionCode: z.string().trim().min(2).max(40), detail: RichIn }).strict())
     .max(LIMITS.actions).optional(),
   clientId: z.string().regex(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i).transform((s) => s.toLowerCase()).nullable().optional(),
@@ -153,6 +154,7 @@ export type DraftIn = Omit<z.infer<typeof DraftInSchema>, "clientId"> & { client
 
 export const CorrectInSchema = z.object({
   whatChanged: RichIn,
+  editorLayoutVersion: z.literal(1).optional(),
   requiredActions: z.array(z.object({ actionCode: z.string().trim().min(2).max(40), detail: RichIn }).strict())
     .min(1).max(LIMITS.actions),
   correctionNote: RichIn,
@@ -355,6 +357,7 @@ function assertDeveloperOwner(ctx: CommandContext, state: EntryState): void {
 export function decideSaveDraft(ctx: CommandContext, state: EntryState, input: DraftIn): CommandResult {
   assertDeveloperOwner(ctx, state);
   nextStatus("guardar_borrador", state.status);
+  if (input.whatChanged !== undefined) assertCurrentEditor(state.whatChanged, input.editorLayoutVersion);
   const effects: Effect[] = [];
   const fileIds: string[] = [];
   const patch: EntryPatch = {};
@@ -514,6 +517,7 @@ export function decideCorrect(ctx: CommandContext, state: EntryState, input: Cor
     requireDeveloper(ctx.actor);
   }
   const to = nextStatus("corregir", state.status);
+  assertCurrentEditor(state.whatChanged, input.editorLayoutVersion);
   const whatChanged = validateDocWithFiles(ctx, input.whatChanged, "medio", "que_cambio");
   if (whatChanged.isEmpty) throw new WhatsNewError(422, "validacion_publicacion", "Faltan campos para publicar.", { fields: ["whatChanged"] });
   const note = validateDocWithFiles(ctx, input.correctionNote, "medio", "nota");
@@ -543,6 +547,12 @@ export function decideCorrect(ctx: CommandContext, state: EntryState, input: Cor
       { kind: "audit", action: "whats_new_entry_corrected", metadata: { fromStatus: state.status, toStatus: to, revisionNo, actionCount: actions.length } },
     ],
   };
+}
+
+function assertCurrentEditor(doc: RichDoc | null, version?: number) {
+  if (version !== 1 && doc?.content?.some(node => node.type === "imageWithText")) {
+    throw new WhatsNewError(409, "editor_desactualizado", "Este borrador usa un formato nuevo. Recargue el Portal antes de editarlo.");
+  }
 }
 
 /* --------------------------------------------------------------- asesor */

@@ -4,7 +4,7 @@
  * (nullable caller-narrowed ERP scope JSON). Never use this for operational
  * authorization, physical ownership, user linking, or task execution.
  */
-export const catalogReconciledIdentitySql = `
+export const catalogReconciledIdentityHeadsSql = `
 SET NOCOUNT ON;
 DECLARE @observedNow datetime2(3)=SYSUTCDATETIME(),@observedActor bigint,
   @observedIsSuper bit=0,@observedPartial bit=0,@observedSagReady bit=0;
@@ -77,7 +77,10 @@ IF (SELECT COUNT(*) FROM @observedHeads WHERE source_role='sag-admin')=1
       AND DATALENGTH(b.portal_environment)=DATALENGTH(@environment)
       AND b.source_role='sag-admin' AND b.source_state='active')=1
   SET @observedSagReady=1;
+`;
 
+export const catalogReconciledIdentitySql = `
+${catalogReconciledIdentityHeadsSql}
 DECLARE @observedErp table(source_key bigint NOT NULL,source_record_id int NOT NULL,customer_key bigint NOT NULL,
   issuer char(2) COLLATE Latin1_General_100_BIN2 NULL,document_type varchar(32) COLLATE Latin1_General_100_BIN2 NULL,
   token binary(32) NULL,official_name nvarchar(512) NULL,active_code char(1) NULL,
