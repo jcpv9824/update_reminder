@@ -229,6 +229,33 @@ describe("Qué hay de nuevo · API real", () => {
     expect(screen.getByLabelText("Publicación activa")).toBeEnabled();
     expect(screen.queryByRole("alert")).toBeNull();
   });
+  it("guarda el valor elegido del interruptor en ambos sentidos y relee la versión antes del siguiente cambio", async () => {
+    const manager = { ...author, permissions: ["configuration.whats_new.view", "configuration.whats_new.manage"] };
+    let settings = { publicEnabled: false, etag: '"v1"' };
+    const config = () => ({ settings, actions: [], publicUrl: "/novedades" });
+    get.mockImplementation(async path => path === "/whats-new/me" ? manager : config());
+    const put = vi.mocked(api.put);
+    put.mockImplementation(async (_path, body) => {
+      settings = { publicEnabled: (body as { publicEnabled: boolean }).publicEnabled, etag: settings.etag === '"v1"' ? '"v2"' : '"v3"' };
+      return config();
+    });
+    mount(<LiveConfigPage />);
+    const publication = await screen.findByRole("switch", { name: "Publicación activa" });
+    expect(publication).not.toBeChecked();
+    fireEvent.click(publication);
+    await waitFor(() => expect(put).toHaveBeenNthCalledWith(1, "/whats-new/config/settings", { publicEnabled: true }, { headers: { "If-Match": '"v1"' } }));
+    await waitFor(() => {
+      expect(publication).toBeChecked();
+      expect(publication).toBeEnabled();
+    });
+    fireEvent.click(publication);
+    await waitFor(() => expect(put).toHaveBeenNthCalledWith(2, "/whats-new/config/settings", { publicEnabled: false }, { headers: { "If-Match": '"v2"' } }));
+    await waitFor(() => {
+      expect(publication).not.toBeChecked();
+      expect(publication).toBeEnabled();
+    });
+    expect(put).toHaveBeenCalledTimes(2);
+  });
   it("separa Aprobadas y Fallidas y recupera filtros y página de la URL", async () => {
     get.mockImplementation(async (path) => path === "/whats-new/me" ? { user: { id: "s", displayName: "Asesora SQL", email: "s@test.co" }, areas: ["soporte"], permissions: ["updates.whats_new.view", "updates.whats_new.test"], views: ["asesor"], defaultView: "asesor", storageAvailable: false } : { items: [], total: 0, page: 1, pageSize: 20 });
     mount(<LiveWhatsNewPage />, "/actualizaciones/que-hay-de-nuevo?tab=fallidas&createdMonth=2026-10&page=2&q=pedidos", "/actualizaciones/que-hay-de-nuevo/*");
