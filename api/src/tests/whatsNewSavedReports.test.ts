@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PERMISSIONS } from "../lib/whatsNewModel";
+import { createHash } from "node:crypto";
+import { PERMISSIONS, WhatsNewError } from "../lib/whatsNewModel";
 import type { WhatsNewActor } from "../lib/whatsNewAccess";
 
 const mocks = vi.hoisted(() => ({
@@ -16,6 +17,7 @@ vi.mock("../lib/contentFileSqlWriter", () => ({ ensureSqlContentFile: mocks.file
 vi.mock("../lib/auditSqlWriter", () => ({ writeSqlAuditLog: mocks.audit }));
 
 import { listSavedReports, readSavedReport, savePrivateReport, withdrawSavedReport } from "../lib/whatsNewSavedReports";
+import { requestFingerprint } from "../lib/whatsNewSqlWriteRepository";
 
 const makeActor = (superAdmin = false, manage = false): WhatsNewActor => ({
   id: "actor", email: "actor@example.test", displayName: "Autor",
@@ -25,7 +27,7 @@ const makeActor = (superAdmin = false, manage = false): WhatsNewActor => ({
 const id = "11111111-1111-4111-8111-111111111111";
 const bytes = Buffer.from("<html>QA</html>");
 const locator = { storageProvider: "s3", storageBucket: "private-fixture", storageObjectKey: "synthetic-key" };
-const input = { include: "todas" };
+const input = { include: "todas", filters: { createdMonth: "2026-11" }, previewSha256: createHash("sha256").update(bytes).digest("hex") };
 afterEach(() => vi.resetAllMocks());
 
 describe("Novedades: reportes privados sin correo", () => {
@@ -87,5 +89,41 @@ describe("Novedades: reportes privados sin correo", () => {
     expect(statements).toContain("INSERT whats_new.report_entries");
     expect(statements).not.toMatch(/notifications\.|report_recipients/);
     expect(mocks.audit).toHaveBeenCalledWith("tx", expect.objectContaining({ action: "whats_new_report_saved" }));
+  });
+
+  it("exige una huella, rechaza una vista previa distinta antes de almacenamiento y conserva replay exacto", async () => {
+    await expect(savePrivateReport(makeActor(), { include: "todas" }, "fresh-key"))
+      .rejects.toMatchObject({ name: "ZodError" });
+    expect(mocks.query).not.toHaveBeenCalled();
+
+    mocks.query.mockResolvedValueOnce([]);
+    mocks.snapshot.mockResolvedValueOnce({ html: "<html>otro contenido</html>", entryCount: 1, entries: [] });
+    await expect(savePrivateReport(makeActor(), input, "fresh-key"))
+      .rejects.toMatchObject({ status: 409, code: "version_desactualizada" });
+    expect(mocks.upload).not.toHaveBeenCalled();
+
+    const marker = JSON.stringify({ ...input.filters, requestHash: requestFingerprint("save-private-report", null, input).toString("hex") });
+    mocks.query.mockResolvedValueOnce([{ id, filters: marker, removed: 0 }]);
+    await expect(savePrivateReport(makeActor(), input, "replay-key")).resolves.toEqual({ id, replayed: true });
+    expect(mocks.snapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("detecta una nueva entrada que entró en los filtros durante la carga antes de escribir en SQL", async () => {
+    mocks.snapshot.mockResolvedValueOnce({ html: bytes.toString(), entryCount: 1, entries: [{ id, etag: '"AAAAAAAAAAA="' }] })
+      .mockResolvedValueOnce({ html: "<html>QA y otra entrada</html>", entryCount: 2, entries: [] });
+    mocks.upload.mockResolvedValue(locator);
+    mocks.query.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    await expect(savePrivateReport(makeActor(), input, "changed-population-key"))
+      .rejects.toMatchObject({ status: 409, code: "version_desactualizada" });
+    expect(mocks.snapshot.mock.calls[1]).toEqual([expect.anything(), { include: "todas", filters: input.filters }, "tx"]);
+    expect(mocks.file).not.toHaveBeenCalled();
+    expect(mocks.audit).not.toHaveBeenCalled();
+  });
+  it("pide regenerar si la consulta creció por encima del límite después de la vista previa", async () => {
+    mocks.snapshot.mockRejectedValueOnce(new WhatsNewError(422, "reporte_muy_grande", "Demasiadas entradas."));
+    mocks.query.mockResolvedValueOnce([]);
+    await expect(savePrivateReport(makeActor(), input, "over-limit-key"))
+      .rejects.toMatchObject({ status: 409, code: "version_desactualizada" });
+    expect(mocks.upload).not.toHaveBeenCalled();
   });
 });

@@ -4,13 +4,15 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Editor } from "@tiptap/react";
 import { api } from "../api/client";
-import { LiveWhatsNewPage, LivePublicPage, LiveReportPage, LiveConfigPage, ReportDialog } from "../pages/queHayDeNuevo/LivePages";
+import { LiveWhatsNewPage, LiveReportPage, LiveConfigPage, ReportDialog } from "../pages/queHayDeNuevo/LivePages";
+import LivePublicPage from "../pages/queHayDeNuevo/PublicNewsLive";
 vi.mock("../api/client", () => ({ api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), del: vi.fn(), getText: vi.fn() } }));
 vi.mock("../auth/AuthContext", () => ({ useAuth: () => ({ cargando: false, usuario: { id: "s", roles: ["custom"], displayName: "Asesora" } }) }));
 const get = vi.mocked(api.get);
 function mount(ui: React.ReactElement, path = "/", pattern = "*") { return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><MemoryRouter initialEntries={[path]}><Routes><Route path={pattern} element={ui} /></Routes></MemoryRouter></QueryClientProvider>); }
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.resetAllMocks(); });
 const author = { user: { id: "s", displayName: "Desarrollo", email: "s@test.co" }, areas: ["desarrollo"], permissions: ["updates.whats_new.view", "updates.whats_new.author"], views: ["desarrollador"], defaultView: "desarrollador", clientCatalogAvailable: true };
+const advisor = { ...author, areas: ["soporte"], permissions: ["updates.whats_new.view", "updates.whats_new.test"], views: ["asesor"], defaultView: "asesor" };
 const newEntryPath = "/actualizaciones/que-hay-de-nuevo/nueva";
 const draftPath = "/actualizaciones/que-hay-de-nuevo/slow-draft/editar";
 const draftDetail = {
@@ -20,8 +22,11 @@ const draftDetail = {
   requiredActions: [], attachments: [], etag: '"v1"',
 };
 const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+const testRound = { id: "round-test", roundNo: 1, revisionNo: 1, holderId: "s", holderName: "Asesora QA", status: "tomada", etag: '"round1"', checklist: [{ itemNo: 2, label: "Prueba funcional", checked: false }], notes: [], noteDraft: null };
+const advisorEntry = { ...draftDetail, id: "test-entry", number: "QHN-TEST", status: "en_pruebas", developer: { id: "dev", displayName: "Autora" },
+  initialAssigneeName: "Asesora inicial", lastTesterName: "Asesora histórica", rounds: [testRound], findings: [], participants: [], log: [], revisions: [], createdAt: "2026-10-24T15:00:00Z", clientText: null };
 describe("Qué hay de nuevo · API real", () => {
-  it("mantiene editor, foco y controles durante seis segundos de autoguardado y luego guarda los cambios con el ETag nuevo", async () => {
+  it("solo guarda al pulsar Guardar borrador y conserva foco y cambios escritos durante una respuesta lenta", async () => {
     get.mockImplementation(async path => path === "/whats-new/me" ? author : path === "/whats-new/entries/slow-draft" ? draftDetail : []);
     const put = vi.mocked(api.put);
     put.mockImplementationOnce(() => new Promise(resolve => setTimeout(() => resolve({ ...draftDetail, etag: '"v2"' }), 6_000)));
@@ -34,9 +39,9 @@ describe("Qué hay de nuevo · API real", () => {
     fireEvent.change(option, { target: { value: "Consultar p" } });
     await tick(1_000);
     fireEvent.change(option, { target: { value: "Consultar pedidos" } });
-    await tick(2_999);
+    await tick(20_000);
     expect(put).not.toHaveBeenCalled();
-    await tick(1);
+    fireEvent.click(screen.getByRole("button", { name: "Guardar borrador" }));
     expect(put).toHaveBeenCalledTimes(1);
     expect(option).toBeEnabled();
     expect(option).toHaveFocus();
@@ -53,7 +58,9 @@ describe("Qué hay de nuevo · API real", () => {
     await tick(1);
     expect(screen.getByRole("textbox", { name: /Qué cambió/ })).toBe(editor);
     expect(editor).toHaveFocus();
-    await tick(3_000);
+    await tick(20_000);
+    expect(put).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Guardar borrador" }));
     expect(put).toHaveBeenCalledTimes(2);
     expect(put).toHaveBeenNthCalledWith(1, "/whats-new/entries/slow-draft/draft", expect.objectContaining({
       routes: [expect.objectContaining({ option: "Consultar pedidos" })],
@@ -69,7 +76,7 @@ describe("Qué hay de nuevo · API real", () => {
     }
   });
 
-  it("no guarda al perder foco y un conflicto detiene el autoguardado sin borrar las ediciones locales", async () => {
+  it("no guarda al perder foco y conserva el borrador si hay conflicto o se cancela la salida", async () => {
     get.mockImplementation(async path => path === "/whats-new/me" ? author : path === "/whats-new/entries/slow-draft" ? draftDetail : []);
     const put = vi.mocked(api.put).mockRejectedValue(Object.assign(new Error("Version conflict"), { status: 409, data: { code: "version_desactualizada" } }));
     mount(<LiveWhatsNewPage />, draftPath, "/actualizaciones/que-hay-de-nuevo/*");
@@ -79,7 +86,10 @@ describe("Qué hay de nuevo · API real", () => {
     fireEvent.blur(option, { relatedTarget: screen.getByRole("link", { name: /Volver a mis entradas/ }) });
     await tick(1_000);
     expect(put).not.toHaveBeenCalled();
-    await tick(2_000);
+    await tick(20_000);
+    expect(put).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Guardar borrador" }));
+    await tick(1);
     expect(put).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("alert")).toHaveTextContent(/otra persona modificó/i);
     expect(option).toHaveValue("Edición local");
@@ -88,6 +98,11 @@ describe("Qué hay de nuevo · API real", () => {
     await tick(60_000);
     expect(put).toHaveBeenCalledTimes(1);
     expect(option).toHaveValue("Edición local sin perder");
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.click(screen.getByRole("link", { name: /Volver a mis entradas/ }));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(option).toHaveValue("Edición local sin perder");
+    confirm.mockRestore();
   });
   it("busca solo en ERP y guarda el identificador seleccionado, nunca el texto de búsqueda ni el nombre", async () => {
     get.mockImplementation(async path => path === "/whats-new/me" ? author : path === "/whats-new/lookups/clients?q=alp" ? [{ id: "erp-id-1", label: "Alpina ERP" }] : []);
@@ -214,16 +229,118 @@ describe("Qué hay de nuevo · API real", () => {
     expect(screen.getByLabelText("Publicación activa")).toBeEnabled();
     expect(screen.queryByRole("alert")).toBeNull();
   });
-  it("carga actor vigente sin selector simulado y muestra tres pestañas de pruebas", async () => {
+  it("separa Aprobadas y Fallidas y recupera filtros y página de la URL", async () => {
     get.mockImplementation(async (path) => path === "/whats-new/me" ? { user: { id: "s", displayName: "Asesora SQL", email: "s@test.co" }, areas: ["soporte"], permissions: ["updates.whats_new.view", "updates.whats_new.test"], views: ["asesor"], defaultView: "asesor", storageAvailable: false } : { items: [], total: 0, page: 1, pageSize: 20 });
-    mount(<LiveWhatsNewPage />);
-    expect(await screen.findByRole("tab", { name: "Sin probar" })).toHaveAttribute("aria-selected", "true");
+    mount(<LiveWhatsNewPage />, "/actualizaciones/que-hay-de-nuevo?tab=fallidas&createdMonth=2026-10&page=2&q=pedidos", "/actualizaciones/que-hay-de-nuevo/*");
+    expect(await screen.findByRole("tab", { name: "Fallidas" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "En pruebas" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "Probadas" }));
-    expect(await screen.findByLabelText("Resultado")).toBeInTheDocument();
+    expect(screen.getByLabelText("Mes de creación")).toHaveValue("2026-10");
+    expect(screen.getByLabelText("Buscar")).toHaveValue("pedidos");
+    await waitFor(() => expect(get.mock.calls.some(([p]) => p.includes("result=fallidas") && p.includes("createdMonth=2026-10") && p.includes("page=2"))).toBe(true));
+    fireEvent.click(screen.getByRole("tab", { name: "Aprobadas" }));
+    expect(screen.queryByLabelText("Resultado")).toBeNull();
     expect(screen.queryByLabelText("Usuario simulado")).toBeNull();
     expect(screen.getByLabelText("Buscar")).toHaveAttribute("maxlength", "100");
-    await waitFor(() => expect(get.mock.calls.some(([p]) => p.includes("/queue?") && p.includes("tab=probadas"))).toBe(true));
+    await waitFor(() => expect(get.mock.calls.some(([p]) => p.includes("/queue?") && p.includes("tab=probadas") && p.includes("result=sin_errores") && p.includes("page=1"))).toBe(true));
+  });
+  it("pide el mes anterior por creación y distingue la asignación inicial de la prueba activa sin perder la lista al abrir el detalle", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-01T04:59:59.999Z"));
+    get.mockImplementation(async path => path === "/whats-new/me" ? advisor : path === "/whats-new/entries/test-entry" ? advisorEntry
+      : { items: [{ ...advisorEntry, holder: { id: "s", displayName: "Asesora QA" } }], total: 1, page: 1, pageSize: 20 });
+    mount(<LiveWhatsNewPage />, "/actualizaciones/que-hay-de-nuevo", "/actualizaciones/que-hay-de-nuevo/*");
+    expect(await screen.findByLabelText("Mes de creación")).toHaveValue("2025-11");
+    fireEvent.click(screen.getByLabelText("Asignadas a mí inicialmente"));
+    fireEvent.click(screen.getByRole("tab", { name: "En pruebas" }));
+    fireEvent.click(screen.getByLabelText("Probando yo"));
+    const selected = await screen.findByRole("link", { name: "Ver detalle de QHN-TEST" });
+    await waitFor(() => expect(get.mock.calls.some(([p]) => p.includes("createdMonth=2025-11") && p.includes("testingByMe=true"))).toBe(true));
+    expect(get.mock.calls.some(([p]) => p.includes("assignedToMe=true"))).toBe(true);
+    fireEvent.click(selected);
+    expect(await screen.findByRole("heading", { name: "QHN-TEST" })).toBeVisible();
+    expect(screen.getByLabelText("Mes de creación")).toHaveValue("2025-11");
+    expect(screen.getByLabelText("Probando yo")).toBeChecked();
+    expect(screen.getAllByText("Asesora inicial").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Prueba funcional" }));
+    const cancel = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.click(screen.getByRole("tab", { name: "Aprobadas" }));
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("tab", { name: "En pruebas" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("checkbox", { name: "Prueba funcional" })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Actualizar bandeja" }));
+    await waitFor(() => expect(get.mock.calls.filter(([p]) => p.includes("testingByMe=true"))).toHaveLength(2));
+    expect(screen.getByRole("checkbox", { name: "Prueba funcional" })).toBeChecked();
+    cancel.mockRestore();
+  });
+  it("mantiene checklist y avance locales y solo guarda juntos con el ETag de ronda", async () => {
+    const body = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Avance local" }] }] };
+    let entry: unknown = advisorEntry;
+    get.mockImplementation(async path => path === "/whats-new/me" ? advisor : entry);
+    const patch = vi.mocked(api.patch).mockImplementation(async () => {
+      entry = { ...advisorEntry, rounds: [{ ...testRound, etag: '"round2"', checklist: [{ ...testRound.checklist[0], checked: true }], noteDraft: body }] };
+      return entry;
+    });
+    mount(<LiveWhatsNewPage />, "/actualizaciones/que-hay-de-nuevo/test-entry", "/actualizaciones/que-hay-de-nuevo/*");
+    const check = await screen.findByRole("checkbox", { name: "Prueba funcional" });
+    const editor = screen.getByRole("textbox", { name: "Borrador de avance" }) as HTMLElement & { editor: Editor };
+    fireEvent.click(check);
+    act(() => { editor.focus(); editor.editor.commands.insertContent("Avance local"); });
+    vi.useFakeTimers();
+    await tick(20_000);
+    expect(patch).not.toHaveBeenCalled();
+    expect(api.put).not.toHaveBeenCalled();
+    expect(check).toBeChecked();
+    expect(screen.getByRole("button", { name: "Aprobar" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Guardar avance" }));
+    await tick(1);
+    expect(patch).toHaveBeenCalledExactlyOnceWith("/whats-new/rounds/round-test/round-progress", { items: [{ itemNo: 2, checked: true }], body }, { headers: { "If-Match": '"round1"' } });
+    expect(screen.getByRole("textbox", { name: "Borrador de avance" })).toBe(editor);
+    expect(editor).toHaveFocus();
+    expect(screen.getByText("Avance guardado.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Aprobar" })).toBeEnabled();
+  });
+  it("no preselecciona publicar y permite aprobar en privado sin permiso de publicación", async () => {
+    let entry = { ...advisorEntry, rounds: [{ ...testRound, checklist: [{ ...testRound.checklist[0], checked: true }] }] };
+    get.mockImplementation(async path => path === "/whats-new/me" ? advisor : entry);
+    vi.mocked(api.post).mockImplementation(async () => { entry = { ...entry, status: "probado" }; return entry; });
+    mount(<LiveWhatsNewPage />, "/actualizaciones/que-hay-de-nuevo/test-entry", "/actualizaciones/que-hay-de-nuevo/*");
+    fireEvent.click(await screen.findByRole("button", { name: "Aprobar" }));
+    let dialog = within(screen.getByRole("dialog", { name: "Aprobar entrada" }));
+    expect(dialog.getByRole("radio", { name: "Sí, mostrar a clientes" })).toBeDisabled();
+    expect(dialog.getByRole("radio", { name: "No, mantener privada" })).not.toBeChecked();
+    expect(dialog.getByRole("button", { name: "Confirmar aprobación" })).toBeDisabled();
+    fireEvent.click(dialog.getByRole("button", { name: "Cancelar" }));
+    expect(api.post).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Título para clientes")).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Aprobar" }));
+    dialog = within(screen.getByRole("dialog", { name: "Aprobar entrada" }));
+    fireEvent.click(dialog.getByRole("radio", { name: "No, mantener privada" }));
+    fireEvent.click(dialog.getByRole("button", { name: "Confirmar aprobación" }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledExactlyOnceWith("/whats-new/entries/test-entry/mark-tested", { publishToClients: false }, { headers: { "If-Match": '"v1"', "Idempotency-Key": expect.any(String) } }));
+  });
+  it("un asesor autorizado puede aprobar con texto público guardado y luego ocultar mediante la versión de entrada", async () => {
+    const privileged = { ...advisor, publicEnabled: false, permissions: [...advisor.permissions, "updates.whats_new.publish_client"] };
+    const body = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Explicación publicada" }] }] };
+    let entry = { ...advisorEntry, rounds: [{ ...testRound, checklist: [{ ...testRound.checklist[0], checked: true }] }],
+      clientText: { title: "Título público", body, etag: '"text-version"', showToClients: false } };
+    get.mockImplementation(async path => path === "/whats-new/me" ? privileged : entry);
+    const post = vi.mocked(api.post).mockImplementation(async path => {
+      if (path.endsWith("mark-tested")) entry = { ...entry, status: "probado", etag: '"v2"', rounds: [], clientText: { ...entry.clientText, showToClients: true } };
+      if (path.endsWith("set-client-visibility")) entry = { ...entry, etag: '"v3"', clientText: { ...entry.clientText, showToClients: false } };
+      return entry;
+    });
+    mount(<LiveWhatsNewPage />, "/actualizaciones/que-hay-de-nuevo/test-entry", "/actualizaciones/que-hay-de-nuevo/*");
+    fireEvent.click(await screen.findByRole("button", { name: "Aprobar" }));
+    const dialog = within(screen.getByRole("dialog", { name: "Aprobar entrada" }));
+    fireEvent.click(dialog.getByRole("radio", { name: "Sí, mostrar a clientes" }));
+    expect(dialog.getByText(/publicación general está desactivada/i)).toBeVisible();
+    fireEvent.click(dialog.getByRole("button", { name: "Confirmar aprobación" }));
+    expect(await screen.findByText("Preparada · publicación general desactivada")).toBeVisible();
+    fireEvent.click(await screen.findByRole("button", { name: "Ocultar a clientes" }));
+    await waitFor(() => expect(post).toHaveBeenNthCalledWith(2, "/whats-new/entries/test-entry/set-client-visibility", { showToClients: false }, { headers: { "If-Match": '"v2"', "Idempotency-Key": expect.any(String) } }));
+    expect(post.mock.calls[0][1]).toEqual({ publishToClients: true });
+    expect(await screen.findByText("Privada")).toBeVisible();
+    expect(api.put).not.toHaveBeenCalled();
   });
   it("página pública consulta DTO público paginado, sin /me ni entradas privadas", async () => {
     get.mockResolvedValue({ enabled: true, items: [{ publicId: "p", category: "nuevo", releaseMonth: "2026-11", title: "Nueva opción", summary: "Resumen seguro", whereToFind: "Ventas › Pedidos" }], total: 22, page: 1, pageSize: 20 });
@@ -244,17 +361,33 @@ describe("Qué hay de nuevo · API real", () => {
   it("guarda un reporte privado con confirmación real sin pedir destinatarios ni llamar al envío", async () => {
     const onSaved = vi.fn();
     const post = vi.mocked(api.post);
-    post.mockResolvedValueOnce({ html: "<p>Vista previa</p>", entryCount: 1, approvedCount: 1, failedCount: 0 });
+    const hash = "a".repeat(64);
+    post.mockResolvedValueOnce({ html: "<p>Vista previa</p>", entryCount: 1, approvedCount: 1, failedCount: 0, snapshotSha256: hash });
     post.mockResolvedValueOnce({ id: "saved-r" });
     mount(<ReportDialog filters={{}} onClose={() => {}} onSaved={onSaved} />);
     expect(screen.queryByLabelText("Buscar destinatarios")).toBeNull();
+    expect(screen.getByRole("button", { name: "Guardar reporte privado" })).toBeDisabled();
     fireEvent.click(await screen.findByRole("button", { name: "Ver vista previa" }));
     expect(await screen.findByTitle("Vista previa del reporte")).toHaveAttribute("sandbox", "");
     fireEvent.click(screen.getByRole("button", { name: "Guardar reporte privado" }));
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith("saved-r"));
-    expect(post).toHaveBeenCalledWith("/whats-new/reports/saved", { include: "todas", filters: {} }, expect.objectContaining({ headers: expect.objectContaining({ "Idempotency-Key": expect.any(String) }) }));
+    expect(post).toHaveBeenCalledWith("/whats-new/reports/saved", { include: "todas", filters: {}, previewSha256: hash }, expect.objectContaining({ headers: expect.objectContaining({ "Idempotency-Key": expect.any(String) }) }));
     expect(post.mock.calls.some(([path]) => path === "/whats-new/reports")).toBe(false);
     expect(get).not.toHaveBeenCalled();
+  });
+  it("cuando cambia el reporte, mantiene filtros y exige generar otra vista previa", async () => {
+    const post = vi.mocked(api.post);
+    post.mockResolvedValueOnce({ html: "<p>Vista previa anterior</p>", entryCount: 2, approvedCount: 0, failedCount: 2, snapshotSha256: "b".repeat(64) });
+    post.mockRejectedValueOnce(Object.assign(new Error("Conflict"), { status: 409, data: { code: "report_preview_stale" } }));
+    mount(<ReportDialog filters={{ createdMonth: "2026-10", q: "pedidos" }} result="fallidas" onClose={() => {}} onSaved={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Ver vista previa" }));
+    await screen.findByTitle("Vista previa del reporte");
+    fireEvent.click(screen.getByRole("button", { name: "Guardar reporte privado" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/genera una nueva vista previa/i);
+    expect(screen.queryByTitle("Vista previa del reporte")).toBeNull();
+    expect(screen.getByRole("button", { name: "Guardar reporte privado" })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "Solo fallidas" })).toBeChecked();
+    expect(post.mock.calls[1][1]).toEqual({ include: "fallidas", filters: { createdMonth: "2026-10", q: "pedidos" }, previewSha256: "b".repeat(64) });
   });
   it("permite eliminar una entrada desde un borrador guardado solo tras confirmación y conserva su ETag", async () => {
     get.mockImplementation(async path => path === "/whats-new/me" ? author : path === "/whats-new/entries/slow-draft" ? { ...draftDetail, canDelete: true } : path.startsWith("/whats-new/entries?") ? { items: [], total: 0, page: 1, pageSize: 20 } : []);
@@ -297,7 +430,7 @@ describe("Qué hay de nuevo · API real", () => {
     get.mockImplementation(async path => path === "/whats-new/me" ? support : { items: [], total: 0, page: 1, pageSize: 20 });
     mount(<LiveWhatsNewPage />, "/actualizaciones/que-hay-de-nuevo", "/actualizaciones/que-hay-de-nuevo/*");
     expect(await screen.findByRole("link", { name: "Reportes guardados" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "Probadas" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Aprobadas" }));
     fireEvent.click(screen.getByRole("button", { name: "Preparar reporte privado" }));
     expect(screen.getByRole("button", { name: "Guardar reporte privado" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Enviar/ })).toBeNull();

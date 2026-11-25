@@ -111,10 +111,12 @@ export type Effect =
   | { kind: "round.open"; roundId: string; roundNo: number; revisionNo: number; holderId: string; checklist: string[] }
   | { kind: "round.close"; roundNo: number; status: "soltada" | "fallida" | "probada"; forcedReason: string | null }
   | { kind: "checklist.set"; roundNo: number; items: Array<{ itemNo: number; checked: boolean }> }
+  | { kind: "round.noteDraft"; roundNo: number; body: RichDoc | null }
   | { kind: "note.insert"; id: string; roundNo: number; body: RichDoc; text: string }
   | { kind: "finding.insert"; id: string; roundNo: number; findingNo: number; body: RichDoc; text: string }
   | { kind: "finding.annul"; findingId: string; reason: string }
   | { kind: "clientText.upsert"; show: boolean; title: string | null; body: RichDoc | null; text: string | null }
+  | { kind: "clientText.visibility"; show: boolean }
   | { kind: "log.insert"; action: LogAction; from: EntryStatus | null; to: EntryStatus | null; roundNo: number | null;
       reason: string | null; detail: Record<string, string | number | boolean> | null }
   | { kind: "audit"; action: string; metadata: Record<string, unknown> };
@@ -163,14 +165,18 @@ export type CorrectIn = z.infer<typeof CorrectInSchema>;
 
 export const ReasonInSchema = z.object({ reason: Reason }).strict();
 export const RichBodyInSchema = z.object({ body: RichIn }).strict();
-export const ChecklistInSchema = z.object({
-  items: z.array(z.object({ itemNo: z.number().int().min(1).max(LIMITS.actions), checked: z.boolean() }).strict())
-    .min(1).max(LIMITS.actions),
+const checklistItems = z.array(z.object({ itemNo: z.number().int().min(1).max(LIMITS.actions), checked: z.boolean() }).strict())
+  .max(LIMITS.actions);
+export const ChecklistInSchema = z.object({ items: checklistItems.min(1) }).strict();
+export const RoundProgressInSchema = z.object({
+  items: checklistItems.refine(items => new Set(items.map(i => i.itemNo)).size === items.length),
+  body: z.unknown().refine(value => value !== undefined),
 }).strict();
+export const MarkTestedInSchema = z.object({ publishToClients: z.boolean() }).strict();
+export const ClientVisibilityInSchema = z.object({ showToClients: z.boolean() }).strict();
 export const ClientTextInSchema = z.object({
-  showToClients: z.boolean(),
   title: z.string().trim().max(LIMITS.clientTitle).nullable(),
-  body: RichIn.nullable(),
+  body: z.unknown().refine(value => value !== undefined),
 }).strict();
 export type ClientTextIn = z.infer<typeof ClientTextInSchema>;
 
@@ -643,6 +649,13 @@ export function decideChecklist(ctx: CommandContext, state: EntryState, items: A
   return { status: state.status, result: { done, total: merged.length }, effects };
 }
 
+export function decideRoundProgress(ctx: CommandContext, state: EntryState, input: z.infer<typeof RoundProgressInSchema>): CommandResult {
+  const round = requireHolder(ctx, state);
+  const body = input.body === null ? null : validateDocWithFiles(ctx, input.body, "medio", "nota");
+  const progress = decideChecklist(ctx, state, input.items);
+  return { ...progress, effects: [...progress.effects, { kind: "round.noteDraft", roundNo: round.roundNo, body: body?.doc ?? null }] };
+}
+
 export function decideNote(ctx: CommandContext, state: EntryState, body: unknown, kind: "nota" | "hallazgo"): CommandResult {
   const round = requireHolder(ctx, state);
   nextStatus(kind === "nota" ? "registrar_nota" : "registrar_hallazgo", state.status);
@@ -695,7 +708,7 @@ export function decideAnnulFinding(ctx: CommandContext, state: EntryState, findi
   };
 }
 
-export function decideMarkTested(ctx: CommandContext, state: EntryState): CommandResult {
+export function decideMarkTested(ctx: CommandContext, state: EntryState, publishToClients: boolean): CommandResult {
   const round = requireHolder(ctx, state);
   const to = nextStatus("marcar_probado", state.status);
   const done = round.checklist.filter((item) => item.checked).length;
@@ -703,16 +716,21 @@ export function decideMarkTested(ctx: CommandContext, state: EntryState): Comman
   if (total === 0 || done < total) {
     throw new WhatsNewError(409, "checklist_incompleto", "Complete el checklist antes de marcar probado.", { done, total });
   }
+  if (publishToClients) {
+    requirePermission(ctx.actor, access.publishClient);
+    assertPublicClientText(ctx, state, state.clientText?.title, state.clientText?.body);
+  }
   // La fecha de liberación que ve el cliente es el mes en que se aprobó, en Bogotá.
   const releaseMonth = bogotaMonth(ctx.now);
   return {
     status: to,
-    result: { roundNo: round.roundNo, releaseMonth },
+    result: { roundNo: round.roundNo, releaseMonth, publishToClients },
     effects: [
       { kind: "entry.patch", patch: { status: to, resultAt: ctx.now, approvedAt: ctx.now, releaseMonth } },
       { kind: "round.close", roundNo: round.roundNo, status: "probada", forcedReason: null },
+      { kind: "clientText.visibility", show: publishToClients },
       log(state, "marcar_probado", to, { roundNo: round.roundNo }),
-      { kind: "audit", action: "whats_new_round_marked_tested", metadata: { roundNo: round.roundNo, checklistDone: done, checklistTotal: total, toStatus: to } },
+      { kind: "audit", action: "whats_new_round_marked_tested", metadata: { roundNo: round.roundNo, checklistDone: done, checklistTotal: total, toStatus: to, publishToClients } },
     ],
   };
 }
@@ -756,13 +774,34 @@ export function decideArchive(ctx: CommandContext, state: EntryState, reason: st
  * quien tiene la ronda; en `probado`, `publish_client` + Soporte. SP crítico
  * nunca se muestra. Mostrar a clientes es mostrar a todos (decisión 5).
  */
+function assertPublicClientText(ctx: CommandContext, state: EntryState, title?: string | null, body?: RichDoc | null) {
+  if (state.type === "sp_critico") {
+    throw new WhatsNewError(409, "visibilidad_bloqueada", "Esta entrada no se puede mostrar a clientes: es un SP crítico.");
+  }
+  const hasBody = body && !validateDocWithFiles(ctx, body, "cliente", "cliente").isEmpty;
+  if (!title?.trim() || !hasBody) {
+    const fields = [...(!title?.trim() ? ["clientText.title"] : []), ...(!hasBody ? ["clientText.body"] : [])];
+    throw new WhatsNewError(422, "validacion_publicacion", "Faltan campos para publicar.", { fields });
+  }
+}
+
+export function decideSetClientVisibility(ctx: CommandContext, state: EntryState, showToClients: boolean): CommandResult {
+  requirePermission(ctx.actor, access.publishClient);
+  if (state.status !== "probado") throw new WhatsNewError(409, "estado_no_permite_accion", "Solo una entrada probada admite cambiar la visibilidad.");
+  if (showToClients) assertPublicClientText(ctx, state, state.clientText?.title, state.clientText?.body);
+  if ((state.clientText?.show ?? false) === showToClients) return { status: state.status, result: { visibilityChanged: false }, effects: [] };
+  return { status: state.status, result: { visibilityChanged: true }, effects: [
+    { kind: "entry.patch", patch: {} },
+    { kind: "clientText.visibility", show: showToClients },
+    log(state, "texto_clientes", null, { detail: { showToClients } }),
+    { kind: "audit", action: "whats_new_client_visibility_updated", metadata: { showToClients } },
+  ] };
+}
+
 export function decideClientText(ctx: CommandContext, state: EntryState, input: ClientTextIn): CommandResult {
   nextStatus("texto_clientes", state.status);
   if (state.status === "en_pruebas") requireHolder(ctx, state);
   else requirePermission(ctx.actor, access.publishClient);
-  if (input.showToClients && state.type === "sp_critico") {
-    throw new WhatsNewError(409, "visibilidad_bloqueada", "Esta entrada no se puede mostrar a clientes: es un SP crítico.");
-  }
   let body: RichDoc | null = null;
   let text: string | null = null;
   if (input.body !== null) {
@@ -772,22 +811,19 @@ export function decideClientText(ctx: CommandContext, state: EntryState, input: 
       text = result.plainText;
     }
   }
-  const title = input.title ? input.title : null;
-  if (input.showToClients && (!title || !body)) {
-    const fields = [...(!title ? ["clientText.title"] : []), ...(!body ? ["clientText.body"] : [])];
-    throw new WhatsNewError(422, "validacion_publicacion", "Faltan campos para publicar.", { fields });
-  }
-  const visibilityChanged = (state.clientText?.show ?? false) !== input.showToClients;
+  const title = input.title || null;
+  const show = state.clientText?.show ?? false;
+  if (show) assertPublicClientText(ctx, state, title, body);
   const effects: Effect[] = [
     { kind: "entry.patch", patch: {} },
-    { kind: "clientText.upsert", show: input.showToClients, title, body, text },
+    { kind: "clientText.upsert", show, title, body, text },
   ];
-  if (visibilityChanged || shouldLog(state, "texto_clientes", ctx)) {
-    effects.push(log(state, "texto_clientes", null, { detail: { showToClients: input.showToClients } }));
+  if (shouldLog(state, "texto_clientes", ctx)) {
+    effects.push(log(state, "texto_clientes", null, { detail: { showToClients: show } }));
   }
   effects.push({
     kind: "audit", action: "whats_new_client_text_updated",
-    metadata: { showToClients: input.showToClients, titleLength: title?.length ?? 0, bodyLength: text?.length ?? 0, visibilityChanged },
+    metadata: { showToClients: show, titleLength: title?.length ?? 0, bodyLength: text?.length ?? 0, visibilityChanged: false },
   });
-  return { status: state.status, result: { visibilityChanged }, effects };
+  return { status: state.status, result: { visibilityChanged: false }, effects };
 }

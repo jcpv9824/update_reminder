@@ -8,14 +8,16 @@ export type AttachmentDto = { group: "reglas_negocio" | "video"; kind: "enlace";
 export type RoundDto = { id: string; roundNo: number; revisionNo: number; holderId: string; holderName: string; status: string; etag: string; takenAt: string | null; closedAt: string | null; checklist: { itemNo: number; label: string; checked: boolean }[]; notes: { id: string; body: DocEnriquecido; createdAt: string; createdById: string }[]; noteDraft: DocEnriquecido | null };
 export type EntryDto = { id: string; number: string; status: EstadoEntrada | "eliminada"; canDelete?: boolean; type: TipoEntrada | null; system: Sistema | null; developer: { id: string; displayName: string }; clientName: string | null; initialTesterId: string | null; whatChanged: DocEnriquecido | null; summary: string | null; primaryRoute: string | null; routes: RouteDto[]; requiredActions: ActionDto[]; attachments: AttachmentDto[]; rounds: RoundDto[]; findings: { id: string; number: number; roundNo: number; body: DocEnriquecido; createdById: string; annulled: { reason: string; at: string } | null }[]; participants: { id: string; displayName: string; role: string }[]; log: { action: string; byId: string; at: string; reason: string | null }[]; revisions: { revisionNo: number; kind: string; correctionNote: DocEnriquecido | null; publishedAt: string }[]; clientText: { showToClients: boolean; title: string | null; body: DocEnriquecido | null; etag: string } | null; etag: string; createdAt: string; updatedAt: string; releaseMonth: string | null };
 export type Page<T> = { items: T[]; total: number; page: number; pageSize: number };
-export type EntrySummary = Pick<EntryDto, "id" | "number" | "type" | "system" | "developer" | "summary" | "primaryRoute" | "initialTesterId" | "etag" | "createdAt" | "updatedAt" | "releaseMonth"> & { status: EstadoEntrada; holder: { id: string; displayName: string } | null; checklistDone: number; checklistTotal: number; openFindings: number; resultAt: string | null };
+export type Advisors = { initialAssigneeName?: string | null; lastTesterName?: string | null };
+export type EntrySummary = Pick<EntryDto, "id" | "number" | "type" | "system" | "developer" | "summary" | "primaryRoute" | "initialTesterId" | "etag" | "createdAt" | "updatedAt" | "releaseMonth"> & Advisors & { status: EstadoEntrada; holder: { id: string; displayName: string } | null; checklistDone: number; checklistTotal: number; openFindings: number; resultAt: string | null; showToClients?: boolean };
 export type PublicItem = { publicId: string; category: string; releaseMonth: string; title: string; summary: string; whereToFind: string };
 export type PublicDetail = PublicItem & { body: DocEnriquecido };
 export type UserLookup = { id: string; displayName: string; email?: string; active?: boolean };
 export type ErpClientLookup = { id: string; label: string };
 export type ConfigDto = { settings: { publicEnabled: boolean; etag: string }; actions: { id: string; code: string; label: string; active: boolean; sortOrder: number; isOther: boolean; etag: string }[]; publicUrl: string };
-export type ReportPreview = { html: string; entryCount: number; approvedCount: number; failedCount: number };
+export type ReportPreview = { html: string; entryCount: number; approvedCount: number; failedCount: number; snapshotSha256: string };
 export type ReportInput = { include: "todas" | "aprobadas" | "fallidas"; filters?: Record<string, string> };
+export type RoundProgress = { items: { itemNo: number; checked: boolean }[]; body: DocEnriquecido | null };
 export type SavedReport = { id: string; generatedAt: string; generatedBy: { id: string; displayName: string }; entryCount: number; approvedCount: number; failedCount: number; canDelete: boolean };
 type Filters = Record<string, string | number | undefined>;
 const query = (filters: Filters) => new URLSearchParams(Object.entries(filters).filter(([,v]) => v !== undefined && v !== "").map(([k,v]) => [k, String(v)])).toString();
@@ -25,15 +27,16 @@ export const richLayoutVersion = (doc: DocEnriquecido | null | undefined) =>
 export const whatsNewApi = {
   me: () => api.get<Me>("/whats-new/me"),
   list: (filters: Filters, queue = false) => api.get<Page<EntrySummary>>(`/whats-new/${queue ? "queue" : "entries"}?${query(filters)}`),
-  detail: (id: string) => api.get<EntryDto>(`/whats-new/entries/${encodeURIComponent(id)}`),
+  detail: (id: string) => api.get<EntryDto & Advisors>(`/whats-new/entries/${encodeURIComponent(id)}`),
   deleteEntry: (id: string, etag: string) => api.del<void>(`/whats-new/entries/${encodeURIComponent(id)}`, mutationOptions(etag)),
   draft: (body: ReturnType<typeof draftFromForm>, entry?: EntryDto, createKey?: string) => entry ? api.put<EntryDto>(`/whats-new/entries/${entry.id}/draft`, { ...body, ...richLayoutVersion(entry.whatChanged) }, mutationOptions(entry.etag)) : api.post<EntryDto>("/whats-new/entries", body, mutationOptions(undefined, true, createKey)),
-  command: (id: string, action: string, etag: string, body: unknown = {}) => api.post<EntryDto>(`/whats-new/entries/${encodeURIComponent(id)}/${action}`, body, mutationOptions(etag, true)),
+  command: (id: string, action: string, etag: string, body: unknown = {}, key?: string) => api.post<EntryDto & Advisors>(`/whats-new/entries/${encodeURIComponent(id)}/${action}`, body, mutationOptions(etag, true, key)),
+  progress: (roundId: string, etag: string, body: RoundProgress) => api.patch<EntryDto & Advisors>(`/whats-new/rounds/${encodeURIComponent(roundId)}/round-progress`, body, mutationOptions(etag)),
   lookup: <T = UserLookup>(kind: string, q = "") => api.get<T[]>(`/whats-new/lookups/${kind}?${query({ q })}`),
   lookupErpClients: (q: string, signal?: AbortSignal) => api.get<ErpClientLookup[]>(`/whats-new/lookups/clients?${query({ q })}`, { signal }),
   preview: (body: ReportInput) => api.post<ReportPreview>("/whats-new/reports/preview", body),
   savedReports: (page: number) => api.get<Page<SavedReport>>(`/whats-new/reports/saved?${query({ page, pageSize: 20 })}`),
-  saveReport: (body: ReportInput, key: string) => api.post<{ id: string }>("/whats-new/reports/saved", body, mutationOptions(undefined, true, key)),
+  saveReport: (body: ReportInput & { previewSha256: string }, key: string) => api.post<{ id: string }>("/whats-new/reports/saved", body, mutationOptions(undefined, true, key)),
   deleteReport: (id: string) => api.del<void>(`/whats-new/reports/${encodeURIComponent(id)}`),
   publicList: (filters: Filters) => api.get<Page<PublicItem> & { enabled: boolean }>(`/public/novedades?${query({ pageSize: 20, ...filters })}`),
   publicDetail: (id: string) => api.get<PublicDetail>(`/public/novedades/${encodeURIComponent(id)}`),

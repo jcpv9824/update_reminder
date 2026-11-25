@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { getSqlPool } from "./sql";
 import { runSqlTransaction } from "./sqlTransaction";
@@ -17,7 +17,8 @@ const textSearch = z.string().trim().max(100).optional();
 export const ListSchema = z.object({ scope: z.enum(["mine", "all"]).default("mine"), status: z.enum(["borrador", "sin_probar", "en_pruebas", "probado", "fallida", "archivada"]).optional(),
   type: z.enum(ENTRY_TYPES).optional(), system: z.enum(SYSTEM_CODES).optional(), q: textSearch,
   tab: z.enum(["sin_probar", "en_pruebas", "probadas", "todas", "borradores", "publicadas"]).optional(), result: z.enum(["sin_errores", "fallidas", "ambas"]).default("ambas"),
-  month: month.optional(), assignedToMe: z.enum(["true", "false"]).optional(), page: integer(1, 100_000), pageSize: integer(25, 50) }).strict();
+  month: month.optional(), createdMonth: month.optional(), assignedToMe: z.enum(["true", "false"]).optional(),
+  testingByMe: z.enum(["true", "false"]).optional(), page: integer(1, 100_000), pageSize: integer(25, 50) }).strict();
 
 export async function listEntries(actor: WhatsNewActor, input: unknown, queue = false, db?: Db, developerOnly = false) {
   requireView(actor);
@@ -42,16 +43,28 @@ export async function listEntries(actor: WhatsNewActor, input: unknown, queue = 
   if (f.system) { where.push("e.system_code=@system"); p.system = f.system; }
   if (f.q) { where.push("(e.primary_route_text LIKE @search ESCAPE '~' OR e.what_changed_text LIKE @search ESCAPE '~')"); p.search = `%${f.q.replace(/[~%_\[]/g, "~$&")}%`; }
   if (f.assignedToMe === "true") where.push("t.source_id=@actor");
+  if (f.testingByMe === "true") where.push(`EXISTS (SELECT 1 FROM whats_new.test_rounds r
+    JOIN security.users u ON u.user_key=r.holder_user_key WHERE r.entry_key=e.entry_key AND r.status='tomada' AND u.source_id=@actor)`);
+  if (f.createdMonth) {
+    where.push("e.created_at>=@createdFrom AND e.created_at<@createdUntil");
+    p.createdFrom = bogotaMonthStartUtc(f.createdMonth); p.createdUntil = bogotaMonthStartUtc(f.createdMonth, 1);
+  }
   if (f.month) {
     const column = queue && tab === "probadas" ? "e.result_at" : "e.last_published_at";
     where.push(`${column}>=@from AND ${column}<@until`); p.from = bogotaMonthStartUtc(f.month); p.until = bogotaMonthStartUtc(f.month, 1);
   }
-  const from = `FROM whats_new.entries e JOIN security.users d ON d.user_key=e.developer_user_key LEFT JOIN security.users t ON t.user_key=e.initial_tester_user_key WHERE ${where.join(" AND ")}`;
+  const from = `FROM whats_new.entries e JOIN security.users d ON d.user_key=e.developer_user_key
+    LEFT JOIN security.users t ON t.user_key=e.initial_tester_user_key
+    LEFT JOIN whats_new.entry_client_texts client_text ON client_text.entry_key=e.entry_key
+    WHERE ${where.join(" AND ")}`;
   const source = db ?? await getSqlPool();
   const [count] = await query(source, `SELECT COUNT_BIG(*) total${queue ? "" : ", COUNT_BIG(CASE WHEN e.status='borrador' THEN 1 END) borradores, COUNT_BIG(CASE WHEN e.status<>'borrador' THEN 1 END) publicadas"} ${from};`, p);
   const tabWhere = queue || tab === "todas" ? "" : tab === "borradores" ? " AND e.status='borrador'" : " AND e.status<>'borrador'";
   const rows = await query(source, `SELECT e.source_id,e.entry_number,e.status,e.entry_type,e.system_code,e.what_changed_summary,e.primary_route_text,
-    e.open_findings_count,e.row_version,e.created_at,e.updated_at,e.result_at,e.release_month,d.source_id developer_id,d.display_name developer_name,t.source_id tester_id,
+    e.open_findings_count,e.row_version,e.created_at,e.updated_at,e.result_at,e.release_month,d.source_id developer_id,d.display_name developer_name,t.source_id tester_id,t.display_name initial_assignee_name,
+    CAST(CASE WHEN e.status='probado' AND e.entry_type<>'sp_critico' AND client_text.show_to_clients=1 THEN 1 ELSE 0 END AS bit) show_to_clients,
+    (SELECT TOP(1) u.display_name FROM whats_new.test_rounds r JOIN security.users u ON u.user_key=r.holder_user_key
+      WHERE r.entry_key=e.entry_key AND r.status IN ('probada','fallida') ORDER BY r.round_no DESC) last_tester_name,
     (SELECT TOP(1) u.source_id FROM whats_new.test_rounds r JOIN security.users u ON u.user_key=r.holder_user_key WHERE r.entry_key=e.entry_key AND r.status='tomada') holder_id,
     (SELECT TOP(1) u.display_name FROM whats_new.test_rounds r JOIN security.users u ON u.user_key=r.holder_user_key WHERE r.entry_key=e.entry_key AND r.status='tomada') holder_name,
     (SELECT COUNT(*) FROM whats_new.round_checklist_items c JOIN whats_new.test_rounds r ON r.round_key=c.round_key WHERE r.entry_key=e.entry_key AND r.status='tomada' AND c.checked=1) checklist_done,
@@ -60,6 +73,8 @@ export async function listEntries(actor: WhatsNewActor, input: unknown, queue = 
   const items = rows.map((row) => ({ id: row.source_id as string, number: formatEntryNumber(Number(row.entry_number)), status: row.status as EntryDetail["status"],
     type: row.entry_type as EntryDetail["type"], system: row.system_code as EntryDetail["system"], developer: { id: row.developer_id as string, displayName: row.developer_name as string },
     summary: row.what_changed_summary as string | null, primaryRoute: row.primary_route_text as string | null, initialTesterId: row.tester_id as string | null,
+    initialAssigneeName: (row.initial_assignee_name ?? null) as string | null, lastTesterName: (row.last_tester_name ?? null) as string | null,
+    showToClients: row.show_to_clients === true,
     holder: row.holder_id ? { id: row.holder_id as string, displayName: row.holder_name as string } : null, checklistDone: Number(row.checklist_done), checklistTotal: Number(row.checklist_total),
     openFindings: Number(row.open_findings_count), etag: etag(row.row_version), createdAt: row.created_at.toISOString() as string, updatedAt: row.updated_at.toISOString() as string,
     resultAt: (row.result_at?.toISOString() ?? null) as string | null, releaseMonth: row.release_month as string | null,
@@ -210,7 +225,9 @@ export async function publicNews(input: unknown, publicId?: string) {
   return { enabled: true, items: rows.map((r) => publicProjection(r)), total: Number(count.total), page: filters.page, pageSize: filters.pageSize };
 }
 
-export const ReportInput = z.object({ include: z.enum(["todas", "aprobadas", "fallidas"]), filters: z.object({ type: z.enum(ENTRY_TYPES).optional(), system: z.enum(SYSTEM_CODES).optional(), month: month.optional(), q: textSearch }).strict().optional() }).strict();
+export const ReportInput = z.object({ include: z.enum(["todas", "aprobadas", "fallidas"]), filters: z.object({
+  type: z.enum(ENTRY_TYPES).optional(), system: z.enum(SYSTEM_CODES).optional(), month: month.optional(), createdMonth: month.optional(), q: textSearch,
+}).strict().optional() }).strict();
 export const ReportSendInput = ReportInput.extend({ recipientIds: z.array(z.string().min(1).max(150)).min(1).max(30).refine((a) => new Set(a).size === a.length) });
 export const escapeHtml = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 export function renderReport(entries: EntryDetail[]) {
@@ -230,11 +247,11 @@ export async function previewReport(actor: WhatsNewActor, input: unknown) {
   return preview;
 }
 
-export async function reportSnapshot(actor: WhatsNewActor, input: unknown) {
+export async function reportSnapshot(actor: WhatsNewActor, input: unknown, transaction?: Db) {
   requirePermission(actor, a => access.report(a) || access.developer(a));
   const body = ReportInput.parse(input);
   const developerOnly = !access.report(actor);
-  return runSqlTransaction(async (db) => {
+  const snapshot = async (db: Db) => {
     const filters = { ...body.filters, scope: "all", tab: "probadas", result: body.include === "aprobadas" ? "sin_errores" : body.include === "fallidas" ? "fallidas" : "ambas", page: 1, pageSize: 50 };
     // Report permission is sufficient for result reading; do not grant the user queue mutation authority.
     const reportActor = { ...actor, permissions: new Set([...actor.permissions, "updates.whats_new.view_all"]) };
@@ -243,7 +260,10 @@ export async function reportSnapshot(actor: WhatsNewActor, input: unknown) {
     const summaries = [...first.items];
     for (let page = 2; summaries.length < first.total; page++) summaries.push(...(await listEntries(reportActor, { ...filters, page }, true, db, developerOnly)).items);
     const entries = (await readEntries(db, summaries.map((s) => s.id))).filter(e => ["probado", "archivada", "fallida"].includes(e.status));
-    return { html: renderReport(entries), entryCount: entries.length, approvedCount: entries.filter((e) => e.status !== "fallida").length,
+    const html = renderReport(entries);
+    return { html, snapshotSha256: createHash("sha256").update(html, "utf8").digest("hex"),
+      entryCount: entries.length, approvedCount: entries.filter((e) => e.status !== "fallida").length,
       failedCount: entries.filter((e) => e.status === "fallida").length, entries };
-  });
+  };
+  return transaction ? snapshot(transaction) : runSqlTransaction(snapshot);
 }

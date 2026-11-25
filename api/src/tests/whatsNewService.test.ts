@@ -78,6 +78,29 @@ describe("Qué hay de nuevo service contracts", () => {
     expect(statement.indexOf("WHERE e.status")).toBeLessThan(statement.indexOf("OFFSET @offset"));
     expect(mocks.query.mock.calls[1][2]).toMatchObject({ offset: 10, size: 10, from: new Date("2026-11-01T05:00:00Z"), until: new Date("2026-12-01T05:00:00Z") });
   });
+  it("filters creation in Bogotá and current holder distinctly from initial assignee", async () => {
+    mocks.query.mockResolvedValueOnce([{ total: 0 }]).mockResolvedValueOnce([]);
+    await listEntries(context().actor, { tab: "en_pruebas", createdMonth: "2026-11", assignedToMe: "true", testingByMe: "true" }, true);
+    for (const [, statement, parameters] of mocks.query.mock.calls) {
+      expect(statement).toContain("e.created_at>=@createdFrom");
+      expect(statement).toContain("t.source_id=@actor");
+      expect(statement).toContain("r.status='tomada' AND u.source_id=@actor");
+      expect(parameters).toMatchObject({ createdFrom: new Date("2026-11-01T05:00:00Z"), createdUntil: new Date("2026-12-01T05:00:00Z") });
+    }
+  });
+  it("projects names and approved visibility in the same bounded page, without leaking client text", async () => {
+    mocks.query.mockResolvedValueOnce([{ total: 1 }]).mockResolvedValueOnce([{
+      entry_number: 1, initial_assignee_name: "Asignada", last_tester_name: "Probadora", show_to_clients: true,
+      row_version: Buffer.alloc(8), created_at: new Date(), updated_at: new Date(), title: "PRIVATE_TEXT",
+    }]);
+    await expect(listEntries(context().actor, { tab: "probadas" }, true)).resolves.toMatchObject({
+      items: [{ initialAssigneeName: "Asignada", lastTesterName: "Probadora", showToClients: true }],
+    });
+    expect(mocks.query).toHaveBeenCalledTimes(2);
+    expect(mocks.query.mock.calls[1][1]).toContain("client_text.show_to_clients=1");
+    expect(mocks.query.mock.calls[1][1]).not.toContain("client_text.title");
+    expect(mocks.query.mock.calls[1][1]).not.toContain("client_text.body_json");
+  });
   it("counts all developer tabs in the authorized filtered scope before applying the tab and offset", async () => {
     mocks.query.mockResolvedValueOnce([{ total: 9, borradores: 3, publicadas: 6 }]).mockResolvedValueOnce([]);
     const result = await listEntries(context().actor, { tab: "borradores", q: "Ventas", page: 2, pageSize: 2 });

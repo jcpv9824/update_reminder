@@ -1,8 +1,9 @@
 # Qué hay de nuevo · Documentación de diseño
 
 Opción nueva del Portal SAG Web: **Actualizaciones › Qué hay de nuevo**. Tiene tres visiones (Desarrollador, Asesor y Cliente) y una configuración propia.
-Estado: **implementación local en curso**, retomada por autorización del propietario. El frontend existente es un prototipo simulado; su integración real y el backend están en construcción y no se han desplegado.
-Rama: `design/que-hay-de-nuevo`, cortada de `main` en `11887e5`.
+Los documentos 01–12 conservan el diseño e integración históricos. Para el
+refactor de la implementación real, consultar las decisiones y criterios de QA
+enlazados abajo. El prototipo sigue siendo una referencia de diseño.
 
 | Documento | Contenido | Autor |
 |---|---|---|
@@ -18,6 +19,8 @@ Rama: `design/que-hay-de-nuevo`, cortada de `main` en `11887e5`.
 | [10_ARQUITECTURA.md](10_ARQUITECTURA.md) | Tecnologías, flujo, carpetas en SeaweedFS, reporte HTML y página pública | Orquestador |
 | [11_CONTRATO_IMPLEMENTACION.md](11_CONTRATO_IMPLEMENTACION.md) | Contrato vigente de API, límites, seguridad, versiones y fronteras pendientes | Desarrollador |
 | [12_INTEGRACION_PARALELA.md](12_INTEGRACION_PARALELA.md) | Aislamiento del catálogo, reserva de migraciones y puertas de entrega | Orquestador |
+| [15_REFACTOR_ASESOR_Y_CLIENTE.md](15_REFACTOR_ASESOR_Y_CLIENTE.md) | Decisiones vigentes del refactor: bandeja, guardado explícito, aprobación, biblioteca y reporte | Orquestador |
+| [14_QA_REFACTOR_ASESOR_CLIENTE.md](14_QA_REFACTOR_ASESOR_CLIENTE.md) | Casos de QA del refactor y condiciones de entrega | QA |
 
 ## Decisiones del propietario (2026-11-18)
 

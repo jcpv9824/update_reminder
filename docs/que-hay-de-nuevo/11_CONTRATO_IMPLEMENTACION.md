@@ -1,6 +1,8 @@
 # Contrato de implementación · Qué hay de nuevo
 
-Estado: implementación local, sin migrar ni desplegar. Este contrato sustituye las secciones obsoletas de `03`–`06`: no menú/Excel, PDF, reasignación del desarrollador, cuarta pestaña ni confirmación de exposición.
+Contrato de integración inicial. Las reglas actualizadas de bandeja, confirmación
+de publicación y reportes privados prevalecen sobre las de este documento:
+[Refactor de Asesor y Cliente](15_REFACTOR_ASESOR_Y_CLIENTE.md).
 
 ## Límites congelados
 

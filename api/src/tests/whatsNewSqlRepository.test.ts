@@ -6,7 +6,8 @@ describe("Qué hay de nuevo batch reads", () => {
     const ids = ["a", "b"];
     const execute = vi.fn(async (_db: unknown, statement: string) => statement.startsWith("SELECT e.*") ? ids.map((id, index) => ({
       entry_key: index + 1, source_id: id, entry_number: index + 1, status: "probado", entry_type: "mejora", system_code: "sag_web",
-      developer_id: "dev", developer_name: "Desarrollo", row_version: Buffer.from("0000000000000001", "hex"),
+      developer_id: "dev", developer_name: "Desarrollo", initial_assignee_name: index === 0 ? "Asesor inicial" : null,
+      row_version: Buffer.from("0000000000000001", "hex"),
       what_changed_json: null, client_name_text: null, current_revision_no: 1, current_round_no: 1, last_finding_no: 0, open_findings_count: 0,
       created_at: new Date("2026-11-01Z"), updated_at: new Date("2026-11-01Z"), result_at: new Date("2026-11-01Z"), release_month: "2026-11",
     })) : statement.includes("FROM whats_new.entry_participants p") ? ids.map((id, index) => ({
@@ -20,6 +21,8 @@ describe("Qué hay de nuevo batch reads", () => {
     })) : []);
     const result = await readEntries({} as Db, ids, execute as typeof query);
     expect(result.map((e) => e.id)).toEqual(ids); expect(execute).toHaveBeenCalledTimes(13);
+    expect(result.map(({ initialAssigneeName, lastTesterName }) => [initialAssigneeName, lastTesterName]))
+      .toEqual([["Asesor inicial", "a"], [null, "b"]]);
     expect(result[0].rounds[0].notes.map((n) => n.id)).toEqual(["note-a"]);
     expect(result[1].rounds[0].notes.map((n) => n.id)).toEqual(["note-b"]);
     expect(result[0].participants).toEqual([{ id: "participant-a", displayName: "Participant a", role: "asesor" }]);

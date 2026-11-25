@@ -125,6 +125,10 @@ export async function applyEffects(db: sql.Transaction, key: number, actor: What
           { checked: item.checked, round: effect.roundNo, no: item.itemNo });
         await run("UPDATE whats_new.test_rounds SET taken_at=taken_at WHERE entry_key=@key AND round_no=@round AND status='tomada';", { round: effect.roundNo });
         break;
+      case "round.noteDraft":
+        await run("UPDATE whats_new.test_rounds SET note_draft_json=@body WHERE entry_key=@key AND round_no=@round AND status='tomada';",
+          { round: effect.roundNo, body: json(effect.body) });
+        break;
       case "note.insert":
       case "finding.insert": {
         const finding = effect.kind === "finding.insert";
@@ -146,6 +150,10 @@ export async function applyEffects(db: sql.Transaction, key: number, actor: What
           ELSE INSERT whats_new.entry_client_texts(entry_key,show_to_clients,title,body_json,body_text,updated_at,updated_by_user_key)
           VALUES(@key,@show,@title,@body,@text,@now,${userKey});`, { show: effect.show, title: effect.title, body: json(effect.body), text: effect.text });
         break;
+      case "clientText.visibility":
+        await run(`UPDATE whats_new.entry_client_texts SET show_to_clients=@show,updated_at=@now,updated_by_user_key=${userKey}
+          WHERE entry_key=@key AND show_to_clients<>@show;`, { show: effect.show });
+        break;
       case "log.insert":
         await run(`INSERT whats_new.entry_log(entry_key,log_no,action,from_status,to_status,round_no,reason_text,detail_json,occurred_at,occurred_by_user_key)
           VALUES(@key,(SELECT ISNULL(MAX(log_no),0)+1 FROM whats_new.entry_log WHERE entry_key=@key),@action,@from,@to,@round,@reason,@detail,@now,${userKey});`,
@@ -159,7 +167,7 @@ export async function applyEffects(db: sql.Transaction, key: number, actor: What
   }
 }
 
-export type Operation = "create" | "draft" | "delete" | "publish" | "correct" | "take" | "release" | "force-release" | "mark-tested" | "mark-failed" | "archive" | "client-text" | "checklist" | "notes" | "findings" | "annul" | "note-draft";
+export type Operation = "create" | "draft" | "delete" | "publish" | "correct" | "take" | "release" | "force-release" | "mark-tested" | "mark-failed" | "archive" | "client-text" | "set-client-visibility" | "checklist" | "notes" | "findings" | "annul" | "note-draft" | "round-progress";
 async function resolveDraftInput(body: unknown, actor: WhatsNewActor, db: sql.Transaction): Promise<commands.DraftIn> {
   const { clientId, ...draft } = commands.DraftInSchema.parse(body);
   if (clientId === undefined) return draft;
@@ -169,18 +177,23 @@ async function resolveDraftInput(body: unknown, actor: WhatsNewActor, db: sql.Tr
 
 export async function mutate(args: { actor: WhatsNewActor; operation: Operation; id: string | null; body: unknown; etag: string | null; idempotencyKey: string | null }) {
   const { actor, operation, body } = args;
+  const roundOp = ["checklist", "notes", "findings", "note-draft", "round-progress"].includes(operation);
   requireView(actor);
   // Current permissions and DB-loaded area are checked even when replaying a
   // previously authorized operation after a role/area has been revoked.
   if (["create", "draft", "publish"].includes(operation)) requireDeveloper(actor);
-  else if (["take", "release", "mark-tested", "mark-failed", "checklist", "notes", "findings", "note-draft"].includes(operation)) requireTester(actor);
+  else if (roundOp || ["take", "release", "mark-tested", "mark-failed"].includes(operation)) requireTester(actor);
   else if (["force-release", "archive"].includes(operation)) requirePermission(actor, access.manage);
   else if (operation === "correct") requirePermission(actor, (a) => access.developer(a) || access.manage(a));
   else if (operation === "client-text") requirePermission(actor, (a) => access.tester(a) || access.publishClient(a));
+  else if (operation === "set-client-visibility") requirePermission(actor, access.publishClient);
   else if (operation === "annul") requirePermission(actor, (a) => access.tester(a) || access.manage(a));
   else if (operation === "delete") requirePermission(actor, mayDeleteEntries);
-  if (["publish", "take", "release", "mark-tested", "mark-failed", "delete"].includes(operation)) z.object({}).strict().parse(body);
-  const idem = !["draft", "delete", "client-text", "checklist", "note-draft"].includes(operation);
+  if (["publish", "take", "release", "mark-failed", "delete"].includes(operation)) z.object({}).strict().parse(body);
+  const approval = operation === "mark-tested" ? commands.MarkTestedInSchema.parse(body) : null;
+  if (approval?.publishToClients) requirePermission(actor, access.publishClient);
+  const visibility = operation === "set-client-visibility" ? commands.ClientVisibilityInSchema.parse(body) : null;
+  const idem = !["draft", "delete", "client-text", "checklist", "note-draft", "round-progress"].includes(operation);
   const idemKey = idem ? assertIdempotencyKey(args.idempotencyKey) : null;
   const hash = requestFingerprint(operation, args.id, body);
   return runSqlTransaction(async (db) => {
@@ -212,7 +225,7 @@ export async function mutate(args: { actor: WhatsNewActor; operation: Operation;
       await query(db, `INSERT whats_new.entries(source_id,status,developer_user_key,last_edited_by_user_key,created_at,created_by,updated_at,updated_by)
         VALUES(@id,'borrador',${userKey},${userKey},@now,@actor,@now,@actor);`, { id, actor: actor.id, now });
     }
-    if (operation === "checklist" || operation === "notes" || operation === "findings" || operation === "note-draft") {
+    if (roundOp) {
       const [entry] = await query(db, "SELECT e.source_id FROM whats_new.test_rounds r JOIN whats_new.entries e ON e.entry_key=r.entry_key WHERE r.source_id=@id;", { id });
       id = entry?.source_id ?? null;
     } else if (operation === "annul") {
@@ -242,7 +255,6 @@ export async function mutate(args: { actor: WhatsNewActor; operation: Operation;
     if (references.size > 200) throw new WhatsNewError(413, "contenido_muy_grande", "Demasiados usuarios referenciados.");
     if (fileIds.size > 50) throw new WhatsNewError(413, "contenido_muy_grande", "Demasiados archivos referenciados.");
     const ctx = await contextFor(db, actor, now, randomUUID, [...references]);
-    const roundOp = ["checklist", "notes", "findings", "note-draft"].includes(operation);
     if (operation !== "create" && operation !== "annul") {
       const resource = roundOp ? current!.detail.rounds.find((r) => r.id === args.id) : operation === "client-text" ? current!.detail.clientText : null;
       requireEtag(args.etag, resource?.etag ?? state.etag);
@@ -267,11 +279,13 @@ export async function mutate(args: { actor: WhatsNewActor; operation: Operation;
       case "take": result = commands.decideTake(ctx, state); break;
       case "release": result = commands.decideRelease(ctx, state); break;
       case "force-release": result = commands.decideForceRelease(ctx, state, commands.ReasonInSchema.parse(body).reason); break;
-      case "mark-tested": result = commands.decideMarkTested(ctx, state); break;
+      case "mark-tested": result = commands.decideMarkTested(ctx, state, approval!.publishToClients); break;
       case "mark-failed": result = commands.decideMarkFailed(ctx, state); break;
       case "archive": result = commands.decideArchive(ctx, state, commands.ReasonInSchema.parse(body).reason); break;
       case "client-text": result = commands.decideClientText(ctx, state, commands.ClientTextInSchema.parse(body)); break;
+      case "set-client-visibility": result = commands.decideSetClientVisibility(ctx, state, visibility!.showToClients); break;
       case "checklist": result = commands.decideChecklist(ctx, state, commands.ChecklistInSchema.parse(body).items); break;
+      case "round-progress": result = commands.decideRoundProgress(ctx, state, commands.RoundProgressInSchema.parse(body)); break;
       case "notes": case "findings": {
         const input = commands.RichBodyInSchema.parse(body);
         result = commands.decideNote(ctx, state, input.body, operation === "notes" ? "nota" : "hallazgo"); break;

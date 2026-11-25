@@ -81,7 +81,7 @@ export async function readWhatsNewMediaStates(db: Db, key: number, actorId: stri
 }
 
 export async function readEntry(db: Db, id: string, lock = false, load: typeof query = query) {
-  const [row] = await load(db, `SELECT e.*,d.source_id developer_id,d.display_name developer_name,t.source_id initial_tester_id
+  const [row] = await load(db, `SELECT e.*,d.source_id developer_id,d.display_name developer_name,t.source_id initial_tester_id,t.display_name initial_assignee_name
     FROM whats_new.entries e ${lock ? "WITH (UPDLOCK,HOLDLOCK)" : ""}
     JOIN security.users d ON d.user_key=e.developer_user_key
     LEFT JOIN security.users t ON t.user_key=e.initial_tester_user_key WHERE e.source_id=@id;`, { id });
@@ -131,6 +131,7 @@ export async function readEntry(db: Db, id: string, lock = false, load: typeof q
   const findingDtos = findings.map((f) => ({ id: f.source_id as string, number: Number(f.finding_no), roundNo: Number(f.round_no), body: parse(f.body_json),
     createdById: f.created_by_id as string, createdAt: iso(f.created_at), annulled: f.annulled_at ? { reason: f.annul_reason, at: iso(f.annulled_at) } : null }));
   const open = roundDtos.find((r) => r.status === "tomada");
+  const lastTester = roundDtos.filter((r) => r.status === "probada" || r.status === "fallida").at(-1);
   const last = logs.at(-1);
   const state: EntryState = { key: p.key, id: row.source_id, number: Number(row.entry_number), status: row.status, type: row.entry_type, system: row.system_code,
     whatChanged: parse(row.what_changed_json), clientName: row.client_name_text, initialTesterId: row.initial_tester_id ?? null, developerId: row.developer_id,
@@ -142,6 +143,7 @@ export async function readEntry(db: Db, id: string, lock = false, load: typeof q
     lastLog: last ? { action: last.action, byId: last.by_id, at: last.occurred_at } : null };
   const detail = { id: state.id, number: formatEntryNumber(state.number), status: state.status, type: state.type, system: state.system,
     developer: { id: state.developerId, displayName: row.developer_name }, clientName: state.clientName, initialTesterId: state.initialTesterId,
+    initialAssigneeName: (row.initial_assignee_name ?? null) as string | null, lastTesterName: lastTester?.holderName ?? null,
     whatChanged: state.whatChanged, summary: row.what_changed_summary, primaryRoute: row.primary_route_text, routes, requiredActions: actions, attachments,
     rounds: roundDtos, findings: findingDtos, participants: participants.map((p) => participantDto({ id: p.id, displayName: p.displayName, role: p.role })), log: logs.map((l) => ({ action: l.action, byId: l.by_id, at: iso(l.occurred_at), reason: l.reason_text })),
     revisions: revisions.map((r) => ({ revisionNo: Number(r.revision_no), kind: r.revision_kind, whatChanged: parse(r.what_changed_json),

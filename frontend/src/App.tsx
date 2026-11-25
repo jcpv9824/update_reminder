@@ -35,7 +35,7 @@ const DevPreview = import.meta.env.DEV ? lazy(() => import("./pages/queHayDeNuev
 // Literal Vite checks let the compiler discard these dynamic imports altogether when off.
 const LiveWhatsNew = import.meta.env.VITE_WHATS_NEW_ENABLED === "true" ? lazy(() => import("./pages/queHayDeNuevo/LivePages").then(m => ({ default: m.LiveWhatsNewPage }))) : null;
 const LiveConfig = import.meta.env.VITE_WHATS_NEW_ENABLED === "true" ? lazy(() => import("./pages/queHayDeNuevo/LivePages").then(m => ({ default: m.LiveConfigPage }))) : null;
-const LivePublic = import.meta.env.VITE_WHATS_NEW_ENABLED === "true" ? lazy(() => import("./pages/queHayDeNuevo/LivePages").then(m => ({ default: m.LivePublicPage }))) : null;
+const LivePublic = import.meta.env.VITE_WHATS_NEW_ENABLED === "true" ? lazy(() => import("./pages/queHayDeNuevo/PublicNewsLive")) : null;
 const LiveReport = import.meta.env.VITE_WHATS_NEW_ENABLED === "true" ? lazy(() => import("./pages/queHayDeNuevo/LivePages").then(m => ({ default: m.LiveReportPage }))) : null;
 function Live({ children }: { children: JSX.Element }) { return <Suspense fallback={<div role="status">Cargando...</div>}>{children}</Suspense>; }
 function Preview({ kind }: { kind: "internal" | "config" | "public" }) { return DevPreview ? <Live><DevPreview kind={kind} /></Live> : null; }

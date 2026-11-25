@@ -158,13 +158,38 @@ describe("Qué hay de nuevo transactional write boundary", () => {
     await expect(mutate({ actor: context().actor, operation: "take", id: "entry", body: {}, etag: '"stale"', idempotencyKey: "same-key-123" })).rejects.toMatchObject({ status: 409, code: "version_desactualizada" });
     expect(f.query.mock.calls.some((c) => c[1].startsWith("UPDATE whats_new.entries"))).toBe(false); expect(f.rolledBack).toBe(true);
   });
-  it.each(["draft", "client-text", "checklist", "note-draft"] as const)("%s PUT/PATCH requires ETag, not an idempotency key", async (operation) => {
+  it.each(["draft", "client-text", "checklist", "note-draft", "round-progress"] as const)("%s PUT/PATCH requires ETag, not an idempotency key", async (operation) => {
     f.query.mockResolvedValue([{ source_id: "entry" }]);
     f.readEntry.mockResolvedValue({ state: entry(), detail: { rounds: [{ id: "resource", etag: '"current"' }] } });
     f.contextFor.mockResolvedValue(context());
     await expect(mutate({ actor: context().actor, operation, id: "resource", body: {}, etag: '"stale"', idempotencyKey: null }))
       .rejects.toMatchObject({ status: 409, code: "version_desactualizada" });
     expect(f.query.mock.calls.some((c) => c[1].includes("whats_new.idempotency_keys"))).toBe(false);
+  });
+  it("writes round progress atomically under the current round ETag", async () => {
+    const { ctx, args } = prepareNoteDraft();
+    const roundEtag = '"round-current"';
+    const state = { ...entry(), status: "en_pruebas" as const,
+      openRound: { id: "round", roundNo: 1, revisionNo: 1, holderId: ctx.actor.id, checklist: [{ itemNo: 1, label: "Probar", checked: false }] } };
+    f.query.mockResolvedValue([{ source_id: state.id }]);
+    f.readEntry.mockResolvedValue({ state, detail: { rounds: [{ id: "round", etag: roundEtag }] } });
+    const body = { items: [{ itemNo: 1, checked: true }], body: null };
+    await expect(mutate({ ...args, operation: "round-progress", body })).rejects.toMatchObject({ code: "version_desactualizada" });
+    expect(f.query.mock.calls.every(c => !c[1].includes("UPDATE"))).toBe(true);
+    f.query.mockClear();
+    await mutate({ ...args, operation: "round-progress", body, etag: roundEtag });
+    const writes = f.query.mock.calls.filter(c => c[1].includes("UPDATE"));
+    expect(writes.map(c => c[1]).join("\n")).toMatch(/UPDATE c SET checked=@checked[\s\S]+UPDATE whats_new.test_rounds SET note_draft_json/);
+    expect(new Set(writes.map(c => c[0])).size).toBe(1);
+    expect(f.committed).toBe(true);
+  });
+  it("requires publication permission even before replaying an approved entry", async () => {
+    const ctx = context();
+    ctx.actor.permissions = new Set([PERMISSIONS.view, PERMISSIONS.test]);
+    await expect(mutate({ actor: ctx.actor, operation: "mark-tested", id: entry().id,
+      body: { publishToClients: true }, etag: entry().etag, idempotencyKey: "approved-replay-key" }))
+      .rejects.toMatchObject({ status: 403, code: "sin_permiso" });
+    expect(f.query).not.toHaveBeenCalled();
   });
   it("state effects, round, participants and audit have one transaction owner; audit failure rolls back", async () => {
     const state = entry();

@@ -1,6 +1,6 @@
-import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Plus, Trash2 } from "lucide-react";
-import { Link, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { useAuth } from "../../auth/AuthContext";
@@ -9,7 +9,7 @@ import { Dialogo, EtiquetaEstadoQhdn, EtiquetaSistema, EtiquetaTipo } from "./co
 import { EditorEnriquecido, VisorEnriquecido } from "./componentes/EditorEnriquecido";
 import { ErpClientCombobox } from "./componentes/ErpClientCombobox";
 import { docVacio, ETIQUETAS_ESTADO_QHDN, ETIQUETAS_TIPO_CORTAS, rutaTexto, rutaVacia } from "./logica";
-import { createDraftSaveSession, draftFromForm, errorMessage, formFromEntry, mutationOptions, richLayoutVersion, safeDisplayDoc, storagePending, whatsNewApi, type ConfigDto, type EntryDto, type EntrySummary, type ErpClientLookup, type Me, type Page, type ReportInput, type ReportPreview, type SavedReport } from "./contrato";
+import { createDraftSaveSession, draftFromForm, errorMessage, formFromEntry, mutationOptions, richLayoutVersion, safeDisplayDoc, storagePending, whatsNewApi, type Advisors, type ConfigDto, type EntryDto, type EntrySummary, type ErpClientLookup, type Me, type Page, type ReportInput, type ReportPreview, type RoundDto, type RoundProgress, type SavedReport } from "./contrato";
 import { aceptaDocumentoPrivado, BotonDescargaPrivada, subirArchivoPrivado, tiposVideoPrivado, validarArchivoPrivado, type DestinoArchivoPrivado, type TipoArchivoPrivado } from "./componentes/archivosPrivados";
 import type { Adjunto, DatosFormulario, DocEnriquecido, Sistema, TipoEntrada } from "./tipos";
 import "./queHayDeNuevo.css";
@@ -57,7 +57,7 @@ function RemovalDialog({ title, children, remove, onRemoved, onClose }: { title:
     </div>
   </Dialogo>;
 }
-function RemoveEntryDialog({ entry, onClose, unsaved = false }: { entry: EntryDto; onClose: () => void; unsaved?: boolean }) {
+function RemoveEntryDialog({ entry, onClose, unsaved = false, returnTo = base }: { entry: EntryDto; onClose: () => void; unsaved?: boolean; returnTo?: string }) {
   const key = useContext(Scope);
   const qc = useQueryClient();
   const navigate = useNavigate();
@@ -65,7 +65,7 @@ function RemoveEntryDialog({ entry, onClose, unsaved = false }: { entry: EntryDt
     // Mark the active detail stale without refetching it before leaving. Lists
     // and the queue refetch when mounted, immediately dropping the entry.
     for (const kind of ["entry", "entries", "queue"]) void qc.invalidateQueries({ queryKey: kind === "entry" ? [...key, kind, entry.id] : [...key, kind], refetchType: "none" });
-    navigate(base, { replace: true });
+    navigate(returnTo, { replace: true });
   }}>
     <p>Se retirará la entrada {entry.number} de las listas y de la publicación pública, si estaba visible. Se conserva el historial y no se enviarán correos.</p>
     {unsaved && <p>Los cambios locales sin guardar no formarán parte del historial.</p>}
@@ -79,12 +79,52 @@ function useOperation() {
 }
 function useMe() { const key = useContext(Scope); return useQuery({ queryKey: [...key, "me"], queryFn: whatsNewApi.me, staleTime: 0, refetchOnMount: "always" }); }
 
+const leaveWithChanges = () => window.confirm("Hay cambios sin guardar. ¿Quieres salir y descartarlos?");
+// BrowserRouter does not support useBlocker. Intercept normal same-origin links,
+// and restore the position of a cancelled same-document back/forward traversal.
+// Non-SPA navigation/reloads use the native beforeunload prompt.
+function useUnsavedNavigation(dirty: boolean) {
+  const current = useLocation();
+  useEffect(() => {
+    if (!dirty) return;
+    const idx: unknown = window.history.state?.idx;
+    let restoring = false;
+    const unload = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    const click = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
+      if (!link || link.hasAttribute("download") || (link.target && link.target !== "_self")) return;
+      const dest = new URL(link.href, window.location.href);
+      if (dest.origin !== window.location.origin || (dest.pathname === current.pathname && dest.search === current.search)) return;
+      if (!leaveWithChanges()) { event.preventDefault(); event.stopPropagation(); }
+    };
+    const pop = (event: PopStateEvent) => {
+      if (restoring) { restoring = false; return; }
+      const next: unknown = event.state?.idx;
+      if (typeof idx === "number" && typeof next === "number" && idx !== next && !leaveWithChanges()) {
+        restoring = true;
+        event.stopImmediatePropagation();
+        window.history.go(idx - next);
+      }
+    };
+    window.addEventListener("beforeunload", unload);
+    document.addEventListener("click", click, true);
+    window.addEventListener("popstate", pop, true);
+    return () => {
+      window.removeEventListener("beforeunload", unload);
+      document.removeEventListener("click", click, true);
+      window.removeEventListener("popstate", pop, true);
+    };
+  }, [dirty, current.pathname, current.search]);
+}
+
 export function LiveWhatsNewPage() {
   return <PrivateScope><PrivateWhatsNew /></PrivateScope>;
 }
 function PrivateWhatsNew() {
   const me = useMe();
   const [chosen, setChosen] = useState<string | null>(null);
+  const [workDirty, setWorkDirty] = useState(false);
   if (me.isPending) return <Loading />;
   if (me.error) return <><Feedback error={me.error} /><button onClick={() => me.refetch()}>Reintentar</button></>;
   const actor = me.data;
@@ -95,14 +135,15 @@ function PrivateWhatsNew() {
   const view = chosen && ((chosen === "desarrollador" && browseEntries) || (chosen === "asesor" && test))
     ? chosen : dev ? "desarrollador" : test ? "asesor" : browseEntries ? "desarrollador" : read ? "lectura" : null;
   if (!can(actor, "updates.whats_new.view") || !view) return <div className="alerta-error" role="alert">No tienes un área y permisos habilitados para esta opción. Solicita acceso al administrador.</div>;
-  return <div className="qhdn-pagina">{browseEntries && test && <div className="qhdn-visiones"><div className="qhdn-selector-vision" role="group" aria-label="Visión"><button aria-pressed={view === "desarrollador"} onClick={() => setChosen("desarrollador")}>{dev ? "Desarrollador" : "Entradas del equipo"}</button><button aria-pressed={view === "asesor"} onClick={() => setChosen("asesor")}>Asesor</button></div></div>}
+  const choose = (next: string) => { if (view !== next && (!workDirty || leaveWithChanges())) setChosen(next); };
+  return <div className="qhdn-pagina">{browseEntries && test && <div className="qhdn-visiones"><div className="qhdn-selector-vision" role="group" aria-label="Visión"><button aria-pressed={view === "desarrollador"} onClick={() => choose("desarrollador")}>{dev ? "Desarrollador" : "Entradas del equipo"}</button><button aria-pressed={view === "asesor"} onClick={() => choose("asesor")}>Asesor</button></div></div>}
     <Routes>
       <Route path="nueva" element={dev ? <LiveForm me={actor} /> : <p role="alert">No tienes permiso para crear entradas.</p>} />
       <Route path=":id/editar" element={dev ? <LoadForm me={actor} /> : <p role="alert">No tienes permiso para editar entradas.</p>} />
       <Route path=":id/corregir" element={dev || can(actor, "configuration.whats_new.manage") ? <LoadForm me={actor} correction /> : <p role="alert">No tienes permiso para corregir entradas.</p>} />
       <Route path="reportes" element={actor.canUseSavedReports ? <SavedReports /> : <p role="alert">No tienes permiso para ver los reportes guardados.</p>} />
-      <Route path=":id" element={<LiveEntry me={actor} developerView={view === "desarrollador"} />} />
-      <Route index element={view === "desarrollador" ? <DeveloperList me={actor} canCreate={dev} /> : <LiveList me={actor} support />} />
+      <Route path=":id" element={<LiveEntry me={actor} developerView={view === "desarrollador"} onDirtyChange={setWorkDirty} />} />
+      <Route index element={view === "desarrollador" ? <DeveloperList me={actor} canCreate={dev} /> : <LiveList me={actor} onDirtyChange={setWorkDirty} />} />
     </Routes>
   </div>;
 }
@@ -173,32 +214,117 @@ function DeveloperList({ me, canCreate }: { me: Me; canCreate: boolean }) {
   </>;
 }
 
-function LiveList({ me, support }: { me: Me; support: boolean }) {
+const advisorTabs = [["sin_probar", "Sin probar"], ["en_pruebas", "En pruebas"], ["aprobadas", "Aprobadas"], ["fallidas", "Fallidas"]] as const;
+type AdvisorTab = typeof advisorTabs[number][0];
+function previousBogotaMonth() {
+  const date = new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", year: "numeric", month: "2-digit" }).formatToParts(new Date());
+  const year = Number(date.find(part => part.type === "year")?.value);
+  const month = Number(date.find(part => part.type === "month")?.value);
+  return `${month === 1 ? year - 1 : year}-${String(month === 1 ? 12 : month - 1).padStart(2, "0")}`;
+}
+function LiveList({ me, onDirtyChange }: { me: Me; onDirtyChange: (value: boolean) => void }) {
   const key = useContext(Scope);
   const navigate = useNavigate();
+  const tabsId = useId();
+  const [params, setParams] = useSearchParams();
+  const [defaultMonth] = useState(previousBogotaMonth);
+  const [report, setReport] = useState(false);
+  const [notice, setNotice] = useState("");
+  const dirty = useRef(false);
+  const reportDirty = useCallback((value: boolean) => { dirty.current = value; onDirtyChange(value); }, [onDirtyChange]);
   const reportOnly = !can(me, "updates.whats_new.test") && !can(me, "updates.whats_new.view_all") && !can(me, "configuration.whats_new.manage") && can(me, "updates.whats_new.report");
-  const [tab, setTab] = useState(reportOnly ? "probadas" : "sin_probar");
-  const [result, setResult] = useState("ambas");
-  const [scope, setScope] = useState("mine");
-  const [type, setType] = useState(""); const [system, setSystem] = useState(""); const [status, setStatus] = useState("");
-  const [month, setMonth] = useState(""); const [q, setQ] = useState(""); const [page, setPage] = useState(1); const [report, setReport] = useState(false);
-  const filters = support ? { tab, result: tab === "probadas" ? result : undefined, type, system, month, q, page, pageSize: 20 } : { scope, type, system, status, q, page, pageSize: 20 };
-  const entries = useQuery({ queryKey: [...key, support ? "queue" : "entries", filters], queryFn: () => whatsNewApi.list(filters, support) });
-  function change(fn: () => void) { fn(); setPage(1); }
-  return <><div className="pagina-encabezado"><div><h1>Qué hay de nuevo</h1><p>{support ? "Bandeja de pruebas" : "Mis entradas"}</p></div>{!support && <Link className="qhdn-boton-primario-enlace" to={`${base}/nueva`}>Nueva entrada</Link>}{me.canUseSavedReports && <Link className="qhdn-enlace-reportes" to={`${base}/reportes`}>Reportes guardados</Link>}</div>
-    {support && <div className="qhdn-pestanas" role="tablist" aria-label="Pruebas">{[["sin_probar", "Sin probar"], ["en_pruebas", "En pruebas"], ["probadas", "Probadas"]].map(([value,label]) => <button role="tab" aria-selected={tab === value} key={value} disabled={reportOnly && value !== "probadas"} onClick={() => change(() => setTab(value))}>{label}</button>)}</div>}
-    <div className="tarjeta qhdn-fila">
-      {!support && <label>Ver<select value={scope} onChange={e => change(() => setScope(e.target.value))}><option value="mine">Mis entradas</option>{can(me, "updates.whats_new.view_all") && <option value="all">Todo el equipo</option>}</select></label>}
-      <label>Tipo<select value={type} onChange={e => change(() => setType(e.target.value))}><option value="">Todos</option>{types.map(t => <option key={t} value={t}>{ETIQUETAS_TIPO_CORTAS[t]}</option>)}</select></label>
-      <label>Sistema<select value={system} onChange={e => change(() => setSystem(e.target.value))}><option value="">Todos</option><option value="sag_web">SAG Web</option><option value="sag_clasico">SAG Clásico</option></select></label>
-      {!support && <label>Estado<select value={status} onChange={e => change(() => setStatus(e.target.value))}><option value="">Todos</option>{["borrador", "sin_probar", "en_pruebas", "probado", "fallida", "archivada"].map(s => <option key={s} value={s}>{s.replaceAll("_", " ")}</option>)}</select></label>}
-      {support && <label>Mes<input type="month" value={month} onChange={e => change(() => setMonth(e.target.value))} /></label>}
-      {support && tab === "probadas" && <label>Resultado<select value={result} onChange={e => change(() => setResult(e.target.value))}><option value="ambas">Ambas</option><option value="sin_errores">Sin errores</option><option value="fallidas">Fallidas</option></select></label>}
-      <label>Buscar<input type="search" value={q} maxLength={100} onChange={e => change(() => setQ(e.target.value))} /></label>
+  const tabs = reportOnly ? advisorTabs.slice(2) : advisorTabs;
+  const tab = tabs.find(([value]) => value === params.get("tab"))?.[0] ?? tabs[0][0];
+  const done = tab === "aprobadas" || tab === "fallidas";
+  const result = tab === "aprobadas" ? "sin_errores" : tab === "fallidas" ? "fallidas" : undefined;
+  const type = types.find(value => value === params.get("type")) ?? "";
+  const requestedSystem = params.get("system");
+  const system = requestedSystem === "sag_web" || requestedSystem === "sag_clasico" ? requestedSystem : "";
+  const rawMonth = params.get("createdMonth") ?? "";
+  const createdMonth = rawMonth === "all" ? "" : /^\d{4}-(?:0[1-9]|1[0-2])$/.test(rawMonth) ? rawMonth : defaultMonth;
+  const q = (params.get("q") ?? "").slice(0, 100);
+  const rawPage = params.get("page") ?? "";
+  const page = /^[1-9]\d{0,3}$/.test(rawPage) ? Number(rawPage) : 1;
+  const assignedToMe = tab === "sin_probar" && params.get("assignedToMe") === "true" ? "true" : undefined;
+  const testingByMe = tab === "en_pruebas" && params.get("testingByMe") === "true" ? "true" : undefined;
+  const selected = params.get("entry");
+  const filters = { tab: done ? "probadas" : tab, result, type, system, createdMonth, q, page, pageSize: 20, assignedToMe, testingByMe };
+  const entries = useQuery({ queryKey: [...key, "queue", filters], queryFn: () => whatsNewApi.list(filters, true), refetchOnWindowFocus: true, refetchInterval: 60 * 60 * 1000 });
+  const active = entries.data?.items.find(row => row.id === selected);
+  const unselected = new URLSearchParams(params);
+  unselected.delete("entry");
+  const returnTo = `${base}${unselected.size ? `?${unselected}` : ""}`;
+  useEffect(() => {
+    if (!selected || !entries.isSuccess || active) return;
+    // Do not unmount an editor with unsaved data because a background refetch
+    // changed membership. The explicit navigation guard remains in force.
+    if (dirty.current) return;
+    setNotice("La entrada ya no está disponible con estos filtros.");
+    setParams(current => { const clean = new URLSearchParams(current); clean.delete("entry"); return clean; }, { replace: true });
+  }, [selected, active, entries.isSuccess, setParams]);
+  function change(field: string, value: string, keepPage = false, replace = false) {
+    if (dirty.current && !leaveWithChanges()) return false;
+    setNotice("");
+    setParams(current => {
+      const next = new URLSearchParams(current);
+      next.delete("entry");
+      if (!keepPage) next.delete("page");
+      if (value) next.set(field, value);
+      else next.delete(field);
+      return next;
+    }, { replace, preventScrollReset: true });
+    return true;
+  }
+  const selectEntry = (id: string) => {
+    const next = new URLSearchParams(params);
+    next.set("entry", id);
+    return `${base}?${next}`;
+  };
+  return <>
+    <header className="qhdn-encabezado qhdn-asesor-encabezado">
+      <div><h1>Qué hay de nuevo · Bandeja de pruebas</h1></div>
+      <div className="qhdn-fila"><button type="button" disabled={entries.isFetching} onClick={() => void entries.refetch()}>Actualizar bandeja</button>
+        {me.canUseSavedReports && <Link className="qhdn-enlace-reportes" to={`${base}/reportes`}>Reportes guardados</Link>}
+        {done && can(me, "updates.whats_new.report") && <button className="primario" type="button" onClick={() => { if (!dirty.current) setReport(true); }} disabled={dirty.current}>{me.canUseSavedReports ? "Preparar reporte privado" : "Vista previa del reporte"}</button>}</div>
+    </header>
+    <div className="qhdn-pestanas qhdn-asesor-pestanas" role="tablist" aria-label="Pruebas">
+      {tabs.map(([value, label], index) => <button key={value} type="button" role="tab" id={`${tabsId}-${value}`} aria-selected={tab === value} aria-controls={`${tabsId}-panel`} tabIndex={tab === value ? 0 : -1}
+        onClick={() => change("tab", value)} onKeyDown={event => {
+          const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 :
+            event.key === "ArrowRight" ? (index + 1) % tabs.length : event.key === "ArrowLeft" ? (index + tabs.length - 1) % tabs.length : null;
+          if (next !== null) { event.preventDefault(); const target = tabs[next][0]; if (change("tab", target)) document.getElementById(`${tabsId}-${target}`)?.focus(); }
+        }}>{label}{tab === value && entries.data && !entries.error && <span className="qhdn-conteo" aria-hidden="true">{entries.data.total}</span>}</button>)}
     </div>
-    {support && tab === "probadas" && can(me, "updates.whats_new.report") && <button className="primario" type="button" onClick={() => setReport(true)}>{me.canUseSavedReports ? "Preparar reporte privado" : "Vista previa del reporte"}</button>}
-    {entries.isPending ? <Loading /> : entries.error ? <><Feedback error={entries.error} /><button onClick={() => entries.refetch()}>Reintentar</button></> : <><div className="qhdn-tabla-contenedor"><table aria-label={support ? "Bandeja de pruebas" : "Mis entradas"}><thead><tr><th>Entrada</th><th>Tipo / Sistema</th><th>Qué cambió</th><th>Desarrollador</th><th>Estado</th></tr></thead><tbody>{entries.data.items.map(e => <tr key={e.id}><td><Link to={`${base}/${e.id}`}>{e.number}</Link></td><td><EtiquetaTipo tipo={e.type} /> <EtiquetaSistema sistema={e.system} /></td><td>{e.summary || "Borrador sin contenido"}<small className="qhdn-detalle-estado">{e.primaryRoute}</small></td><td>{e.developer?.displayName}</td><td><EtiquetaEstadoQhdn estado={e.status} /></td></tr>)}</tbody></table></div>{entries.data.items.length === 0 && <p>No hay entradas con estos filtros.</p>}<PageControl page={page} total={entries.data.total} size={20} onChange={setPage} /></>}
-    {report && <ReportDialog filters={{ type, system, month, q }} result={result} onClose={() => setReport(false)} onSaved={me.canUseSavedReports ? id => navigate(`${base}/reportes/${encodeURIComponent(id)}`) : undefined} />}
+    <div className="qhdn-asesor-filtros" role="search" aria-label="Filtrar bandeja de pruebas">
+      <label>Tipo<select value={type} onChange={e => change("type", e.target.value)}><option value="">Todos</option>{types.map(t => <option key={t} value={t}>{ETIQUETAS_TIPO_CORTAS[t]}</option>)}</select></label>
+      <label>Sistema<select value={system} onChange={e => change("system", e.target.value)}><option value="">Todos</option><option value="sag_web">SAG Web</option><option value="sag_clasico">SAG Clásico</option></select></label>
+      <label>Mes de creación<input type="month" value={createdMonth} onChange={e => change("createdMonth", e.target.value || "all")} /></label>
+      <label>Buscar<input type="search" value={q} maxLength={100} placeholder="Ruta o texto" onChange={e => change("q", e.target.value, false, true)} /></label>
+      {tab === "sin_probar" && <label className="qhdn-check"><input type="checkbox" checked={!!assignedToMe} onChange={e => change("assignedToMe", e.target.checked ? "true" : "")} />Asignadas a mí inicialmente</label>}
+      {tab === "en_pruebas" && <label className="qhdn-check"><input type="checkbox" checked={!!testingByMe} onChange={e => change("testingByMe", e.target.checked ? "true" : "")} />Probando yo</label>}
+    </div>
+    {notice && <p role="status">{notice}</p>}
+    <div className={selected ? "qhdn-asesor-workspace tiene-detalle" : "qhdn-asesor-workspace"}>
+      <section id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-${tab}`}>
+        {entries.isPending ? <Loading /> : entries.error ? <><Feedback error={entries.error} /><button type="button" onClick={() => void entries.refetch()}>Reintentar</button></> :
+          <>{entries.data.items.length ? <ul className="qhdn-asesor-lista" aria-label="Entradas de la bandeja">{entries.data.items.map(e => {
+            const person = tab === "sin_probar" ? e.initialAssigneeName : tab === "en_pruebas" ? e.holder?.displayName : e.lastTesterName;
+            const personLabel = tab === "sin_probar" ? "Asesor asignado" : tab === "en_pruebas" ? "En pruebas por" : "Última persona que probó";
+            return <li key={e.id} className={selected === e.id ? "qhdn-asesor-fila seleccionada" : "qhdn-asesor-fila"}>
+              <div className="qhdn-etiquetas"><strong>{e.number}</strong><EtiquetaTipo tipo={e.type} /><EtiquetaSistema sistema={e.system} />{tab === "aprobadas" && typeof e.showToClients === "boolean" && <span className="qhdn-detalle-estado">{visibilityLabel(e.showToClients, me.publicEnabled)}</span>}</div>
+              <p>{e.summary || "Sin descripción"}{e.primaryRoute && <small className="qhdn-detalle-estado">{e.primaryRoute}</small>}</p>
+              <div className="qhdn-asesor-fila-meta"><span>{personLabel}: <strong>{person || "—"}</strong></span><time dateTime={e.createdAt}>{prettyDate(e.createdAt)}</time>
+                <Link className="qhdn-accion-fila" to={selectEntry(e.id)} preventScrollReset aria-current={selected === e.id ? "location" : undefined} aria-label={`Ver detalle de ${e.number}`}>Ver detalle</Link></div>
+            </li>;
+          })}</ul> : <p className="tarjeta">No hay entradas con estos filtros.</p>}
+          <PageControl page={page} total={entries.data.total} size={entries.data.pageSize} onChange={value => change("page", String(value), true)} /></>}
+      </section>
+      {selected && (active || dirty.current) && <section className="qhdn-asesor-detalle" aria-label="Entrada seleccionada">
+        <LiveEntry key={selected} entryId={selected} me={me} developerView={false} returnTo={returnTo}
+          onDirtyChange={reportDirty} />
+      </section>}
+    </div>
+    {report && <ReportDialog filters={{ type, system, createdMonth, q }} result={result} onClose={() => setReport(false)} onSaved={me.canUseSavedReports ? id => navigate(`${base}/reportes/${encodeURIComponent(id)}`) : undefined} />}
   </>;
 }
 
@@ -266,7 +392,6 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
   const [removing, setRemoving] = useState(false);
   const [draftError, setDraftError] = useState<unknown>(null);
   const [conflict, setConflict] = useState(false);
-  const failedRevision = useRef<number>();
   const [uploading, setUploading] = useState(false);
   const uploadBusy = useRef(false);
   const publishing = useRef(false);
@@ -280,19 +405,16 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
   const support = useQuery({ queryKey: [...key, "support-users"], queryFn: () => whatsNewApi.lookup("support-users") });
   const op = useOperation();
   const [submitting, setSubmitting] = useState(false);
-  const latest = useRef({ form, saved, revision: 0, committed: 0, conflicted: false });
+  const latest = useRef({ form, saved, revision: 0, conflicted: false });
   function update(patch: Partial<LiveDraftForm>) {
     const state = latest.current;
     state.form = { ...state.form, ...patch };
-    if (!correction) {
-      state.revision++;
-      setEditRevision(state.revision);
-      if (!state.conflicted) setDraftError(null);
-    }
+    state.revision++;
+    setEditRevision(state.revision);
+    if (!state.conflicted) setDraftError(null);
     setForm(state.form);
   }
   const clientLabel = form.clientSelection === undefined ? saved?.clientName ?? null : form.clientSelection?.label ?? null;
-  const saveRef = useRef<() => void>(() => {});
   function persistDraft() {
     if (inFlightDraft.current) return inFlightDraft.current;
     const state = latest.current;
@@ -305,8 +427,6 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
     const write = saveDraft(draftFromForm(submitted, selection === null ? null : selection?.id), state.saved)
       .then(result => {
         state.saved = result;
-        state.committed = revision;
-        failedRevision.current = undefined;
         setSaved(result);
         setCommittedRevision(revision);
         if (selection !== undefined && state.form.clientSelection === selection) {
@@ -315,7 +435,6 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
         }
         return result;
       }).catch((error: unknown) => {
-        failedRevision.current = state.revision;
         const response = error as { status?: number; data?: { code?: unknown } };
         if (response.status === 409 && (!response.data?.code || response.data.code === "version_desactualizada")) {
           state.conflicted = true;
@@ -330,12 +449,11 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
     inFlightDraft.current = write;
     return write;
   }
-  async function save(publish = false, auto = false) {
+  async function save(publish = false) {
     const state = latest.current;
-    if (removing || inFlightDraft.current || publishing.current || uploadBusy.current || state.conflicted || correction
-      || (auto && (state.revision === state.committed || failedRevision.current === state.revision))) return;
+    if (removing || inFlightDraft.current || publishing.current || uploadBusy.current || state.conflicted || correction) return;
     if (publish) { publishing.current = true; setSubmitting(true); }
-    if (!auto) setLocalError("");
+    setLocalError("");
     try {
       const result = await persistDraft();
       if (publish) { await op.mutateAsync(() => whatsNewApi.command(result.id, "publish", result.etag)); navigate(`${base}/${result.id}`); }
@@ -348,11 +466,10 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
     validarArchivoPrivado(file, kind);
     uploadBusy.current = true; setUploading(true); setLocalError("");
     try {
-      let current = inFlightDraft.current ? await inFlightDraft.current : latest.current.saved;
+      const current = latest.current.saved;
       if (!current || (target !== "que_cambio" && current.type !== "nuevo")) {
         if (correction) throw new Error("La entrada no admite esta referencia.");
-        current = await persistDraft();
-        setMessage("Borrador creado para recibir archivos. No se ha publicado.");
+        throw new Error("Guarda el borrador antes de adjuntar archivos o pegar imágenes.");
       }
       const fingerprint = JSON.stringify([kind, target, file.name, file.size, file.lastModified, file.type]);
       const key = fileKeys.current.get(fingerprint) ?? crypto.randomUUID();
@@ -370,36 +487,8 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
       if (current.tipo === "nuevo") update({ [group]: [...current[group], { id: media.fileId, clase: "archivo", nombre: media.name, url: "" }] });
     } catch (error) { setLocalError(errorMessage(error)); }
   }
-  saveRef.current = () => { void save(false, true); };
   const dirty = editRevision !== committedRevision;
-  useEffect(() => {
-    if (!dirty || correction || removing || draftPending || uploading || submitting || conflict || failedRevision.current === editRevision) return;
-    const timer = window.setTimeout(() => saveRef.current(), 3_000);
-    return () => window.clearTimeout(timer);
-  }, [dirty, editRevision, correction, removing, draftPending, uploading, submitting, conflict]);
-  useEffect(() => {
-    if (!dirty) return;
-    // The debounce leaves a brief unsaved window; never discard it on a reload silently.
-    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
-    // BrowserRouter's in-app links don't fire beforeunload (including the sidebar).
-    const warnLink = (event: MouseEvent) => {
-      if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-      const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
-      if (!link || link.hasAttribute("download") || (link.target && link.target !== "_self")) return;
-      const destination = new URL(link.href, location.href);
-      if (destination.origin !== location.origin || destination.pathname === location.pathname) return;
-      if (!window.confirm("Hay cambios sin guardar. ¿Quieres salir del borrador?")) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-    };
-    window.addEventListener("beforeunload", warn);
-    document.addEventListener("click", warnLink, true);
-    return () => {
-      window.removeEventListener("beforeunload", warn);
-      document.removeEventListener("click", warnLink, true);
-    };
-  }, [dirty]);
+  useUnsavedNavigation(dirty || uploading || draftPending || submitting);
   const formLocked = submitting || op.isPending;
   const mayRemove = !correction && saved?.status === "borrador" && (saved.canDelete ?? entry?.canDelete) === true;
   const missing = fieldRequirements(form, clientLabel);
@@ -438,7 +527,8 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
           <input ref={rulesInput} type="file" aria-label="Documento de reglas de negocio" accept={aceptaDocumentoPrivado} hidden onChange={e => { void addReferenceFile("reglasNegocio", e.currentTarget.files?.[0]); e.currentTarget.value = ""; }} />
           <input ref={videoInput} type="file" aria-label="Archivo de video de entrega" accept={tiposVideoPrivado.join(",")} hidden onChange={e => { void addReferenceFile("videos", e.currentTarget.files?.[0]); e.currentTarget.value = ""; }} />
         </fieldset>}
-        {correction && <section className="qhdn-formulario-seccion"><h3 id="live-correction">Nota de corrección</h3><EditorEnriquecido valor={note} onChange={setNote} perfil="medio" etiquetaId="live-correction" soloLectura={formLocked} /></section>}
+        {correction && <section className="qhdn-formulario-seccion"><h3 id="live-correction">Nota de corrección</h3><EditorEnriquecido valor={note} onChange={value => { setNote(value); update({}); }} perfil="medio" etiquetaId="live-correction" soloLectura={formLocked} /></section>}
+        {me.storageAvailable && !saved && <p className="texto-ayuda">Guarda el borrador antes de adjuntar archivos o pegar imágenes.</p>}
         {!me.storageAvailable && <p className="texto-ayuda" id="storage-form">{storagePending}</p>}
         {uploading && <p className="texto-ayuda" id="storage-form" role="status">Subiendo archivo a almacenamiento privado…</p>}
         <div className="qhdn-pie-formulario">
@@ -464,105 +554,293 @@ function LiveForm({ me, entry, correction = false }: { me: Me; entry?: EntryDto;
   </>;
 }
 
-function LiveEntry({ me, developerView }: { me: Me; developerView: boolean }) {
+function LiveEntry({ me, developerView, entryId, returnTo = base, onDirtyChange }: { me: Me; developerView: boolean; entryId?: string; returnTo?: string; onDirtyChange?: (dirty: boolean) => void }) {
   const key = useContext(Scope);
-  const { id = "" } = useParams(); const detail = useQuery({ queryKey: [...key, "entry", id], queryFn: () => whatsNewApi.detail(id) });
+  const params = useParams();
+  const id = entryId ?? params.id ?? "";
+  const detail = useQuery({ queryKey: [...key, "entry", id], queryFn: () => whatsNewApi.detail(id) });
   if (detail.isPending) return <Loading />;
-  if (detail.error) return <><Feedback error={detail.error} /><button onClick={() => detail.refetch()}>Recargar</button></>;
-  return <EntryContent me={me} entry={detail.data} developerView={developerView} />;
+  const status = (detail.error as { status?: number } | null)?.status;
+  if (!detail.data || status === 401 || status === 403 || status === 404) return <><Feedback error={detail.error} /><button type="button" onClick={() => detail.refetch()}>Recargar</button></>;
+  return <><Feedback error={detail.error} /><EntryContent key={id} me={me} entry={detail.data} developerView={developerView} returnTo={returnTo} onDirtyChange={onDirtyChange} /></>;
 }
-function EntryContent({ me, entry: e, developerView }: { me: Me; entry: EntryDto; developerView: boolean }) {
-  const key = useContext(Scope); const qc = useQueryClient(); const [noteSaved, setNoteSaved] = useState("");
-  const op = useOperation(); const [confirm, setConfirm] = useState<string | null>(null); const [reason, setReason] = useState("");
-  const [removing, setRemoving] = useState(false);
-  const [body, setBody] = useState<DocEnriquecido | null>(null); const [annul, setAnnul] = useState<string | null>(null);
+
+type RoundState = { id: string | null; etag: string | null; current: RoundProgress; saved: RoundProgress; stale: boolean };
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const visibilityLabel = (show: boolean, global: boolean) => !show ? "Privada" : global ? "Visible a clientes" : "Preparada · publicación general desactivada";
+function fromRound(round?: RoundDto): RoundState {
+  const progress = { items: round?.checklist.map(({ itemNo, checked }) => ({ itemNo, checked })) ?? [], body: round?.noteDraft ?? null };
+  return { id: round?.id ?? null, etag: round?.etag ?? null, saved: progress, current: progress, stale: false };
+}
+function useStableActionKey() {
+  const last = useRef<{ intent: string; key: string }>();
+  return (intent: unknown) => {
+    const payload = JSON.stringify(intent);
+    if (last.current?.intent !== payload) last.current = { intent: payload, key: crypto.randomUUID() };
+    return last.current.key;
+  };
+}
+function EntryContent({ me, entry: e, developerView, returnTo, onDirtyChange }: { me: Me; entry: EntryDto & Advisors; developerView: boolean; returnTo: string; onDirtyChange?: (dirty: boolean) => void }) {
+  const key = useContext(Scope); const qc = useQueryClient();
+  const op = useOperation();
+  const [confirm, setConfirm] = useState<string | null>(null); const [reason, setReason] = useState("");
+  const [approving, setApproving] = useState(false); const [publishChoice, setPublishChoice] = useState<boolean | null>(null);
+  const [removing, setRemoving] = useState(false); const [annul, setAnnul] = useState<string | null>(null);
+  const [note, setNote] = useState<DocEnriquecido | null>(null);
+  const [finding, setFinding] = useState<DocEnriquecido | null>(null);
+  const [clientDirty, setClientDirty] = useState(false);
+  const [clientEditorVersion, setClientEditorVersion] = useState(0);
+  const [feedback, setFeedback] = useState("");
+  const persistentKey = useStableActionKey();
   const round = e.rounds.find(r => r.status === "tomada"); const mine = round?.holderId === me.user.id;
+  const [progress, setProgress] = useState(() => fromRound(round));
+  const progressDirty = !same(progress.current, progress.saved);
+  const unsaved = progressDirty || !docVacio(note) || !docVacio(finding) || clientDirty;
+  useUnsavedNavigation(unsaved);
+  useEffect(() => { onDirtyChange?.(unsaved); }, [onDirtyChange, unsaved]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
   const tester = me.areas.includes("soporte") && can(me, "updates.whats_new.test");
   const manage = can(me, "configuration.whats_new.manage"); const author = e.developer.id === me.user.id && can(me, "updates.whats_new.author") && me.areas.includes("desarrollo");
   const contributors = [e.developer.id, ...e.log.filter(l => ["editar_borrador", "publicar", "corregir", "corregir_en_nombre"].includes(l.action)).map(l => l.byId)];
   const removed = e.status === "eliminada";
   const mayTest = !removed && !developerView && tester && !contributors.includes(me.user.id);
-  const noteDraft = useMutation({ mutationFn: (data: { roundId: string; etag: string; body: DocEnriquecido | null }) => api.put(`/whats-new/rounds/${data.roundId}/note-draft`, { body: data.body }, mutationOptions(data.etag)), onSuccess: async () => { setNoteSaved("Avance guardado automáticamente."); await qc.invalidateQueries({ queryKey: [...key, "entry", e.id] }); } });
-  useEffect(() => { setBody(round?.noteDraft ?? null); setNoteSaved(""); }, [round?.id]);
+  const hasPublishingPermission = !removed && !developerView && me.areas.includes("soporte") &&
+    can(me, "updates.whats_new.publish_client") && e.type !== "sp_critico";
+  const mayApprovePublic = hasPublishingPermission && mayTest && mine;
+  const mayToggle = hasPublishingPermission && e.status === "probado";
+  const mayEditClientText = e.type !== "sp_critico" && (mayTest && mine || mayToggle);
+  const hasClientText = Boolean(e.clientText?.title?.trim()) && !docVacio(safeDisplayDoc(e.clientText?.body ?? null, true));
   useEffect(() => {
-    if (!round || !mine || !mayTest || removing || noteDraft.isPending || noteDraft.error || op.isPending || JSON.stringify(body) === JSON.stringify(round.noteDraft)) return;
-    const timer = setTimeout(() => noteDraft.mutate({ roundId: round.id, etag: round.etag, body }), 1500);
-    return () => clearTimeout(timer);
-  }, [body, round?.etag, mine, mayTest, removing, op.isPending, noteDraft.isPending]);
-  function command(action: string, data: unknown = {}) { op.run(() => whatsNewApi.command(e.id, action, e.etag, data)); }
-  const findings = <><h3>Hallazgos {developerView && <span className="qhdn-conteo">{e.findings.length}</span>}</h3>{e.findings.length === 0 && <p>Sin hallazgos registrados.</p>}{e.findings.map(f => <article className={developerView ? "qhdn-hallazgo-detalle" : "tarjeta"} key={f.id}><h4>Hallazgo {f.number} · Ronda {f.roundNo}</h4><ReadDoc value={f.body} />{f.annulled ? <p>Anulado: {f.annulled.reason}</p> : mine && mayTest && f.roundNo === round.roundNo && <button onClick={() => { setAnnul(f.id); setConfirm("annul"); }}>Anular hallazgo</button>}</article>)}</>;
-  return <><Link className={developerView ? "qhdn-volver-desarrollador" : undefined} to={base}>{developerView ? "← Volver a mis entradas" : "← Volver a la bandeja"}</Link>
-    <header className={developerView ? "qhdn-encabezado qhdn-cabecera-detalle" : "pagina-encabezado"}>
+    setProgress(current => {
+      if ((round?.id ?? null) === current.id && (round?.etag ?? null) === current.etag) return current;
+      return !same(current.current, current.saved) ? { ...current, stale: true } : fromRound(round);
+    });
+  }, [round?.id, round?.etag]);
+  const progressWrite = useMutation({
+    mutationFn: (submission: { id: string; etag: string; payload: RoundProgress }) => whatsNewApi.progress(submission.id, submission.etag, submission.payload),
+    onSuccess: async (result, written) => {
+      const committed = result.rounds.find(item => item.id === written.id && item.status === "tomada");
+      if (!committed) return;
+      await qc.cancelQueries({ queryKey: [...key, "entry", e.id], exact: true });
+      setProgress(current => current.id === written.id
+        ? { ...current, etag: committed.etag, saved: written.payload, stale: false } : current);
+      setFeedback("Avance guardado.");
+      // Apply the version returned by the explicit operation without replacing
+      // the editor or its locally typed changes after the request started.
+      qc.setQueryData([...key, "entry", e.id], result);
+      void qc.invalidateQueries({ queryKey: [...key, "queue"] });
+      void qc.invalidateQueries({ queryKey: [...key, "entries"] });
+    },
+  });
+  const savingProgress = useRef(false);
+  function saveProgress() {
+    if (!mine || !mayTest || !progressDirty || !round || !progress.etag || progress.stale || progress.id !== round.id || savingProgress.current || op.isPending) return;
+    savingProgress.current = true;
+    setFeedback("");
+    void progressWrite.mutateAsync({ id: round.id, etag: progress.etag, payload: progress.current }).catch(() => {}).finally(() => { savingProgress.current = false; });
+  }
+  function editProgress(update: (before: RoundProgress) => RoundProgress) {
+    setFeedback("");
+    setProgress(current => ({ ...current, current: update(current.current) }));
+  }
+  const blocking = op.isPending || progressWrite.isPending;
+  const canClose = mine && mayTest && !blocking && !unsaved && !progress.stale;
+  function command(action: string, data: unknown = {}) { op.run(() => whatsNewApi.command(e.id, action, e.etag, data, persistentKey([e.id, action, data]))); }
+  function record(kind: "notes" | "findings", body: DocEnriquecido | null) {
+    if (!round || !mine || !mayTest || blocking || docVacio(body)) return;
+    const write = { body };
+    const url = `/whats-new/rounds/${encodeURIComponent(round.id)}/${kind}`;
+    void op.mutateAsync(() => api.post(url, write, mutationOptions(round.etag, true, persistentKey([url, round.etag, write])))).then(() => {
+      const setBody = kind === "notes" ? setNote : setFinding;
+      setBody(current => same(current, body) ? null : current);
+    }).catch(() => {});
+  }
+  function approve() {
+    if (!canClose || publishChoice === null || (publishChoice && (!mayApprovePublic || !hasClientText))) return;
+    const data = { publishToClients: publishChoice };
+    void op.mutateAsync(() => whatsNewApi.command(e.id, "mark-tested", e.etag, data, persistentKey([e.id, "mark-tested", data])))
+      .then(() => { setApproving(false); setPublishChoice(null); }).catch(() => {});
+  }
+  const findings = <><h3>Hallazgos {developerView && <span className="qhdn-conteo">{e.findings.length}</span>}</h3>{e.findings.length === 0 && <p>Sin hallazgos registrados.</p>}{e.findings.map(f => <article className={developerView ? "qhdn-hallazgo-detalle" : "qhdn-evento"} key={f.id}><h4>Hallazgo {f.number} · Ronda {f.roundNo}</h4><ReadDoc value={f.body} />{f.annulled ? <p>Anulado: {f.annulled.reason}</p> : mine && mayTest && f.roundNo === round.roundNo && <button type="button" disabled={blocking || progressDirty} onClick={() => { setAnnul(f.id); setConfirm("annul"); }}>Anular hallazgo</button>}</article>)}</>;
+  const persistedNotes = e.rounds.flatMap(item => item.notes.map(n => ({ ...n, roundNo: item.roundNo })));
+  return <><Link className={developerView ? "qhdn-volver-desarrollador" : undefined} to={returnTo}>{developerView ? "← Volver a mis entradas" : "← Volver a la bandeja"}</Link>
+    <header className="qhdn-encabezado qhdn-cabecera-detalle">
       <div><h1>{developerView ? "Detalle de la entrada" : e.number}</h1><div className="qhdn-etiquetas">{developerView && <span className="qhdn-detalle-identificador">{e.number}</span>}<EtiquetaTipo tipo={e.type} /><EtiquetaSistema sistema={e.system} /><EtiquetaEstadoQhdn estado={e.status} /></div></div>
       {developerView && author && e.status === "borrador" && <Link className="qhdn-boton-primario-enlace" to={`${base}/${e.id}/editar`}>Continuar edición</Link>}
     </header>
     {developerView && (e.status !== "borrador" || !author) && <p className="alerta alerta-info qhdn-aviso-desarrollador"><strong>Solo lectura.</strong> {(author || manage) && ["sin_probar", "fallida"].includes(e.status) ? "Usa la acción de corrección para modificar el cambio y devolverlo a Soporte." : "En este estado no puedes editar la entrada."}</p>}
-    <Feedback error={op.error} /><div className="qhdn-fila qhdn-comandos-detalle">
-    {author && e.status === "borrador" && <>{!developerView && <Link to={`${base}/${e.id}/editar`}>Editar borrador</Link>}<button disabled={op.isPending} onClick={() => command("publish")}>Publicar a Soporte</button></>}
-    {!removed && e.canDelete === true && <RemoveButton label="Eliminar entrada" disabled={op.isPending || noteDraft.isPending} onClick={() => setRemoving(true)} />}
-    {(author || manage) && ["sin_probar", "fallida"].includes(e.status) && <Link to={`${base}/${e.id}/corregir`}>Corregir y volver a publicar</Link>}
-    {!developerView && e.status === "sin_probar" && <button className="primario" disabled={!mayTest || op.isPending} onClick={() => command("take")}>Tomar para probar</button>}
-    {!removed && !developerView && mine && <><button onClick={() => setConfirm("release")} disabled={op.isPending}>Soltar</button><button className="peligro" disabled={op.isPending || !e.findings.some(f => f.roundNo === round.roundNo && !f.annulled)} onClick={() => command("mark-failed")}>Marcar fallida</button><button className="primario" disabled={op.isPending || round.checklist.some(c => !c.checked)} onClick={() => command("mark-tested")}>Marcar probado</button></>}
-    {!removed && !developerView && manage && round && !mine && <button onClick={() => setConfirm("force-release")}>Forzar Soltar</button>}{!developerView && manage && e.status === "probado" && <button onClick={() => setConfirm("archive")}>Archivar</button>}
-  </div>{!developerView && e.status === "sin_probar" && !mayTest && <p>Probar exige área Soporte y permiso de pruebas; quien creó o corrigió la entrada no puede probarla.</p>}{round && !mine && <p>En pruebas por {round.holderName}. Solo lectura.</p>}
-    <Feedback error={noteDraft.error} />{!developerView && <p role="status">{noteSaved}</p>}<div className={developerView ? "qhdn-detalle-grid qhdn-desarrollador-grid" : "qhdn-formulario-grid"}><section className="tarjeta">
-      {developerView ? <><h2>Datos del cambio</h2><dl className="qhdn-datos">
-        <dt>Desarrollador</dt><dd>{e.developer.displayName}</dd><dt>Asesores que han probado</dt><dd>{e.participants.filter(p => p.role === "asesor").map(p => p.displayName).join(", ") || "Ninguno todavía"}</dd>
+    {!approving && <Feedback error={op.error} />}
+    <div className="qhdn-fila qhdn-comandos-detalle">
+      {author && e.status === "borrador" && <>{!developerView && <Link to={`${base}/${e.id}/editar`}>Editar borrador</Link>}<button type="button" disabled={blocking} onClick={() => command("publish")}>Publicar a Soporte</button></>}
+      {!removed && e.canDelete === true && <RemoveButton label="Eliminar entrada" disabled={blocking} onClick={() => setRemoving(true)} />}
+      {(author || manage) && ["sin_probar", "fallida"].includes(e.status) && <Link to={`${base}/${e.id}/corregir`}>Corregir y volver a publicar</Link>}
+      {!developerView && e.status === "sin_probar" && <button className="primario" type="button" disabled={!mayTest || blocking} onClick={() => command("take")}>Tomar para probar</button>}
+      {mine && mayTest && <>
+        <button type="button" onClick={() => setConfirm("release")} disabled={blocking}>Soltar</button>
+        <button type="button" className="peligro" disabled={!canClose || !e.findings.some(f => f.roundNo === round.roundNo && !f.annulled)} onClick={() => command("mark-failed")}>Marcar fallida</button>
+        <button type="button" className="primario" disabled={!canClose || round.checklist.some(c => !c.checked)} onClick={() => { op.reset(); setPublishChoice(null); setApproving(true); }}>Aprobar</button>
+      </>}
+      {!removed && !developerView && manage && round && !mine && <button type="button" disabled={blocking} onClick={() => setConfirm("force-release")}>Forzar Soltar</button>}
+      {!developerView && manage && e.status === "probado" && <button type="button" disabled={blocking} onClick={() => setConfirm("archive")}>Archivar</button>}
+    </div>
+    {!developerView && e.status === "sin_probar" && !mayTest && <p>Probar exige área Soporte y permiso de pruebas; quien creó o corrigió la entrada no puede probarla.</p>}
+    {round && !mine && <p>En pruebas por {round.holderName}. Solo lectura.</p>}
+    <div className={developerView ? "qhdn-detalle-grid qhdn-desarrollador-grid" : "qhdn-asesor-detalle-grid"}><section className="tarjeta">
+      <h2>Datos del cambio</h2>
+      <dl className="qhdn-datos"><dt>Desarrollador</dt><dd>{e.developer.displayName}</dd>
+        {developerView ? <><dt>Asesores que han probado</dt><dd>{e.participants.filter(p => p.role === "asesor").map(p => p.displayName).join(", ") || "Ninguno todavía"}</dd></> :
+          <><dt>Asesor asignado</dt><dd>{e.initialAssigneeName || "—"}</dd><dt>En pruebas por</dt><dd>{round?.holderName || "—"}</dd><dt>Última persona que probó</dt><dd>{e.lastTesterName || "—"}</dd></>}
         {e.clientName && <><dt>Cliente</dt><dd>{e.clientName}</dd></>}<dt>Creada</dt><dd><time dateTime={e.createdAt}>{prettyDate(e.createdAt)}</time></dd>
-      </dl></> : <><p><strong>Desarrollador:</strong> {e.developer.displayName}</p><p><strong>Asesores que han probado:</strong> {e.participants.filter(p => p.role === "asesor").map(p => p.displayName).join(", ") || "Ninguno todavía"}</p>{e.clientName && <p><strong>Cliente:</strong> {e.clientName}</p>}</>}
+      </dl>
       <h3>Dónde se encuentra</h3><ul>{e.routes.map((r,i) => <li key={i}>{[r.via === "barra_lateral" ? "Barra lateral" : "Barra de navegación", ...r.submenus, r.option].join(" › ")}</li>)}</ul><h3>Qué cambió</h3><ReadDoc value={e.whatChanged} privateMedia />
       <h3>Acción requerida</h3>{e.requiredActions.map(a => <section key={a.code}><h4>{a.label}</h4><ReadDoc value={a.detail} /></section>)}
       {e.attachments.length > 0 && <section><h3>Referencias internas</h3><ul>{e.attachments.map((a,i) => <li key={i}>{a.group === "video" ? "Video" : "Reglas de negocio"}: {a.kind === "archivo" ? <BotonDescargaPrivada id={a.fileId} name={a.name || "Archivo adjunto"} /> : /^https:\/\//i.test(a.url) ? <a href={a.url} target="_blank" rel="noopener noreferrer">{a.label || a.url}</a> : "Enlace no disponible"}</li>)}</ul></section>}
-      {!developerView && round && <section><h3>Mi checklist</h3><progress max={round.checklist.length || 1} value={round.checklist.filter(c => c.checked).length} aria-label="Avance del checklist" />{round.checklist.map(item => <label className="qhdn-check" key={item.itemNo}><input type="checkbox" checked={item.checked} disabled={!mine || !mayTest || op.isPending} onChange={() => op.run(() => api.patch(`/whats-new/rounds/${round.id}/checklist`, { items: [{ itemNo: item.itemNo, checked: !item.checked }] }, mutationOptions(round.etag)))} />{item.label}</label>)}<p>Para aprobar, completa el checklist. Para marcar fallida, registra al menos un hallazgo vigente de esta ronda.</p></section>}
-      {mine && mayTest && <section><h3 id="live-note">Notas y hallazgos</h3><EditorEnriquecido valor={body} onChange={setBody} perfil="medio" etiquetaId="live-note" /><div className="qhdn-fila"><button disabled={!body || op.isPending} onClick={() => op.mutateAsync(() => api.post(`/whats-new/rounds/${round.id}/notes`, { body }, mutationOptions(round.etag, true))).then(() => setBody(null)).catch(() => {})}>Guardar como nota</button><button disabled={!body || op.isPending} onClick={() => op.mutateAsync(() => api.post(`/whats-new/rounds/${round.id}/findings`, { body }, mutationOptions(round.etag, true))).then(() => setBody(null)).catch(() => {})}>Registrar hallazgo</button></div><p className="texto-ayuda">Registrar un hallazgo no envía correo.</p></section>}
-      {!developerView && findings}
-    </section><aside className="qhdn-panel-lateral">{developerView ? <section className="tarjeta">{findings}</section> : <ClientText me={me} entry={e} editable={!removed && can(me, "updates.whats_new.publish_client") && me.areas.includes("soporte") && !contributors.includes(me.user.id) && (mine || e.status === "probado")} />}<div className="tarjeta"><h3>Historial y rondas de prueba</h3>{e.rounds.map(r => <details key={r.id}><summary>Ronda {r.roundNo} · {r.holderName} · {r.status}</summary><ul>{r.checklist.map(c => <li key={c.itemNo}>{c.checked ? "✓" : "○"} {c.label}</li>)}</ul>{r.notes.map(n => <ReadDoc key={n.id} value={n.body} />)}</details>)}<ol>{e.log.map((l,i) => <li key={i}><time>{new Date(l.at).toLocaleString("es-CO", { timeZone: "America/Bogota" })}</time> · {l.byId}: {l.action.replaceAll("_", " ")}{l.reason && ` · ${l.reason}`}</li>)}</ol></div></aside></div>
-    <Dialogo titulo={confirm === "release" ? "Soltar y reiniciar la prueba" : "Confirmar acción"} abierto={!!confirm} onCerrar={() => { setConfirm(null); setReason(""); }}>{confirm === "release" ? <p>La entrada volverá a Sin probar y la próxima prueba empezará vacía. Se conserva la historia de esta ronda. No se enviará ningún correo.</p> : <label>Motivo (10 a 500 caracteres)<textarea value={reason} minLength={10} maxLength={500} onChange={ev => setReason(ev.target.value)} /></label>}<button className="primario" disabled={op.isPending || (confirm !== "release" && reason.trim().length < 10)} onClick={() => { const action = confirm!; if (action === "annul") op.run(() => api.post(`/whats-new/findings/${annul}/annul`, { reason }, mutationOptions(round?.etag ?? e.etag, true))); else command(action, action === "release" ? {} : { reason }); setConfirm(null); setReason(""); }}>Confirmar</button></Dialogo>
-    {removing && <RemoveEntryDialog entry={e} onClose={() => setRemoving(false)} unsaved={Boolean(mine && round && JSON.stringify(body) !== JSON.stringify(round.noteDraft))} />}
+    </section><aside className="qhdn-panel-lateral">
+      {!developerView && (round || progress.stale) && <section className="tarjeta qhdn-asesor-progreso"><h3>Avance de pruebas</h3>
+        <progress max={progress.current.items.length || 1} value={progress.current.items.filter(item => item.checked).length} aria-label="Avance del checklist" />
+        {round?.checklist.map(item => <label className="qhdn-check" key={item.itemNo}><input type="checkbox" checked={progress.current.items.find(value => value.itemNo === item.itemNo)?.checked ?? item.checked} disabled={!mine || !mayTest || progress.stale || op.isPending} onChange={event => {
+          const checked = event.target.checked;
+          editProgress(current => ({ ...current, items: current.items.map(value => value.itemNo === item.itemNo ? { ...value, checked } : value) }));
+        }} />{item.label}</label>)}
+        {(mine && mayTest || progress.stale) && <>
+          <EditorEnriquecido valor={progress.current.body} onChange={body => editProgress(current => ({ ...current, body: docVacio(body) ? null : body }))} perfil="medio" tamano="compacto" ariaLabel="Borrador de avance" soloLectura={progress.stale || op.isPending} />
+          <Feedback error={progressWrite.error} />
+          {progress.stale && <p role="alert">La ronda cambió en otra sesión. El avance local se conserva; copia lo necesario antes de recargar.</p>}
+          <p role="status" className="texto-ayuda">{progressWrite.isPending ? "Guardando avance…" : progressDirty ? "Avance sin guardar." : feedback}</p>
+          <button type="button" className="primario" disabled={!mine || !mayTest || !progressDirty || progress.stale || blocking} onClick={saveProgress}>Guardar avance</button>
+          <p className="texto-ayuda">Completa y guarda el checklist para aprobar. Guarda o limpia los borradores antes de cerrar la prueba.</p>
+        </>}
+      </section>}
+      {!developerView && <ClientText key={clientEditorVersion} entry={e} editable={mayEditClientText} mayToggle={mayToggle} globalPublic={me.publicEnabled} onDirtyChange={setClientDirty} busy={blocking} />}
+      <section className="tarjeta"><h3>Notas de prueba</h3>{!persistedNotes.length && <p>Sin notas registradas.</p>}
+        {persistedNotes.map(n => <article className="qhdn-evento" key={n.id}><p>Ronda {n.roundNo} · <time dateTime={n.createdAt}>{prettyDate(n.createdAt)}</time></p><ReadDoc value={n.body} /></article>)}
+        {mine && mayTest && <details><summary>Agregar una nota</summary><EditorEnriquecido valor={note} onChange={setNote} perfil="medio" ariaLabel="Nota de prueba" tamano="compacto" />
+          <button type="button" disabled={docVacio(note) || blocking || progressDirty} onClick={() => record("notes", note)}>Guardar nota</button></details>}
+      </section>
+      <section className="tarjeta">{findings}
+        {mine && mayTest && <details><summary>Agregar un hallazgo</summary><EditorEnriquecido valor={finding} onChange={setFinding} perfil="medio" ariaLabel="Nuevo hallazgo" tamano="compacto" />
+          <button type="button" disabled={docVacio(finding) || blocking || progressDirty} onClick={() => record("findings", finding)}>Registrar hallazgo</button><p className="texto-ayuda">Registrar un hallazgo no envía correo.</p></details>}
+      </section>
+      <div className="tarjeta"><h3>Historial y rondas de prueba</h3>{e.rounds.map(r => <details key={r.id}><summary>Ronda {r.roundNo} · {r.holderName} · {r.status}</summary><ul>{r.checklist.map(c => <li key={c.itemNo}>{c.checked ? "✓" : "○"} {c.label}</li>)}</ul></details>)}<ol>{e.log.map((l,i) => <li key={i}><time>{new Date(l.at).toLocaleString("es-CO", { timeZone: "America/Bogota" })}</time> · {l.byId}: {l.action.replaceAll("_", " ")}{l.reason && ` · ${l.reason}`}</li>)}</ol></div>
+    </aside></div>
+    <Dialogo titulo="Aprobar entrada" abierto={approving} onCerrar={() => { if (!blocking) { setApproving(false); setPublishChoice(null); } }}>
+      <p>Elige si esta novedad aprobada podrá mostrarse a los clientes. Esta acción no envía correos.</p>
+      <fieldset disabled={blocking}><legend>¿Mostrar a clientes?</legend>
+        <label className="qhdn-radio"><input type="radio" name="qhdn-publicar-decision" checked={publishChoice === true} disabled={!mayApprovePublic || !hasClientText} onChange={() => setPublishChoice(true)} />Sí, mostrar a clientes</label>
+        <label className="qhdn-radio"><input type="radio" name="qhdn-publicar-decision" checked={publishChoice === false} onChange={() => setPublishChoice(false)} />No, mantener privada</label>
+      </fieldset>
+      {(!mayApprovePublic || !hasClientText) && <p className="texto-ayuda">{e.type === "sp_critico" ? "Los SP críticos no se muestran a clientes." : !mayApprovePublic ? "Tu cuenta puede aprobar, pero no publicar a clientes." : "Guarda primero un título y texto para clientes distintos del contenido interno."}</p>}
+      {publishChoice === true && !me.publicEnabled && <p className="texto-ayuda">La publicación general está desactivada. Esta entrada quedará preparada, pero no se mostrará todavía.</p>}
+      <Feedback error={approving ? op.error : null} />
+      <div className="acciones-formulario"><button type="button" data-autofoco disabled={blocking} onClick={() => { setApproving(false); setPublishChoice(null); }}>Cancelar</button><button type="button" className="primario" disabled={!canClose || publishChoice === null || (publishChoice && (!mayApprovePublic || !hasClientText))} onClick={approve}>Confirmar aprobación</button></div>
+    </Dialogo>
+    <Dialogo titulo={confirm === "release" ? "Soltar y reiniciar la prueba" : "Confirmar acción"} abierto={!!confirm} onCerrar={() => { setConfirm(null); setReason(""); }}>
+      {confirm === "release" ? <><p>La entrada volverá a Sin probar y la próxima prueba empezará vacía. Se conserva la historia de esta ronda. No se enviará ningún correo.</p>{unsaved && <p>Esta acción descarta los cambios locales sin guardar.</p>}</> : <label>Motivo (10 a 500 caracteres)<textarea value={reason} minLength={10} maxLength={500} onChange={ev => setReason(ev.target.value)} /></label>}
+      <button type="button" className="primario" disabled={blocking || (confirm !== "release" && reason.trim().length < 10)} onClick={() => {
+        const action = confirm!;
+        if (action === "annul") { const path = `/whats-new/findings/${encodeURIComponent(annul!)}/annul`; op.run(() => api.post(path, { reason }, mutationOptions(round?.etag ?? e.etag, true, persistentKey([path, reason])))); }
+        else if (action === "release") {
+          void op.mutateAsync(() => whatsNewApi.command(e.id, "release", e.etag, {}, persistentKey([e.id, "release"]))).then(() => {
+            setProgress(fromRound()); setNote(null); setFinding(null); setClientEditorVersion(version => version + 1);
+          }).catch(() => {});
+        } else command(action, { reason });
+        setConfirm(null); setReason("");
+      }}>Confirmar</button>
+    </Dialogo>
+    {removing && <RemoveEntryDialog entry={e} returnTo={returnTo} onClose={() => setRemoving(false)} unsaved={unsaved} />}
   </>;
 }
 
-function ClientText({ entry: source, editable }: { me: Me; entry: EntryDto; editable: boolean }) {
-  const entry = { ...source, etag: source.clientText?.etag ?? source.etag };
-  const [show, setShow] = useState(entry.clientText?.showToClients ?? false); const [title, setTitle] = useState(entry.clientText?.title ?? ""); const [body, setBody] = useState<DocEnriquecido | null>(entry.clientText?.body ?? null); const op = useOperation();
-  useEffect(() => { setShow(entry.clientText?.showToClients ?? false); setTitle(entry.clientText?.title ?? ""); setBody(entry.clientText?.body ?? null); }, [entry.clientText?.etag]);
-  return <section className="tarjeta"><h3>Para clientes</h3><p>Mostrar significa mostrar a todos los clientes. Redacta un texto público independiente: nunca se copia contenido interno.</p><label className="qhdn-check"><input type="checkbox" role="switch" checked={show} disabled={!editable || entry.type === "sp_critico" || op.isPending} onChange={e => setShow(e.target.checked)} />Mostrar esta novedad a los clientes</label>{entry.type === "sp_critico" && <p>Los SP críticos nunca se publican.</p>}{!editable && <p>No tienes permiso para modificar la publicación de esta entrada.</p>}<label>Título para clientes<input value={title} maxLength={120} disabled={!editable || op.isPending} onChange={e => setTitle(e.target.value)} /></label><EditorEnriquecido valor={safeDisplayDoc(body, true)} onChange={setBody} perfil="cliente" ariaLabel="Texto para clientes" tamano="compacto" soloLectura={!editable} /><Feedback error={op.error} />{editable && <button disabled={op.isPending} onClick={() => op.run(() => api.put(`/whats-new/entries/${entry.id}/client-text`, { showToClients: show, title: title || null, body: safeDisplayDoc(body, true) }, mutationOptions(entry.etag)))}>Guardar texto para clientes</button>}</section>;
+function ClientText({ entry, editable, mayToggle, globalPublic, onDirtyChange, busy }: { entry: EntryDto; editable: boolean; mayToggle: boolean; globalPublic: boolean; onDirtyChange: (dirty: boolean) => void; busy: boolean }) {
+  const key = useContext(Scope); const qc = useQueryClient();
+  const source = () => ({ title: entry.clientText?.title ?? "", body: entry.clientText?.body ?? null, etag: entry.clientText?.etag ?? entry.etag });
+  const [saved, setSaved] = useState(source);
+  const [title, setTitle] = useState(saved.title);
+  const [body, setBody] = useState<DocEnriquecido | null>(saved.body);
+  const [stale, setStale] = useState(false);
+  const [message, setMessage] = useState("");
+  const op = useOperation(); const persistentKey = useStableActionKey();
+  const dirty = title !== saved.title || !same(body, saved.body);
+  const safeBody = useMemo(() => safeDisplayDoc(body, true), [body]);
+  useEffect(() => { onDirtyChange(dirty); }, [onDirtyChange, dirty]);
+  useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
+  useEffect(() => {
+    const current = source();
+    if (current.etag === saved.etag) return;
+    if (dirty) { setStale(true); return; }
+    setSaved(current); setTitle(current.title); setBody(current.body); setStale(false);
+  }, [entry.etag, entry.clientText?.etag]);
+  const shown = entry.clientText?.showToClients === true;
+  const mayShow = Boolean(entry.clientText?.title?.trim()) && !docVacio(safeDisplayDoc(entry.clientText?.body ?? null, true));
+  function save() {
+    if (!editable || !dirty || stale || busy || op.isPending) return;
+    const written = { title: title.trim() || null, body: safeBody };
+    const path = `/whats-new/entries/${encodeURIComponent(entry.id)}/client-text`;
+    setMessage("");
+    void op.mutateAsync(async () => {
+      const result = await api.put<EntryDto>(path, written, mutationOptions(saved.etag));
+      if (result.clientText) {
+        setSaved({ title, body, etag: result.clientText.etag });
+        qc.setQueryData([...key, "entry", entry.id], result);
+      }
+      setMessage("Texto para clientes guardado.");
+    }).catch(() => {});
+  }
+  function toggleVisibility() {
+    if (!mayToggle || busy || op.isPending || dirty || (!shown && !mayShow)) return;
+    const body = { showToClients: !shown };
+    void op.mutateAsync(() => whatsNewApi.command(entry.id, "set-client-visibility", entry.etag, body, persistentKey([entry.id, "visibility", body]))).catch(() => {});
+  }
+  return <section className="tarjeta"><h3>Para clientes</h3>
+    <p className="qhdn-detalle-estado">Estado: <strong>{visibilityLabel(shown && entry.status === "probado" && entry.type !== "sp_critico", globalPublic)}</strong></p>
+    <p>Redacta un texto público independiente. El contenido interno no se publica.</p>
+    {entry.type === "sp_critico" && <p>Los SP críticos nunca se publican.</p>}
+    <label>Título para clientes<input value={title} maxLength={120} disabled={!editable || busy || stale} onChange={e => { setMessage(""); setTitle(e.target.value); }} /></label>
+    <EditorEnriquecido valor={safeBody} onChange={value => { setMessage(""); setBody(docVacio(value) ? null : value); }} perfil="cliente" ariaLabel="Texto para clientes" tamano="compacto" soloLectura={!editable || busy || stale} />
+    <Feedback error={op.error} />{stale && <p role="alert">El texto se actualizó en otra sesión. Tus cambios locales se conservan; copia lo necesario antes de recargar.</p>}
+    <p role="status" className="texto-ayuda">{op.isPending ? "Guardando…" : dirty ? "Texto para clientes sin guardar." : message}</p>
+    {(editable || mayToggle) && <div className="qhdn-fila">
+      {editable && <button type="button" disabled={!dirty || stale || busy || op.isPending} onClick={save}>Guardar texto para clientes</button>}
+      {mayToggle && <button type="button" disabled={stale || dirty || busy || op.isPending || (!shown && !mayShow)} onClick={toggleVisibility}>{shown ? "Ocultar a clientes" : "Mostrar a clientes"}</button>}
+    </div>}
+  </section>;
 }
-
 function ReportFrame({ html, title }: { html: string; title: string }) { return <iframe className="qhdn-reporte-frame" title={title} srcDoc={html} sandbox="" referrerPolicy="no-referrer" />; }
 export function ReportDialog({ filters, onClose, onSaved, result }: { filters: Record<string, string>; onClose: () => void; onSaved?: (id: string) => void; result?: string }) {
   const [include, setInclude] = useState<ReportInput["include"]>(result === "sin_errores" ? "aprobadas" : result === "fallidas" ? "fallidas" : "todas");
-  const [month, setMonth] = useState(filters.month ?? "");
-  const [preview, setPreview] = useState<ReportPreview | null>(null);
+  const monthField = filters.createdMonth !== undefined ? "createdMonth" : "month";
+  const [month, setMonth] = useState(filters[monthField] ?? "");
+  const [preview, setPreview] = useState<{ result: ReportPreview; input: ReportInput } | null>(null);
   const key = useRef<{ payload: string; value: string }>();
   const inFlight = useRef(false);
-  const input: ReportInput = { include, filters: Object.fromEntries(Object.entries({ ...filters, month }).filter(([, value]) => value.trim() !== "")) };
-  const previewOp = useMutation({ mutationFn: whatsNewApi.preview, onSuccess: setPreview });
-  const saveOp = useMutation({ mutationFn: (body: ReportInput) => {
+  const input: ReportInput = { include, filters: Object.fromEntries(Object.entries({ ...filters, [monthField]: month }).filter(([, value]) => value.trim() !== "")) };
+  const previewOp = useMutation({ mutationFn: whatsNewApi.preview, onSuccess: (result, input) => setPreview({ result, input }) });
+  const saveOp = useMutation({ mutationFn: (body: ReportInput & { previewSha256: string }) => {
     const payload = JSON.stringify(body);
     if (key.current?.payload !== payload) key.current = { payload, value: crypto.randomUUID() };
     return whatsNewApi.saveReport(body, key.current.value);
-  }, onSuccess: ({ id }) => onSaved?.(id) });
+  }, onSuccess: ({ id }) => onSaved?.(id), onError: (error: Error & { status?: number }) => { if (error.status === 409) setPreview(null); } });
   const busy = previewOp.isPending || saveOp.isPending;
+  const staleReport = saveOp.error?.status === 409;
+  const approvedPreview = preview && same(preview.input, input) && /^[a-f0-9]{64}$/.test(preview.result.snapshotSha256) && preview.result.entryCount > 0 ? preview : null;
   function run(kind: "preview" | "save") {
-    if (inFlight.current) return;
+    if (inFlight.current || (kind === "save" && (!approvedPreview || !onSaved))) return;
     inFlight.current = true;
-    if (kind === "preview") saveOp.reset();
-    else previewOp.reset();
-    const op = kind === "preview" ? previewOp : saveOp;
-    void op.mutateAsync(input).catch(() => {}).finally(() => { inFlight.current = false; });
+    if (kind === "preview") { setPreview(null); saveOp.reset(); }
+    const request = kind === "preview" ? previewOp.mutateAsync(input) : saveOp.mutateAsync({ ...approvedPreview!.input, previewSha256: approvedPreview!.result.snapshotSha256 });
+    void request.catch(() => {}).finally(() => { inFlight.current = false; });
   }
   return <Dialogo titulo={onSaved ? "Preparar reporte privado" : "Vista previa del reporte"} abierto onCerrar={() => { if (!inFlight.current) onClose(); }} className="qhdn-dialogo-reporte">
     <fieldset disabled={busy}><legend>Qué incluir</legend>{([["todas", "Todas"], ["aprobadas", "Solo aprobadas"], ["fallidas", "Solo fallidas"]] as const).map(([value, label]) => <label className="qhdn-radio" key={value}><input type="radio" name="include" value={value} checked={include === value} onChange={() => { setInclude(value); setPreview(null); }} />{label}</label>)}</fieldset>
-    <label>Mes del reporte (opcional)<input type="month" value={month} disabled={busy} onChange={event => { setMonth(event.target.value); setPreview(null); }} /></label>
+    <label>{monthField === "createdMonth" ? "Mes de creación del reporte (opcional)" : "Mes del reporte (opcional)"}<input type="month" value={month} disabled={busy} onChange={event => { setMonth(event.target.value); setPreview(null); }} /></label>
     <p className="texto-ayuda">{onSaved ? "El reporte se guarda en el Portal de forma privada. No se envían correos." : "La vista previa no guarda un reporte ni envía correos."}</p>
-    <Feedback error={previewOp.error || saveOp.error} />
+    {staleReport ? <p role="alert">Los datos del reporte cambiaron. Genera una nueva vista previa antes de guardar.</p> : <Feedback error={previewOp.error || saveOp.error} />}
     {busy && <p role="status">{saveOp.isPending ? "Guardando reporte…" : "Preparando vista previa…"}</p>}
     <div className="qhdn-fila">
       <button type="button" disabled={busy} onClick={() => run("preview")}>Ver vista previa</button>
-      {onSaved && <button type="button" className="primario" disabled={busy || preview?.entryCount === 0} onClick={() => run("save")}>Guardar reporte privado</button>}
+      {onSaved && <button type="button" className="primario" disabled={busy || !approvedPreview} onClick={() => run("save")}>Guardar reporte privado</button>}
     </div>
-    {preview && <><p>{preview.entryCount} entradas · {preview.approvedCount} aprobadas · {preview.failedCount} fallidas</p><ReportFrame html={preview.html} title="Vista previa del reporte" /></>}
+    {preview && <><p>{preview.result.entryCount} entradas · {preview.result.approvedCount} aprobadas · {preview.result.failedCount} fallidas</p><ReportFrame html={preview.result.html} title="Vista previa del reporte" /></>}
   </Dialogo>;
 }
 function SavedReports() {
@@ -631,17 +909,4 @@ function PrivateConfig() {
 function ConfigAction({ action, disabled, save }: { action: ConfigDto["actions"][number]; disabled: boolean; save: (body: { label: string; active: boolean; sortOrder: number }) => void }) {
   const [label, setLabel] = useState(action.label); const [active, setActive] = useState(action.active); const [order, setOrder] = useState(action.sortOrder);
   return <fieldset disabled={disabled} className="qhdn-fila"><legend>{action.label}</legend><label>Nombre<input value={label} maxLength={120} onChange={e => setLabel(e.target.value)} /></label><label className="qhdn-check"><input type="checkbox" checked={active} onChange={e => setActive(e.target.checked)} />Activa</label><label>Orden<input type="number" min={1} max={999} value={order} onChange={e => setOrder(Number(e.target.value))} /></label><button disabled={disabled || !label.trim() || order < 1 || order > 999} onClick={() => save({ label, active, sortOrder: order })}>Guardar acción</button></fieldset>;
-}
-
-export function LivePublicPage() {
-  const [params, setParams] = useSearchParams(); const detailId = params.get("detalle"); const [category, setCategory] = useState("todo"); const [period, setPeriod] = useState("todo"); const [from, setFrom] = useState(""); const [to, setTo] = useState(""); const [page, setPage] = useState(1);
-  const validRange = period !== "rango" || (!!from && !!to && from <= to); const filters = { categoria: category, periodo: period, ...(period === "rango" ? { desde: from, hasta: to } : {}), page };
-  const list = useQuery({ queryKey: [...key, "public", filters], queryFn: () => whatsNewApi.publicList(filters), enabled: validRange });
-  const detail = useQuery({ queryKey: [...key, "public-detail", detailId], queryFn: () => whatsNewApi.publicDetail(detailId!), enabled: !!detailId });
-  function change(fn: () => void) { fn(); setPage(1); }
-  const month = (value: string) => { const [y,m] = value.split("-").map(Number); return Number.isFinite(y) && Number.isFinite(m) ? new Date(Date.UTC(y,m - 1,15)).toLocaleDateString("es-CO", { month: "long", year: "numeric", timeZone: "America/Bogota" }) : value; };
-  return <main className="qhdn-novedades"><header className="qhdn-novedades-cabecera"><img src="/brand/sag-two-tone-icon.png" alt="SAG" /><h1>Novedades de SAG Web</h1><p>Conoce las opciones nuevas y las mejoras que tenemos para ti.</p></header><section className="qhdn-novedades-filtros"><label>Tipo<select value={category} onChange={e => change(() => setCategory(e.target.value))}><option value="todo">Todo</option><option value="nuevas">Opciones nuevas</option><option value="mejoras">Mejoras</option></select></label><label>Fecha de liberación<select value={period} onChange={e => change(() => setPeriod(e.target.value))}><option value="mes_actual">Mes actual</option><option value="ultimos_3_meses">Últimos 3 meses</option><option value="ultimo_ano">Último año</option><option value="todo">Todo</option><option value="rango">Rango de fechas</option></select></label>{period === "rango" && <><label>Desde<input type="date" value={from} onChange={e => change(() => setFrom(e.target.value))} /></label><label>Hasta<input type="date" value={to} min={from} onChange={e => change(() => setTo(e.target.value))} /></label></>}</section>
-    {!validRange ? <p role="alert">Selecciona un rango válido de fechas.</p> : list.isPending ? <Loading /> : list.error ? <><p role="alert">No pudimos cargar las novedades. Inténtalo de nuevo.</p><button onClick={() => list.refetch()}>Reintentar</button></> : !list.data.enabled || list.data.items.length === 0 ? <p>Sin novedades por ahora.</p> : <><section className="qhdn-novedades-grid">{list.data.items.map(item => <article key={item.publicId} className="tarjeta qhdn-novedad"><span className="qhdn-tipo">{item.category === "nuevo" || item.category === "nueva" ? "Opción nueva" : "Mejora"}</span><time>{month(item.releaseMonth)}</time><h2>{item.title}</h2><p>{item.summary}</p><h3>Dónde lo encuentras</h3><p>{item.whereToFind}</p><button onClick={() => setParams({ detalle: item.publicId })}>Ver detalle</button></article>)}</section><PageControl page={page} total={list.data.total} size={list.data.pageSize} onChange={setPage} /></>}
-    <Dialogo titulo={detail.data?.title ?? "Detalle de la novedad"} abierto={!!detailId} onCerrar={() => setParams({})}>{detail.isPending ? <Loading /> : detail.error ? <p role="alert">No pudimos cargar esta novedad.</p> : detail.data && <><p>{month(detail.data.releaseMonth)}</p><ReadDoc value={detail.data.body} publicProfile /><h4>Dónde lo encuentras</h4><p>{detail.data.whereToFind}</p></>}</Dialogo>
-  </main>;
 }

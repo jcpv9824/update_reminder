@@ -17,6 +17,17 @@ const missing = () => new WhatsNewError(404, "no_encontrado", "No encontrado.");
 const unavailable = () => new WhatsNewError(503, "almacenamiento_no_disponible", "El almacenamiento privado del reporte no está disponible.");
 const visible = "w.report_key IS NULL AND (@admin=1 OR u.source_id=@actor)";
 const matchesId = z.string().uuid();
+const SaveInput = ReportInput.extend({ previewSha256: z.string().regex(/^[a-f0-9]{64}$/) });
+const stalePreview = () => new WhatsNewError(409, "version_desactualizada", "Las entradas del reporte cambiaron. Genere una nueva vista previa.");
+async function snapshotForSave(actor: WhatsNewActor, selection: z.infer<typeof ReportInput>, db?: Db) {
+  try { return await reportSnapshot(actor, selection, db); }
+  catch (error) {
+    // Preview itself retains the 422 size validation. A save presenting a
+    // prior preview is stale when its selection has since exceeded that cap.
+    if (error instanceof WhatsNewError && error.code === "reporte_muy_grande") throw stalePreview();
+    throw error;
+  }
+}
 const listInput = z.object({ page: z.coerce.number().int().min(1).max(100_000).default(1),
   pageSize: z.coerce.number().int().min(1).max(50).default(20) }).strict();
 const actorParams = (actor: WhatsNewActor) => ({ actor: actor.id, admin: access.superAdmin(actor) });
@@ -58,15 +69,17 @@ async function priorReport(db: Db, actor: WhatsNewActor, key: string, marker: st
 
 export async function savePrivateReport(actor: WhatsNewActor, input: unknown, key: string) {
   requirePermission(actor, access.savedReports);
-  const body = ReportInput.parse(input);
+  const body = SaveInput.parse(input);
   const marker = JSON.stringify({ ...body.filters, requestHash: requestFingerprint("save-private-report", null, body).toString("hex") });
   const replay = await priorReport(await getSqlPool(), actor, key, marker);
   if (replay) return replay;
-  const snapshot = await reportSnapshot(actor, body);
-  if (!snapshot.entryCount) throw new WhatsNewError(422, "reporte_vacio", "No hay entradas probadas con estos filtros.");
+  const { previewSha256, ...selection } = body;
+  const snapshot = await snapshotForSave(actor, selection);
   const bytes = Buffer.from(snapshot.html, "utf8");
-  if (bytes.length > MAX_BYTES) throw new WhatsNewError(422, "reporte_muy_grande", "El reporte supera el tamaño permitido. Limite el rango.");
   const sha = createHash("sha256").update(bytes).digest("hex");
+  if (sha !== previewSha256) throw stalePreview();
+  if (!snapshot.entryCount) throw new WhatsNewError(422, "reporte_vacio", "No hay entradas probadas con estos filtros.");
+  if (bytes.length > MAX_BYTES) throw new WhatsNewError(422, "reporte_muy_grande", "El reporte supera el tamaño permitido. Limite el rango.");
   const stored = await storePrivateObject({ bytes, sha256: sha, extension: ".html", mimeType: MIME, requiredProvider: "seaweedfs" })
     .catch(() => { throw unavailable(); });
   if (stored.storageProvider !== "s3") throw unavailable();
@@ -75,6 +88,10 @@ export async function savePrivateReport(actor: WhatsNewActor, input: unknown, ke
   return runSqlTransaction(async db => {
     const already = await priorReport(db, actor, key, marker, true);
     if (already) return already;
+    // Re-read the same population within this transaction to also catch newly
+    // matching entries or display-data changes while the object was stored.
+    const verified = await snapshotForSave(actor, selection, db);
+    if (verified.html !== snapshot.html || verified.entryCount !== snapshot.entryCount) throw stalePreview();
     const evidence = JSON.stringify(snapshot.entries.map(e => ({ id: e.id,
       version: Buffer.from(e.etag.slice(1, -1), "base64").toString("hex") })));
     const [current] = await query(db, `SELECT COUNT_BIG(*) total
@@ -82,7 +99,7 @@ export async function savePrivateReport(actor: WhatsNewActor, input: unknown, ke
       JOIN whats_new.entries e WITH (HOLDLOCK) ON e.source_id=v.id AND e.row_version=TRY_CONVERT(binary(8),v.version,2)
       WHERE e.status IN ('probado','archivada','fallida');`, { evidence });
     if (Number(current.total) !== snapshot.entryCount) {
-      throw new WhatsNewError(409, "version_desactualizada", "Las entradas del reporte cambiaron. Genere una nueva vista previa.");
+      throw stalePreview();
     }
     const id = randomUUID(), now = new Date();
     const file = await ensureSqlContentFile(db, { ...stored, originalName: "reporte-novedades.html",

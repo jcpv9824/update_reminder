@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { decideCreate, decideDelete, decideTake, decideRelease, decideMarkTested, decideMarkFailed, decidePublish, decideSaveDraft, DraftInSchema,
+  decideClientText, decideSetClientVisibility, decideRoundProgress, MarkTestedInSchema, RoundProgressInSchema, ClientTextInSchema,
   type CommandContext, type EntryState } from "../lib/whatsNewCommands";
 import { buildActor, canSeeEntry } from "../lib/whatsNewAccess";
 import { PERMISSIONS } from "../lib/whatsNewModel";
@@ -21,6 +22,46 @@ export const entry = (): EntryState => ({
 function held(): EntryState { return { ...entry(), status: "en_pruebas", currentRoundNo: 1, openRound: { id: "round", roundNo: 1, revisionNo: 1, holderId: "tester", checklist: [{ itemNo: 1, label: "Probar", checked: false }] } }; }
 
 describe("Qué hay de nuevo domain gates", () => {
+  it("requires an explicit approval choice and validates public content and permission independently", () => {
+    expect(MarkTestedInSchema.safeParse({}).success).toBe(false);
+    const ctx = context();
+    const state = held();
+    state.openRound!.checklist[0].checked = true;
+    expect(() => decideMarkTested(ctx, state, true)).toThrow("Faltan campos");
+    state.clientText = { show: true, title: "Cambios para clientes", body: doc };
+    expect(decideMarkTested(ctx, state, true).effects).toContainEqual(expect.objectContaining({ kind: "clientText.visibility", show: true }));
+    expect(decideMarkTested(ctx, state, false).effects).toContainEqual(expect.objectContaining({ kind: "clientText.visibility", show: false }));
+    expect(() => decideMarkTested(ctx, { ...state, type: "sp_critico" }, true)).toThrow("SP crítico");
+    ctx.actor.permissions = new Set([PERMISSIONS.view, PERMISSIONS.test]);
+    expect(() => decideMarkTested(ctx, state, true)).toThrow("permisos");
+    expect(decideMarkTested(ctx, state, false).status).toBe("probado");
+  });
+
+  it("keeps draft text independent of visibility and requires approved state for later toggles", () => {
+    const ctx = context();
+    const state = held();
+    expect(ClientTextInSchema.safeParse({ showToClients: true, title: "Título", body: doc }).success).toBe(false);
+    expect(decideClientText(ctx, state, { title: "Título", body: doc }).effects)
+      .toContainEqual(expect.objectContaining({ kind: "clientText.upsert", show: false }));
+    expect(() => decideSetClientVisibility(ctx, state, true)).toThrow("probada");
+    const approved = { ...state, status: "probado" as const, clientText: { show: true, title: "Título", body: doc } };
+    expect(decideSetClientVisibility(ctx, approved, false).effects)
+      .toContainEqual(expect.objectContaining({ kind: "clientText.visibility", show: false }));
+    expect(() => decideClientText(ctx, approved, { title: "", body: null })).toThrow("Faltan campos");
+  });
+
+  it("saves checklist and note draft together only for the holder, with no note or finding append", () => {
+    const state = held();
+    const input = RoundProgressInSchema.parse({ items: [{ itemNo: 1, checked: true }], body: doc });
+    expect(RoundProgressInSchema.safeParse({ items: [...input.items, ...input.items], body: doc }).success).toBe(false);
+    expect(RoundProgressInSchema.safeParse({ items: [] }).success).toBe(false);
+    const effects = decideRoundProgress(context(), state, input).effects;
+    expect(effects).toContainEqual({ kind: "round.noteDraft", roundNo: 1, body: doc });
+    expect(effects).toContainEqual({ kind: "checklist.set", roundNo: 1, items: input.items });
+    expect(effects.some(e => e.kind === "note.insert" || e.kind === "finding.insert")).toBe(false);
+    const other = context(); other.actor.id = "other";
+    expect(() => decideRoundProgress(other, state, input)).toThrow("otra persona");
+  });
   it("lets the developer retire an owned approved entry without rewriting its approval history", () => {
     const ctx = context(); ctx.actor.id = "developer";
     ctx.actor.areas = new Set(["desarrollo"]);
@@ -156,9 +197,9 @@ describe("Qué hay de nuevo domain gates", () => {
     expect(result.effects.map((e) => e.kind)).toEqual(["entry.patch", "round.close", "log.insert", "audit"]);
   });
   it("requires complete checklist and sets Bogotá approval month", () => {
-    const state = held(); expect(() => decideMarkTested(context(), state)).toThrow("checklist");
+    const state = held(); expect(() => decideMarkTested(context(), state, false)).toThrow("checklist");
     state.openRound!.checklist[0].checked = true;
-    expect(decideMarkTested(context(), state).result.releaseMonth).toBe("2026-11");
+    expect(decideMarkTested(context(), state, false).result.releaseMonth).toBe("2026-11");
   });
   it("requires a current, nonannulled finding to fail", () => {
     const state = held(); state.findings = [{ id: "x", number: 1, roundNo: 0, createdById: "tester", annulled: false }];

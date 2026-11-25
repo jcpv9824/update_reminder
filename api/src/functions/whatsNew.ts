@@ -84,10 +84,10 @@ register("whatsNewMe", "whats-new/me", ["GET"], (_r, a) => service.me(a!));
 register("whatsNewEntries", "whats-new/entries", ["GET", "POST"], async (r, a) => r.method === "GET" ? service.listEntries(a!, filters(r)) : mutation(r, a!, "create", null));
 register("whatsNewQueue", "whats-new/queue", ["GET"], (r, a) => service.listEntries(a!, filters(r), true));
 register("whatsNewEntry", "whats-new/entries/{id}", ["GET", "DELETE"], (r, a) => r.method === "GET" ? service.getEntry(a!, param(r)) : mutation(r, a!, "delete", param(r)));
-const operations = ["draft", "publish", "correct", "take", "release", "force-release", "mark-tested", "mark-failed", "archive", "client-text"] as const;
+const operations = ["draft", "publish", "correct", "take", "release", "force-release", "mark-tested", "mark-failed", "archive", "client-text", "set-client-visibility"] as const;
 for (const operation of operations) register(`whatsNewEntry_${operation.replaceAll("-", "_")}`, `whats-new/entries/{id}/${operation}`, [operation === "draft" || operation === "client-text" ? "PUT" : "POST"], (r, a) => mutation(r, a!, operation, param(r)));
-for (const operation of ["checklist", "notes", "findings", "note-draft"] as const) register(`whatsNewRound_${operation.replaceAll("-", "_")}`, `whats-new/rounds/{id}/${operation}`,
-  [operation === "checklist" ? "PATCH" : operation === "note-draft" ? "PUT" : "POST"], (r, a) => mutation(r, a!, operation, param(r)));
+for (const operation of ["checklist", "notes", "findings", "note-draft", "round-progress"] as const) register(`whatsNewRound_${operation.replaceAll("-", "_")}`, `whats-new/rounds/{id}/${operation}`,
+  [operation === "checklist" || operation === "round-progress" ? "PATCH" : operation === "note-draft" ? "PUT" : "POST"], (r, a) => mutation(r, a!, operation, param(r)));
 register("whatsNewFindingAnnul", "whats-new/findings/{id}/annul", ["POST"], (r, a) => mutation(r, a!, "annul", param(r)));
 async function mutation(req: HttpRequest, actor: WhatsNewActor, operation: Operation, id: string | null) {
   const result = await mutate({ actor, operation, id, body: await body(req), etag: req.headers.get("if-match"), idempotencyKey: req.headers.get("idempotency-key") });
