@@ -12,6 +12,10 @@ y no requiere reescribir la migración 062. El editor enriquecido se conserva.
   debajo del campo. La espera desde la última tecla es de 120 ms, y las
   búsquedas sustituidas se cancelan. El servidor comprueba las fuentes
   autorizadas en cada búsqueda y vuelve a verificar la opción antes de guardar.
+  En el catálogo V2, la búsqueda reutiliza en memoria los registros de una
+  revisión sellada solo cuando SQL confirma de nuevo el usuario, sus fuentes
+  y la vigencia de esa misma revisión. No reutiliza registros caducados ni
+  los usa para validar el cliente al guardar.
 - **Qué cambió:** se conserva la barra de formato. Insertar imagen, pegar una
   imagen del portapapeles y adjuntar documentos usan el mismo canal privado. Pegar
   inserta la imagen en el punto de pegado sin reemplazar el texto existente.

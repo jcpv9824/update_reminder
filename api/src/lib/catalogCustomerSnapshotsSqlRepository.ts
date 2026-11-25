@@ -16,6 +16,35 @@ import { runSqlTransaction } from "./sqlTransaction";
 const maxSources = 32;
 const maxRows = 100_000;
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const pickerTtlMs = 60_000;
+const maxPickerEntries = 16;
+const maxPickerRows = 20_000;
+const maxPickerRowsPerActor = 8_000;
+type PickerMemo = { stamp: Buffer; projection: CatalogDirectoryInput; rows: number; until: number };
+const pickerMemo = new Map<string, PickerMemo>();
+
+function freshPickerMemo(key: string) {
+  const now = Date.now();
+  for (const [id, value] of pickerMemo) if (value.until <= now) pickerMemo.delete(id);
+  const entry = pickerMemo.get(key);
+  if (entry) {
+    pickerMemo.delete(key);
+    pickerMemo.set(key, entry);
+  }
+  return entry;
+}
+
+function rememberPicker(key: string, stamp: Buffer, projection: CatalogDirectoryInput, rows: number) {
+  pickerMemo.delete(key);
+  if (!rows || rows > maxPickerRowsPerActor || !projection.erp.some(source => source.state === "verified")) return;
+  pickerMemo.set(key, { stamp, projection, rows, until: Date.now() + pickerTtlMs });
+  let total = [...pickerMemo.values()].reduce((sum, entry) => sum + entry.rows, 0);
+  for (const [id, entry] of pickerMemo) {
+    if (pickerMemo.size <= maxPickerEntries && total <= maxPickerRows) break;
+    pickerMemo.delete(id);
+    total -= entry.rows;
+  }
+}
 
 export interface CatalogCustomerSnapshotsReadScope {
   environment: CatalogEnvironment;
@@ -291,6 +320,17 @@ const readSnapshots = (v2: boolean, erpAutocomplete = false) => `
   IF (SELECT SUM(CONVERT(bigint,expected_rows)) FROM @eligible)>@rowLimit
     THROW 53310, N'Catalog exceeds its read safety bound.', 1;
 
+  ${erpAutocomplete ? `
+  -- The body and opaque IDs of a sealed revision are immutable. A hint from
+  -- memory is considered only after this transaction rebuilt the live scope.
+  DECLARE @pickerStamp varbinary(32)=HASHBYTES('SHA2_256',(
+    SELECT source_id,display_name,revision_state,snapshot_key,observed_at,expected_rows,expected_scopes
+    FROM @eligible WHERE source_role='erp-customers'
+    ORDER BY source_id FOR JSON PATH,INCLUDE_NULL_VALUES));
+  DECLARE @pickerHit bit=CASE WHEN @pickerStamp=@pickerFingerprint THEN 1 ELSE 0 END;
+  SELECT @pickerStamp AS fingerprint,@pickerHit AS cache_hit;
+  ` : ""}
+
   SELECT source_id, display_name, source_role, revision_state, observed_at, expected_rows, expected_scopes FROM @eligible
   ${erpAutocomplete ? "WHERE source_role='erp-customers'" : ""};
 
@@ -298,12 +338,12 @@ const readSnapshots = (v2: boolean, erpAutocomplete = false) => `
     r.active_code, r.issuer, r.document_type, r.document_number_token
   FROM @eligible AS e JOIN core.catalog_customer_revision_rows AS r ON r.revision_key=e.snapshot_key
   LEFT JOIN core.catalog_customer_ids AS c ON c.catalog_customer_key=r.catalog_customer_key
-  ${erpAutocomplete ? "WHERE e.source_role='erp-customers'" : ""}
+  ${erpAutocomplete ? "WHERE e.source_role='erp-customers' AND @pickerHit=0" : ""}
   ORDER BY e.source_id,r.source_record_id;
 
   SELECT e.source_id, s.issuer, s.document_type
   FROM @eligible AS e JOIN core.catalog_customer_revision_scopes AS s ON s.revision_key=e.snapshot_key
-  ${erpAutocomplete ? "WHERE e.source_role='erp-customers'" : ""};
+  ${erpAutocomplete ? "WHERE e.source_role='erp-customers' AND @pickerHit=0" : ""};
 `;
 
 // V2 does not certify negative Web presence; the Novedades suggestions only
@@ -329,6 +369,13 @@ export async function readSqlCatalogCustomerSnapshots(scope: CatalogCustomerSnap
   if (v2 && (typeof scope.actorId !== "string" || !scope.actorId.trim() || scope.actorId.length > 128 ||
       /\p{C}/u.test(scope.actorId))) fail();
   if (!allowed.size && !v2) return mapCatalogCustomerSnapshots(scope, [], [], []);
+  const memoKey = erpAutocomplete && !scope.sourcePriorityById && !scope.preferredSourceByCustomer
+    ? JSON.stringify([scope.environment, scope.actorId, scope.matchKeyVersion, [...allowed].sort()])
+    : null;
+  // This cache supplies row bodies, never evidence of an authorized source or
+  // a fresh head. Bodies are never shared between actors; every transaction
+  // still checks the scope and versions against SQL before reusing one.
+  const memo = memoKey ? freshPickerMemo(memoKey) : undefined;
   try {
     const read = async (request: sql.Request) => {
       request
@@ -341,6 +388,7 @@ export async function readSqlCatalogCustomerSnapshots(scope: CatalogCustomerSnap
           .input("sourceIds", sql.NVarChar(2048), JSON.stringify([...allowed]))
           .input("selectedSourceIds", sql.NVarChar(sql.MAX), null);
       }
+      if (erpAutocomplete) request.input("pickerFingerprint", sql.VarBinary(32), memo?.stamp ?? null);
       const result = await request.query(erpAutocomplete ? catalogErpAutocompleteSql : v2 ? `
         ${catalogReconciledIdentitySql}
         ${readSnapshots(true)}
@@ -348,11 +396,23 @@ export async function readSqlCatalogCustomerSnapshots(scope: CatalogCustomerSnap
         SELECT @observedSagReady AS sag_ready,@observedPartial AS partial;
       ` : readSnapshots(false));
       const expectsGraph = v2 && !erpAutocomplete;
-      if (!Array.isArray(result.recordsets) || result.recordsets.length !== (expectsGraph ? 5 : 3) ||
+      if (!Array.isArray(result.recordsets) || result.recordsets.length !== (expectsGraph ? 5 : erpAutocomplete ? 4 : 3) ||
           !result.recordsets.every(Array.isArray)) fail();
-      const [headers, records, scopes] = result.recordsets as unknown as [
+      const sets = result.recordsets as unknown as unknown[][];
+      const [headers, records, scopes] = (erpAutocomplete ? sets.slice(1) : sets) as [
         CatalogSnapshotHeaderRow[], CatalogSnapshotCustomerRow[], CatalogSnapshotCoverageRow[],
       ];
+      let stamp: Buffer | undefined;
+      if (erpAutocomplete) {
+        if (sets[0].length !== 1) fail();
+        const header = sets[0][0] as { fingerprint?: unknown; cache_hit?: unknown };
+        if (!Buffer.isBuffer(header.fingerprint) || header.fingerprint.length !== 32 || typeof header.cache_hit !== "boolean") fail();
+        stamp = header.fingerprint;
+        if (header.cache_hit) {
+          if (!memo || !stamp.equals(memo.stamp) || records.length || scopes.length) fail();
+          return memo.projection;
+        }
+      }
       let reconciled: CatalogReconciledDirectoryProjection | undefined;
       if (expectsGraph) {
         const extraSets = result.recordsets as unknown as unknown[][];
@@ -363,8 +423,10 @@ export async function readSqlCatalogCustomerSnapshots(scope: CatalogCustomerSnap
         reconciled = { rows: extraSets[3] as CatalogReconciledDirectoryRow[],
           sagReady: row.sag_ready, partial: row.partial };
       }
-      return mapCatalogCustomerSnapshots(erpAutocomplete ? { ...scope, includeSagDirectory: false } : scope,
+      const projection = mapCatalogCustomerSnapshots(erpAutocomplete ? { ...scope, includeSagDirectory: false } : scope,
         headers, records, scopes, reconciled);
+      if (memoKey && stamp) rememberPicker(memoKey, stamp, projection, records.length);
+      return projection;
     };
     // A serializable read prevents ACL, profile or head changes between the
     // common graph and its exact immutable snapshot projection.
@@ -372,6 +434,7 @@ export async function readSqlCatalogCustomerSnapshots(scope: CatalogCustomerSnap
       : v2 ? await runSqlTransaction(transaction => read(new sql.Request(transaction)))
       : await read((await getSqlPool()).request());
   } catch {
+    if (memoKey) pickerMemo.delete(memoKey);
     // Driver errors and internal comparison material are never exposed or logged here.
     fail();
   }

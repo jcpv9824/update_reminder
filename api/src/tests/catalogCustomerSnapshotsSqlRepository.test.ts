@@ -13,7 +13,7 @@ import {
 const sqlMocks = vi.hoisted(() => ({ pool: vi.fn(), query: vi.fn(), input: vi.fn(), transaction: vi.fn() }));
 vi.mock("../lib/sql", () => ({ getSqlPool: sqlMocks.pool }));
 vi.mock("../lib/sqlTransaction", () => ({ runSqlTransaction: sqlMocks.transaction }));
-vi.mock("mssql", () => ({ default: { VarChar: vi.fn(), SmallInt: {}, NVarChar: vi.fn(), Int: {}, MAX: -1,
+vi.mock("mssql", () => ({ default: { VarChar: vi.fn(), VarBinary: vi.fn(), SmallInt: {}, NVarChar: vi.fn(), Int: {}, MAX: -1,
   Request: class { input = sqlMocks.input; query = sqlMocks.query; } } }));
 
 const erpId = "00000000-0000-4000-8000-000000000001";
@@ -105,7 +105,7 @@ describe("customer catalog published snapshots", () => {
   it("reads only verified ERP bodies for the V2 Novedades picker under the same live authorization gates", async () => {
     sqlMocks.input.mockReturnThis();
     const tx = {};
-    sqlMocks.query.mockResolvedValueOnce({ recordsets: [[headers[0]], [records[0]], []] });
+    sqlMocks.query.mockResolvedValueOnce({ recordsets: [[{ fingerprint: Buffer.alloc(32, 6), cache_hit: false }], [headers[0]], [records[0]], []] });
     const result = await readSqlCatalogCustomerSnapshots({
       ...scope, actorId: "actor-autocomplete", includeSagDirectory: true, erpAutocomplete: true,
     }, tx as never);
@@ -120,6 +120,34 @@ describe("customer catalog published snapshots", () => {
     expect(statement).toContain("WHERE e.source_role='erp-customers'");
     expect(statement).not.toMatch(/INSERT @observed(?:Erp|Sag|Identity)\b/);
     expect(statement).not.toMatch(/p\.(?:server_host|server_port|login_name|password_secret_name)\b/);
+  });
+
+  it("revalidates immutable memo bodies on each read, with no cross-actor or revoked revision fallback", async () => {
+    sqlMocks.input.mockReturnThis();
+    const tx = {} as never;
+    const stampA = Buffer.alloc(32, 5), stampB = Buffer.alloc(32, 7), stampC = Buffer.alloc(32, 9);
+    const qa = { ...scope, actorId: "memo-actor-a", includeSagDirectory: true, erpAutocomplete: true };
+    const loaded = (fingerprint: Buffer, cache_hit: boolean, head = headers[0], rows = [records[0]]) => ({
+      recordsets: [[{ fingerprint, cache_hit }], [head], rows, []],
+    });
+    const sentFingerprint = () => sqlMocks.input.mock.calls.filter(([name]) => name === "pickerFingerprint").at(-1)?.[2];
+    sqlMocks.query.mockResolvedValueOnce(loaded(stampA, false));
+    await readSqlCatalogCustomerSnapshots(qa, tx);
+    expect(sentFingerprint()).toBeNull();
+    sqlMocks.query.mockResolvedValueOnce(loaded(stampA, true, headers[0], []));
+    expect((await readSqlCatalogCustomerSnapshots(qa, tx)).erp[0].customers[0].customerId).toBe(publicId);
+    expect(sentFingerprint()).toEqual(stampA);
+    sqlMocks.query.mockResolvedValueOnce(loaded(stampB, false));
+    await readSqlCatalogCustomerSnapshots({ ...qa, actorId: "memo-actor-b" }, tx);
+    expect(sentFingerprint()).toBeNull();
+    sqlMocks.query.mockResolvedValueOnce(loaded(stampC, false, {
+      ...headers[0], revision_state: "unavailable", observed_at: null, expected_rows: 0,
+    }, []));
+    expect((await readSqlCatalogCustomerSnapshots(qa, tx)).erp[0].customers).toEqual([]);
+    expect(sentFingerprint()).toEqual(stampA);
+    sqlMocks.query.mockRejectedValueOnce(new Error("QA simulated outage"));
+    await expect(readSqlCatalogCustomerSnapshots(qa, tx)).rejects.toThrow("inconsistente");
+    expect(sentFingerprint()).toBeNull();
   });
   it("joins matching protected tokens by scope without exposing the original value, token or SAG records", () => {
     const input = mapCatalogCustomerSnapshots(scope, headers, records, coverage);
