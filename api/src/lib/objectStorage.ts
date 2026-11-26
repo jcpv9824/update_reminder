@@ -981,3 +981,90 @@ export function buildObjectContentDisposition(
 ): string {
   return `${disposition}; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }
+
+/** Checklists own UUID keys, not shared content-hash objects. The feature's
+ * SQL reservation/verification/cleanup lease is authoritative for lifecycle.
+ * Existing content/guide behavior and configuration are unchanged. */
+function checklistObjectKey(locator: PrivateObjectLocator): string {
+  const key = locator.storageProvider === "s3" ? locator.storageObjectKey : locator.storageBlobName;
+  if (!/^checklists\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/payload\.(?:png|jpg|gif|webp|mp4|mov|webm|bin)$/.test(key)) {
+    throw new Error("Invalid private checklist object key.");
+  }
+  return key;
+}
+export function prepareChecklistPrivateObject(id: string, extension: string): PrivateObjectLocator {
+  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id) || !/^\.(png|jpg|gif|webp|mp4|mov|webm|bin)$/.test(extension)) throw new Error("Invalid checklist upload identity.");
+  const config = getWriteConfig();
+  if (!config) throw Object.assign(new Error("El almacenamiento privado no está disponible."), { status: 503 });
+  const key = `checklists/${id}/payload${extension}`;
+  return config.provider === "seaweedfs" ? { storageProvider: "s3", storageBucket: config.bucket, storageObjectKey: key }
+    : { storageProvider: "azure_blob", storageContainer: config.containerName, storageBlobName: key };
+}
+export async function storeChecklistPrivateObject(locator: PrivateObjectLocator, bytes: Buffer, sha256: string, mimeType: string): Promise<void> {
+  const key = checklistObjectKey(locator), config = getWriteConfig();
+  if (!config || bytes.length < 1 || bytes.length > 100_000_000 || !/^[0-9a-f]{64}$/.test(sha256) || createHash("sha256").update(bytes).digest("hex") !== sha256) throw new Error("Invalid checklist upload metadata.");
+  if (locator.storageProvider === "s3") {
+    if (config.provider !== "seaweedfs" || config.bucket !== locator.storageBucket) throw new Error("Checklist write provider changed.");
+    const client = getSeaweedFSClient(config), abortSignal = AbortSignal.timeout(60_000);
+    await client.send(new PutObjectCommand({ Bucket: locator.storageBucket, Key: key, Body: bytes, ContentType: mimeType,
+      ContentLength: bytes.length, IfNoneMatch: "*", Metadata: { sha256 } }), { abortSignal });
+    const remote = await client.send(new HeadObjectCommand({ Bucket: locator.storageBucket, Key: key }), { abortSignal });
+    if (remote.ContentLength !== bytes.length || remote.ContentType !== mimeType || remote.Metadata?.sha256 !== sha256) throw new Error("Checklist upload verification failed.");
+  } else {
+    if (config.provider !== "azure_blob" || config.containerName !== locator.storageContainer) throw new Error("Checklist write provider changed.");
+    const blob = getAzureService(config).getContainerClient(locator.storageContainer).getBlockBlobClient(key);
+    await blob.uploadData(bytes, { conditions: { ifNoneMatch: "*" }, blobHTTPHeaders: { blobContentType: mimeType }, metadata: { sha256 }, abortSignal: AbortSignal.timeout(60_000) });
+    const remote = await blob.getProperties({ abortSignal: AbortSignal.timeout(60_000) });
+    if (remote.contentLength !== bytes.length || remote.contentType !== mimeType || remote.metadata?.sha256 !== sha256) throw new Error("Checklist upload verification failed.");
+  }
+}
+export async function readChecklistPrivateObjectBuffer(locator: PrivateObjectLocator, expectedBytes: number, sha256: string): Promise<Buffer> {
+  const key = checklistObjectKey(locator);
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 1 || expectedBytes > 100_000_000 || !/^[0-9a-f]{64}$/.test(sha256)) throw new Error("Invalid checklist read metadata.");
+  const properties = await statPrivateObject(locator);
+  if (properties.byteCount !== expectedBytes) throw new Error("Checklist object length mismatch.");
+  const abortSignal = AbortSignal.timeout(60_000);
+  let body: NodeJS.ReadableStream | undefined;
+  if (locator.storageProvider === "s3") {
+    const config = readSeaweedFSConfig(true)!;
+    if (config.bucket !== locator.storageBucket) throw new Error("Checklist bucket mismatch.");
+    const response = await getSeaweedFSClient(config).send(new GetObjectCommand({ Bucket: locator.storageBucket, Key: key, IfMatch: quotedEtag(properties.etag) }), { abortSignal });
+    body = response.Body as NodeJS.ReadableStream | undefined;
+  } else {
+    const config = readAzureBlobConfig(true)!;
+    if (config.containerName !== locator.storageContainer) throw new Error("Checklist container mismatch.");
+    const response = await getAzureService(config).getContainerClient(locator.storageContainer).getBlobClient(key).download(0, undefined, {
+      abortSignal, conditions: properties.etag ? { ifMatch: properties.etag } : undefined,
+    });
+    body = response.readableStreamBody;
+  }
+  if (!body) throw new Error("Checklist object has no content.");
+  const stream = Readable.from(body as AsyncIterable<Uint8Array>), output = Buffer.allocUnsafe(expectedBytes), hash = createHash("sha256");
+  let count = 0;
+  try {
+    for await (const part of stream) {
+      abortSignal.throwIfAborted(); const chunk = Buffer.from(part);
+      if (count + chunk.length > expectedBytes) throw new Error("Checklist object exceeds declared length.");
+      chunk.copy(output, count); count += chunk.length; hash.update(chunk);
+    }
+    if (count !== expectedBytes || hash.digest("hex") !== sha256) throw new Error("Checklist object integrity mismatch.");
+    return output;
+  } finally { stream.destroy(); (body as Readable).destroy?.(); }
+}
+/** Caller must hold a durably committed, confirmed pending-evidence tombstone
+ * lease. This is never used as rollback compensation after unknown SQL commit. */
+export async function deleteChecklistPrivateObject(locator: PrivateObjectLocator): Promise<boolean> {
+  const key = checklistObjectKey(locator);
+  try {
+    if (locator.storageProvider === "s3") {
+      const config = readSeaweedFSConfig(true)!;
+      if (config.bucket !== locator.storageBucket) throw new Error("Checklist bucket mismatch.");
+      await getSeaweedFSClient(config).send(new DeleteObjectCommand({ Bucket: locator.storageBucket, Key: key }), { abortSignal: AbortSignal.timeout(60_000) });
+    } else {
+      const config = readAzureBlobConfig(true)!;
+      if (config.containerName !== locator.storageContainer) throw new Error("Checklist container mismatch.");
+      await getAzureService(config).getContainerClient(locator.storageContainer).getBlobClient(key).deleteIfExists({ abortSignal: AbortSignal.timeout(60_000) });
+    }
+    return true;
+  } catch (error) { if (storageStatusCode(error) === 404) return true; throw error; }
+}

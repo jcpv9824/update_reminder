@@ -165,7 +165,11 @@ export async function saveChecklist(actor: ChecklistActor, id: string, input: Sa
         JOIN OPENJSON(@points) WITH(pointId uniqueidentifier, checked bit, notesJson nvarchar(max)) j ON j.pointId=p.template_point_id
         WHERE p.checklist_id=@id;
         UPDATE e SET status='saved',updated_at=@now FROM implementation.implementation_checklist_evidence e
-          JOIN OPENJSON(@promote) j ON CONVERT(uniqueidentifier,j.value)=e.id WHERE e.checklist_id=@id AND e.deleted_at IS NULL;
+          JOIN OPENJSON(@promote) j ON CONVERT(uniqueidentifier,j.value)=e.id
+          WHERE e.checklist_id=@id AND e.status='pending' AND e.deleted_at IS NULL AND e.cleanup_lease_id IS NULL
+            AND (e.kind IN ('link','text') OR e.verified_at IS NOT NULL);
+        IF @@ROWCOUNT<>(SELECT COUNT(*) FROM OPENJSON(@promote))
+          THROW 53581,N'Checklist evidence changed before promotion.',1;
         UPDATE e SET deleted_at=@now,deleted_by=@who,updated_at=@now FROM implementation.implementation_checklist_evidence e
           JOIN OPENJSON(@remove) j ON CONVERT(uniqueidentifier,j.value)=e.id WHERE e.checklist_id=@id AND e.deleted_at IS NULL;
         UPDATE implementation.implementation_checklists SET updated_at=@now,

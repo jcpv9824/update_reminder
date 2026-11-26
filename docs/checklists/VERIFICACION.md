@@ -15,6 +15,15 @@ Este informe no acredita una fase hasta registrar las pruebas del candidato.
   mockup, este nombre es la decisión posterior aprobada. La referencia local
   se inspeccionó en su HTML; el navegador integrado bloqueó `file://`. No
   hay validación visual ni capturas en esta etapa.
+- La vista previa del PR apunta al API de producción por diseño del workflow;
+  no debe usarse para las pruebas de escritura de QA. El recorrido de QA usa
+  exclusivamente la aplicación y el API separados de QA.
+- La publicación aprobada usa un ZIP completo con conservación del paquete
+  activo anterior. Se promueve exactamente el ZIP certificado en QA. Después
+  de CI: respaldo, migración 085, publicación y verificación del API, y solo
+  entonces fusión a `main` para desplegar el frontend. Si la copia de
+  recuperación o el aislamiento de los otros módulos no se comprueban, se
+  suspende antes de publicar.
 
 ## Evidencia y puertas
 
@@ -25,13 +34,17 @@ Este informe no acredita una fase hasta registrar las pruebas del candidato.
 | Línea base del selector ERP y menú existentes | `npm test -- --maxWorkers=1 ErpClientCombobox AppLayout`: 14/14, 2 archivos; no es aún una prueba de Checklists |
 | Primer incremento API: reglas puras, esquemas Zod y catálogo de permisos | Dos suites nuevas: 22/22 fallaron en rojo antes de la lógica y pasan tras implementarla. La regresión del catálogo también falló por ausencia de claves antes de integrarlas. Corrida conjunta: 33/33 en 3 archivos. No certifica endpoints ni SQL. |
 | CA-01…CA-38 y trazabilidad final | Pendiente; identificar las pruebas efectivamente ejecutadas después de cada fase |
-| Guard del API y auditorías de dependencias | SQL-only y las cuatro auditorías pasaron, sin hallazgos moderados o superiores, antes del candidato completo |
+| Guard del API y auditorías de dependencias | SQL-only aprobado en el incremento inicial. Las cuatro auditorías de `api` y `frontend` pasaron con Node 20.19.0/npm 10.8.2, sin hallazgos moderados o superiores; se repetirán en la puerta del commit candidato |
 | API, pruebas enfocadas de plantillas, núcleo, permisos y auditoría | 114/114 en 12 archivos, compilación correcta; antes de la integración de evidencias |
 | API, fronteras HTTP y regresión de evidencia inline | 17/17 en 2 archivos, incluidos 401, 403, cuerpo estricto, 409 y CA-20: imagen verificada, imagen de otro punto y binario aún no verificado |
 | Builds de ambos paquetes y suites completas | Pendiente para el candidato final |
 | DDL 085 y manifiesto | SQL Server 2019 ScriptDom TSql150: PASS; SHA-256 del archivo: `39e66d7d0aa3483e23e57b799c7c10a07921a5876a7fe30972adc071e5689d62` |
 | Ensayo SQL de la 085 con reversión | `PortalSAGWeb-TEST`, motor 15, compatibilidad 150. Solicitud `ecb34e60aa9d`: PASS, sin tablas/permisos de la migración y con 0 transacciones abiertas tras rollback |
 | Aplicación e idempotencia en QA | Dos ejecuciones de `-Environment qa -ChecklistsOnly`: «PortalSAGWeb-TEST migration 085 is applied and verified.» La prueba sintética inicial `86431d63b5df` y la ampliada `e63ccdd761e0` devolvieron `checklists_fixture_rolled_back=true`. La ampliada comprueba que SQL rechaza promover binarios no verificados y que no concede una reserva de limpieza a una evidencia guardada. No certifica concurrencia de dos sesiones. |
+| Consulta paginada con 1.000 checklists en QA | Solicitud `3a1ffb2e9e35`: batch exacto de API-01 con 1.000 filas sintéticas, 1.000 coincidencias, 25 devueltas y 55,999 ms medidos en SQL. Se revirtió la transacción. No mide red, autenticación ni tiempo total de HTTP. |
+| Batch de guardado y finalización en QA | Solicitud `24eeade411a4`: se ejecutó el SQL exacto de API-05/06 con puntos, nota y evidencia sintéticos. Confirmó puntos, nota, promoción de evidencia, responsable/fecha de finalización y cambio de versión de fila; todo se revirtió. |
+| Estado del entorno alojado de QA antes de publicar | API y frontend separados de producción; SQL conectado y seguro, seis timers operativos deshabilitados, trabajador de catálogo desactivado. SQL confirma una fuente ERP activa con una revisión. No hay selector de proveedor privado configurado para las evidencias; no se modificaron ajustes. |
+| Versión de Node | El workflow fija 20.19.0; la instalación local advierte que algunas dependencias ya presentes en la base piden ≥22. Los dos API alojados están configurados con `~22`. Checklists no modifica paquetes ni configuración del runtime. |
 | Recorrido y comparación visual en navegador | Pendiente |
 | Revisión independiente y CI del PR | Pendiente |
 | Respaldo, migración, publicación API y fusión frontend | No ejecutados |
@@ -56,8 +69,13 @@ no sustituye las capas SQL, HTTP, visual o de concurrencia aún pendientes.
 | RN-22…29, RN-36…39, P-05/06, API-24…28 | `checklistTemplateDomain.ts`, `checklistTemplateSqlWriteRepository.ts`, `ChecklistVersionPage.tsx` | CA-22…29/32/37: `checklistTemplateDomain.test.ts`, `checklistTemplateSqlWriteRepository.test.ts`, `ChecklistVersionPage.test.tsx`, fixture SQL |
 | P-01…06: navegación y permisos | `frontend/src/App.tsx`, `frontend/src/menu.ts`, ambos catálogos de permisos | CA-38: `ChecklistNavigation.test.tsx`, `permissionModel.test.ts`; menú real con sesión pendiente |
 | RNF-01/02/06 | Controles y estilos de `frontend/src/pages/checklists/` | Pruebas de interacción más recorrido visual y accesibilidad a varios tamaños; pendiente en navegador |
-| RNF-03 | Paginación y conteos de `api/src/lib/checklistSqlRepository.ts` | Medir con 1000 filas, endpoint y latencia real de QA: pendiente |
+| RNF-03 | Paginación y conteos de `api/src/lib/checklistSqlRepository.ts` | SQL con 1.000 filas, 25 por página: PASS en QA (55,999 ms). Medición HTTP de extremo a extremo pendiente |
 | RNF-07 | `migration/sql/085_checklists.sql`, manifiesto, validador y ejecutor aislado | Análisis, hash, ensayo con rollback y dos ejecuciones de QA: PASS |
+
+Variables opcionales de RN-40: `CHECKLIST_EVIDENCE_{IMAGE,VIDEO,FILE}_MAX_BYTES` y
+`CHECKLIST_EVIDENCE_{LINK,TEXT}_MAX_CHARS`. Solo admiten positivos hasta el
+valor predeterminado de cada tipo; no amplían el límite del host ni de SQL.
+No se configuró ninguna de estas variables en Azure.
 
 No se modificaron los datos ni la configuración de producción. Este informe
 debe actualizarse con resultados y referencias concretas; los requisitos
