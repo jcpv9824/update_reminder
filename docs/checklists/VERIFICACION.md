@@ -21,6 +21,9 @@ Este informe no acredita una fase hasta registrar las pruebas del candidato.
 | Verificación | Resultado observado |
 |---|---|
 | Instalación limpia del API | `npm ci`: 214 paquetes instalados, 0 vulnerabilidades reportadas por el instalador |
+| Instalación limpia del frontend | `npm ci`: 201 paquetes instalados, 0 vulnerabilidades reportadas por el instalador |
+| Línea base del selector ERP y menú existentes | `npm test -- --maxWorkers=1 ErpClientCombobox AppLayout`: 14/14, 2 archivos; no es aún una prueba de Checklists |
+| Primer incremento API: reglas puras, esquemas Zod y catálogo de permisos | Dos suites nuevas: 22/22 fallaron en rojo antes de la lógica y pasan tras implementarla. La regresión del catálogo también falló por ausencia de claves antes de integrarlas. Corrida conjunta: 33/33 en 3 archivos. No certifica endpoints ni SQL. |
 | CA-01…CA-38 y trazabilidad final | Pendiente; identificar las pruebas efectivamente ejecutadas después de cada fase |
 | Builds y auditorías completas | Pendiente |
 | DDL, manifiesto y ensayo SQL con reversión | Pendiente |
