@@ -14,6 +14,8 @@ param(
   [switch]$AuthorizeRetentionProduction,
   [switch]$CatalogSagExactDomainOnly,
   [switch]$AuthorizeCatalogSagExactDomainProduction,
+  [switch]$ChecklistsOnly,
+  [switch]$AuthorizeChecklistsProduction,
 
   [switch]$IncludeCatalogOwnerPublisher,
 
@@ -28,6 +30,22 @@ param(
 )
 
 $ErrorActionPreference='Stop'
+if($ChecklistsOnly -and ($IncludeWhatsNew -or $WhatsNewOnly -or $WhatsNewRetentionOnly -or
+    $AuthorizeRetentionProduction -or $CatalogSagExactDomainOnly -or $AuthorizeCatalogSagExactDomainProduction -or
+    $IncludeCatalog -or $IncludeCatalogOwnerPublisher -or $IncludeCatalogErpOwnerPublisher -or
+    $IncludeCatalogObservedInventory -or $IncludeCatalogDirectoryV2 -or $IncludeScheduleLifecycle -or
+    $AuthorizeScheduleProcedureGrants)){
+  throw 'Use -ChecklistsOnly without other migration flags to apply only 085.'
+}
+if($ChecklistsOnly -and -not $PSBoundParameters.ContainsKey('Environment')){
+  throw 'Select an explicit -Environment for migration 085.'
+}
+if($AuthorizeChecklistsProduction -and (-not $ChecklistsOnly -or $Environment -ne 'production')){
+  throw '-AuthorizeChecklistsProduction is only valid for production migration 085.'
+}
+if($ChecklistsOnly -and $Environment -eq 'production' -and -not $AuthorizeChecklistsProduction){
+  throw 'Migration 085 requires separate production authorization.'
+}
 if($CatalogSagExactDomainOnly -and ($IncludeWhatsNew -or $WhatsNewOnly -or $WhatsNewRetentionOnly -or
     $AuthorizeRetentionProduction -or $IncludeCatalog -or $IncludeCatalogOwnerPublisher -or
     $IncludeCatalogErpOwnerPublisher -or $IncludeCatalogObservedInventory -or $IncludeCatalogDirectoryV2 -or
@@ -118,6 +136,94 @@ foreach($line in Get-Content -LiteralPath $manifestPath){
   if($line -match '^([a-fA-F0-9]{64})\s{2}(.+\.sql)$'){
     $manifest[$Matches[2]]=$Matches[1].ToLowerInvariant()
   }
+}
+
+if($ChecklistsOnly){
+  $name='085_checklists.sql'
+  $path=Join-Path $sqlDirectory $name
+  if(-not (Test-Path -LiteralPath $path -PathType Leaf) -or -not $manifest.ContainsKey($name)){
+    throw "Checklists deployment package validation failed for $name. Nothing was written."
+  }
+  $reviewedBytes=[IO.File]::ReadAllBytes($path)
+  $hash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($reviewedBytes)).ToLowerInvariant()
+  if($hash -cne $manifest[$name]){
+    throw "Checklists deployment package validation failed for $name. Nothing was written."
+  }
+  foreach($prerequisite in @('002_migration_history_and_schemas.sql','003_security_core.sql',
+      '007_indexes_constraints_permissions.sql','033_catalog_customer_snapshots.sql')){
+    $version=$prerequisite.Substring(0,3)
+    $result=Invoke-SessionSql -Mode read -TimeoutSeconds 120 -MaxRows 1 -Sql ("SELECT CONVERT(varchar(64),script_sha256,2) hash FROM migration.schema_migrations WHERE migration_version='$version' AND succeeded=1;")
+    $row=$result.resultSets[0].rows | Select-Object -First 1
+    if(-not $row -or -not $manifest.ContainsKey($prerequisite) -or ([string]$row.hash).ToLowerInvariant() -cne $manifest[$prerequisite]){
+      throw "Migration 085 requires the exact applied migration $version. Nothing was written."
+    }
+  }
+  $status=Invoke-SessionSql -Mode read -TimeoutSeconds 120 -MaxRows 1 -Sql @'
+SELECT CONVERT(varchar(64),script_sha256,2) AS script_sha256,succeeded
+FROM migration.schema_migrations WHERE migration_version='085';
+'@
+  $row=$status.resultSets[0].rows | Select-Object -First 1
+  if($row -and (([string]$row.script_sha256).ToLowerInvariant() -cne $hash -or $row.succeeded -ne $true)){
+    throw 'Migration history for 085 conflicts with the reviewed script. Nothing was written.'
+  }
+
+  if(-not $row){
+    if($Environment -eq 'production'){
+      & (Join-Path $PSScriptRoot 'Assert-PortalSAGWeb-RecentProductionBackup.ps1') -SessionDirectory $SessionDirectory
+    }
+    $sql=[Text.Encoding]::UTF8.GetString($reviewedBytes).Replace("'","''")
+    # The reviewed DDL's inner COMMIT does not commit the outer transaction.
+    # Keep schema, permissions and the checksum ledger in one atomic write.
+    $null=Invoke-SessionSql -Mode write -TimeoutSeconds 900 -MaxRows 1 -Sql @"
+IF @@TRANCOUNT<>0
+BEGIN
+  RAISERROR(N'Migration 085 needs a dedicated session with no open transaction.',16,1);
+  RETURN;
+END;
+SET XACT_ABORT ON;
+BEGIN TRY
+  BEGIN TRANSACTION;
+  EXEC sys.sp_executesql N'$sql';
+  -- The inner DDL acquired the application lock; it remains held until this COMMIT.
+  IF EXISTS(SELECT 1 FROM migration.schema_migrations WHERE migration_version='085')
+    THROW 53558,N'Migration history changed concurrently; retry the reviewed runner.',1;
+  INSERT migration.schema_migrations(migration_version,script_name,script_sha256,duration_ms,succeeded)
+  VALUES ('085',N'$name',0x$hash,0,1);
+  COMMIT TRANSACTION;
+END TRY
+BEGIN CATCH
+  IF XACT_STATE()<>0 ROLLBACK TRANSACTION;
+  THROW;
+END CATCH;
+"@
+  }
+
+  $ok=Invoke-SessionSql -Mode read -TimeoutSeconds 120 -MaxRows 1 -Sql @"
+SELECT CAST(CASE WHEN
+  EXISTS (SELECT 1 FROM migration.schema_migrations WHERE migration_version='085' AND script_sha256=0x$hash AND succeeded=1)
+  AND (SELECT COUNT(*) FROM sys.tables WHERE schema_id=SCHEMA_ID(N'implementation') AND name IN
+    (N'checklist_templates',N'checklist_template_versions',N'checklist_template_points',
+     N'implementation_checklists',N'implementation_checklist_points',N'implementation_checklist_evidence'))=6
+  AND (SELECT COUNT(*) FROM sys.indexes WHERE has_filter=1 AND is_unique=1 AND is_disabled=0 AND
+    ((object_id=OBJECT_ID(N'implementation.checklist_templates') AND name=N'UX_checklist_templates_active_name') OR
+     (object_id=OBJECT_ID(N'implementation.checklist_template_versions') AND name IN
+       (N'UX_checklist_versions_active_number',N'UX_checklist_versions_active_current',N'UX_checklist_versions_active_editing')) OR
+     (object_id=OBJECT_ID(N'implementation.checklist_template_points') AND name=N'UX_checklist_template_points_active_position') OR
+     (object_id=OBJECT_ID(N'implementation.implementation_checklists') AND name=N'UX_implementation_checklists_active_progress')))=6
+  AND (SELECT COUNT(*) FROM sys.foreign_keys WHERE is_disabled=0 AND is_not_trusted=0 AND
+    ((parent_object_id=OBJECT_ID(N'implementation.implementation_checklists') AND name IN
+        (N'FK_implementation_checklists_client',N'FK_implementation_checklists_version')) OR
+     (parent_object_id=OBJECT_ID(N'implementation.implementation_checklist_points') AND name IN
+        (N'FK_implementation_checklist_points_checklist',N'FK_implementation_checklist_points_version')) OR
+     (parent_object_id=OBJECT_ID(N'implementation.implementation_checklist_evidence') AND name=N'FK_checklist_evidence_point')))=5
+  AND (SELECT COUNT(*) FROM security.role_permissions AS rp JOIN security.permissions AS p ON p.permission_key=rp.permission_key
+    WHERE rp.role_id=N'super_admin' AND p.active=1 AND p.permission_key IN
+    (N'implementation.checklists.view',N'implementation.checklists.create',N'configuration.checklist_templates.view'))=3
+  THEN 1 ELSE 0 END AS bit) AS checklists_ready;
+"@
+  if($ok.resultSets[0].rows[0].checklists_ready -ne $true){throw 'Migration 085 post-verification failed.'}
+  Write-Host "$expectedDatabase migration 085 is applied and verified." -ForegroundColor Green
+  return
 }
 
 $migrations=@(

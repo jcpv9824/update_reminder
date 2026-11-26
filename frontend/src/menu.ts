@@ -14,6 +14,7 @@ import {
   FileText,
   Gauge,
   KeyRound,
+  ListChecks,
   Megaphone,
   Sparkles,
   Server,
@@ -72,6 +73,7 @@ export const MODULOS: ModuloMenu[] = [
       { ruta: "/admin/descargas-publicas", etiqueta: "Descargas Públicas", permiso: "implementation.public_downloads.view", Icono: DownloadCloud },
       { ruta: "/admin/archivos-publicos", etiqueta: "Archivos Públicos", permiso: "implementation.public_files.view", Icono: FileImage },
       { ruta: "/implementacion/logo-compania", etiqueta: "Almacenamiento de archivos y logo", permiso: "implementation.company_logo.view", Icono: ImageUp },
+      { ruta: "/implementacion/checklists", etiqueta: "Checklists", permiso: "implementation.checklists.view", Icono: ListChecks },
     ],
   },
   {
@@ -85,6 +87,7 @@ export const MODULOS: ModuloMenu[] = [
       ...(WHATS_NEW_ENABLED
         ? [{ ruta: "/configuracion/que-hay-de-nuevo", etiqueta: "Qué hay de nuevo", permiso: "configuration.whats_new.view", Icono: Sparkles }]
         : []),
+      { ruta: "/configuracion/checklists", etiqueta: "Checklists", permiso: "configuration.checklist_templates.view", Icono: ClipboardList },
     ],
   },
   {

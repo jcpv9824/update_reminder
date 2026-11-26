@@ -32,3 +32,12 @@ import "./functions/sendBlockedReminders";
 import "./functions/processEmailOutbox";
 import "./functions/runtimeStatus";
 import "./functions/whatsNew";
+import { registerChecklistTemplateRoutes } from "./functions/checklistTemplates";
+import { registerImplementationChecklistRoutes } from "./functions/implementationChecklists";
+import { registerChecklistEvidenceRoutes } from "./functions/checklistEvidence";
+import { registerChecklistEvidenceSweep } from "./functions/checklistEvidenceSweep";
+
+registerChecklistTemplateRoutes();
+registerImplementationChecklistRoutes();
+registerChecklistEvidenceRoutes();
+registerChecklistEvidenceSweep();

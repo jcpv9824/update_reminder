@@ -12,6 +12,22 @@ import {
 } from "../lib/permissionModel";
 
 describe("permission model", () => {
+  it("CA-30 CA-32 / sección 4 expone exactamente las acciones de Checklists sin concederlas a roles ordinarios", () => {
+    const implementation = PERMISSION_CATALOG.find((module) => module.id === "implementation")!;
+    const configuration = PERMISSION_CATALOG.find((module) => module.id === "configuration")!;
+    expect(implementation.options.at(-1)?.permissionPrefix).toBe("implementation.checklists");
+    expect(optionPermissionKeys(implementation.options.at(-1)!)).toEqual([
+      "implementation.checklists.view", "implementation.checklists.create",
+    ]);
+    expect(configuration.options.at(-1)?.permissionPrefix).toBe("configuration.checklist_templates");
+    expect(optionPermissionKeys(configuration.options.at(-1)!)).toEqual(["configuration.checklist_templates.view"]);
+    const keys = allPermissionKeys().filter((key) => key.includes("checklist"));
+    for (const key of keys) {
+      expect(hasPermissionFromRoles(DEFAULT_ROLE_DEFINITIONS.filter((role) => role.id === "super_admin"), key)).toBe(true);
+      expect(hasPermissionFromRoles(DEFAULT_ROLE_DEFINITIONS.filter((role) => role.id !== "super_admin"), key)).toBe(false);
+    }
+  });
+
   it("only offers active roles with task access and matching visibility for schedule assignment", () => {
     const roles = [
       { id: "domain_worker", name: "Especialista de Dominios", permissions: ["updates.tasks.view"], taskVisibility: { domain: "assigned", database: "none" }, system: false, active: true },

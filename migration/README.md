@@ -251,3 +251,23 @@ Antes de diseñar Fase 4, considerar:
 - V15 de clientes: `externalId` opcional, único si existe, y futuro candidato a obligatorio.
 - Catálogo cerrado de ambientes operativos: `production`, `test`, `demo`.
 - Regla crítica de tareas: `cancelled` + `result = "obsolete"` puede ser reactivada por una programación activa; `completed` sí bloquea duplicados.
+
+## Checklists — migración 085
+
+La `085` instala las seis tablas de Checklists, sin datos iniciales, y agrega las tres claves de permiso únicamente a `super_admin`. El rol SQL `portal_runtime` recibe `SELECT`, `INSERT` y `UPDATE` sobre esas seis tablas y `DENY DELETE`; las bajas son lógicas. No se cambian los permisos de sesiones o usuarios existentes.
+
+Validación local sin conexión:
+
+```powershell
+pwsh -NoProfile -File migration/tools/Validate-SqlServer2019Scripts.ps1
+```
+
+En **QA autorizado**, con una sesión efímera de control completo dirigida a `PortalSAGWeb-TEST`:
+
+```powershell
+pwsh -NoProfile -File migration/tools/Apply-PortalSAGWeb-PendingMigrationsThroughSession.ps1 -Environment qa -ChecklistsOnly
+```
+
+La opción solo aplica `085`: si falta un prerrequisito (`002`, `003`, `007` o `033`) o su checksum no coincide, no escribe. Repetir el comando valida el historial y las postcondiciones sin volver a aplicar la migración. `migration/sql/qa_checklists_rollback_smoke.sql` usa datos sintéticos y revierte la transacción; solo acepta `PortalSAGWeb-TEST`. Su ejecución no sustituye pruebas con dos sesiones, restauración desde respaldo ni mediciones de rendimiento.
+
+La migración es aditiva: para revertir una versión de la aplicación, conservar las tablas y sus datos y retirar el código que los usa. No se proporciona un `DROP` automático. Cualquier restauración de base o aplicación en producción requiere autorización separada y un respaldo vigente.

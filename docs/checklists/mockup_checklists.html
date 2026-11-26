@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup Checklists</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<style>
+:root{--azul:#1C3664;--azul2:#14264a;--dorado:#D3C193;--bg:#f4f5f7;--card:#fff;--borde:#d1d3d2;--texto:#1f2937;--muted:#6b7280;--err:#b91c1c;--errbg:#fee2e2;--ok:#047857;--okbg:#d1fae5;--warn:#8a6d1f;--warnbg:#fdf6e3;--gris:#eef0f3}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--texto);font-size:14px}
+.app{display:flex;min-height:100vh}
+nav{width:260px;background:var(--azul);color:#fff;padding:16px 0;flex:none}
+nav .marca{padding:0 20px 16px;font-weight:600;letter-spacing:1px;line-height:1.2}
+nav .marca small{display:block;color:var(--dorado);font-size:12px}
+nav .mod{padding:10px 20px 4px;font-size:11px;text-transform:uppercase;color:#aab8cc}
+nav a{display:flex;gap:8px;align-items:center;padding:7px 20px;color:#fff;text-decoration:none;font-size:13px;cursor:pointer}
+nav a.on{background:rgba(255,255,255,.12);border-left:3px solid var(--dorado);padding-left:17px}
+main{flex:1;padding:24px 28px;min-width:0}
+.pant{display:none}.pant.on{display:block}
+.card{background:var(--card);border:1px solid var(--borde);border-radius:10px;padding:16px 20px;margin-bottom:16px}
+.crumb{font-size:12px;color:var(--muted);margin:0 0 4px}
+h1{font-size:20px;margin:0 0 14px;display:flex;align-items:center;gap:10px}
+button{font:inherit;border:1px solid var(--borde);background:#fff;border-radius:6px;padding:6px 12px;cursor:pointer;color:var(--texto)}
+button.pri{background:var(--azul);border-color:var(--azul);color:#fff}
+button.pri:hover{background:var(--azul2)}
+button.sm{padding:3px 8px;font-size:12px}
+input,select{font:inherit;border:1px solid var(--borde);border-radius:6px;padding:7px 10px;width:100%;background:#fff}
+label.l{display:block;font-size:13px;color:var(--muted);margin-bottom:4px}
+.req::before{content:"";display:inline-block;width:6px;height:12px;border-radius:0 6px 6px 0;background:var(--err);margin-right:5px;vertical-align:-1px}
+.grid3{display:grid;grid-template-columns:1.3fr 1.3fr 1fr;gap:12px;margin-bottom:12px}
+.chip{display:inline-flex;align-items:center;gap:4px;font-size:12px;padding:2px 9px;border-radius:12px;white-space:nowrap}
+.c-ok{background:var(--okbg);color:var(--ok)}.c-warn{background:var(--warnbg);color:var(--warn)}.c-gris{background:var(--gris);color:var(--muted)}.c-azul{background:#e6ecf5;color:var(--azul)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;color:var(--muted);font-weight:600;padding:8px 6px;border-bottom:1px solid var(--borde)}
+td{padding:9px 6px;border-bottom:1px solid #eceeef;vertical-align:middle}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--borde);margin-bottom:12px}
+.tab{border:none;border-bottom:2px solid transparent;border-radius:0;background:none;padding:7px 12px}
+.tab.on{border-bottom-color:var(--azul);color:var(--azul);font-weight:600}
+.barra{background:var(--gris);border-radius:4px;height:6px;width:100px;display:inline-block;vertical-align:middle;margin-right:6px}
+.barra i{display:block;height:6px;border-radius:4px;background:var(--azul)}
+.pto{border:1px solid var(--borde);border-radius:8px;padding:8px 12px;margin-bottom:6px}
+.pto.ok{border-color:#9fd8bf}
+.pto .fila{display:flex;align-items:center;gap:10px}
+.ck{width:20px;height:20px;accent-color:var(--ok);flex:none;cursor:pointer}
+.det{font-size:12px;color:var(--muted);margin:2px 0 0 30px}
+.evs{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0 30px}
+.ev{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:2px 8px;border-radius:6px;background:var(--gris)}
+.ev a{color:var(--azul)}
+.mini{width:56px;height:36px;border-radius:4px;background:linear-gradient(135deg,#c9d6ea,#e9eef6);border:1px solid var(--borde)}
+.editor{border:1px solid var(--borde);border-radius:6px;margin:8px 0 0 30px}
+.tb{display:flex;gap:2px;padding:3px;border-bottom:1px solid var(--borde);background:#fafbfc}
+.tb button{border:none;background:none;width:28px;height:26px;padding:0}
+.area{min-height:42px;padding:6px 10px;outline:none;font-size:13px}
+.img-ed{display:inline-block;resize:both;overflow:hidden;width:180px;height:90px;border:1px dashed #9aa4b2;background:#eef2f8;border-radius:4px;font-size:11px;color:var(--muted);text-align:center;line-height:90px;vertical-align:top}
+.menu{position:absolute;right:0;top:30px;background:#fff;border:1px solid var(--borde);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.12);z-index:5;width:170px}
+.menu div{padding:6px 12px;cursor:pointer;font-size:13px;display:flex;gap:8px;align-items:center}
+.menu div:hover{background:var(--gris)}
+.alert{border-radius:6px;padding:10px 12px;font-size:13px;margin-bottom:10px}
+.a-err{background:var(--errbg);color:var(--err)}.a-warn{background:var(--warnbg);color:var(--warn)}.a-ok{background:var(--okbg);color:var(--ok)}
+.pie{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:12px}
+.pie .nota{margin-right:auto;font-size:12px;color:var(--muted)}
+.vt{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #eceeef}
+.pp{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--borde);border-radius:6px;padding:7px 10px;margin-bottom:5px;background:#fff}
+.pp.drag{opacity:.4}
+.asa{cursor:grab;color:var(--muted)}
+.velo{background:rgba(0,0,0,.4);border-radius:10px;padding:30px;display:flex;justify-content:center;margin-top:12px}
+.modal{background:#fff;border-radius:10px;padding:18px 20px;max-width:480px}
+.leyenda{font-size:12px;color:var(--muted);margin:0 0 14px;background:#fff;border:1px dashed var(--borde);border-radius:6px;padding:8px 12px}
+</style>
+</head>
+<body>
+<div class="app">
+<nav>
+  <div class="marca">PORTAL<small>SAG WEB</small></div>
+  <div class="mod">Implementación</div>
+  <a data-p="p1" class="on"><i class="ti ti-list-check"></i>Checklists</a>
+  <div class="mod">Configuración</div>
+  <a data-p="p4"><i class="ti ti-clipboard-list"></i>Checklists</a>
+</nav>
+<main>
+<p class="leyenda">Mockup de la especificación <b>ESPEC_CHECKLISTS_IMPLEMENTACION.md</b>. Datos de ejemplo. En el menú solo hay dos opciones; las demás vistas se abren con los botones. Cada vista lleva su identificador (P-01…P-06).</p>
+
+<!-- P-01 -->
+<section class="pant on" id="p1">
+<div class="card">
+<p class="crumb">Implementación › Checklists · P-01</p>
+<h1><i class="ti ti-list-check"></i>Checklists<span style="flex:1"></span><button class="pri" data-ir="p2"><i class="ti ti-plus"></i> Nuevo checklist</button></h1>
+<div style="display:flex;gap:12px;align-items:center"><div class="tabs" style="flex:1" id="tabs"><button class="tab on" data-f="">Todos (4)</button><button class="tab" data-f="p">En progreso (3)</button><button class="tab" data-f="c">Completados (1)</button></div><input placeholder="Buscar cliente o plantilla" style="width:240px;margin-bottom:12px"></div>
+<table><thead><tr><th>Cliente</th><th>Plantilla</th><th>Ambiente</th><th>Responsable</th><th>Avance</th><th>Creado</th><th>Finalizado</th><th></th></tr></thead><tbody id="lista"></tbody></table>
+</div>
+</section>
+
+<!-- P-02 -->
+<section class="pant" id="p2">
+<div class="card">
+<p class="crumb">Implementación › Checklists › Nuevo · P-02</p>
+<h1><button class="sm" data-ir="p1"><i class="ti ti-arrow-left"></i> Volver</button><i class="ti ti-clipboard-plus"></i>Nuevo checklist</h1>
+<div class="grid3">
+<div style="position:relative"><label class="l req" for="cli">Cliente</label><input id="cli" placeholder="Escriba al menos 3 letras" autocomplete="off"><div id="dd"></div></div>
+<div><label class="l req" for="pl">Plantilla</label><select id="pl"><option value="">Seleccione…</option><option value="mig" data-amb="1">Migración de SAG Clásico a SAG Web · v3.0</option><option value="new" data-amb="1">Cliente nuevo · v1.0</option><option value="loc" data-amb="0">Cliente local · v1.0</option></select></div>
+<div id="ambBox" style="visibility:hidden"><label class="l req" for="amb">Ambiente</label><select id="amb"><option value="">Seleccione…</option><option>Pruebas</option><option>Producción</option><option>Demostración</option></select></div>
+</div>
+<div id="msg2"></div>
+<div class="pie"><span class="nota">Pruebe: Tecnifluidos + Migración + Pruebas (bloqueado) · + Producción (pide confirmación)</span><button data-ir="p1">Cancelar</button><button class="pri" id="bCrear">Crear checklist</button></div>
+</div>
+</section>
+
+<!-- P-03 -->
+<section class="pant" id="p3">
+<div class="card">
+<p class="crumb">Implementación › Checklists › Tecnifluidos S.A.S. · P-03</p>
+<h1><button class="sm" data-ir="p1"><i class="ti ti-arrow-left"></i> Volver</button><i class="ti ti-clipboard-check"></i>Migración de SAG Clásico a SAG Web · v3.0 <span class="chip c-azul">En progreso</span></h1>
+<div style="display:flex;gap:18px;font-size:13px;color:var(--muted);margin-bottom:12px;flex-wrap:wrap"><span><b style="color:var(--texto)">Cliente:</b> Tecnifluidos S.A.S.</span><span><b style="color:var(--texto)">Ambiente:</b> Pruebas</span><span><b style="color:var(--texto)">Responsable:</b> Camilo P.</span><span><b style="color:var(--texto)">Creado:</b> 20/11/2026</span><span><b style="color:var(--texto)">Finalizado:</b> —</span><span><b style="color:var(--texto)">Avance:</b> <span class="barra"><i id="barra" style="width:40%"></i></span><span id="pct">40 %</span></span></div>
+<div id="ptos"></div>
+<div id="msg3"></div>
+<div class="pie"><span class="nota"><i class="ti ti-info-circle"></i> Sin autoguardado: guarde el borrador antes de salir.</span><button id="bBorr">Guardar borrador</button><button class="pri" id="bFin">Finalizar checklist</button></div>
+</div>
+</section>
+
+<!-- P-04 -->
+<section class="pant" id="p4">
+<div class="card">
+<p class="crumb">Configuración › Checklists · P-04</p>
+<h1><i class="ti ti-clipboard-list"></i>Plantillas de checklist<span style="flex:1"></span><input placeholder="Buscar plantilla" style="width:200px;font-size:13px;font-weight:400"><button class="pri" id="bNp"><i class="ti ti-plus"></i> Nueva plantilla</button></h1>
+<table><thead><tr><th>Plantilla</th><th>Versión vigente</th><th>Usos</th><th>Creada</th><th></th></tr></thead><tbody>
+<tr><td>Migración de SAG Clásico a SAG Web</td><td>v3.0</td><td>4</td><td>01/08/2026</td><td><button class="sm" data-ir="p5"><i class="ti ti-folder-open"></i> Abrir</button></td></tr>
+<tr><td>Cliente nuevo</td><td>v1.0</td><td>1</td><td>10/09/2026</td><td><button class="sm" data-ir="p5"><i class="ti ti-folder-open"></i> Abrir</button></td></tr>
+<tr><td>Cliente local</td><td>v1.0</td><td>0</td><td>12/10/2026</td><td><button class="sm" data-ir="p5"><i class="ti ti-folder-open"></i> Abrir</button> <button class="sm" title="Eliminar (solo superadministrador; sin usos)"><i class="ti ti-trash"></i></button></td></tr>
+<tr><td>Módulo especial</td><td><span class="chip c-warn">Sin publicar</span></td><td>0</td><td>25/11/2026</td><td><button class="sm" data-ir="p5"><i class="ti ti-folder-open"></i> Abrir</button> <button class="sm" title="Eliminar (solo superadministrador; sin usos)"><i class="ti ti-trash"></i></button></td></tr>
+</tbody></table>
+<div id="np"></div>
+</div>
+</section>
+
+<!-- P-05 -->
+<section class="pant" id="p5">
+<div class="card">
+<p class="crumb">Configuración › Checklists › Migración de SAG Clásico a SAG Web · P-05</p>
+<h1><button class="sm" data-ir="p4"><i class="ti ti-arrow-left"></i> Volver</button><i class="ti ti-versions"></i>Migración de SAG Clásico a SAG Web</h1>
+<div style="display:flex;align-items:center;margin-bottom:6px"><b style="flex:1">Versiones</b><button id="bNv"><i class="ti ti-plus"></i> <span id="bNvT">Crear versión 4.0</span></button></div>
+<div id="vers"></div>
+<div id="msg5" style="margin-top:8px"></div>
+<div id="modalV"></div>
+</div>
+</section>
+
+<!-- P-06 -->
+<section class="pant" id="p6">
+<div class="card">
+<p class="crumb">Configuración › Checklists › Migración de SAG Clásico a SAG Web › v4.0 (en edición) · P-06</p>
+<h1><button class="sm" data-ir="p5"><i class="ti ti-arrow-left"></i> Volver</button><i class="ti ti-list-numbers"></i>Puntos de la versión 4.0 <span class="chip c-warn">En edición</span></h1>
+<label style="display:flex;gap:10px;align-items:center;margin-bottom:14px;cursor:pointer"><input type="checkbox" class="ck" checked> Esta versión exige escoger el ambiente (Pruebas, Producción o Demostración)</label>
+<p style="font-size:13px;color:var(--muted);margin:0 0 6px">Arrastre <i class="ti ti-grip-vertical"></i> para cambiar el orden (o use las flechas con el teclado).</p>
+<div id="pps"></div>
+<div style="border:1px dashed var(--borde);border-radius:6px;padding:10px;margin-top:8px">
+<input id="nT" placeholder="Título del punto" style="margin-bottom:6px">
+<input id="nD" placeholder="Detalle (opcional)">
+<div class="pie" style="margin-top:8px"><span id="e6" style="color:var(--err);font-size:13px;margin-right:auto"></span><button id="bAdd">Agregar punto</button></div>
+</div>
+<div class="pie"><span class="nota">La versión en edición tampoco se autoguarda.</span><button data-ir="p5">Volver</button><button class="pri" id="bG6">Guardar cambios</button></div>
+<div id="msg6"></div>
+</div>
+</section>
+</main>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+function ir(p){document.querySelectorAll('.pant').forEach(x=>x.classList.toggle('on',x.id===p));const m=['p1','p2','p3'].includes(p)?'p1':'p4';document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.p===m));scrollTo(0,0)}
+document.addEventListener('click',e=>{const a=e.target.closest('[data-p],[data-ir]');if(a)ir(a.dataset.p||a.dataset.ir)});
+
+/* P-01 */
+const filas=[["Tecnifluidos S.A.S.","Migración · v3.0","Pruebas","Camilo P.",40,"p","20/11/2026","—"],["Agroindustrias del Sur","Migración · v2.0","Pruebas","Andrés M.",30,"p","18/11/2026","—"],["Inversiones Polanco","Cliente local · v1.0","—","Laura G.",10,"p","14/11/2026","—"],["Tecnifluidos S.A.S.","Migración · v2.0","Producción","Camilo P.",100,"c","15/09/2026","02/10/2026"]];
+function lista(f){$('#lista').innerHTML=filas.filter(r=>!f||r[5]===f).map(r=>{const mio=r[3]==='Camilo P.';return `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td><td><span class="barra"><i style="width:${r[4]}%;background:${r[4]===100?'var(--ok)':'var(--azul)'}"></i></span>${r[4]} %</td><td>${r[6]}</td><td>${r[7]}</td><td style="white-space:nowrap"><button class="sm" data-ir="p3" title="Ver"><i class="ti ti-eye"></i></button>${mio?' <button class="sm" data-ir="p3" title="Editar"><i class="ti ti-pencil"></i></button> <button class="sm" title="Eliminar"><i class="ti ti-trash"></i></button>':''}</td></tr>`}).join('')}
+lista('');
+$('#tabs').onclick=e=>{const b=e.target.closest('.tab');if(!b)return;document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t===b));lista(b.dataset.f)};
+
+/* P-02 */
+const clientes=["Tecnifluidos S.A.S.","Industrias Polímeros S.A.S.","Inversiones Polanco","Poliductos del Valle","Agroindustrias del Sur"];
+const sinTilde=s=>s.normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
+$('#cli').oninput=()=>{$('#msg2').innerHTML='';const q=sinTilde($('#cli').value.trim());if(q.length<3){$('#dd').innerHTML='';return}const m=clientes.filter(c=>sinTilde(c).includes(q));$('#dd').innerHTML=m.length?`<div class="menu" style="left:0;right:auto;width:100%;top:62px">${m.map(c=>`<div>${c}</div>`).join('')}</div>`:''};
+$('#dd').onclick=e=>{const d=e.target.closest('.menu div');if(d){$('#cli').value=d.textContent;$('#dd').innerHTML=''}};
+$('#pl').onchange=()=>{const o=$('#pl').selectedOptions[0];$('#ambBox').style.visibility=o.dataset.amb==='1'?'visible':'hidden';$('#amb').value='';$('#msg2').innerHTML=''};
+$('#amb').onchange=()=>$('#msg2').innerHTML='';
+$('#bCrear').onclick=()=>{const m=$('#msg2');const c=$('#cli').value,p=$('#pl').value,a=$('#amb').value,req=$('#ambBox').style.visibility==='visible';
+if(!clientes.includes(c)){m.innerHTML='<div class="alert a-err">Seleccione un cliente de la lista</div>';return}
+if(!p){m.innerHTML='<div class="alert a-err">Seleccione la plantilla</div>';return}
+if(req&&!a){m.innerHTML='<div class="alert a-err">Seleccione el ambiente</div>';return}
+if(c==='Tecnifluidos S.A.S.'&&p==='mig'&&a==='Pruebas'){m.innerHTML='<div class="alert a-err"><i class="ti ti-ban"></i> Ya hay un checklist en progreso de esta plantilla para Tecnifluidos S.A.S. en Pruebas (de Camilo P., creado el 20/11/2026). Continúe ese en vez de crear otro. <a href="#" data-ir="p3">Abrir el checklist existente</a></div>';return}
+if(c==='Tecnifluidos S.A.S.'&&p==='mig'&&a==='Producción'){m.innerHTML='<div class="alert a-warn"><i class="ti ti-alert-triangle"></i> Ya hay uno completado de esta plantilla para Tecnifluidos S.A.S. en Producción (terminado el 02/10/2026). ¿Crear otro de todos modos? <div style="margin-top:8px;display:flex;gap:8px"><a href="#">Ver el completado</a><span style="flex:1"></span><button class="sm" data-ir="p3">Sí, crear otro</button></div></div>';return}
+ir('p3')};
+
+/* P-03 */
+const puntos=[["Crear la base de datos y el dominio","Solicitar a Elasticserver y anotar el nombre de la base."],["Correr los scripts web",""],["Validar correos de los usuarios activos","Con la consulta de validación de correos."],["Configurar almacenamiento de archivos y logo",""],["Enviar credenciales al cliente",""]];
+const marcados=new Set([0,1]);
+const evIni={0:[["image","captura_dominio.png"]],1:[["file","resultado_scripts.txt"],["video","corrida_scripts.mp4"],["link","https://drive.google.com/…"]],2:[["text","El cliente corrigió 3 correos repetidos"]]};
+const icono={link:"ti-link",image:"ti-photo",video:"ti-movie",file:"ti-paperclip",text:"ti-notes"};
+const ejNom={link:"https://drive.google.com/…",image:"captura.png",video:"video.mp4",file:"archivo.xlsx",text:"Nota corta"};
+function chip(t,n){const x='<i class="ti ti-x" style="cursor:pointer;color:var(--muted)" onclick="this.parentNode.remove()" title="Quitar"></i>';if(t==='image')return `<span class="ev"><span class="mini"></span>${n}${x}</span>`;if(t==='text')return `<span class="ev"><i class="ti ti-notes"></i>${n}${x}</span>`;return `<span class="ev"><i class="ti ${icono[t]}"></i><a href="#">${n}</a>${x}</span>`}
+function editor(i){return `<div class="editor"><div class="tb"><button title="Negrita" onmousedown="event.preventDefault();document.execCommand('bold')"><i class="ti ti-bold"></i></button><button title="Cursiva" onmousedown="event.preventDefault();document.execCommand('italic')"><i class="ti ti-italic"></i></button><button title="Subrayado" onmousedown="event.preventDefault();document.execCommand('underline')"><i class="ti ti-underline"></i></button><button title="Lista" onmousedown="event.preventDefault();document.execCommand('insertUnorderedList')"><i class="ti ti-list"></i></button><button title="Enlace"><i class="ti ti-link"></i></button><button title="Imagen" onclick="this.closest('.editor').querySelector('.area').insertAdjacentHTML('beforeend','<div><span class=&quot;img-ed&quot; contenteditable=&quot;false&quot;>imagen · arrastre la esquina</span></div>')"><i class="ti ti-photo"></i></button></div><div class="area" contenteditable="true">${i===1?'Se corrieron los <b>4 scripts</b> sin error.':''}</div></div>`}
+function ptos(){$('#ptos').innerHTML=puntos.map((p,i)=>`<div class="pto${marcados.has(i)?' ok':''}" id="pt${i}"><div class="fila"><input type="checkbox" class="ck" data-i="${i}" ${marcados.has(i)?'checked':''} aria-label="${p[0]}"><span style="flex:1;font-size:14px">${p[0]}</span><span style="position:relative"><button class="sm" data-ev="${i}"><i class="ti ti-plus"></i> Evidencia</button><span id="mn${i}"></span></span></div>${p[1]?`<div class="det">${p[1]}</div>`:''}<div id="ed${i}">${marcados.has(i)?editor(i):''}</div><div class="evs" id="ev${i}">${(evIni[i]||[]).map(e=>chip(e[0],e[1])).join('')}</div></div>`).join('');avance()}
+function avance(){const n=Math.round(marcados.size/puntos.length*100);$('#barra').style.width=n+'%';$('#pct').textContent=n+' %'}
+ptos();
+$('#ptos').onchange=e=>{if(!e.target.classList.contains('ck'))return;const i=+e.target.dataset.i;if(e.target.checked){marcados.add(i);$('#ed'+i).innerHTML=editor(i)}else{marcados.delete(i);$('#ed'+i).innerHTML=''}$('#pt'+i).classList.toggle('ok',e.target.checked);$('#msg3').innerHTML='';avance()};
+$('#ptos').onclick=e=>{const b=e.target.closest('[data-ev]');if(b){const m=$('#mn'+b.dataset.ev);m.innerHTML=m.innerHTML?'':`<div class="menu">${[["link","Enlace"],["image","Imagen"],["video","Video"],["file","Archivo"],["text","Texto"]].map(o=>`<div data-t="${o[0]}" data-i="${b.dataset.ev}"><i class="ti ${icono[o[0]]}"></i>${o[1]}</div>`).join('')}</div>`;return}const d=e.target.closest('[data-t]');if(d){$('#ev'+d.dataset.i).insertAdjacentHTML('beforeend',chip(d.dataset.t,ejNom[d.dataset.t]));$('#mn'+d.dataset.i).innerHTML=''}};
+$('#bBorr').onclick=()=>$('#msg3').innerHTML='<div class="alert a-ok" style="margin-top:10px">Borrador guardado</div>';
+$('#bFin').onclick=()=>{const f=puntos.length-marcados.size;document.querySelectorAll('.pto').forEach((p,i)=>p.style.borderColor=marcados.has(i)?'':(f?'var(--err)':''));$('#msg3').innerHTML=f?`<div class="alert a-err" style="margin-top:10px">Faltan ${f} puntos por marcar</div>`:'<div class="alert a-ok" style="margin-top:10px">Checklist completado</div>'};
+
+/* P-04 */
+$('#bNp').onclick=()=>{$('#np').innerHTML=$('#np').innerHTML?'':'<div class="velo"><div class="modal"><b>Nueva plantilla</b><p style="font-size:13px;color:var(--muted)">Se crea con la versión 1.0 en edición.</p><label class="l req">Nombre</label><input id="npN" placeholder="Migración de SAG Clásico a SAG Web"><div id="npE" style="color:var(--err);font-size:13px;margin-top:4px"></div><div class="pie"><button onclick="document.getElementById(\'np\').innerHTML=\'\'">Cancelar</button><button class="pri" id="npOk">Crear plantilla</button></div></div></div>';const ok=$('#npOk');if(ok)ok.onclick=()=>{const v=sinTilde($('#npN').value.trim());if(!v){$('#npE').textContent='Escriba el nombre de la plantilla';return}if(['migracion de sag clasico a sag web','cliente nuevo','cliente local','modulo especial'].includes(v)){$('#npE').textContent='Ya existe una plantilla con ese nombre.';return}$('#np').innerHTML='<div class="alert a-ok" style="margin-top:10px">Plantilla creada con la versión 1.0 en edición.</div>'}};
+
+/* P-05 */
+let vers=[[1,"frozen",1],[2,"frozen",3],[3,"current",0]];
+function pv(){$('#vers').innerHTML=vers.map(v=>{const est={frozen:['c-gris','<i class="ti ti-lock"></i> Congelada'],current:['c-ok','Vigente'],editing:['c-warn','En edición']}[v[1]];let acc='<button class="sm" data-ir="p6"><i class="ti ti-eye"></i> Ver puntos</button>';if(v[1]==='editing')acc='<button class="sm" data-ir="p6"><i class="ti ti-pencil"></i> Editar puntos</button> <button class="sm" data-a="pub">Publicar</button> <button class="sm" data-a="desc" title="Descartar"><i class="ti ti-trash"></i></button>';if(v[1]==='current'&&v[2]===0&&!vers.some(x=>x[1]==='editing'))acc+=' <button class="sm" data-a="elim" title="Eliminar (sin uso)"><i class="ti ti-trash"></i></button>';return `<div class="vt"><span class="chip ${est[0]}">v${v[0]}.0</span><span style="flex:1">${est[1]} · ${v[2]} ${v[2]===1?'checklist':'checklists'}</span>${acc}</div>`}).join('');$('#bNvT').textContent='Crear versión '+(vers[vers.length-1][0]+1)+'.0'}
+pv();
+const msg5=(t,c)=>$('#msg5').innerHTML=`<div class="alert ${c}">${t}</div>`;
+$('#bNv').onclick=()=>{if(vers.some(v=>v[1]==='editing')){msg5('Ya hay una versión en edición. Publíquela o descártela antes de crear otra.','a-err');return}const n=vers[vers.length-1][0]+1,a=vers.find(v=>v[1]==='current')[0];$('#modalV').innerHTML=`<div class="velo"><div class="modal"><b>Crear versión ${n}.0</b><p style="font-size:13px;color:var(--muted)">La versión ${n}.0 empieza como copia de la ${a}.0, en edición. Nadie la puede usar hasta que la publique.</p><div class="pie"><button id="mvC">Cancelar</button><button class="pri" id="mvO">Crear versión ${n}.0</button></div></div></div>`;$('#mvC').onclick=()=>$('#modalV').innerHTML='';$('#mvO').onclick=()=>{vers.push([n,'editing',0]);$('#modalV').innerHTML='';pv();msg5(`Versión ${n}.0 creada en edición.`,'a-ok')}};
+$('#vers').onclick=e=>{const b=e.target.closest('[data-a]');if(!b)return;const ed=vers.find(v=>v[1]==='editing'),cur=vers.find(v=>v[1]==='current');
+if(b.dataset.a==='desc'){vers=vers.filter(v=>v!==ed);pv();msg5(`Versión ${ed[0]}.0 descartada.`,'a-ok')}
+if(b.dataset.a==='pub'){$('#modalV').innerHTML=`<div class="velo"><div class="modal"><b>Publicar versión ${ed[0]}.0</b><div class="alert a-warn" style="margin-top:8px">Al publicar la ${ed[0]}.0, la ${cur[0]}.0 queda congelada: ya no se puede editar ni eliminar, y los checklists nuevos solo usarán la ${ed[0]}.0. Los que ya usan la ${cur[0]}.0 siguen en la ${cur[0]}.0.</div><div class="pie"><button id="mpC">Cancelar</button><button class="pri" id="mpO">Publicar</button></div></div></div>`;$('#mpC').onclick=()=>$('#modalV').innerHTML='';$('#mpO').onclick=()=>{cur[1]='frozen';ed[1]='current';$('#modalV').innerHTML='';pv();msg5(`Versión ${ed[0]}.0 publicada. La ${cur[0]}.0 quedó congelada.`,'a-ok')}}
+if(b.dataset.a==='elim'){vers.pop();vers[vers.length-1][1]='current';pv();msg5(`Versión eliminada. La ${vers[vers.length-1][0]}.0 vuelve a ser la vigente.`,'a-ok')}};
+
+/* P-06 */
+let pps=puntos.map(p=>[...p]).concat([["Revisar formatos de impresión web",""]]);let dg=null;
+function rp(){$('#pps').innerHTML=pps.map((p,i)=>`<div class="pp" draggable="true" data-i="${i}"><i class="ti ti-grip-vertical asa"></i><span style="color:var(--muted)">${i+1}.</span><div style="flex:1">${p[0]}${p[1]?`<div style="font-size:12px;color:var(--muted)">${p[1]}</div>`:''}</div><button class="sm" data-m="-1" data-i="${i}" title="Subir"><i class="ti ti-arrow-up"></i></button><button class="sm" data-m="1" data-i="${i}" title="Bajar"><i class="ti ti-arrow-down"></i></button><button class="sm" data-x="${i}" title="Quitar"><i class="ti ti-x"></i></button></div>`).join('')}
+rp();
+const P=$('#pps');
+P.addEventListener('dragstart',e=>{const r=e.target.closest('.pp');dg=+r.dataset.i;r.classList.add('drag')});
+P.addEventListener('dragover',e=>e.preventDefault());
+P.addEventListener('drop',e=>{e.preventDefault();const r=e.target.closest('.pp');if(!r||dg===null)return;const[m]=pps.splice(dg,1);pps.splice(+r.dataset.i,0,m);dg=null;rp()});
+P.addEventListener('dragend',()=>{dg=null;rp()});
+P.onclick=e=>{const x=e.target.closest('[data-x]');if(x){pps.splice(+x.dataset.x,1);rp();return}const m=e.target.closest('[data-m]');if(m){const i=+m.dataset.i,j=i+ +m.dataset.m;if(j<0||j>=pps.length)return;[pps[i],pps[j]]=[pps[j],pps[i]];rp()}};
+$('#bAdd').onclick=()=>{const t=$('#nT').value.trim();if(!t){$('#e6').textContent='Escriba el título del punto';return}pps.push([t,$('#nD').value.trim()]);$('#nT').value='';$('#nD').value='';$('#e6').textContent='';rp()};
+$('#nT').oninput=()=>$('#e6').textContent='';
+$('#bG6').onclick=()=>$('#msg6').innerHTML='<div class="alert a-ok" style="margin-top:10px">Cambios guardados.</div>';
+</script>
+</body>
+</html>

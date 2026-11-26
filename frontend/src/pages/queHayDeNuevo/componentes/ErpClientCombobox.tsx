@@ -5,12 +5,17 @@ import type { ErpClientLookup } from "../contrato";
 const minimumLength = 3;
 const debounceMs = 120;
 
-export function ErpClientCombobox({ name, readOnly, scope, lookup, onSelect }: {
+export function ErpClientCombobox({ name, readOnly, scope, lookup, onSelect, label = "Cliente", labelPrefix = "6. ", helpText = "Escribe al menos 3 caracteres y selecciona un cliente del ERP.", onInputChange, isQueryValid }: {
   name: string | null;
   readOnly: boolean;
   scope: string[];
   lookup: (q: string, signal?: AbortSignal) => Promise<ErpClientLookup[]>;
   onSelect: (choice: ErpClientLookup | null) => void;
+  label?: string;
+  labelPrefix?: string;
+  helpText?: string;
+  onInputChange?: () => void;
+  isQueryValid?: (term: string) => boolean;
 }) {
   const id = useId();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -21,7 +26,7 @@ export function ErpClientCombobox({ name, readOnly, scope, lookup, onSelect }: {
   const [activeIndex, setActiveIndex] = useState(-1);
   const [request, setRequest] = useState<{ term: string; serial: number }>();
   const term = input.trim();
-  const valid = open && editing && !readOnly && term.length >= minimumLength;
+  const valid = open && editing && !readOnly && (isQueryValid ? isQueryValid(term) : term.length >= minimumLength);
   const isCurrent = valid && request?.term === term;
   const result = useQuery({
     queryKey: [...scope, "erp-clients", id, request?.term, request?.serial],
@@ -86,7 +91,7 @@ export function ErpClientCombobox({ name, readOnly, scope, lookup, onSelect }: {
   if (readOnly) return <p><strong>Cliente:</strong> {name || "Sin cliente seleccionado"}</p>;
 
   return <div className="qhdn-erp-cliente" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) close(); }}>
-    <label htmlFor={id}><span aria-hidden="true">6. </span>Cliente *</label>
+    <label htmlFor={id}>{labelPrefix && <span aria-hidden="true">{labelPrefix}</span>}{label}{label === "Cliente" ? " *" : ""}</label>
     <div className="qhdn-erp-ancla">
     <div className="qhdn-erp-campo">
       <input ref={inputRef} id={id} role="combobox" aria-autocomplete="list" aria-expanded={popup}
@@ -96,6 +101,7 @@ export function ErpClientCombobox({ name, readOnly, scope, lookup, onSelect }: {
         placeholder="Busca un cliente del ERP" value={editing ? input : (name ?? "")}
         onFocus={() => setOpen(true)} onClick={() => setOpen(true)} onKeyDown={onKeys}
         onChange={event => {
+          onInputChange?.();
           const next = event.target.value;
           setOpen(true); setEditing(true); setInput(next); setActiveIndex(-1);
           if (next.trim() !== term) setRequest(undefined);
@@ -114,6 +120,6 @@ export function ErpClientCombobox({ name, readOnly, scope, lookup, onSelect }: {
       </ul>
     </div>}
     </div>
-    <p id={`${id}-help`} className="texto-ayuda">Escribe al menos 3 caracteres y selecciona un cliente del ERP.</p>
+    <p id={`${id}-help`} className="texto-ayuda">{helpText}</p>
   </div>;
 }

@@ -166,6 +166,21 @@ const cascadeFields = fields(
 const refreshFields = fields("date", "windowStart", "windowEnd", "created", "updated", "obsoleted", "skipped", "deduplicated", "updatedSources");
 
 const ACTION_METADATA_SCHEMAS: Record<string, AuditSchema> = {
+  checklist_created: fields("templateId", "clientId", "versionId"),
+  checklist_saved: fields(),
+  checklist_completed: fields(),
+  checklist_reopened: fields(),
+  checklist_deleted: fields(),
+  checklist_duplicate_confirmed: fields(),
+  checklist_evidence_added: { evidenceIds: "scalarArray" },
+  checklist_evidence_removed: { evidenceIds: "scalarArray" },
+  checklist_template_created: fields("templateId", "versionId", "versionNumber"),
+  checklist_template_deleted: fields("templateId"),
+  checklist_version_created: fields("templateId", "versionId", "versionNumber"),
+  checklist_version_saved: fields("templateId", "versionId", "versionNumber"),
+  checklist_version_published: fields("templateId", "versionId", "versionNumber"),
+  checklist_version_discarded: fields("templateId", "versionId", "versionNumber"),
+  checklist_version_deleted: fields("templateId", "versionId", "versionNumber"),
   password_reset_requested: fields("expiresAt"),
   mandatory_password_changed: fields(),
   mfa_enabled: fields(),

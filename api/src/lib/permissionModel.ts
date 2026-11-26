@@ -125,6 +125,10 @@ export const PERMISSION_CATALOG: PermissionModule[] = [
         ACTIONS.view,
         { id: "upload", label: "Configurar Almacenamiento y Subir Logo" },
       ]),
+      option("checklists", "Checklists", "implementation.checklists", [
+        ACTIONS.view,
+        { id: "create", label: "Crear Checklist" },
+      ]),
     ],
   },
   {
@@ -170,6 +174,9 @@ export const PERMISSION_CATALOG: PermissionModule[] = [
       option("whats_new", "Qué hay de nuevo", "configuration.whats_new", [
         ACTIONS.view,
         { id: "manage", label: "Administrar" },
+      ]),
+      option("checklist_templates", "Checklists", "configuration.checklist_templates", [
+        { id: "view", label: "Entrar (ver, crear y editar plantillas y versiones)" },
       ]),
     ],
   },
