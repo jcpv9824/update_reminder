@@ -91,13 +91,25 @@ $expected = @(
   '081_catalog_schedule_draft_runtime_execute.sql',
   '082_catalog_schedule_activation_seals.sql',
   '083_whats_new_retention.sql',
-  '084_catalog_sag_target_exact_domain.sql'
+  '084_catalog_sag_target_exact_domain.sql',
+  '085_checklists.sql',
+  'qa_checklists_rollback_smoke.sql'
 )
 
 $resolvedSqlDirectory = (Resolve-Path -LiteralPath $SqlDirectory).Path
 $missing = @($expected | Where-Object { -not (Test-Path -LiteralPath (Join-Path $resolvedSqlDirectory $_)) })
 if ($missing.Count -gt 0) {
   throw "Missing required SQL migration scripts: $($missing -join ', ')"
+}
+
+$checklistsPath = Join-Path $resolvedSqlDirectory '085_checklists.sql'
+$checklistsBytes = [IO.File]::ReadAllBytes($checklistsPath)
+$checklistsHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $checklistsPath).Hash.ToLowerInvariant()
+$checklistsManifestRows = @(Get-Content -LiteralPath (Join-Path $resolvedSqlDirectory 'MANIFEST.sha256') |
+  Where-Object { $_ -match '^\S+\s+085_checklists\.sql\s*$' })
+if ($checklistsBytes -contains 13 -or $checklistsManifestRows.Count -ne 1 -or
+    $checklistsManifestRows[0] -cne "$checklistsHash  085_checklists.sql") {
+  throw 'Migration 085 requires LF and exactly one matching SHA-256 entry in MANIFEST.sha256.'
 }
 
 $scriptDom = Get-ChildItem -Path 'C:\Program Files\Microsoft SQL Server Management Studio*' `
@@ -111,6 +123,28 @@ if (-not $scriptDom) {
 Add-Type -Path $scriptDom.FullName
 $parser = [Microsoft.SqlServer.TransactSql.ScriptDom.TSql150Parser]::new($true)
 $failed = $false
+
+# Parse the assembled Checklists SQL without executing the migration runner.
+$runnerPath = Join-Path $PSScriptRoot 'Apply-PortalSAGWeb-PendingMigrationsThroughSession.ps1'
+$runnerAst = [ScriptBlock]::Create([IO.File]::ReadAllText($runnerPath)).Ast
+$runnerBatches = @($runnerAst.FindAll({
+  param($node)
+  $node -is [System.Management.Automation.Language.ExpandableStringExpressionAst] -and
+  $node.StringConstantType -eq 'DoubleQuotedHereString' -and
+  ($node.Value.Contains("EXEC sys.sp_executesql N'`$sql';") -or $node.Value.Contains('AS checklists_ready;'))
+}, $true))
+if ($runnerBatches.Count -ne 2) { throw 'Expected the Checklists apply and verification batches.' }
+$checklistsSqlLiteral = [IO.File]::ReadAllText($checklistsPath).Replace("'", "''")
+foreach ($runnerBatch in $runnerBatches) {
+  $batch = $runnerBatch.Value.Replace('$name', '085_checklists.sql').Replace('$hash', $checklistsHash).Replace('$sql', $checklistsSqlLiteral)
+  $batchReader = [IO.StringReader]::new($batch)
+  try {
+    $batchErrors = $null
+    $null = $parser.Parse($batchReader, [ref]$batchErrors)
+    if ($batchErrors.Count) { throw "Invalid Checklists runner batch: $($batchErrors[0].Message)" }
+  } finally { $batchReader.Dispose() }
+}
+Write-Host 'PASS Checklists runner SQL batches and SHA-256 manifest' -ForegroundColor Green
 
 foreach ($name in $expected) {
   $path = Join-Path $resolvedSqlDirectory $name
