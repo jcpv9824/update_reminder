@@ -1,0 +1,24 @@
+import { useState } from "react";
+import { Link } from "react-router-dom";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { ListChecks } from "lucide-react";
+import { useAuth } from "../../auth/AuthContext";
+import { checklistsApi } from "./api";
+import { ChecklistDialog, ErrorNotice, Loading, useRefreshTemplates, useTemplateKeys } from "./components";
+import { implementationPath } from "./ImplementationChecklistsRoutes";
+import type { ChecklistSummary, Environment } from "./types";
+export const environmentNames: Record<Environment, string> = { testing: "Pruebas", production: "Producción", demo: "Demostración" };
+export const checklistDate = (value: string | null) => value ? new Date(value).toLocaleDateString("es-CO", { timeZone: "America/Bogota", day: "2-digit", month: "2-digit", year: "numeric" }) : "—";
+export default function ChecklistsPage() {
+  const auth = useAuth(); const userId = !auth.cargando ? auth.usuario?.id : ""; const keys = useTemplateKeys(); const refresh = useRefreshTemplates();
+  const tabKey = `portal.checklists.tab.${userId}`;
+  const [status, setStatus] = useState(() => { try { const saved = localStorage.getItem(tabKey); return saved === "in_progress" || saved === "completed" ? saved : ""; } catch { return ""; } });
+  const [q, setQ] = useState(""); const [page, setPage] = useState(1); const [deleting, setDeleting] = useState<ChecklistSummary | null>(null);
+  const filters = { status, q, page }; const list = useQuery({ queryKey: [...keys, "list", filters], queryFn: () => checklistsApi.list(filters) });
+  const remove = useMutation({ mutationFn: () => checklistsApi.remove(deleting!.id), onSuccess: async () => { setDeleting(null); await refresh(); } });
+  function changeTab(value: string) { setStatus(value); setPage(1); try { localStorage.setItem(tabKey, value); } catch { /* storage unavailable */ } }
+  return <><nav className="checklists-migas" aria-label="Migas de pan">Implementación › Checklists</nav><section className="tarjeta"><header className="checklists-heading"><h1><ListChecks size={22} aria-hidden="true" />Checklists</h1>{list.data?.availableTemplates !== undefined && <Link className="boton primario" to={`${implementationPath}/nuevo`}>Nuevo checklist</Link>}</header>
+    <div className="checklists-heading"><div role="tablist" aria-label="Estado del checklist">{[["", "Todos", list.data?.counts?.all], ["in_progress", "En progreso", list.data?.counts?.inProgress], ["completed", "Completados", list.data?.counts?.completed]].map(([value,label,count]) => <button key={value} role="tab" aria-selected={status === value} onClick={() => changeTab(String(value))}>{label} ({count ?? 0})</button>)}</div><label className="checklists-search"><span className="sr-only">Buscar cliente o plantilla</span><input type="search" maxLength={100} value={q} onChange={e => { setQ(e.target.value); setPage(1); }} /></label></div>
+    {list.isPending ? <Loading /> : list.error ? <><ErrorNotice error={list.error} /><button onClick={() => list.refetch()}>Reintentar</button></> : <><div className="checklists-table"><table aria-label="Checklists"><thead><tr>{["Cliente", "Plantilla", "Ambiente", "Responsable", "Avance", "Creado", "Finalizado", "Acciones"].map(l => <th key={l}>{l}</th>)}</tr></thead><tbody>{list.data.items.map(c => <tr key={c.id}><td>{c.clientName}</td><td>{c.templateName} · v{c.versionNumber}.0</td><td>{c.environment ? environmentNames[c.environment] : "—"}</td><td>{c.ownerName}</td><td><progress max={100} value={c.progress} aria-label={`Avance de ${c.clientName}`} /> {c.progress} %</td><td>{checklistDate(c.createdAt)}</td><td>{checklistDate(c.completedAt)}</td><td><Link to={`${implementationPath}/${c.id}`}>Ver</Link>{c.canEdit && <Link to={`${implementationPath}/${c.id}`} className="checklists-row-action">Editar</Link>}{c.canDelete && <button className="checklists-row-action" onClick={() => { remove.reset(); setDeleting(c); }} aria-label={`Eliminar checklist de ${c.clientName}`}>Eliminar</button>}</td></tr>)}</tbody></table></div>{!list.data.items.length && <p>Aún no hay checklists. Cree el primero con Nuevo checklist.</p>}<div className="checklists-heading"><button disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Anterior</button><span role="status">Página {page} · {list.data.total} resultados</span><button disabled={page * list.data.pageSize >= list.data.total} onClick={() => setPage(p => p + 1)}>Siguiente</button></div></>}
+    </section>{deleting && <ChecklistDialog title="Eliminar checklist" close={() => setDeleting(null)} busy={remove.isPending}><p>¿Eliminar el checklist de {deleting.clientName}? Se conservará su historial.</p><ErrorNotice error={remove.error} /><button disabled={remove.isPending} onClick={() => setDeleting(null)}>Cancelar</button><button className="peligro" disabled={remove.isPending} onClick={() => remove.mutate()}>Eliminar</button></ChecklistDialog>}</>;
+}

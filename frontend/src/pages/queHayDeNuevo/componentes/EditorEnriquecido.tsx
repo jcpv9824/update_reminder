@@ -54,6 +54,8 @@ type Props = {
   perfil?: "medio" | "compacto" | "cliente";
   archivosPrivados?: boolean;
   cargarArchivo?: CargarArchivo;
+  hideAttachments?: boolean;
+  hideFileAttachments?: boolean;
 };
 
 const COLORES = [
@@ -89,6 +91,8 @@ export function EditorEnriquecido({
   perfil,
   archivosPrivados = false,
   cargarArchivo,
+  hideAttachments = false,
+  hideFileAttachments = false,
 }: Props) {
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
@@ -194,7 +198,7 @@ export function EditorEnriquecido({
 
   return (
     <div className={`qhdn-editor qhdn-editor-${tamano}${invalido ? " qhdn-editor-invalido" : ""}`}>
-      {editor && <BarraEditor editor={editor} usuariosMencion={usuariosMencion} nombre={nombreBarra ?? ariaLabel ?? "el texto"} perfil={perfil} cargarArchivo={archivosPrivados && perfil === "medio" ? cargarArchivo : undefined} />}
+      {editor && <BarraEditor editor={editor} usuariosMencion={usuariosMencion} nombre={nombreBarra ?? ariaLabel ?? "el texto"} perfil={perfil} cargarArchivo={archivosPrivados && perfil === "medio" ? cargarArchivo : undefined} hideAttachments={hideAttachments} hideFileAttachments={hideFileAttachments} />}
       <EditorContent editor={editor} />
       {pegandoImagen && <p role="status">Guardando la imagen pegada…</p>}
       {errorPegado && <p role="alert" className="qhdn-error-campo">{errorPegado}</p>}
@@ -244,7 +248,7 @@ function BotonBarra({ indice, foco, setFoco, panelId, etiqueta, Icono, activo, c
   );
 }
 
-function BarraEditor({ editor, usuariosMencion, nombre, perfil, cargarArchivo }: { editor: Editor; usuariosMencion: UsuarioPortal[]; nombre: string; perfil?: "medio" | "compacto" | "cliente"; cargarArchivo?: CargarArchivo }) {
+function BarraEditor({ editor, usuariosMencion, nombre, perfil, cargarArchivo, hideAttachments, hideFileAttachments }: { editor: Editor; usuariosMencion: UsuarioPortal[]; nombre: string; perfil?: "medio" | "compacto" | "cliente"; cargarArchivo?: CargarArchivo; hideAttachments?: boolean; hideFileAttachments?: boolean }) {
   const [panel, setPanel] = useState<Panel>(null);
   const [indiceFoco, setIndiceFoco] = useState(0);
   const [errorArchivo, setErrorArchivo] = useState<string | null>(null);
@@ -359,8 +363,8 @@ function BarraEditor({ editor, usuariosMencion, nombre, perfil, cargarArchivo }:
       {(!perfil || perfil === "medio") && <BotonBarra {...comun} indice={sig()} etiqueta="Bloque de código" Icono={SquareCode} activo={estado?.codeBlock} onClick={() => editor.chain().focus().toggleCodeBlock().run()} />}
       <BotonBarra {...comun} indice={sig()} etiqueta="Color del texto" Icono={Palette} activo={panel === "color"} controla onClick={() => alternarPanel("color")} />
       <span className="qhdn-separador" aria-hidden="true" />
-      <BotonBarra {...comun} indice={sig()} etiqueta="Adjuntar archivo" Icono={Paperclip} onClick={() => { if (!cargaEnCurso.current) (cargarArchivo || (!perfil && subida)) ? inputArchivo.current?.click() : setErrorArchivo(almacenamientoNoConectado); }} />
-      <BotonBarra {...comun} indice={sig()} etiqueta="Insertar imagen" Icono={ImagePlus} onClick={() => { if (!cargaEnCurso.current) (cargarArchivo || (!perfil && subida)) ? inputImagen.current?.click() : setErrorArchivo(almacenamientoNoConectado); }} />
+      {!hideAttachments && !hideFileAttachments && <BotonBarra {...comun} indice={sig()} etiqueta="Adjuntar archivo" Icono={Paperclip} onClick={() => { if (!cargaEnCurso.current) (cargarArchivo || (!perfil && subida)) ? inputArchivo.current?.click() : setErrorArchivo(almacenamientoNoConectado); }} />}
+      {!hideAttachments && <BotonBarra {...comun} indice={sig()} etiqueta="Insertar imagen" Icono={ImagePlus} onClick={() => { if (!cargaEnCurso.current) (cargarArchivo || (!perfil && subida)) ? inputImagen.current?.click() : setErrorArchivo(almacenamientoNoConectado); }} />}
       {usuariosMencion.length > 0 && <BotonBarra {...comun} indice={sig()} etiqueta="Mencionar a un usuario" Icono={AtSign} activo={panel === "mencion"} controla onClick={() => alternarPanel("mencion")} />}
     </>
   );

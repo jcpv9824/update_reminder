@@ -32,6 +32,8 @@ import { hasPermissionForRoleIds } from "./permissionAccess";
 import { GUIDE_BUILDER_UI_ENABLED, WHATS_NEW_PROTOTYPE_ENABLED, WHATS_NEW_ENABLED } from "./featureFlags";
 
 const DevPreview = import.meta.env.DEV ? lazy(() => import("./pages/queHayDeNuevo/DevPreview")) : null;
+const ChecklistTemplates = lazy(() => import("./pages/checklists/ChecklistTemplatesRoutes"));
+const ImplementationChecklists = lazy(() => import("./pages/checklists/ImplementationChecklistsRoutes"));
 // Literal Vite checks let the compiler discard these dynamic imports altogether when off.
 const LiveWhatsNew = import.meta.env.VITE_WHATS_NEW_ENABLED === "true" ? lazy(() => import("./pages/queHayDeNuevo/LivePages").then(m => ({ default: m.LiveWhatsNewPage }))) : null;
 const LiveConfig = import.meta.env.VITE_WHATS_NEW_ENABLED === "true" ? lazy(() => import("./pages/queHayDeNuevo/LivePages").then(m => ({ default: m.LiveConfigPage }))) : null;
@@ -105,8 +107,10 @@ function Enrutador() {
           <Route path="admin/descargas-publicas" element={<Protegido permiso="implementation.public_downloads.view" element={<DescargasPublicasAdminPage />} />} />
           <Route path="admin/archivos-publicos" element={<Protegido permiso="implementation.public_files.view" element={<ArchivosPublicosAdminPage />} />} />
           <Route path="implementacion/logo-compania" element={<Protegido permiso="implementation.company_logo.view" element={<LogoCompaniaPage />} />} />
+          <Route path="implementacion/checklists/*" element={<Protegido permiso="implementation.checklists.view" element={<Live><ImplementationChecklists /></Live>} />} />
           <Route path="alertas-correos" element={<Protegido permiso="configuration.alerts.view" element={<AlertasCorreosPage />} />} />
           <Route path="configuracion/conexiones" element={<Protegido permiso="configuration.integrations.view" element={<ConexionesPage />} />} />
+          <Route path="configuracion/checklists/*" element={<Protegido permiso="configuration.checklist_templates.view" element={<Live><ChecklistTemplates /></Live>} />} />
           <Route path="auditoria" element={<Protegido permiso="visibility.audit.view" element={<AuditoriaPage />} />} />
           <Route path="usuarios" element={<Protegido permisos={["configuration.users.view", "configuration.roles.view"]} element={<UsuariosPage />} />} />
           <Route path="tablero" element={<Protegido permiso="visibility.dashboard.view" element={<DashboardPage />} />} />

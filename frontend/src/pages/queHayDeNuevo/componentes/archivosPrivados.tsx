@@ -1,7 +1,7 @@
 import { Node, mergeAttributes } from "@tiptap/core";
 import { NodeViewWrapper, ReactNodeViewRenderer, type NodeViewProps } from "@tiptap/react";
 import { MoveDiagonal } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { api } from "../../../api/client";
 import { privateImageWidth, validPrivateImageWidth } from "../contrato";
 import { escribirAlLado, permiteTextoLateral } from "./imagenConTexto";
@@ -11,6 +11,10 @@ export type DestinoArchivoPrivado = "que_cambio" | "reglas_negocio" | "video";
 export type ArchivoPrivado = { fileId: string; name: string; mime: string; bytes: number };
 const valido = (id: unknown): id is string => typeof id === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id);
 const ruta = (id: string) => `/whats-new/files/${encodeURIComponent(id)}`;
+/** Optional module-scoped reader. Default remains the authenticated Novedades endpoint. */
+export type PrivateImageReader = (id: string, signal: AbortSignal) => Promise<Blob>;
+const defaultImageReader: PrivateImageReader = (id, signal) => api.getBlob(ruta(id), { signal });
+export const PrivateImageReaderContext = createContext<PrivateImageReader>(defaultImageReader);
 export const tiposImagenPrivada = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 export const tiposDocumentoPrivado = ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"];
 export const aceptaDocumentoPrivado = [...tiposDocumentoPrivado, ".pdf", ".docx", ".xlsx"].join(",");
@@ -19,14 +23,14 @@ const tiposPorClase = { imagen: tiposImagenPrivada, documento: tiposDocumentoPri
 const limiteMb = { imagen: 5, documento: 20, video: 30 };
 let imageReads: Promise<unknown> = Promise.resolve();
 
-function leerImagen(id: string, signal: AbortSignal) {
+function leerImagen(id: string, signal: AbortSignal, reader: PrivateImageReader) {
   // A long draft renders both the editor and the preview; serialize image
   // reads so neither leaves the Function saturated or images blank on load.
   const request = imageReads.then(() => {
     signal.throwIfAborted();
-    return api.getBlob(ruta(id), { signal });
+    return reader(id, signal);
   });
-  imageReads = request.catch(() => undefined);
+  imageReads = request.then(() => undefined, () => undefined);
   return request;
 }
 
@@ -71,6 +75,7 @@ function limitarAncho(width: number) {
 }
 
 function VistaImagenPrivada({ node, editor, getPos, updateAttributes }: NodeViewProps) {
+  const reader = useContext(PrivateImageReaderContext);
   const id = node.attrs.fileId;
   const [attempt, setAttempt] = useState(0);
   const [media, setMedia] = useState<{ id: string; url?: string; attempt: number }>();
@@ -82,14 +87,14 @@ function VistaImagenPrivada({ node, editor, getPos, updateAttributes }: NodeView
     if (!valido(id)) return;
     const control = new AbortController();
     let url: string | undefined;
-    void leerImagen(id, control.signal).then(blob => {
+    void leerImagen(id, control.signal, reader).then(blob => {
       if (control.signal.aborted) return;
       if (!tiposImagenPrivada.includes(blob.type)) throw new Error();
       url = URL.createObjectURL(blob);
       setMedia({ id, url, attempt });
     }).catch(() => { if (!control.signal.aborted) setMedia({ id, attempt }); });
     return () => { control.abort(); if (url) URL.revokeObjectURL(url); };
-  }, [id, attempt]);
+  }, [id, attempt, reader]);
   const texto = typeof node.attrs.alt === "string" ? node.attrs.alt : "";
   const anchoGuardado = validPrivateImageWidth(node.attrs.width);
   const ancho = anchoTemporal ?? anchoGuardado;

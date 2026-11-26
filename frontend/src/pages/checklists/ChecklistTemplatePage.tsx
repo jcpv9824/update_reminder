@@ -1,0 +1,23 @@
+import { useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { templatesApi } from "./api";
+import { basePath, Breadcrumb, ChecklistDialog, ErrorNotice, Loading, Status, useRefreshTemplates, useTemplateKeys } from "./components";
+type Action = { kind: "create" | "publish" | "remove"; number: number };
+/** P05 / CA-22–27,32. Eligibility is UX; every mutation is rechecked by SQL/API. */
+export default function ChecklistTemplatePage() {
+  const { templateId = "" } = useParams(); const keys = useTemplateKeys(); const refresh = useRefreshTemplates(); const navigate = useNavigate(); const [action, setAction] = useState<Action | null>(null);
+  const detail = useQuery({ queryKey: [...keys, "template", templateId], queryFn: () => templatesApi.detail(templateId) });
+  const operation = useMutation({ mutationFn: async (a: Action) => a.kind === "create" ? templatesApi.createVersion(templateId) : a.kind === "publish" ? templatesApi.publish(templateId, a.number) : templatesApi.removeVersion(templateId, a.number), onSuccess: async (result, a) => { setAction(null); await refresh(); if (a.kind === "create" && result) navigate(`${basePath}/${templateId}/versiones/${result.number}`); } });
+  if (detail.isPending) return <Loading />;
+  if (detail.error) return <><ErrorNotice error={detail.error} /><button onClick={() => detail.refetch()}>Reintentar</button></>;
+  const t = detail.data; const latest = Math.max(0, ...t.versions.map(v => v.number)); const editing = t.versions.some(v => v.status === "editing"); const current = t.versions.find(v => v.status === "current");
+  function open(a: Action) { operation.reset(); setAction(a); }
+  return <><Breadcrumb><span>{t.name}</span></Breadcrumb><section className="tarjeta"><header className="checklists-heading"><Link to={basePath}>Volver</Link><h1>{t.name}</h1></header><div className="checklists-heading"><h2>Versiones</h2><button disabled={editing || operation.isPending} onClick={() => open({ kind: "create", number: latest + 1 })}>Crear versión {latest + 1}.0</button></div>{editing && <p className="alerta alerta-info">Ya hay una versión en edición. Publíquela o descártela antes de crear otra.</p>}
+    <ul className="checklists-versions">{[...t.versions].sort((a,b) => a.number - b.number).map(v => <li key={v.id}><strong>v{v.number}.0</strong><Status status={v.status} /><span>{v.uses} {v.uses === 1 ? "checklist" : "checklists"}</span><div className="checklists-version-actions"><Link to={`${basePath}/${templateId}/versiones/${v.number}`}>{v.status === "editing" ? "Editar puntos" : "Ver puntos"}</Link>{v.status === "editing" && <><button onClick={() => open({ kind: "publish", number: v.number })}>Publicar versión {v.number}.0</button><button onClick={() => open({ kind: "remove", number: v.number })}>Descartar versión {v.number}.0</button></>}{v.status === "current" && v.uses === 0 && v.number === latest && <button onClick={() => open({ kind: "remove", number: v.number })}>Retirar versión {v.number}.0</button>}</div></li>)}</ul>{!t.versions.length && <p>Sin versiones. Cree la versión 1.0 para empezar.</p>}
+    </section>{action && <ChecklistDialog title={`${action.kind === "create" ? "Crear" : action.kind === "publish" ? "Publicar" : "Retirar o descartar"} versión ${action.number}.0`} close={() => setAction(null)} busy={operation.isPending}>
+      {action.kind === "create" ? <p>{current ? `La versión ${action.number}.0 empieza como copia de la ${current.number}.0, en edición.` : `La versión ${action.number}.0 empieza vacía, en edición.`} Nadie la puede usar hasta que la publique.</p> : action.kind === "publish" ? <p>{current ? `Al publicar la ${action.number}.0, la ${current.number}.0 queda congelada: ya no se puede editar ni eliminar, y los checklists nuevos solo usarán la ${action.number}.0. Los que ya usan la ${current.number}.0 siguen en la ${current.number}.0.` : `Al publicar la ${action.number}.0, los checklists nuevos usarán esta versión.`}</p> : <p>Se retirará o descartará la versión {action.number}.0. Si era vigente, la anterior volverá a ser vigente. Se conserva el historial.</p>}
+      <ErrorNotice error={operation.error} /><div className="acciones-formulario"><button disabled={operation.isPending} onClick={() => setAction(null)}>Cancelar</button><button className="primario" disabled={operation.isPending} onClick={() => operation.mutate(action)}>{action.kind === "create" ? `Crear versión ${action.number}.0` : action.kind === "publish" ? "Publicar" : "Confirmar"}</button></div>
+    </ChecklistDialog>}
+  </>;
+}

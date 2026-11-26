@@ -91,6 +91,7 @@ export const PERMISSION_CATALOG: PermissionModule[] = [
       option("public_downloads", "Descargas Públicas", "implementation.public_downloads", [ACTIONS.view, { id: "create_document", label: "Crear Archivo" }, { id: "edit_document", label: "Editar Archivo" }, { id: "delete_document", label: "Eliminar Archivo" }, { id: "replace_file", label: "Reemplazar Archivo" }]),
       option("public_files", "Archivos Públicos", "implementation.public_files", [ACTIONS.view, { id: "create_file", label: "Crear Archivo" }, { id: "edit_file", label: "Editar Archivo" }, { id: "delete_file", label: "Eliminar Archivo" }, { id: "replace_file", label: "Reemplazar Archivo" }]),
       option("company_logo", "Almacenamiento de archivos y logo", "implementation.company_logo", [ACTIONS.view, { id: "upload", label: "Configurar Almacenamiento y Subir Logo" }]),
+      option("checklists", "Checklists", "implementation.checklists", [ACTIONS.view, { id: "create", label: "Crear Checklist" }]),
     ],
   },
   {
@@ -102,6 +103,7 @@ export const PERMISSION_CATALOG: PermissionModule[] = [
       option("roles", "Roles", "configuration.roles", [ACTIONS.view, ACTIONS.create, ACTIONS.edit, ACTIONS.delete, ACTIONS.deactivate, ACTIONS.reactivate, { id: "manage_permissions", label: "Gestionar Permisos" }, { id: "manage_task_visibility", label: "Gestionar Visibilidad de Tareas" }]),
       option("print_formats", "Formatos de Impresión", "configuration.print_formats", [ACTIONS.view, { id: "create_source", label: "Crear Fuente" }, { id: "edit_source", label: "Editar Fuente" }, { id: "delete_source", label: "Eliminar Fuente" }, { id: "create_format", label: "Crear Formato" }, { id: "edit_format", label: "Editar Formato" }, { id: "delete_format", label: "Eliminar Formato" }, { id: "replace_pdf", label: "Reemplazar PDF" }]),
       option("whats_new", "Qué hay de nuevo", "configuration.whats_new", [ACTIONS.view, { id: "manage", label: "Administrar" }]),
+      option("checklist_templates", "Checklists", "configuration.checklist_templates", [{ id: "view", label: "Entrar (ver, crear y editar plantillas y versiones)" }]),
       option("integrations", "Conexiones", "configuration.integrations", [
         ACTIONS.view,
         { id: "edit_object_storage", label: "Configurar Almacenamiento" },
